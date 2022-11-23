@@ -3,7 +3,7 @@
 set -e
 
 SCRIPT_DIR=$(dirname "$0")
-BIN_DIR="$SCRIPT_DIR/../target/release"
+BIN_DIR="${BIN_DIR:-"$SCRIPT_DIR/../target/debug"}"
 
 if [[ -z $WHOIS_BEARER_TOKEN ]]
 then
