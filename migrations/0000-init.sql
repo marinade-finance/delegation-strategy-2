@@ -2,6 +2,7 @@ CREATE TABLE uptimes (
   id BIGSERIAL NOT NULL,
   identity TEXT NOT NULL,
   status TEXT CHECK (status IN ('UP', 'DOWN')) NOT NULL,
+  epoch INTEGER NOT NULL,
   start_at TIMESTAMP WITH TIME ZONE NOT NULL,
   end_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
@@ -38,14 +39,51 @@ CREATE TABLE validators (
   identity TEXT NOT NULL,
   vote_account TEXT NOT NULL,
   epoch INTEGER NOT NULL,
+  name TEXT NULL,
+  url TEXT NULL,
+  keybase TEXT NULL,
+  dc_ip TEXT NOT NULL,
+  dc_coordinates_lat DOUBLE PRECISION NULL,
+  dc_coordinates_lon DOUBLE PRECISION NULL,
+  dc_continent TEXT NULL,
+  dc_country_iso TEXT NULL,
+  dc_country TEXT NULL,
+  dc_city TEXT NULL,
+  dc_asn INTEGER NULL,
+  dc_aso TEXT NULL,
+  max_commission INTEGER NULL,
+  version TEXT NULL,
+  mnde_votes NUMERIC NULL,
+  activated_stake NUMERIC NOT NULL,
+  marinade_stake NUMERIC NOT NULL,
+  decentralizer_stake NUMERIC NOT NULL,
+  superminority BOOLEAN NOT NULL,
+  stake_to_become_superminority NUMERIC NOT NULL,
+  credits INTEGER NOT NULL,
+  leader_slots INTEGER NOT NULL,
+  blocks_produced INTEGER NOT NULL,
+  uptime_pct INTEGER NULL,
+  uptime INTERVAL NULL,
+  downtime INTERVAL NULL,
+
+  PRIMARY KEY(identity, epoch)
+);
+
+CREATE TABLE cluster_info (
+  id BIGSERIAL NOT NULL,
+  epoch_slot INTEGER NOT NULL,
+  epoch INTEGER NOT NULL,
+  transaction_count NUMERIC NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)
 );
 
-CREATE TABLE cluster_info (
-
-);
-
 CREATE TABLE epochs (
+  epoch INTEGER NOT NULL,
+  start_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  end_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  transaction_count NUMERIC NOT NULL,
 
+  PRIMARY KEY(epoch)
 );

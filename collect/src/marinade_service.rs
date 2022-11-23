@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use bincode::deserialize;
+use log::info;
 use solana_account_decoder::*;
 use solana_client::{
     rpc_client::RpcClient,
@@ -9,7 +9,6 @@ use solana_client::{
 use solana_program::{clock::*, pubkey::Pubkey};
 use solana_sdk::stake;
 use std::collections::*;
-use std::ops::Deref;
 
 pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from state
@@ -125,19 +124,12 @@ impl Gauge {
     pub const LEN: usize = 200;
 }
 
-// impl Deref for Gauge {
-//     type Target = Gauge;
-//
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-
 pub fn get_mnde_votes(
     rpc_client: &RpcClient,
     escrow_relocker: Pubkey,
     gauge_meister: Pubkey,
 ) -> anyhow::Result<HashMap<String, u64>> {
+    info!("Getting MNDE votes");
     let accounts = rpc_client.get_program_accounts_with_config(
         &escrow_relocker,
         RpcProgramAccountsConfig {

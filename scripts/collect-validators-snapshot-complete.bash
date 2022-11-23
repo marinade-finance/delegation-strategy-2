@@ -1,17 +1,29 @@
 #!/bin/bash
 
+set -e
+
 SCRIPT_DIR=$(dirname "$0")
-BIN_DIR=$SCRIPT_DIR/../target/debug
+BIN_DIR="$SCRIPT_DIR/../target/release"
 
 if [[ -z $WHOIS_BEARER_TOKEN ]]
 then
-  echo "Env variable WHOIS_BEARER_TOKEN is missing!"
+  echo "Env variable WHOIS_BEARER_TOKEN is missing!" >&2
   exit 1
 fi
 
+if [[ -z $RPC_URL ]]
+then
+  echo "Env variable RPC_URL is missing!" >&2
+  exit 1
+fi
+
+EPOCH=$(( $(solana epoch) - 1 ))
+
 "$BIN_DIR/collect" \
-  --url http://api.mainnet-beta.solana.com \
+  --url "$RPC_URL" \
   validators \
+    --epoch "$EPOCH" \
+    --with-rewards \
     --with-validator-info \
     --whois "https://whois.marinade.finance" \
     --whois-bearer-token "$WHOIS_BEARER_TOKEN" \

@@ -76,6 +76,12 @@ impl<'a> UpdateQueryCombiner<'a> {
                 query_end.push_str(",");
             }
             query_end.push_str(&format!("${}", i + 1 + self.params.len()));
+            if i == 0 {
+                query_end.push_str("::bigint");
+            }
+            if i == 1 {
+                query_end.push_str("::timestamp with time zone");
+            }
         }
         query_end.push_str(")");
 

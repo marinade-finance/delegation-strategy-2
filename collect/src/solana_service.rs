@@ -1,9 +1,9 @@
 use crate::validators::*;
 use bincode::deserialize;
-use log::{debug, error, info};
+use log::{error, info};
 use serde_json::{Map, Value};
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
-use solana_config_program::{config_instruction, get_config_data, ConfigKeys, ConfigState};
+use solana_config_program::{get_config_data, ConfigKeys};
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
@@ -11,13 +11,7 @@ use solana_sdk::{
     slot_history::{self, SlotHistory},
     sysvar,
 };
-use solana_sdk::{
-    account::Account,
-    message::Message,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
-};
+use solana_sdk::{account::Account, pubkey::Pubkey};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -28,6 +22,7 @@ pub fn solana_client(url: String, commitment: String) -> RpcClient {
 }
 
 pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashMap<String, u64>> {
+    info!("Getting credits");
     let vote_accounts = rpc_client.get_vote_accounts()?;
 
     let mut credits = HashMap::new();
@@ -53,6 +48,7 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
 pub fn get_cluster_nodes_versions(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashMap<String, String>> {
+    info!("Getting cluster nodes versions");
     let cluster_nodes = rpc_client.get_cluster_nodes()?;
 
     Ok(cluster_nodes
@@ -65,6 +61,7 @@ pub fn get_cluster_nodes_versions(
 }
 
 pub fn get_cluster_nodes_ips(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, String>> {
+    info!("Getting cluster nodes IPs");
     let cluster_nodes = rpc_client.get_cluster_nodes()?;
 
     Ok(cluster_nodes
@@ -119,6 +116,7 @@ pub fn get_block_production_by_validator(
     rpc_client: &RpcClient,
     epoch: Epoch,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
+    info!("Getting block production by validator");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
     let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
     let last_slot_in_epoch = epoch_schedule.get_last_slot_in_epoch(epoch);
@@ -213,6 +211,7 @@ fn parse_validator_info(
 pub fn get_validators_info(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
+    info!("Getting validator info");
     let validator_info = rpc_client.get_program_accounts(&solana_config_program::id())?;
 
     let mut validator_info_map = HashMap::new();
@@ -242,12 +241,12 @@ pub fn get_apy(
     vote_accounts: &RpcVoteAccountStatus,
     credits: &HashMap<String, u64>,
 ) -> anyhow::Result<HashMap<String, f64>> {
-    let supply = rpc_client.supply()?;
-
+    info!("Calculating APY");
+    let supply = rpc_client.supply()?.value.total;
     let inflation = rpc_client.get_inflation_rate()?.total;
     let inflation_taper = rpc_client.get_inflation_governor()?.taper;
 
-    let epochs_in_year = 125;
+    let epochs_in_year = 160; // @todo fix
 
     let activated_stake: HashMap<_, _> = vote_accounts
         .current
@@ -274,7 +273,6 @@ pub fn get_apy(
         .collect();
 
     let total_points = points.iter().map(|(_, p)| p).sum::<u128>();
-    let total_supply = supply.value.total as f64;
 
     let mut total_rewards = 0.0;
     for epoch in 1..epochs_in_year + 1 {
@@ -297,4 +295,34 @@ pub fn get_apy(
     }
 
     Ok(apy)
+}
+
+pub fn get_commission_from_inflation_rewards(
+    rpc_client: &RpcClient,
+    vote_accounts: &RpcVoteAccountStatus,
+    epoch: Option<Epoch>,
+) -> anyhow::Result<HashMap<String, u8>> {
+    let vote_addresses: Vec<_> = vote_accounts
+        .current
+        .iter()
+        .chain(vote_accounts.delinquent.iter())
+        .map(|v| Pubkey::from_str(&v.vote_pubkey).unwrap())
+        .collect();
+    let mut result: HashMap<String, u8> = Default::default();
+    for vote_addresses_chunk in vote_addresses.chunks(100) {
+        let rewards = rpc_client.get_inflation_reward(vote_addresses_chunk, epoch)?;
+        result.extend(vote_addresses_chunk.iter().zip(rewards).filter_map(
+            |(vote_address, reward)| {
+                if let Some(reward) = reward {
+                    if let Some(commission) = reward.commission {
+                        return Some((vote_address.to_string(), commission));
+                    }
+                }
+
+                None
+            },
+        ));
+    }
+
+    Ok(result)
 }

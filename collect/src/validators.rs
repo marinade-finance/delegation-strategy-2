@@ -3,11 +3,11 @@ use crate::marinade_service::*;
 use crate::solana_service::solana_client;
 use crate::solana_service::*;
 use crate::whois_service::*;
-use bincode::deserialize;
-use log::{debug, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{self};
+use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
@@ -26,6 +26,9 @@ pub struct ValidatorsOptions {
     )]
     with_validator_info: bool,
 
+    #[structopt(long = "with-rewards", help = "Whether to calculate APY and rewards.")]
+    with_rewards: bool,
+
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
@@ -34,6 +37,9 @@ pub struct ValidatorsOptions {
         help = "Bearer token to be used to fetch data from whois API"
     )]
     whois_bearer_token: Option<String>,
+
+    #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
+    epoch: Option<Epoch>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,8 +60,13 @@ pub struct ValidatorStake {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidatorRewards {
+    pub commission: Option<u8>,
+    pub apy: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ValidatorPerformance {
-    pub apy: f64,
     pub credits: u64,
     pub leader_slots: usize,
     pub blocks_produced: usize,
@@ -71,7 +82,7 @@ pub struct ValidatorDataCenter {
     pub country_iso: Option<String>,
     pub country: Option<String>,
     pub city: Option<String>,
-    pub asn: u32,
+    pub asn: Option<u32>,
     pub aso: Option<String>,
 }
 
@@ -99,8 +110,17 @@ pub struct ValidatorSnapshot {
     pub mnde_votes: Option<u64>,
     pub data_center: Option<ValidatorDataCenter>,
     pub info: Option<ValidatorInfo>,
-    pub stake: ValidatorStake,
+    pub stake: Option<ValidatorStake>,
     pub performance: ValidatorPerformance,
+    pub rewards: Option<ValidatorRewards>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub epoch: Epoch,
+    pub epoch_slot: u64,
+    pub created_at: String,
+    pub validators: Vec<ValidatorSnapshot>,
 }
 
 pub fn collect_validators_info(
@@ -110,7 +130,11 @@ pub fn collect_validators_info(
     info!("Collecting snaphost of validators: {:?}", &options);
     let client = solana_client(common_params.rpc_url, common_params.commitment);
 
-    let epoch = client.get_epoch_info()?.epoch;
+    let created_at = chrono::Utc::now();
+    let current_epoch_info = client.get_epoch_info()?;
+    info!("Current epoch: {:?}", current_epoch_info);
+
+    let epoch = options.epoch.unwrap_or(current_epoch_info.epoch);
     info!("Looking at epoch: {}", epoch);
 
     let mut validators: Vec<ValidatorSnapshot> = vec![];
@@ -160,7 +184,12 @@ pub fn collect_validators_info(
         None
     };
     let node_ips = get_cluster_nodes_ips(&client)?;
-    let apy = get_apy(&client, &vote_accounts, &credits)?;
+
+    let apy = if options.with_rewards {
+        get_apy(&client, &vote_accounts, &credits)?
+    } else {
+        Default::default()
+    };
 
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
@@ -168,6 +197,12 @@ pub fn collect_validators_info(
             node_ips,
         )?,
         _ => Default::default(),
+    };
+
+    let commission_from_rewards = if options.with_rewards {
+        get_commission_from_inflation_rewards(&client, &vote_accounts, Some(epoch))?
+    } else {
+        Default::default()
     };
 
     for vote_account in vote_accounts
@@ -179,6 +214,15 @@ pub fn collect_validators_info(
         let identity = vote_account.node_pubkey.clone();
         let (leader_slots, blocks_produced) =
             *production_by_validator.get(&identity).unwrap_or(&(0, 0));
+
+        let rewards = if options.with_rewards {
+            Some(ValidatorRewards {
+                commission: commission_from_rewards.get(&vote_pubkey).cloned(),
+                apy: apy.get(&identity).cloned(),
+            })
+        } else {
+            Default::default()
+        };
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -198,7 +242,7 @@ pub fn collect_validators_info(
                 }),
             info: validators_info.get(&identity).cloned(),
 
-            stake: ValidatorStake {
+            stake: Some(ValidatorStake {
                 activated_stake: vote_account.activated_stake,
                 marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
                 decentralizer_stake: *decentralizer_stake.get(&vote_pubkey).unwrap_or(&0),
@@ -206,10 +250,9 @@ pub fn collect_validators_info(
                 superminority: minimum_superminority_stake <= vote_account.activated_stake,
                 stake_to_become_superminority: minimum_superminority_stake
                     .saturating_sub(vote_account.activated_stake),
-            },
+            }),
 
             performance: ValidatorPerformance {
-                apy: *apy.get(&identity).unwrap_or(&0.0),
                 credits: *credits.get(&identity).unwrap_or(&0),
                 leader_slots,
                 blocks_produced,
@@ -220,10 +263,20 @@ pub fn collect_validators_info(
                 },
                 delinquent: delinquent.contains(&identity),
             },
+
+            rewards,
         });
     }
 
-    serde_yaml::to_writer(std::io::stdout(), &validators)?;
+    serde_yaml::to_writer(
+        std::io::stdout(),
+        &Snapshot {
+            epoch,
+            epoch_slot: current_epoch_info.slot_index,
+            created_at: created_at.to_string(),
+            validators,
+        },
+    )?;
 
     Ok(())
 }

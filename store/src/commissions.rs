@@ -1,7 +1,7 @@
 use crate::utils::*;
 use crate::CommonParams;
 use chrono::{DateTime, Duration, Utc};
-use collect::validators::ValidatorSnapshot;
+use collect::validators::Snapshot;
 use core::marker::Send;
 use log::{debug, info};
 use postgres::types::ToSql;
@@ -19,14 +19,17 @@ pub fn store_commissions(
     mut psql_client: Client,
 ) -> anyhow::Result<()> {
     info!("Storing commission...");
-    let now = Utc::now();
 
     let snapshot_file = std::fs::File::open(common_params.snapshot_path)?;
-    let validators: Vec<ValidatorSnapshot> = serde_yaml::from_reader(snapshot_file)?;
-    let validators: HashMap<_, _> = validators
+    let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
+    let validators: HashMap<_, _> = snapshot
+        .validators
         .iter()
         .map(|v| (v.identity.clone(), v.clone()))
         .collect();
+    let snapshot_epoch_slot = snapshot.epoch_slot as i64;
+    let snapshot_epoch = snapshot.epoch as i64;
+    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
     let mut skip_validators = HashSet::new();
 
     info!("Loaded the snapshot");
@@ -34,28 +37,20 @@ pub fn store_commissions(
     for row in psql_client.query(
         "
         SELECT DISTINCT ON (identity)
-            id,
             identity,
             commission,
-            epoch_slot,
-            epoch,
-            created_at
+            epoch
         FROM commissions
         ORDER BY identity, created_at DESC
     ",
         &[],
     )? {
-        let id: i64 = row.get(0);
-        let identity: &str = row.get(1);
-        let commission: i32 = row.get(2);
-        let epoch_slot: i32 = row.get(3);
-        let epoch: i32 = row.get(4);
-        let created_at: DateTime<Utc> = row.get(5);
+        let identity: &str = row.get("identity");
+        let commission: i32 = row.get("commission");
+        let epoch: i64 = row.get("epoch");
 
-        if let Some(snapshot) = validators.get(identity) {
-            if
-            /*epoch == snapshot.epoch &&*/
-            commission == snapshot.commission {
+        if let Some(validator_snapshot) = validators.get(identity) {
+            if epoch == snapshot_epoch && commission == validator_snapshot.commission {
                 skip_validators.insert(identity.to_string());
             }
         }
@@ -72,8 +67,13 @@ pub fn store_commissions(
 
     for (identity, snapshot) in validators.iter() {
         if !skip_validators.contains(identity) {
-            let mut params: Vec<&(dyn ToSql + Sync)> =
-                vec![&snapshot.identity, &snapshot.commission, &0, &0, &now];
+            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
+                &snapshot.identity,
+                &snapshot.commission,
+                &snapshot_epoch_slot,
+                &snapshot_epoch,
+                &snapshot_created_at,
+            ];
             query.add(&mut params);
         }
     }

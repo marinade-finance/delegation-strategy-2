@@ -1,7 +1,6 @@
-use crate::validators::*;
-use log::{debug, info};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use log::{debug, error, info};
+use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Clone)]
 pub struct Coordinates {
@@ -10,7 +9,7 @@ pub struct Coordinates {
 }
 #[derive(Deserialize, Clone)]
 pub struct IpInfo {
-    pub asn: u32,
+    pub asn: Option<u32>,
     pub aso: Option<String>,
     pub coordinates: Option<Coordinates>,
     pub continent: Option<String>,
@@ -53,8 +52,15 @@ pub fn get_data_centers(
     let mut data_centers = HashMap::new();
 
     for (node, ip) in node_ips.iter() {
-        let info = whois_client.get_ip_info(ip)?;
-        data_centers.insert(node.clone(), (ip.clone(), info));
+        match whois_client.get_ip_info(ip) {
+            Ok(info) => {
+                data_centers.insert(node.clone(), (ip.clone(), info));
+            }
+            Err(err) => error!(
+                "Error fetching info about IP {} of node {}: {}",
+                ip, node, err
+            ),
+        };
     }
 
     info!("Fetched info about data centers...");

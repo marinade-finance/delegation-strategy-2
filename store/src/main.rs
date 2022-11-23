@@ -1,6 +1,7 @@
+// use close_epoch::*;
+use cluster_info::*;
 use commissions::*;
 use env_logger::Env;
-use log::{debug, error, info};
 use postgres::{Client, NoTls};
 use structopt::StructOpt;
 use uptime::*;
@@ -29,9 +30,14 @@ enum StoreCommand {
     Uptime(StoreUptimeOptions),
     Commissions(StoreCommissionsOptions),
     Versions(StoreVersionsOptions),
+    ClusterInfo(ClusterInfoOptions),
+    // CloseEpoch(CloseEpochOptions),
 }
 
+// pub mod close_epoch;
+pub mod cluster_info;
 pub mod commissions;
+pub mod dto;
 pub mod uptime;
 pub mod utils;
 pub mod versions;
@@ -39,13 +45,15 @@ pub mod versions;
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let mut params = Params::from_args();
+    let params = Params::from_args();
 
-    let mut psql_client = Client::connect(&params.common.postgres_url, NoTls)?;
+    let psql_client = Client::connect(&params.common.postgres_url, NoTls)?;
 
     Ok(match params.command {
-        StoreCommand::Uptime(options) => store_uptime(params.common, psql_client),
-        StoreCommand::Commissions(options) => store_commissions(params.common, psql_client),
-        StoreCommand::Versions(options) => store_versions(params.common, psql_client),
+        StoreCommand::Uptime(_options) => store_uptime(params.common, psql_client),
+        StoreCommand::Commissions(_options) => store_commissions(params.common, psql_client),
+        StoreCommand::Versions(_options) => store_versions(params.common, psql_client),
+        StoreCommand::ClusterInfo(_options) => store_cluster_info(params.common, psql_client),
+        // StoreCommand::CloseEpoch(_options) => close_epoch(params.common, psql_client),
     }?)
 }
