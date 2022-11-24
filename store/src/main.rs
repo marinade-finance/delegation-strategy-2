@@ -1,11 +1,11 @@
 // use close_epoch::*;
-use cluster_info::*;
-use commissions::*;
+use cluster_info::{store_cluster_info, StoreClusterInfoOptions};
+use commissions::{store_commissions, StoreCommissionsOptions};
 use env_logger::Env;
 use postgres::{Client, NoTls};
 use structopt::StructOpt;
-use uptime::*;
-use versions::*;
+use uptime::{store_uptime, StoreUptimeOptions};
+use versions::{store_versions, StoreVersionsOptions};
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
@@ -30,7 +30,7 @@ enum StoreCommand {
     Uptime(StoreUptimeOptions),
     Commissions(StoreCommissionsOptions),
     Versions(StoreVersionsOptions),
-    ClusterInfo(ClusterInfoOptions),
+    ClusterInfo(StoreClusterInfoOptions),
     // CloseEpoch(CloseEpochOptions),
 }
 

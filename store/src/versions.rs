@@ -11,12 +11,9 @@ use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct ClusterInfoOptions {}
+pub struct StoreVersionsOptions {}
 
-pub fn store_cluster_info(
-    common_params: CommonParams,
-    mut psql_client: Client,
-) -> anyhow::Result<()> {
+pub fn store_versions(common_params: CommonParams, mut psql_client: Client) -> anyhow::Result<()> {
     info!("Storing versions...");
 
     let snapshot_file = std::fs::File::open(common_params.snapshot_path)?;
