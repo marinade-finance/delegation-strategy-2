@@ -38,8 +38,6 @@ impl<'a> InsertQueryCombiner<'a> {
             return Ok(None);
         }
 
-        println!("query: {} {:?}", &self.statement, &self.params);
-
         Ok(Some(client.execute(&self.statement, &self.params)?))
     }
 }
@@ -100,8 +98,6 @@ impl<'a> UpdateQueryCombiner<'a> {
             ") AS {} WHERE {}",
             self.values_names, self.where_condition
         ));
-
-        println!("query: {} {:?}", &self.statement, &self.params);
 
         Ok(Some(client.execute(&self.statement, &self.params)?))
     }
