@@ -5,6 +5,7 @@ use collect::validators::Snapshot;
 use log::info;
 use postgres::types::ToSql;
 use postgres::Client;
+use rust_decimal::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
@@ -25,8 +26,8 @@ pub fn store_cluster_info(
         .iter()
         .map(|v| (v.identity.clone(), v.clone()))
         .collect();
-    let snapshot_epoch_slot = snapshot.epoch_slot as i64;
-    let snapshot_epoch = snapshot.epoch as i64;
+    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
+    let snapshot_epoch: Decimal = snapshot.epoch.into();
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
     let mut skip_validators = HashSet::new();
 
@@ -45,7 +46,7 @@ pub fn store_cluster_info(
     )? {
         let identity: &str = row.get("identity");
         let version: &str = row.get("version");
-        let epoch: i64 = row.get("epoch");
+        let epoch: Decimal = row.get("epoch");
 
         if let Some(validator_snapshot) = validators.get(identity) {
             if epoch == snapshot_epoch && version == validator_snapshot.version {

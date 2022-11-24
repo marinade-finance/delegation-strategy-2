@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use collect::cluster_info::ClusterInfo;
 use log::info;
 use postgres::Client;
+use rust_decimal::prelude::*;
 use serde::Deserialize;
 use structopt::StructOpt;
 
@@ -23,9 +24,9 @@ pub fn store_versions(common_params: CommonParams, mut psql_client: Client) -> a
         VALUES ($1, $2, $3, $4)
     ",
         &[
-            &(snapshot.epoch as i64),
-            &(snapshot.epoch_slot as i64),
-            &(snapshot.transaction_count as i64),
+            &(Decimal::from(snapshot.epoch)),
+            &(Decimal::from(snapshot.epoch_slot)),
+            &(Decimal::from(snapshot.transaction_count)),
             &snapshot.created_at.parse::<DateTime<Utc>>().unwrap(),
         ],
     )?;

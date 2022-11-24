@@ -6,6 +6,7 @@ use core::marker::Send;
 use log::{debug, info};
 use postgres::types::ToSql;
 use postgres::{Client, NoTls};
+use rust_decimal::prelude::*;
 use serde::Serialize;
 use serde_yaml::{self};
 use std::collections::{HashMap, HashSet};
@@ -27,8 +28,8 @@ pub fn store_commissions(
         .iter()
         .map(|v| (v.identity.clone(), v.clone()))
         .collect();
-    let snapshot_epoch_slot = snapshot.epoch_slot as i64;
-    let snapshot_epoch = snapshot.epoch as i64;
+    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
+    let snapshot_epoch: Decimal = snapshot.epoch.into();
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
     let mut skip_validators = HashSet::new();
 
@@ -47,7 +48,7 @@ pub fn store_commissions(
     )? {
         let identity: &str = row.get("identity");
         let commission: i32 = row.get("commission");
-        let epoch: i64 = row.get("epoch");
+        let epoch: Decimal = row.get("epoch");
 
         if let Some(validator_snapshot) = validators.get(identity) {
             if epoch == snapshot_epoch && commission == validator_snapshot.commission {

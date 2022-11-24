@@ -2654,6 +2654,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_decimal"
+version = "1.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee9164faf726e4f3ece4978b25ca877ddc6802fa77f38cdccb32c7f805ecd70c"
+dependencies = [
+ "arrayvec",
+ "byteorder",
+ "bytes",
+ "num-traits",
+ "postgres",
+ "serde",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3604,6 +3618,7 @@ dependencies = [
  "num 0.4.0",
  "postgres",
  "reqwest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "serde_yaml",

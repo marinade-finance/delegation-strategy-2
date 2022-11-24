@@ -5,6 +5,7 @@ use collect::validators::Snapshot;
 use log::{debug, info};
 use postgres::types::ToSql;
 use postgres::Client;
+use rust_decimal::prelude::*;
 use serde_yaml::Deserializer;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
@@ -34,8 +35,8 @@ pub fn store_uptime(common_params: CommonParams, mut psql_client: Client) -> any
         .map(|v| (v.identity.clone(), v.clone()))
         .collect();
     let mut validators_with_extended_status: HashSet<String> = HashSet::new();
-    let snapshot_epoch_slot = snapshot.epoch_slot as i64;
-    let snapshot_epoch = snapshot.epoch as i64;
+    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
+    let snapshot_epoch: Decimal = snapshot.epoch.into();
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
     let status_end_at = snapshot_created_at
         .checked_add_signed(Duration::minutes(1))
@@ -61,7 +62,7 @@ pub fn store_uptime(common_params: CommonParams, mut psql_client: Client) -> any
         let id: i64 = row.get("id");
         let identity: &str = row.get("identity");
         let status: &str = row.get("status");
-        let epoch: i64 = row.get("epoch");
+        let epoch: Decimal = row.get("epoch");
         let start_at: DateTime<Utc> = row.get("start_at");
         let end_at: DateTime<Utc> = row.get("end_at");
         let latest_end_extension_at = end_at

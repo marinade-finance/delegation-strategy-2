@@ -2,7 +2,7 @@ CREATE TABLE uptimes (
   id BIGSERIAL NOT NULL,
   identity TEXT NOT NULL,
   status TEXT CHECK (status IN ('UP', 'DOWN')) NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch NUMERIC NOT NULL,
   start_at TIMESTAMP WITH TIME ZONE NOT NULL,
   end_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
@@ -15,8 +15,8 @@ CREATE TABLE commissions (
   id BIGSERIAL NOT NULL,
   identity TEXT NOT NULL,
   commission INTEGER NOT NULL,
-  epoch_slot INTEGER NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch_slot NUMERIC NOT NULL,
+  epoch NUMERIC NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)
@@ -27,8 +27,8 @@ CREATE TABLE versions (
   id BIGSERIAL NOT NULL,
   identity TEXT NOT NULL,
   version TEXT,
-  epoch_slot INTEGER NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch_slot NUMERIC NOT NULL,
+  epoch NUMERIC NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)
@@ -38,7 +38,7 @@ CREATE INDEX version_changes_identity_created_at ON versions (identity, created_
 CREATE TABLE validators (
   identity TEXT NOT NULL,
   vote_account TEXT NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch NUMERIC NOT NULL,
   name TEXT NULL,
   url TEXT NULL,
   keybase TEXT NULL,
@@ -59,10 +59,10 @@ CREATE TABLE validators (
   decentralizer_stake NUMERIC NOT NULL,
   superminority BOOLEAN NOT NULL,
   stake_to_become_superminority NUMERIC NOT NULL,
-  credits INTEGER NOT NULL,
+  credits NUMERIC NOT NULL,
   leader_slots INTEGER NOT NULL,
   blocks_produced INTEGER NOT NULL,
-  uptime_pct INTEGER NULL,
+  uptime_pct DOUBLE PRECISION NULL,
   uptime INTERVAL NULL,
   downtime INTERVAL NULL,
 
@@ -71,8 +71,8 @@ CREATE TABLE validators (
 
 CREATE TABLE cluster_info (
   id BIGSERIAL NOT NULL,
-  epoch_slot INTEGER NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch_slot NUMERIC NOT NULL,
+  epoch NUMERIC NOT NULL,
   transaction_count NUMERIC NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
@@ -80,7 +80,7 @@ CREATE TABLE cluster_info (
 );
 
 CREATE TABLE epochs (
-  epoch INTEGER NOT NULL,
+  epoch NUMERIC NOT NULL,
   start_at TIMESTAMP WITH TIME ZONE NOT NULL,
   end_at TIMESTAMP WITH TIME ZONE NOT NULL,
   transaction_count NUMERIC NOT NULL,
