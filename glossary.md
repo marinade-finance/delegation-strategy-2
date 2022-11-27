@@ -19,9 +19,13 @@ Let:
 then:
 
 $$p_v = \frac{V_{v_{Credits}} \cdot V_{v_{Stake}}}{ \sum_{i} V_{i_{Credits}} \cdot V_{i_{Stake}} }$$
+
 $$I_E = \sqrt[E]{1 - I_{Taper}}$$
+
 $$R_{v{_Y}} = \sum_{e = 0}^{E-1} \frac{I_Y \cdot I_E^e \cdot p_v \cdot S_{Supply}}{E} = \frac{I_Y \cdot p_v \cdot S_{Supply} \cdot I_E^E - 1}{E \cdot (I_E - 1)}$$
+
 $$R_{v_{Staker}} = R_{v{_Y}} \cdot (1 - C_v)$$
+
 $$APR_v = \frac{R_{v_{Staker}}}{V_{v_{Stake}}}$$
 
 Epochs' durations, cluster SOL supply, credits earned by validators, total amount of staked SOL - all of these change throughout the year and therefore it is virtually impossible to accurately project the staking yield. Our calculations are to be considered as mere optimistic estimations.
