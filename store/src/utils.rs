@@ -1,5 +1,6 @@
 use postgres::types::ToSql;
-use postgres::{Client, NoTls};
+use postgres::Client;
+use std::collections::HashMap;
 
 pub struct InsertQueryCombiner<'a> {
     pub insertions: u64,
@@ -38,6 +39,9 @@ impl<'a> InsertQueryCombiner<'a> {
             return Ok(None);
         }
 
+        // println!("{}", self.statement);
+        // println!("{:?}", self.params);
+
         Ok(Some(client.execute(&self.statement, &self.params)?))
     }
 }
@@ -66,7 +70,7 @@ impl<'a> UpdateQueryCombiner<'a> {
         }
     }
 
-    pub fn add(&mut self, values: &mut Vec<&'a (dyn ToSql + Sync)>) {
+    pub fn add(&mut self, values: &mut Vec<&'a (dyn ToSql + Sync)>, types: HashMap<usize, String>) {
         let separator = if self.updates == 0 { " " } else { "," };
         let mut query_end = "(".to_string();
         for i in 0..values.len() {
@@ -74,12 +78,9 @@ impl<'a> UpdateQueryCombiner<'a> {
                 query_end.push_str(",");
             }
             query_end.push_str(&format!("${}", i + 1 + self.params.len()));
-            if i == 0 {
-                query_end.push_str("::bigint");
-            }
-            if i == 1 {
-                query_end.push_str("::timestamp with time zone");
-            }
+            if let Some(t) = types.get(&i) {
+                query_end.push_str(&format!("::{}", t));
+            };
         }
         query_end.push_str(")");
 
@@ -98,6 +99,9 @@ impl<'a> UpdateQueryCombiner<'a> {
             ") AS {} WHERE {}",
             self.values_names, self.where_condition
         ));
+
+        // println!("{}", self.statement);
+        // println!("{:?}", self.params);
 
         Ok(Some(client.execute(&self.statement, &self.params)?))
     }

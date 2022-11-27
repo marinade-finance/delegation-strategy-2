@@ -39,9 +39,9 @@ CREATE TABLE validators (
   identity TEXT NOT NULL,
   vote_account TEXT NOT NULL,
   epoch NUMERIC NOT NULL,
-  name TEXT NULL,
-  url TEXT NULL,
-  keybase TEXT NULL,
+  info_name TEXT NULL,
+  info_url TEXT NULL,
+  info_keybase TEXT NULL,
   dc_ip TEXT NOT NULL,
   dc_coordinates_lat DOUBLE PRECISION NULL,
   dc_coordinates_lon DOUBLE PRECISION NULL,
@@ -51,7 +51,10 @@ CREATE TABLE validators (
   dc_city TEXT NULL,
   dc_asn INTEGER NULL,
   dc_aso TEXT NULL,
-  max_commission INTEGER NULL,
+  commission_max_observed INTEGER NULL,
+  commission_min_observed INTEGER NULL,
+  commission_advertised INTEGER NULL,
+  commission_effective INTEGER NULL,
   version TEXT NULL,
   mnde_votes NUMERIC NULL,
   activated_stake NUMERIC NOT NULL,
@@ -60,11 +63,13 @@ CREATE TABLE validators (
   superminority BOOLEAN NOT NULL,
   stake_to_become_superminority NUMERIC NOT NULL,
   credits NUMERIC NOT NULL,
-  leader_slots INTEGER NOT NULL,
-  blocks_produced INTEGER NOT NULL,
+  leader_slots NUMERIC NOT NULL,
+  blocks_produced NUMERIC NOT NULL,
+  skip_rate DOUBLE PRECISION NOT NULL,
   uptime_pct DOUBLE PRECISION NULL,
-  uptime INTERVAL NULL,
-  downtime INTERVAL NULL,
+  uptime NUMERIC NULL,
+  downtime NUMERIC NULL,
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(identity, epoch)
 );
@@ -84,6 +89,9 @@ CREATE TABLE epochs (
   start_at TIMESTAMP WITH TIME ZONE NOT NULL,
   end_at TIMESTAMP WITH TIME ZONE NOT NULL,
   transaction_count NUMERIC NOT NULL,
+  supply NUMERIC NOT NULL,
+  inflation DOUBLE PRECISION NOT NULL,
+  inflation_taper DOUBLE PRECISION NOT NULL,
 
   PRIMARY KEY(epoch)
 );

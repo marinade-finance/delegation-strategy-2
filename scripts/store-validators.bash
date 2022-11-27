@@ -20,5 +20,5 @@ fi
 
 "$BIN_DIR/store" \
   --postgres-url "$POSTGRES_URL" \
-  cluster-info \
+  validators \
     --snapshot-file "$SNAPSHOT"

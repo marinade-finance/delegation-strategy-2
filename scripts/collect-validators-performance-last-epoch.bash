@@ -9,6 +9,10 @@ then
   exit 1
 fi
 
+EPOCH=$(( $(solana -u "$RPC_URL" epoch) - 1 ))
+
 "$BIN_DIR/collect" \
   --url "$RPC_URL" \
-  validators
+  validators-performance \
+    --with-rewards \
+    --epoch "$EPOCH"

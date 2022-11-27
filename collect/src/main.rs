@@ -1,6 +1,8 @@
-use collect::cluster_info::*;
 use collect::common::*;
 use collect::validators::*;
+use collect::validators_performance::{
+    collect_validators_performance_info, ValidatorsPerformanceOptions,
+};
 use env_logger::Env;
 use structopt::StructOpt;
 
@@ -15,8 +17,8 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum CollectCommand {
-    ClusterInfo(ClusterInfoOptions),
     Validators(ValidatorsOptions),
+    ValidatorsPerformance(ValidatorsPerformanceOptions),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -25,7 +27,9 @@ fn main() -> anyhow::Result<()> {
     let params = Params::from_args();
 
     Ok(match params.command {
-        CollectCommand::ClusterInfo(_options) => collect_cluster_info(params.common),
         CollectCommand::Validators(options) => collect_validators_info(params.common, options),
+        CollectCommand::ValidatorsPerformance(options) => {
+            collect_validators_performance_info(params.common, options)
+        }
     }?)
 }

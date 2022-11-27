@@ -20,5 +20,5 @@ fi
 
 "$BIN_DIR/store" \
   --postgres-url "$POSTGRES_URL" \
-  --snapshot-file "$SNAPSHOT" \
-  versions
+  versions \
+    --snapshot-file "$SNAPSHOT"

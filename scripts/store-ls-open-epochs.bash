@@ -11,14 +11,6 @@ then
   exit 1
 fi
 
-SNAPSHOT="$1"
-if [[ -z $SNAPSHOT ]]
-then
-  echo "Usage: $0 <snapshot-file>" >&2
-  exit 1
-fi
-
 "$BIN_DIR/store" \
   --postgres-url "$POSTGRES_URL" \
-  cluster-info \
-    --snapshot-file "$SNAPSHOT"
+  ls-open-epochs

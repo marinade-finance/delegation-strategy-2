@@ -1,17 +1,19 @@
 use crate::utils::*;
-use crate::CommonParams;
 use chrono::{DateTime, Duration, Utc};
-use collect::validators::Snapshot;
-use log::{debug, info};
+use collect::validators_performance::ValidatorsPerformanceSnapshot;
+use log::{debug, info, warn};
 use postgres::types::ToSql;
 use postgres::Client;
 use rust_decimal::prelude::*;
-use serde_yaml::Deserializer;
+use serde_yaml;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreUptimeOptions {}
+pub struct StoreUptimeOptions {
+    #[structopt(long = "snapshot-file")]
+    snapshot_path: String,
+}
 
 static UP: &str = "UP";
 static DOWN: &str = "DOWN";
@@ -24,25 +26,20 @@ fn status_from_delinquency(delinquent: bool) -> &'static str {
     }
 }
 
-pub fn store_uptime(common_params: CommonParams, mut psql_client: Client) -> anyhow::Result<()> {
+pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> anyhow::Result<()> {
     info!("Storing uptime...");
 
-    let snapshot_file = std::fs::File::open(common_params.snapshot_path)?;
-    let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let validators: HashMap<_, _> = snapshot
-        .validators
-        .iter()
-        .map(|v| (v.identity.clone(), v.clone()))
-        .collect();
+    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let mut validators_with_extended_status: HashSet<String> = HashSet::new();
-    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
-    let status_end_at = snapshot_created_at
+    let default_status_end_at = snapshot_created_at
         .checked_add_signed(Duration::minutes(1))
         .unwrap();
     let status_max_delay_to_extend = Duration::minutes(5);
-    let mut records_to_extend = HashSet::new();
+    let mut records_extensions: HashMap<i64, DateTime<Utc>> = Default::default();
+
     info!("Loaded the snapshot");
 
     for row in psql_client.query(
@@ -69,15 +66,15 @@ pub fn store_uptime(common_params: CommonParams, mut psql_client: Client) -> any
             .checked_add_signed(status_max_delay_to_extend.clone())
             .unwrap();
 
-        if let Some(validator_snapshot) = validators.get(identity) {
-            let status_from_snapshot =
-                status_from_delinquency(validator_snapshot.performance.delinquent);
-            if latest_end_extension_at > snapshot_created_at
-                && status == status_from_snapshot
-                && epoch == snapshot_epoch
-            {
-                validators_with_extended_status.insert(identity.to_string());
-                records_to_extend.insert(id);
+        if let Some(validator_snapshot) = snapshot.validators.get(identity) {
+            let status_from_snapshot = status_from_delinquency(validator_snapshot.delinquent);
+            if latest_end_extension_at > snapshot_created_at {
+                if status == status_from_snapshot && epoch == snapshot_epoch {
+                    validators_with_extended_status.insert(identity.to_string());
+                    records_extensions.insert(id, default_status_end_at.clone());
+                } else {
+                    records_extensions.insert(id, snapshot_created_at.clone());
+                }
             }
         }
 
@@ -94,38 +91,43 @@ pub fn store_uptime(common_params: CommonParams, mut psql_client: Client) -> any
         "uptimes.id = u.id".to_string(),
     );
 
-    for record_to_extend in records_to_extend.iter() {
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![record_to_extend, &status_end_at];
-        query.add(&mut params);
+    for (id, status_end_at) in records_extensions.iter() {
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![id, status_end_at];
+        query.add(
+            &mut params,
+            HashMap::from_iter([(0, "BIGINT".into()), (1, "TIMESTAMP WITH TIME ZONE".into())]),
+        );
     }
     query.execute(&mut psql_client)?;
-    info!("Extended previous {} uptimes", records_to_extend.len());
+    info!("Extended previous {} uptimes", records_extensions.len());
 
     let mut query = InsertQueryCombiner::new(
         "uptimes".to_string(),
         "identity, status, epoch, start_at, end_at".to_string(),
     );
 
-    for (identity, snapshot) in validators.iter() {
+    for (identity, snapshot) in snapshot.validators.iter() {
         if !validators_with_extended_status.contains(identity) {
-            if snapshot.performance.delinquent {
+            if snapshot.delinquent {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    &snapshot.identity,
+                    identity,
                     &DOWN,
                     &snapshot_epoch,
                     &snapshot_created_at,
-                    &status_end_at,
+                    &default_status_end_at,
                 ];
                 query.add(&mut params);
+                warn!("Validator {} is now DOWN", identity);
             } else {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    &snapshot.identity,
+                    identity,
                     &UP,
                     &snapshot_epoch,
                     &snapshot_created_at,
-                    &status_end_at,
+                    &default_status_end_at,
                 ];
                 query.add(&mut params);
+                info!("Validator {} is now UP", identity);
             }
         }
     }

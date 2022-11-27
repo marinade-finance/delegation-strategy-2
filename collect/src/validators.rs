@@ -2,14 +2,12 @@ use crate::common::*;
 use crate::marinade_service::*;
 use crate::solana_service::solana_client;
 use crate::solana_service::*;
+use crate::validators_performance::{validators_performance, ValidatorPerformance};
 use crate::whois_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use serde_yaml::{self};
 use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
-use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -19,15 +17,6 @@ pub struct ValidatorsOptions {
 
     #[structopt(long = "escrow-relocker", help = "Escrow relocker program address.")]
     escrow_relocker: Option<Pubkey>,
-
-    #[structopt(
-        long = "with-validator-info",
-        help = "Whether to get published details."
-    )]
-    with_validator_info: bool,
-
-    #[structopt(long = "with-rewards", help = "Whether to calculate APY and rewards.")]
-    with_rewards: bool,
 
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
@@ -42,7 +31,7 @@ pub struct ValidatorsOptions {
     epoch: Option<Epoch>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ValidatorInfo {
     pub name: Option<String>,
     pub url: Option<String>,
@@ -50,31 +39,7 @@ pub struct ValidatorInfo {
     pub keybase: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ValidatorStake {
-    pub activated_stake: u64,
-    pub marinade_stake: u64,
-    pub decentralizer_stake: u64,
-    pub superminority: bool,
-    pub stake_to_become_superminority: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ValidatorRewards {
-    pub commission: Option<u8>,
-    pub apy: Option<f64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ValidatorPerformance {
-    pub credits: u64,
-    pub leader_slots: usize,
-    pub blocks_produced: usize,
-    pub skip_rate: f64,
-    pub delinquent: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ValidatorDataCenter {
     pub ip: String,
     pub coordinates: Option<(f64, f64)>, // lon, lat
@@ -103,22 +68,25 @@ impl ValidatorDataCenter {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidatorSnapshot {
-    pub vote_account: String,
     pub identity: String,
-    pub commission: i32,
-    pub version: String,
+    pub vote_account: String,
+    pub info_name: Option<String>,
+    pub info_url: Option<String>,
+    pub info_details: Option<String>,
+    pub info_keybase: Option<String>,
     pub mnde_votes: Option<u64>,
     pub data_center: Option<ValidatorDataCenter>,
-    pub info: Option<ValidatorInfo>,
-    pub stake: Option<ValidatorStake>,
+    pub activated_stake: u64,
+    pub marinade_stake: u64,
+    pub decentralizer_stake: u64,
+    pub superminority: bool,
+    pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
-    pub rewards: Option<ValidatorRewards>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub epoch: Epoch,
-    pub epoch_slot: u64,
     pub created_at: String,
     pub validators: Vec<ValidatorSnapshot>,
 }
@@ -163,19 +131,8 @@ pub fn collect_validators_info(
     let minimum_superminority_stake = get_minimum_superminority_stake(&vote_accounts);
     let marinade_stake = get_marinade_stakes(&client)?;
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
-    let delinquent: HashSet<_> = vote_accounts
-        .delinquent
-        .iter()
-        .map(|v| v.node_pubkey.clone())
-        .collect();
-    let production_by_validator = get_block_production_by_validator(&client, epoch)?;
-    let node_versions = get_cluster_nodes_versions(&client)?;
-    let credits = get_credits(&client, epoch)?;
-    let validators_info = if options.with_validator_info {
-        get_validators_info(&client)?
-    } else {
-        Default::default()
-    };
+
+    let validators_info = get_validators_info(&client)?;
     let mnde_votes = if let (Some(escrow_relocker), Some(gauge_meister)) =
         (options.escrow_relocker, options.gauge_meister)
     {
@@ -185,12 +142,6 @@ pub fn collect_validators_info(
     };
     let node_ips = get_cluster_nodes_ips(&client)?;
 
-    let apy = if options.with_rewards {
-        get_apy(&client, &vote_accounts, &credits)?
-    } else {
-        Default::default()
-    };
-
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
             WhoisClient::new(whois, options.whois_bearer_token),
@@ -199,11 +150,7 @@ pub fn collect_validators_info(
         _ => Default::default(),
     };
 
-    let commission_from_rewards = if options.with_rewards {
-        get_commission_from_inflation_rewards(&client, &vote_accounts, Some(epoch))?
-    } else {
-        Default::default()
-    };
+    let performance = validators_performance(&client, epoch, &vote_accounts)?;
 
     for vote_account in vote_accounts
         .current
@@ -212,26 +159,20 @@ pub fn collect_validators_info(
     {
         let vote_pubkey = vote_account.vote_pubkey.clone();
         let identity = vote_account.node_pubkey.clone();
-        let (leader_slots, blocks_produced) =
-            *production_by_validator.get(&identity).unwrap_or(&(0, 0));
 
-        let rewards = if options.with_rewards {
-            Some(ValidatorRewards {
-                commission: commission_from_rewards.get(&vote_pubkey).cloned(),
-                apy: apy.get(&identity).cloned(),
-            })
-        } else {
-            Default::default()
+        let ValidatorInfo {
+            name,
+            url,
+            keybase,
+            details,
+        } = match validators_info.get(&identity).cloned() {
+            Some(info) => info,
+            None => Default::default(),
         };
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
             identity: identity.clone(),
-            version: node_versions
-                .get(&identity)
-                .cloned()
-                .unwrap_or("unknown".to_string()),
-            commission: vote_account.commission as i32,
             mnde_votes: mnde_votes
                 .clone()
                 .map_or(None, |v| Some(*v.get(&vote_pubkey).unwrap_or(&0))),
@@ -240,31 +181,21 @@ pub fn collect_validators_info(
                 .map_or(None, |(ip, data_center)| {
                     Some(ValidatorDataCenter::new(ip.clone(), data_center.clone()))
                 }),
-            info: validators_info.get(&identity).cloned(),
 
-            stake: Some(ValidatorStake {
-                activated_stake: vote_account.activated_stake,
-                marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
-                decentralizer_stake: *decentralizer_stake.get(&vote_pubkey).unwrap_or(&0),
+            info_url: url,
+            info_name: name,
+            info_keybase: keybase,
+            info_details: details,
 
-                superminority: minimum_superminority_stake <= vote_account.activated_stake,
-                stake_to_become_superminority: minimum_superminority_stake
-                    .saturating_sub(vote_account.activated_stake),
-            }),
+            activated_stake: vote_account.activated_stake,
+            marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
+            decentralizer_stake: *decentralizer_stake.get(&vote_pubkey).unwrap_or(&0),
 
-            performance: ValidatorPerformance {
-                credits: *credits.get(&identity).unwrap_or(&0),
-                leader_slots,
-                blocks_produced,
-                skip_rate: if leader_slots == 0 {
-                    0f64
-                } else {
-                    1f64 - (blocks_produced as f64 / leader_slots as f64)
-                },
-                delinquent: delinquent.contains(&identity),
-            },
+            superminority: minimum_superminority_stake <= vote_account.activated_stake,
+            stake_to_become_superminority: minimum_superminority_stake
+                .saturating_sub(vote_account.activated_stake),
 
-            rewards,
+            performance: performance.get(&identity).unwrap().clone(),
         });
     }
 
@@ -272,7 +203,6 @@ pub fn collect_validators_info(
         std::io::stdout(),
         &Snapshot {
             epoch,
-            epoch_slot: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             validators,
         },

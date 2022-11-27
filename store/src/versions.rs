@@ -1,34 +1,35 @@
 use crate::utils::*;
-use crate::CommonParams;
 use chrono::{DateTime, Utc};
-use collect::validators::Snapshot;
+use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use postgres::types::ToSql;
 use postgres::Client;
 use rust_decimal::prelude::*;
-use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use serde_yaml;
+use std::collections::HashMap;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreVersionsOptions {}
+pub struct StoreVersionsOptions {
+    #[structopt(long = "snapshot-file")]
+    snapshot_path: String,
+}
 
-pub fn store_versions(common_params: CommonParams, mut psql_client: Client) -> anyhow::Result<()> {
+pub fn store_versions(
+    options: StoreVersionsOptions,
+    mut psql_client: Client,
+) -> anyhow::Result<()> {
     info!("Storing versions...");
 
-    let snapshot_file = std::fs::File::open(common_params.snapshot_path)?;
-    let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let validators: HashMap<_, _> = snapshot
-        .validators
-        .iter()
-        .map(|v| (v.identity.clone(), v.clone()))
-        .collect();
+    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
-    let mut skip_validators = HashSet::new();
 
     info!("Loaded the snapshot");
+
+    let mut versions: HashMap<String, Option<String>> = Default::default();
 
     for row in psql_client.query(
         "
@@ -42,36 +43,30 @@ pub fn store_versions(common_params: CommonParams, mut psql_client: Client) -> a
         &[],
     )? {
         let identity: &str = row.get("identity");
-        let version: &str = row.get("version");
+        let version: Option<String> = row.get("version");
         let epoch: Decimal = row.get("epoch");
 
-        if let Some(validator_snapshot) = validators.get(identity) {
-            if epoch == snapshot_epoch && version == validator_snapshot.version {
-                skip_validators.insert(identity.to_string());
+        if let Some(validator_snapshot) = snapshot.validators.get(identity) {
+            if epoch != snapshot_epoch && version != validator_snapshot.version {
+                versions.insert(identity.to_string(), version);
             }
         }
     }
-    info!(
-        "Found {} validators with no changes since last run",
-        skip_validators.len()
-    );
 
     let mut query = InsertQueryCombiner::new(
         "versions".to_string(),
         "identity, version, epoch_slot, epoch, created_at".to_string(),
     );
 
-    for (identity, validator) in validators.iter() {
-        if !skip_validators.contains(identity) {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &validator.identity,
-                &validator.version,
-                &snapshot_epoch_slot,
-                &snapshot_epoch,
-                &snapshot_created_at,
-            ];
-            query.add(&mut params);
-        }
+    for (identity, version) in versions.iter() {
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![
+            identity,
+            version,
+            &snapshot_epoch_slot,
+            &snapshot_epoch,
+            &snapshot_created_at,
+        ];
+        query.add(&mut params);
     }
     let insertions = query.execute(&mut psql_client)?;
 

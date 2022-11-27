@@ -1,27 +1,30 @@
-use crate::CommonParams;
 use chrono::{DateTime, Utc};
-use collect::cluster_info::ClusterInfo;
+use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use postgres::Client;
 use rust_decimal::prelude::*;
-use serde::Deserialize;
+use serde_yaml;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreClusterInfoOptions {}
+pub struct StoreClusterInfoOptions {
+    #[structopt(long = "snapshot-file")]
+    snapshot_path: String,
+}
 
 pub fn store_cluster_info(
-    common_params: CommonParams,
+    options: StoreClusterInfoOptions,
     mut psql_client: Client,
 ) -> anyhow::Result<()> {
     info!("Storing cluster info...");
 
-    let snapshot_file = std::fs::File::open(common_params.snapshot_path)?;
-    let snapshot: ClusterInfo = serde_yaml::from_reader(snapshot_file)?;
+    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
 
     info!("Loaded the cluster info");
 
     psql_client.execute(
+        // todo add supply, inflation and active stake
         "
         INSERT INTO cluster_info (epoch, epoch_slot, transaction_count, created_at)
         VALUES ($1, $2, $3, $4)
