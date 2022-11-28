@@ -1,5 +1,7 @@
+use crate::dto::{UptimeRecord, VersionRecord};
 use postgres::types::ToSql;
 use postgres::Client;
+use rust_decimal::prelude::*;
 use std::collections::HashMap;
 
 pub struct InsertQueryCombiner<'a> {
@@ -105,4 +107,65 @@ impl<'a> UpdateQueryCombiner<'a> {
 
         Ok(Some(client.execute(&self.statement, &self.params)?))
     }
+}
+
+pub fn load_validators(psql_client: &mut Client) -> anyhow::Result<()> {
+    // psql_client.query(query, params)
+
+    Ok(())
+}
+
+pub fn load_uptimes(
+    psql_client: &mut Client,
+    identity: String,
+    epochs: u8,
+) -> anyhow::Result<Vec<UptimeRecord>> {
+    let rows = psql_client.query(
+        "
+        WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+        SELECT
+            status, epoch, start_at, end_at
+        FROM uptimes, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC
+    ",
+        &[&identity, &Decimal::from(epochs)],
+    )?;
+
+    let mut records: Vec<_> = Default::default();
+    for row in rows {
+        records.push(UptimeRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            status: row.get("status"),
+            start_at: row.get("start_at"),
+            end_at: row.get("end_at"),
+        })
+    }
+
+    Ok(records)
+}
+
+pub fn load_versions(
+    psql_client: &mut Client,
+    identity: String,
+    epochs: u8,
+) -> anyhow::Result<Vec<VersionRecord>> {
+    let rows = psql_client.query(
+        "
+        WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+        SELECT
+            version, epoch, created_at
+        FROM uptimes, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC
+    ",
+        &[&identity, &Decimal::from(epochs)],
+    )?;
+
+    let mut records: Vec<_> = Default::default();
+    for row in rows {
+        records.push(VersionRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            version: row.get("version"),
+            created_at: row.get("created_at"),
+        })
+    }
+
+    Ok(records)
 }

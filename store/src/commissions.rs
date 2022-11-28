@@ -6,7 +6,7 @@ use postgres::types::ToSql;
 use postgres::Client;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -29,7 +29,7 @@ pub fn store_commissions(
 
     info!("Loaded the snapshot");
 
-    let mut commissions: HashMap<String, i32> = Default::default();
+    let mut skipped_identities: HashSet<String> = Default::default();
 
     for row in psql_client.query(
         "
@@ -47,8 +47,8 @@ pub fn store_commissions(
         let epoch: Decimal = row.get("epoch");
 
         if let Some(validator_snapshot) = snapshot.validators.get(identity) {
-            if epoch != snapshot_epoch || commission != validator_snapshot.commission as i32 {
-                commissions.insert(identity.to_string(), commission);
+            if epoch == snapshot_epoch && commission == validator_snapshot.commission as i32 {
+                skipped_identities.insert(identity.to_string());
             }
         }
     }
@@ -58,15 +58,23 @@ pub fn store_commissions(
         "identity, commission, epoch_slot, epoch, created_at".to_string(),
     );
 
+    let commissions: HashMap<_, _> = snapshot
+        .validators
+        .iter()
+        .map(|(i, v)| (i.clone(), v.commission as i8))
+        .collect();
+
     for (identity, commission) in commissions.iter() {
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-            identity,
-            commission,
-            &snapshot_epoch_slot,
-            &snapshot_epoch,
-            &snapshot_created_at,
-        ];
-        query.add(&mut params);
+        if !skipped_identities.contains(identity) {
+            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
+                identity,
+                commission,
+                &snapshot_epoch_slot,
+                &snapshot_epoch,
+                &snapshot_created_at,
+            ];
+            query.add(&mut params);
+        }
     }
     let insertions = query.execute(&mut psql_client)?;
 

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use rust_decimal::prelude::*;
+use serde::Serialize;
 
 pub struct Validator {
     pub identity: String,
@@ -98,4 +99,19 @@ impl Validator {
             updated_at: None,
         }
     }
+}
+
+#[derive(Serialize, Debug)]
+pub struct UptimeRecord {
+    pub epoch: u64,
+    pub status: String,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct VersionRecord {
+    pub epoch: u64,
+    pub version: Option<String>,
+    pub created_at: DateTime<Utc>,
 }

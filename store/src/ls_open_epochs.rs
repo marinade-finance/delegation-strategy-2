@@ -21,6 +21,7 @@ pub fn list_open_epochs(mut psql_client: Client) -> anyhow::Result<()> {
     for row in rows.iter() {
         let epoch: Decimal = row.get("epoch");
         println!("{}", epoch);
+        info!("Open epoch: {}", epoch);
     }
 
     info!("Found open epochs: {}", rows.len());
