@@ -61,7 +61,7 @@ pub fn store_commissions(
     let commissions: HashMap<_, _> = snapshot
         .validators
         .iter()
-        .map(|(i, v)| (i.clone(), v.commission as i8))
+        .map(|(i, v)| (i.clone(), v.commission as i32))
         .collect();
 
     for (identity, commission) in commissions.iter() {

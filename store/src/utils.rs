@@ -153,7 +153,34 @@ pub fn load_versions(
         WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
         SELECT
             version, epoch, created_at
-        FROM uptimes, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC
+        FROM versions, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC
+    ",
+        &[&identity, &Decimal::from(epochs)],
+    )?;
+
+    let mut records: Vec<_> = Default::default();
+    for row in rows {
+        records.push(VersionRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            version: row.get("version"),
+            created_at: row.get("created_at"),
+        })
+    }
+
+    Ok(records)
+}
+
+pub fn load_commissions(
+    psql_client: &mut Client,
+    identity: String,
+    epochs: u8,
+) -> anyhow::Result<Vec<VersionRecord>> {
+    let rows = psql_client.query(
+        "
+        WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+        SELECT
+            commission, epoch, created_at
+        FROM commissions, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC
     ",
         &[&identity, &Decimal::from(epochs)],
     )?;
