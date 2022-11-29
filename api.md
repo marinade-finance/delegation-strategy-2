@@ -146,7 +146,7 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 
 ## Glossary
 ```bash
-curl -sfLS localhost:8000/glossary
+curl -sfLS localhost:8000/static/glossary.md
 # Glossary
 
 ...

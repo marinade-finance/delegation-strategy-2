@@ -22,7 +22,7 @@ $$p_v = \frac{V_{v_{Credits}} \cdot V_{v_{Stake}}}{ \sum_{i} V_{i_{Credits}} \cd
 
 $$I_E = \sqrt[E]{1 - I_{Taper}}$$
 
-$$R_{v{_Y}} = \sum_{e = 0}^{E-1} \frac{I_Y \cdot I_E^e \cdot p_v \cdot S_{Supply}}{E} = \frac{I_Y \cdot p_v \cdot S_{Supply} \cdot I_E^E - 1}{E \cdot (I_E - 1)}$$
+$$R_{v{_Y}} = \sum_{e=0}^{E-1} \frac{I_Y \cdot I_E^e \cdot p_v \cdot S_{Supply}}{E} = \frac{I_Y \cdot p_v \cdot S_{Supply} \cdot (I_E^E - 1)}{E \cdot (I_E - 1)}$$
 
 $$R_{v_{Staker}} = R_{v{_Y}} \cdot (1 - C_v)$$
 
