@@ -3,12 +3,12 @@ use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
 use chrono::{DateTime, Utc};
 use collect::validators::Snapshot;
 use log::info;
-use postgres::types::ToSql;
-use postgres::Client;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
+use tokio_postgres::types::ToSql;
+use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreValidatorsOptions {
@@ -18,9 +18,9 @@ pub struct StoreValidatorsOptions {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
-pub fn store_validators(
+pub async fn store_validators(
     options: StoreValidatorsOptions,
-    mut psql_client: Client,
+    mut psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing validators snapshot...");
 
@@ -51,7 +51,8 @@ pub fn store_validators(
         WHERE epoch = $1
     ",
             &[&snapshot_epoch],
-        )?
+        )
+        .await?
         .chunks(DEFAULT_CHUNK_SIZE)
     {
         let mut query = UpdateQueryCombiner::new(
@@ -178,7 +179,7 @@ pub fn store_validators(
                 updated_identities.insert(identity.to_string());
             }
         }
-        query.execute(&mut psql_client)?;
+        query.execute(&mut psql_client).await?;
         info!(
             "Updated previously existing validator records: {}",
             updated_identities.len()
@@ -275,7 +276,7 @@ pub fn store_validators(
             ];
             query.add(&mut params);
         }
-        insertions += query.execute(&mut psql_client)?.unwrap_or(0);
+        insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
         info!("Stored {} new validator records", insertions);
     }
 

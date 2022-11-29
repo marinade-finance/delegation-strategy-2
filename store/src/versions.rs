@@ -2,12 +2,11 @@ use crate::utils::*;
 use chrono::{DateTime, Utc};
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
-use postgres::types::ToSql;
-use postgres::Client;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::HashSet;
 use structopt::StructOpt;
+use tokio_postgres::{types::ToSql, Client};
 
 #[derive(Debug, StructOpt)]
 pub struct StoreVersionsOptions {
@@ -15,9 +14,9 @@ pub struct StoreVersionsOptions {
     snapshot_path: String,
 }
 
-pub fn store_versions(
+pub async fn store_versions(
     options: StoreVersionsOptions,
-    mut psql_client: Client,
+    mut psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing versions...");
 
@@ -31,8 +30,9 @@ pub fn store_versions(
 
     let mut skipped_identities: HashSet<String> = Default::default();
 
-    for row in psql_client.query(
-        "
+    for row in psql_client
+        .query(
+            "
         SELECT DISTINCT ON (identity)
             identity,
             version,
@@ -40,8 +40,10 @@ pub fn store_versions(
         FROM versions
         ORDER BY identity, created_at DESC
     ",
-        &[],
-    )? {
+            &[],
+        )
+        .await?
+    {
         let identity: &str = row.get("identity");
         let version: Option<String> = row.get("version");
         let epoch: Decimal = row.get("epoch");
@@ -70,7 +72,7 @@ pub fn store_versions(
             query.add(&mut params);
         }
     }
-    let insertions = query.execute(&mut psql_client)?;
+    let insertions = query.execute(&mut psql_client).await?;
 
     info!("Stored {} version changes", insertions.unwrap_or(0));
 

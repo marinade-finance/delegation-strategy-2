@@ -2,12 +2,11 @@ use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
 use log::info;
-use postgres::types::ToSql;
-use postgres::Client;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
+use tokio_postgres::{types::ToSql, Client};
 
 #[derive(Debug, StructOpt)]
 pub struct CloseEpochOptions {
@@ -17,13 +16,14 @@ pub struct CloseEpochOptions {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
-pub fn create_epoch_record(
-    psql_client: &mut Client,
+pub async fn create_epoch_record(
+    psql_client: &Client,
     epoch: u64,
     cluster_inflation: ClusterInflation,
 ) -> anyhow::Result<()> {
-    psql_client.execute(
-        "
+    psql_client
+        .execute(
+            "
         WITH
             epoch_cluster_info AS (
                 SELECT
@@ -57,13 +57,14 @@ pub fn create_epoch_record(
             $4
         FROM epoch_cluster_info, previous_epoch
     ",
-        &[
-            &Decimal::from(epoch),
-            &Decimal::from(cluster_inflation.sol_total_supply),
-            &cluster_inflation.inflation,
-            &cluster_inflation.inflation_taper,
-        ],
-    )?;
+            &[
+                &Decimal::from(epoch),
+                &Decimal::from(cluster_inflation.sol_total_supply),
+                &cluster_inflation.inflation,
+                &cluster_inflation.inflation_taper,
+            ],
+        )
+        .await?;
 
     Ok(())
 }
@@ -79,7 +80,10 @@ struct ValidatorUpdateRecord {
     updated_at: DateTime<Utc>,
 }
 
-pub fn close_epoch(options: CloseEpochOptions, mut psql_client: Client) -> anyhow::Result<()> {
+pub async fn close_epoch(
+    options: CloseEpochOptions,
+    mut psql_client: &mut Client,
+) -> anyhow::Result<()> {
     info!("Finalizing validators snapshot...");
 
     let snapshot_file = std::fs::File::open(options.snapshot_path)?;
@@ -92,7 +96,8 @@ pub fn close_epoch(options: CloseEpochOptions, mut psql_client: Client) -> anyho
         &mut psql_client,
         snapshot.epoch,
         snapshot.cluster_inflation.unwrap(),
-    )?;
+    )
+    .await?;
 
     let mut updated_identities: HashSet<_> = Default::default();
 
@@ -165,7 +170,7 @@ pub fn close_epoch(options: CloseEpochOptions, mut psql_client: Client) -> anyho
             );
             updated_identities.insert(v.identity.clone());
         }
-        query.execute(&mut psql_client)?;
+        query.execute(&mut psql_client).await?;
         info!(
             "Updated previously existing validator records: {}",
             updated_identities.len()

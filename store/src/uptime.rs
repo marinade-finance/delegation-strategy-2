@@ -2,12 +2,12 @@ use crate::utils::*;
 use chrono::{DateTime, Duration, Utc};
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::{debug, info, warn};
-use postgres::types::ToSql;
-use postgres::Client;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
+use tokio_postgres::types::ToSql;
+use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreUptimeOptions {
@@ -26,7 +26,10 @@ fn status_from_delinquency(delinquent: bool) -> &'static str {
     }
 }
 
-pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> anyhow::Result<()> {
+pub async fn store_uptime(
+    options: StoreUptimeOptions,
+    mut psql_client: &mut Client,
+) -> anyhow::Result<()> {
     info!("Storing uptime...");
 
     let snapshot_file = std::fs::File::open(options.snapshot_path)?;
@@ -42,8 +45,9 @@ pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> any
 
     info!("Loaded the snapshot");
 
-    for row in psql_client.query(
-        "
+    for row in psql_client
+        .query(
+            "
         SELECT DISTINCT ON (identity)
             id,
             identity,
@@ -54,8 +58,10 @@ pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> any
         FROM uptimes
         ORDER BY identity, end_at DESC
     ",
-        &[],
-    )? {
+            &[],
+        )
+        .await?
+    {
         let id: i64 = row.get("id");
         let identity: &str = row.get("identity");
         let status: &str = row.get("status");
@@ -98,7 +104,7 @@ pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> any
             HashMap::from_iter([(0, "BIGINT".into()), (1, "TIMESTAMP WITH TIME ZONE".into())]),
         );
     }
-    query.execute(&mut psql_client)?;
+    query.execute(&mut psql_client).await?;
     info!("Extended previous {} uptimes", records_extensions.len());
 
     let mut query = InsertQueryCombiner::new(
@@ -131,7 +137,7 @@ pub fn store_uptime(options: StoreUptimeOptions, mut psql_client: Client) -> any
             }
         }
     }
-    let insertions = query.execute(&mut psql_client)?;
+    let insertions = query.execute(&mut psql_client).await?;
     info!("Stored {} changed uptimes", insertions.unwrap_or(0));
 
     Ok(())

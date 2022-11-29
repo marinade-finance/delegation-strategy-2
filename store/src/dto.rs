@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use rust_decimal::prelude::*;
 use serde::Serialize;
+use std::collections::HashMap;
 
 pub struct Validator {
     pub identity: String,
@@ -101,6 +102,61 @@ impl Validator {
     }
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct ValidatorEpochStats {
+    pub epoch: u64,
+    pub commission_max_observed: Option<u8>,
+    pub commission_min_observed: Option<u8>,
+    pub commission_advertised: Option<u8>,
+    pub commission_effective: Option<u8>,
+    pub version: Option<String>,
+    pub mnde_votes: Option<u64>,
+    pub activated_stake: u64,
+    pub marinade_stake: u64,
+    pub decentralizer_stake: u64,
+    pub superminority: bool,
+    pub stake_to_become_superminority: u64,
+    pub credits: u64,
+    pub leader_slots: u64,
+    pub blocks_produced: u64,
+    pub skip_rate: f64,
+    pub uptime_pct: Option<f64>,
+    pub uptime: Option<u64>,
+    pub downtime: Option<u64>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct ValidatorRecord {
+    pub identity: String,
+    pub vote_account: String,
+    pub info_name: Option<String>,
+    pub info_url: Option<String>,
+    pub info_keybase: Option<String>,
+    pub dc_ip: String,
+    pub dc_coordinates_lat: Option<f64>,
+    pub dc_coordinates_lon: Option<f64>,
+    pub dc_continent: Option<String>,
+    pub dc_country_iso: Option<String>,
+    pub dc_country: Option<String>,
+    pub dc_city: Option<String>,
+    pub dc_asn: Option<i32>,
+    pub dc_aso: Option<String>,
+    pub commission_max_observed: Option<i32>,
+    pub commission_min_observed: Option<i32>,
+    pub commission_advertised: Option<i32>,
+    pub commission_effective: Option<i32>,
+    pub version: Option<String>,
+    pub mnde_votes: Option<Decimal>,
+    pub activated_stake: Decimal,
+    pub marinade_stake: Decimal,
+    pub decentralizer_stake: Decimal,
+    pub superminority: bool,
+    pub credits: u64,
+    pub marinade_score: u64,
+
+    pub epoch_stats: Vec<ValidatorEpochStats>,
+}
+
 #[derive(Serialize, Debug)]
 pub struct UptimeRecord {
     pub epoch: u64,
@@ -113,5 +169,12 @@ pub struct UptimeRecord {
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct CommissionRecord {
+    pub epoch: u64,
+    pub commission: u8,
     pub created_at: DateTime<Utc>,
 }
