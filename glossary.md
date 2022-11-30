@@ -77,3 +77,9 @@ $$APY_v = (1 + \frac{APR_v}{E})^{E - 1}$$
 ## Stake distribution
 
 ## Superminority 
+
+## Uptime
+
+## Version
+
+## Vote account
