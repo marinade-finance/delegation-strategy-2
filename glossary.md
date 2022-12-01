@@ -47,7 +47,7 @@ List of validators (identity keys) that have been manually blacklisted by Marina
 - Cheating with credits by vote lagging
 
 ## Commission
-Percentage that will be taken by the validator on the staking rewards for the epoch. Marinade's delegation strategy allows validators to go up to 10% commission, and a bonus to Marinade score is applied for validators running with a lower commission. Check out the [delegation strategy](https://docs.marinade.finance/marinade-protocol/validators) for more details. 
+Percentage of the staking rewards that will be taken by the validator for the epoch. Marinade's delegation strategy allows validators to go up to 10% commission, and a bonus to Marinade score is applied for validators running with a lower commission. Check out the [delegation strategy](https://docs.marinade.finance/marinade-protocol/validators) for more details. 
 
 ## Epoch
 In the Solana network, an epoch has a variable time and corresponds to the time a [leader schedule](https://docs.solana.com/terminology#leader-schedule) is valid. An epoch lasts an average of 2 days and you can follow the evolution of the current and previous epochs on Solana explorers or directly on Marinade. 
