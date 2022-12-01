@@ -1,5 +1,8 @@
 # Glossary
 
+## Active epochs
+
+
 ## APR (Annual percentage rate)
 Percentage growth of the investment (stake account balance) in case rewards are taken out. We estimate the validators' APY for each epoch based on that epoch's duration, cluster's SOL supply, validators' earned credits and stake.
 
@@ -38,3 +41,45 @@ Let:
 
 then:
 $$APY_v = (1 + \frac{APR_v}{E})^{E - 1}$$
+
+## Blacklisted validators
+
+## Commission
+
+## Epoch
+
+## Estimated yearly yield
+
+## Identity
+
+## Marinade rank
+
+## Marinade score
+
+## Marinade stake/all active stake
+
+## Node IP
+
+## Node location
+
+## Planned stake change
+
+## Provider company (ASN, ASO)
+
+## Rank active stake
+
+## Skipped slots
+
+## Stake account distribution
+
+## Stake concentration in city
+
+## Stake distribution
+
+## Superminority 
+
+## Uptime
+
+## Version
+
+## Vote account
