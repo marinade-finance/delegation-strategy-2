@@ -160,14 +160,22 @@ curl -sLfS 'http://localhost:8000/reports/staking' | jq
 {
   "planned": [
     {
-      "change": 50000000000000,
+      "current_stake": 1000000000000000,
       "identity": "XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr",
-      "stake": 1000000000000000
+      "immediate": true,
+      "next_stake": 1200000000000000
     },
     {
-      "change": -50000000000000,
+      "current_stake": 50000000000000,
       "identity": "Awes4Tr6TX8JDzEhCZY2QVNimT6iD1zWHzf1vNyGvpLM",
-      "stake": 50000000000000
+      "immediate": true,
+      "next_stake": 0
+    },
+    {
+      "current_stake": 20000000000000,
+      "identity": "DRpbCBMxVnDK7maPM5tGv6MvB3v1sRMC86PZ8okm21hy",
+      "immediate": false,
+      "next_stake": 0
     }
   ]
 }
