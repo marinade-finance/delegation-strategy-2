@@ -1,5 +1,5 @@
 ## Active epochs
-Number of epochs on Solana during which a validator has been active.
+Number of epochs on Solana during which a validator has been active, meaning it has been producing credits for the epoch.
 
 
 ## APR (Annual percentage rate)
