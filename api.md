@@ -19,7 +19,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "info_name": "Coinbase Cloud",
       "info_url": "https://www.coinbase.com/cloud",
       "info_keybase": "coinbasecloud",
-      "dc_ip": "3.144.92.238",
+      "node_ip": "3.144.92.238",
       "dc_coordinates_lat": 39.9625,
       "dc_coordinates_lon": -83.0061,
       "dc_continent": "NA",

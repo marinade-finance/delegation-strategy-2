@@ -42,7 +42,7 @@ CREATE TABLE validators (
   info_name TEXT NULL,
   info_url TEXT NULL,
   info_keybase TEXT NULL,
-  dc_ip TEXT NOT NULL,
+  node_ip TEXT NULL,
   dc_coordinates_lat DOUBLE PRECISION NULL,
   dc_coordinates_lon DOUBLE PRECISION NULL,
   dc_continent TEXT NULL,

@@ -11,7 +11,7 @@ pub struct Validator {
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
-    pub dc_ip: String,
+    pub node_ip: Option<String>,
     pub dc_coordinates_lat: Option<f64>,
     pub dc_coordinates_lon: Option<f64>,
     pub dc_continent: Option<String>,
@@ -44,7 +44,6 @@ pub struct Validator {
 impl Validator {
     pub fn new_from_snapshot(v: &ValidatorSnapshot, epoch: u64) -> Self {
         let ValidatorDataCenter {
-            ip,
             coordinates,
             continent,
             country_iso,
@@ -54,10 +53,7 @@ impl Validator {
             aso,
         } = match v.data_center.clone() {
             Some(dc) => dc.clone(),
-            _ => ValidatorDataCenter {
-                ip: "wut?".to_string(),
-                ..Default::default()
-            },
+            _ => Default::default(),
         };
 
         Self {
@@ -68,7 +64,7 @@ impl Validator {
             info_url: v.info_url.clone(),
             info_keybase: v.info_keybase.clone(),
 
-            dc_ip: ip,
+            node_ip: v.node_ip.clone(),
             dc_coordinates_lon: coordinates.map(|(_, lon)| lon),
             dc_coordinates_lat: coordinates.map(|(lat, _)| lat),
             dc_continent: continent,
@@ -132,7 +128,7 @@ pub struct ValidatorRecord {
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
-    pub dc_ip: String,
+    pub node_ip: String,
     pub dc_coordinates_lat: Option<f64>,
     pub dc_coordinates_lon: Option<f64>,
     pub dc_continent: Option<String>,

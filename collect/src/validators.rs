@@ -41,7 +41,6 @@ pub struct ValidatorInfo {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ValidatorDataCenter {
-    pub ip: String,
     pub coordinates: Option<(f64, f64)>, // lon, lat
     pub continent: Option<String>,
     pub country_iso: Option<String>,
@@ -52,9 +51,8 @@ pub struct ValidatorDataCenter {
 }
 
 impl ValidatorDataCenter {
-    fn new(ip: String, ip_info: IpInfo) -> ValidatorDataCenter {
+    fn new(ip_info: IpInfo) -> ValidatorDataCenter {
         ValidatorDataCenter {
-            ip,
             coordinates: ip_info.coordinates.map_or(None, |c| Some((c.lon, c.lat))),
             continent: ip_info.continent,
             country_iso: ip_info.country_iso,
@@ -70,6 +68,7 @@ impl ValidatorDataCenter {
 pub struct ValidatorSnapshot {
     pub identity: String,
     pub vote_account: String,
+    pub node_ip: Option<String>,
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_details: Option<String>,
@@ -145,7 +144,7 @@ pub fn collect_validators_info(
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
             WhoisClient::new(whois, options.whois_bearer_token),
-            node_ips,
+            node_ips.clone(),
         )?,
         _ => Default::default(),
     };
@@ -173,13 +172,14 @@ pub fn collect_validators_info(
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
             identity: identity.clone(),
+            node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
             mnde_votes: mnde_votes
                 .clone()
                 .map_or(None, |v| Some(*v.get(&vote_pubkey).unwrap_or(&0))),
             data_center: data_centers
                 .get(&identity)
                 .map_or(None, |(ip, data_center)| {
-                    Some(ValidatorDataCenter::new(ip.clone(), data_center.clone()))
+                    Some(ValidatorDataCenter::new(data_center.clone()))
                 }),
 
             info_url: url,
