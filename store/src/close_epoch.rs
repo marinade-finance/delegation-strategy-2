@@ -69,6 +69,38 @@ pub async fn create_epoch_record(
     Ok(())
 }
 
+pub async fn update_observed_commission(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
+    psql_client
+            .execute("
+                WITH grouped_commissions AS (
+                    WITH
+                        commissions AS (SELECT identity, MIN(commission) AS commission_min, MAX(commission) AS commission_max FROM commissions WHERE epoch = $1 GROUP BY identity)
+                    SELECT
+                        commissions.commission_min,
+                        commissions.commission_max,
+                        validators.identity
+                    FROM
+                        validators
+                        LEFT JOIN commissions ON validators.identity = commissions.identity
+                    WHERE validators.epoch = $1
+                )
+                UPDATE validators
+                SET
+                    commission_max_observed = GREATEST(commission_max, commission_advertised, commission_effective),
+                    commission_min_observed = LEAST(commission_min, commission_advertised, commission_effective)
+                FROM grouped_commissions
+                WHERE grouped_commissions.identity = validators.identity AND validators.epoch = $1
+                "
+,
+        &[
+            &Decimal::from(epoch),
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
 pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
     psql_client
             .execute("
@@ -212,6 +244,7 @@ pub async fn close_epoch(
     }
 
     update_uptimes(&mut psql_client, snapshot.epoch).await?;
+    update_observed_commission(&mut psql_client, snapshot.epoch).await?;
 
     Ok(())
 }
