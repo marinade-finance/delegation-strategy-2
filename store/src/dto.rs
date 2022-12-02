@@ -128,7 +128,7 @@ pub struct ValidatorRecord {
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
-    pub node_ip: String,
+    pub node_ip: Option<String>,
     pub dc_coordinates_lat: Option<f64>,
     pub dc_coordinates_lon: Option<f64>,
     pub dc_continent: Option<String>,
