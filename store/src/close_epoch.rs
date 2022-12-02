@@ -69,6 +69,40 @@ pub async fn create_epoch_record(
     Ok(())
 }
 
+pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
+    psql_client
+            .execute("
+                WITH uptimes AS (
+                    WITH
+                        vars AS (SELECT epoch, end_at - start_at AS epoch_duration FROM epochs WHERE epoch = $1),
+                        downtimes AS (SELECT identity, SUM(end_at - start_at) AS downtime FROM uptimes WHERE epoch = $1 AND status = 'DOWN' GROUP BY identity)
+                    SELECT
+                        LEAST(GREATEST(COALESCE(1 - EXTRACT('epoch' FROM downtimes.downtime) / EXTRACT('epoch' FROM vars.epoch_duration), 1), 0), 1) uptime_pct,
+                        EXTRACT('epoch' FROM GREATEST(COALESCE(vars.epoch_duration - downtimes.downtime, vars.epoch_duration), '0 seconds')) uptime,
+                        EXTRACT('epoch' FROM COALESCE(downtimes.downtime, '0 seconds')) downtime,
+                        validators.identity,
+                        vars.epoch
+                    FROM
+                        validators
+                        INNER JOIN vars ON validators.epoch = vars.epoch
+                        LEFT JOIN downtimes ON validators.identity = downtimes.identity
+                    WHERE validators.epoch = $1
+                )
+                UPDATE validators
+                SET uptime_pct = uptimes.uptime_pct, uptime = uptimes.uptime, downtime = uptimes.downtime
+                FROM uptimes
+                WHERE uptimes.identity = validators.identity AND uptimes.epoch = validators.epoch
+                "
+,
+        &[
+            &Decimal::from(epoch),
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
 struct ValidatorUpdateRecord {
     identity: String,
     epoch: Decimal,
@@ -176,6 +210,8 @@ pub async fn close_epoch(
             updated_identities.len()
         );
     }
+
+    update_uptimes(&mut psql_client, snapshot.epoch).await?;
 
     Ok(())
 }
