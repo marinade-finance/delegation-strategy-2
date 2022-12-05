@@ -39,7 +39,7 @@ Let:
 - $E$ be epochs per year,
 
 then:
-$$APY_v = (1 + \frac{APR_v}{E})^{E - 1}$$
+$$APY_v = (1 + \frac{APR_v}{E})^{E - 1} - 1$$
 
 ## Blacklisted validators
 List of validators (identity keys) that have been manually blacklisted by Marinade team. A validator can get blacklisted for the following reasons:
