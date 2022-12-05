@@ -1,11 +1,10 @@
 use crate::context::WrappedContext;
-use crate::utils::reponse_error_500;
+use crate::metrics;
+use crate::utils::reponse_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::UptimeRecord;
 use warp::{http::StatusCode, reply::json, Reply};
-
-const DEFAULT_EPOCHS: u8 = 15;
 
 #[derive(Serialize, Debug)]
 pub struct Response {
@@ -33,16 +32,15 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching uptimes {:?}", &identity);
+    metrics::REQUEST_COUNT_UPTIMES.inc();
 
-    let uptimes =
-        store::utils::load_uptimes(&context.read().await.psql_client, identity, DEFAULT_EPOCHS)
-            .await;
+    let uptimes = context.read().await.cache.get_uptimes(&identity);
 
     Ok(match uptimes {
-        Ok(uptimes) => warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK),
-        Err(err) => {
-            error!("Failed to fetch uptime records: {}", err);
-            reponse_error_500("Failed to fetch records!".into())
+        Some(uptimes) => warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK),
+        _ => {
+            error!("No uptimes found for {}", &identity);
+            reponse_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })
 }

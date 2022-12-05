@@ -95,3 +95,15 @@ CREATE TABLE epochs (
 
   PRIMARY KEY(epoch)
 );
+
+CREATE TABLE warnings (
+  id BIGSERIAL NOT NULL,
+  identity TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  details TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+
+  PRIMARY KEY(id)
+);
+CREATE INDEX warnings_identity ON warnings (identity);

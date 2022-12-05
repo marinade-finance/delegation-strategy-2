@@ -1,11 +1,10 @@
 use crate::context::WrappedContext;
-use crate::utils::reponse_error_500;
+use crate::metrics;
+use crate::utils::reponse_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::CommissionRecord;
 use warp::{http::StatusCode, reply::json, Reply};
-
-const DEFAULT_EPOCHS: u8 = 15;
 
 #[derive(Serialize, Debug)]
 pub struct Response {
@@ -21,18 +20,17 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching commissions {:?}", &identity);
+    metrics::REQUEST_COUNT_COMMISSIONS.inc();
 
-    let commissions =
-        store::utils::load_commissions(&context.read().await.psql_client, identity, DEFAULT_EPOCHS)
-            .await;
+    let commissions = context.read().await.cache.get_commissions(&identity);
 
     Ok(match commissions {
-        Ok(commissions) => {
+        Some(commissions) => {
             warp::reply::with_status(json(&Response { commissions }), StatusCode::OK)
         }
-        Err(err) => {
-            error!("Failed to fetch commission records: {}", err);
-            reponse_error_500("Failed to fetch records!".into())
+        _ => {
+            error!("No commissions found for {}", &identity);
+            reponse_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })
 }

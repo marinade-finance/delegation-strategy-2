@@ -1,114 +1,136 @@
+use crate::context::WrappedContext;
 use log::{error, info};
-use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
-use std::{collections::HashMap, sync::Arc};
-use store::dto::ValidatorRecord;
-use tokio::{
-    sync::RwLock,
-    time::{sleep, Duration},
-};
-use tokio_postgres::Client;
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+use store::dto::{CommissionRecord, UptimeRecord, ValidatorRecord, VersionRecord};
+use tokio::time::{sleep, Duration};
 
+const DEFAULT_EPOCHS: u8 = 20;
+
+type CachedValidators = HashMap<String, ValidatorRecord>;
+type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
+type CachedVersions = HashMap<String, Vec<VersionRecord>>;
+type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
+
+#[derive(Default)]
 pub struct Cache {
-    pub validators: HashMap<String, ValidatorRecord>,
+    pub validators: CachedValidators,
+    pub commissions: CachedCommissions,
+    pub versions: CachedVersions,
+    pub uptimes: CachedUptimes,
 }
 
 impl Cache {
     pub fn new() -> Self {
         Self {
-            validators: Default::default(),
+            ..Default::default()
         }
     }
 
-    pub async fn get_validators(
-        &self,
-        config: GetValidatorsConfig,
-    ) -> anyhow::Result<Vec<ValidatorRecord>> {
-        let validators: Vec<_> = if let Some(identities) = config.query_identities {
-            identities
-                .iter()
-                .filter_map(|i| self.validators.get(i))
-                .collect()
-        } else {
-            self.validators.values().collect()
-        };
+    pub fn get_validators(&self) -> CachedValidators {
+        self.validators.clone()
+    }
 
-        let mut validators: Vec<_> = if let Some(query) = config.query {
-            let query = query.to_lowercase();
-            validators
-                .into_iter()
-                .filter(|v| {
-                    v.identity.to_lowercase().find(&query).is_some()
-                        || v.vote_account.to_lowercase().find(&query).is_some()
-                        || v.info_name.clone().map_or(false, |info_name| {
-                            info_name.to_lowercase().find(&query).is_some()
-                        })
-                })
-                .collect()
-        } else {
-            validators
-        };
+    pub fn get_commissions(&self, identity: &String) -> Option<Vec<CommissionRecord>> {
+        self.commissions.get(identity).cloned()
+    }
 
-        let order_fn = match (config.order_field, config.order_direction) {
-            (OrderField::Stake, OrderDirection::ASC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| {
-                    a.activated_stake.cmp(&b.activated_stake)
-                }
-            }
-            (OrderField::Stake, OrderDirection::DESC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| {
-                    b.activated_stake.cmp(&a.activated_stake)
-                }
-            }
-            (OrderField::MndeVotes, OrderDirection::ASC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| a.mnde_votes.cmp(&b.mnde_votes)
-            }
-            (OrderField::MndeVotes, OrderDirection::DESC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| b.mnde_votes.cmp(&a.mnde_votes)
-            }
-            (OrderField::Credits, OrderDirection::ASC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| a.credits.cmp(&b.credits)
-            }
-            (OrderField::Credits, OrderDirection::DESC) => {
-                |a: &&ValidatorRecord, b: &&ValidatorRecord| b.credits.cmp(&a.credits)
-            }
-        };
+    pub fn get_all_commissions(&self) -> CachedCommissions {
+        self.commissions.clone()
+    }
 
-        validators.sort_by(order_fn);
+    pub fn get_versions(&self, identity: &String) -> Option<Vec<VersionRecord>> {
+        self.versions.get(identity).cloned()
+    }
 
-        Ok(validators
-            .into_iter()
-            .skip(config.offset)
-            .take(config.limit)
-            .cloned()
-            .map(|v| ValidatorRecord {
-                epoch_stats: v.epoch_stats.into_iter().take(config.epochs).collect(),
-                ..v
-            })
-            .collect())
+    pub fn get_uptimes(&self, identity: &String) -> Option<Vec<UptimeRecord>> {
+        self.uptimes.get(identity).cloned()
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub enum OrderField {
-    Stake,
-    MndeVotes,
-    Credits,
+pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading validators from DB");
+
+    let validators =
+        store::utils::load_validators(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    context
+        .write()
+        .await
+        .cache
+        .validators
+        .clone_from(&validators);
+    info!("Loaded validators to cache: {}", validators.len());
+
+    Ok(())
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub enum OrderDirection {
-    ASC,
-    DESC,
+pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading commissions from DB");
+
+    let commissions =
+        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    context
+        .write()
+        .await
+        .cache
+        .commissions
+        .clone_from(&commissions);
+    info!("Loaded commissions to cache: {}", commissions.len());
+
+    Ok(())
 }
 
-#[derive(Debug)]
-pub struct GetValidatorsConfig {
-    pub order_direction: OrderDirection,
-    pub order_field: OrderField,
-    pub offset: usize,
-    pub limit: usize,
-    pub query: Option<String>,
-    pub query_identities: Option<Vec<String>>,
-    pub epochs: usize,
+pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading versions from DB");
+
+    let versions =
+        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    context.write().await.cache.versions.clone_from(&versions);
+    info!("Loaded versions to cache: {}", versions.len());
+
+    Ok(())
+}
+
+pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading uptimes from DB");
+
+    let uptimes =
+        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    context.write().await.cache.uptimes.clone_from(&uptimes);
+    info!("Loaded uptimes to cache: {}", uptimes.len());
+
+    Ok(())
+}
+
+pub fn spawn_cache_warmer(context: WrappedContext) {
+    tokio::spawn(async move {
+        loop {
+            info!("Warming up the cache");
+
+            if let Err(err) = warm_versions_cache(&context).await {
+                error!("Failed to update the versions: {}", err);
+            }
+
+            if let Err(err) = warm_commissions_cache(&context).await {
+                error!("Failed to update the commissions: {}", err);
+            }
+
+            if let Err(err) = warm_uptimes_cache(&context).await {
+                error!("Failed to update the uptimes: {}", err);
+            }
+
+            if let Err(err) = warm_validators_cache(&context).await {
+                error!("Failed to update the validators: {}", err);
+            }
+
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let run_every = Duration::from_secs(15 * 60);
+            let run_offset_seconds = 5 * 60 + 30;
+            let sleep_seconds = now.as_secs() % run_every.as_secs();
+            sleep(Duration::from_secs(
+                run_every.as_secs() - sleep_seconds + run_offset_seconds,
+            ))
+            .await;
+        }
+    });
 }

@@ -1,5 +1,6 @@
 use crate::dto::{
     CommissionRecord, UptimeRecord, ValidatorEpochStats, ValidatorRecord, VersionRecord,
+    WarningRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
@@ -110,25 +111,90 @@ impl<'a> UpdateQueryCombiner<'a> {
     }
 }
 
+struct InflationApyCalculator {
+    supply: u64,
+    duration: u64,
+    inflation: f64,
+    inflation_taper: f64,
+    total_weighted_credits: u128,
+}
+impl InflationApyCalculator {
+    fn estimate_yields(&self, credits: u64, stake: u64, commission: u8) -> (f64, f64) {
+        let epochs_per_year = 365.25 * 24f64 * 3600f64 / self.duration as f64;
+        let rewards_share = credits as f64 * stake as f64 / self.total_weighted_credits as f64;
+        let inflation_change_per_epoch = (1.0 - self.inflation_taper).powf(1.0 / epochs_per_year);
+        let generated_rewards =
+            self.inflation * self.supply as f64 * rewards_share * self.inflation_taper
+                / epochs_per_year
+                / (1.0 - inflation_change_per_epoch);
+        let staker_rewards = generated_rewards * (1.0 - commission as f64 / 100.0);
+        let apr = staker_rewards / stake as f64;
+        let apy = (1.0 + apr / epochs_per_year).powf(epochs_per_year - 1.0) - 1.0;
+
+        (apr, apy)
+    }
+}
+async fn get_apy_calculators(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<u64, InflationApyCalculator>> {
+    let apy_info_rows = psql_client
+        .query(
+            "SELECT
+                    epochs.epoch,
+                    (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER as duration,
+                    supply,
+                    inflation,
+                    inflation_taper,
+                    SUM(validators.credits * validators.activated_stake) total_weighted_credits
+                FROM
+                epochs
+                INNER JOIN validators ON epochs.epoch = validators.epoch
+                GROUP BY epochs.epoch",
+            &[],
+        )
+        .await?;
+
+    let mut result: HashMap<_, _> = Default::default();
+    for row in apy_info_rows {
+        result.insert(
+            row.get::<_, Decimal>("epoch").try_into()?,
+            InflationApyCalculator {
+                supply: row.get::<_, Decimal>("supply").try_into()?,
+                duration: row.get::<_, i32>("duration").try_into()?,
+                inflation: row.get("inflation"),
+                inflation_taper: row.get("inflation_taper"),
+                total_weighted_credits: row
+                    .get::<_, Decimal>("total_weighted_credits")
+                    .try_into()?,
+            },
+        );
+    }
+
+    Ok(result)
+}
+
 pub async fn load_uptimes(
     psql_client: &Client,
-    identity: String,
     epochs: u8,
-) -> anyhow::Result<Vec<UptimeRecord>> {
+) -> anyhow::Result<HashMap<String, Vec<UptimeRecord>>> {
     let rows = psql_client
         .query(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                status, epoch, start_at, end_at
-            FROM uptimes, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC",
-            &[&identity, &Decimal::from(epochs)],
+                identity, status, epoch, start_at, end_at
+            FROM uptimes, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
-    let mut records: Vec<_> = Default::default();
+    let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        records.push(UptimeRecord {
+        let identity: String = row.get("identity");
+        let commissions = records
+            .entry(identity.clone())
+            .or_insert(Default::default());
+        commissions.push(UptimeRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             status: row.get("status"),
             start_at: row.get("start_at"),
@@ -141,23 +207,26 @@ pub async fn load_uptimes(
 
 pub async fn load_versions(
     psql_client: &Client,
-    identity: String,
     epochs: u8,
-) -> anyhow::Result<Vec<VersionRecord>> {
+) -> anyhow::Result<HashMap<String, Vec<VersionRecord>>> {
     let rows = psql_client
         .query(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                version, epoch, created_at
-            FROM versions, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC",
-            &[&identity, &Decimal::from(epochs)],
+                identity, version, epoch, created_at
+            FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
-    let mut records: Vec<_> = Default::default();
+    let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        records.push(VersionRecord {
+        let identity: String = row.get("identity");
+        let commissions = records
+            .entry(identity.clone())
+            .or_insert(Default::default());
+        commissions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
             created_at: row.get("created_at"),
@@ -169,25 +238,63 @@ pub async fn load_versions(
 
 pub async fn load_commissions(
     psql_client: &Client,
-    identity: String,
     epochs: u8,
-) -> anyhow::Result<Vec<CommissionRecord>> {
+) -> anyhow::Result<HashMap<String, Vec<CommissionRecord>>> {
     let rows = psql_client
         .query(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                commission, epoch, created_at
-            FROM commissions, cluster WHERE identity = $1 AND epoch > cluster.last_epoch - $2::NUMERIC",
-            &[&identity, &Decimal::from(epochs)],
+                identity, commission, epoch, epoch_slot, created_at
+            FROM commissions, cluster
+            WHERE epoch > cluster.last_epoch - $1::NUMERIC
+            UNION
+            SELECT
+                identity, commission_effective, epoch, 432000, updated_at
+            FROM validators, cluster
+            WHERE epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
+            ",
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
-    let mut records: Vec<_> = Default::default();
+    let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        records.push(CommissionRecord {
+        let identity: String = row.get("identity");
+        let commissions = records
+            .entry(identity.clone())
+            .or_insert(Default::default());
+        commissions.push(CommissionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
+            created_at: row.get("created_at"),
+        })
+    }
+
+    Ok(records)
+}
+
+pub async fn load_warnings(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, Vec<WarningRecord>>> {
+    let rows = psql_client
+        .query(
+            "SELECT identity, code, message, details, created_at FROM warnings",
+            &[],
+        )
+        .await?;
+
+    let mut records: HashMap<_, Vec<_>> = Default::default();
+    for row in rows {
+        let identity: String = row.get("identity");
+        let warnings = records
+            .entry(identity.clone())
+            .or_insert(Default::default());
+        warnings.push(WarningRecord {
+            code: row.get("code"),
+            message: row.get("message"),
+            details: row.get("details"),
             created_at: row.get("created_at"),
         })
     }
@@ -199,6 +306,9 @@ pub async fn load_validators(
     psql_client: &Client,
     epochs: u8,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
+    let apy_calculators = get_apy_calculators(psql_client).await?;
+    let warnings = load_warnings(psql_client).await?;
+
     let rows = psql_client
         .query(
             "
@@ -247,11 +357,23 @@ pub async fn load_validators(
     let mut records: HashMap<_, _> = Default::default();
     for row in rows {
         let identity: String = row.get("identity");
-
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+        let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
+            let (apr, apy) = c.estimate_yields(
+                row.get::<_, Decimal>("credits").try_into()?,
+                row.get::<_, Decimal>("activated_stake").try_into()?,
+                row.get::<_, Option<i32>>("commission_effective")
+                    .map(|n| n.try_into().unwrap())
+                    .unwrap_or(100),
+            );
+            (Some(apr), Some(apy))
+        } else {
+            (None, None)
+        };
         let record = records
             .entry(identity.clone())
             .or_insert_with(|| ValidatorRecord {
-                identity,
+                identity: identity.clone(),
                 vote_account: row.get("vote_account"),
                 info_name: row.get("info_name"),
                 info_url: row.get("info_url"),
@@ -292,9 +414,11 @@ pub async fn load_validators(
                 marinade_score: 0,
 
                 epoch_stats: Default::default(),
+
+                warnings: warnings.get(&identity).cloned().unwrap_or(vec![]),
             });
         record.epoch_stats.push(ValidatorEpochStats {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch,
             commission_max_observed: row
                 .get::<_, Option<i32>>("commission_max_observed")
                 .map(|n| n.try_into().unwrap()),
@@ -329,6 +453,8 @@ pub async fn load_validators(
             downtime: row
                 .get::<_, Option<Decimal>>("downtime")
                 .map(|n| n.try_into().unwrap()),
+            apr,
+            apy,
         });
     }
 

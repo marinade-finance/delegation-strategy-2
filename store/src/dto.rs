@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use rust_decimal::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub struct Validator {
@@ -98,7 +98,7 @@ impl Validator {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub commission_max_observed: Option<u8>,
@@ -119,9 +119,11 @@ pub struct ValidatorEpochStats {
     pub uptime_pct: Option<f64>,
     pub uptime: Option<u64>,
     pub downtime: Option<u64>,
+    pub apr: Option<f64>,
+    pub apy: Option<f64>,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -149,11 +151,12 @@ pub struct ValidatorRecord {
     pub superminority: bool,
     pub credits: u64,
     pub marinade_score: u64,
+    pub warnings: Vec<WarningRecord>,
 
     pub epoch_stats: Vec<ValidatorEpochStats>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct UptimeRecord {
     pub epoch: u64,
     pub status: String,
@@ -161,16 +164,25 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct CommissionRecord {
     pub epoch: u64,
+    pub epoch_slot: u64,
     pub commission: u8,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct WarningRecord {
+    pub code: String,
+    pub message: String,
+    pub details: Option<String>,
+    pub created_at: String,
 }

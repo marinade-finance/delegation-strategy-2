@@ -203,3 +203,29 @@ curl -sLfS 'http://localhost:8000/reports/scoring' | jq
   }
 }
 ```
+
+## Config
+```bash
+curl -sfLS localhost:8000/static/config | jq
+```
+```json
+{
+  "stakes": {
+    "delegation_authorities": [
+      {
+        "delegation_authority": "4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk",
+        "name": "Marinade"
+      },
+      {
+        "delegation_authority": "noMa7dN4cHQLV4ZonXrC29HTKFpxrpFbDLK5Gub8W8t",
+        "name": "Marinade's Decentralizer"
+      }
+    ]
+  }
+}
+```
+
+## Metrics
+```bash
+curl -sLfS 'http://localhost:9000/metrics'
+```

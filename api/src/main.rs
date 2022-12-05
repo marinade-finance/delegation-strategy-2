@@ -1,6 +1,7 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    commissions, glossary, list_validators, reports_scoring, reports_staking, uptimes, versions,
+    commissions, config, glossary, list_validators, reports_commission_changes, reports_scoring,
+    reports_staking, uptimes, versions,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -8,12 +9,13 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
-use tokio_postgres::{Error, NoTls};
+use tokio_postgres::NoTls;
 use warp::Filter;
 
 pub mod cache;
 pub mod context;
 pub mod handlers;
+pub mod metrics;
 pub mod utils;
 
 #[derive(Debug, StructOpt)]
@@ -26,7 +28,7 @@ pub struct Params {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     info!("Launching API");
 
@@ -34,15 +36,16 @@ async fn main() -> Result<(), Error> {
     let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, NoTls).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
-            error!("Connection error: {}", err);
+            error!("PSQL Connection error: {}", err);
             std::process::exit(1);
         }
     });
 
-    let context = Arc::new(RwLock::new(
-        Context::new(psql_client, params.glossary_path).unwrap(),
-    ));
-    context::spawn_context_updater(context.clone());
+    let context = Arc::new(RwLock::new(Context::new(
+        psql_client,
+        params.glossary_path,
+    )?));
+    cache::spawn_cache_warmer(context.clone());
 
     let cors = warp::cors()
         .allow_any_origin()
@@ -95,6 +98,18 @@ async fn main() -> Result<(), Error> {
         .and(with_context(context.clone()))
         .and_then(glossary::handler);
 
+    let route_config = warp::path!("static" / "config")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(config::handler);
+
+    let route_reports_scoring = warp::path!("reports" / "commission-changes")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(reports_commission_changes::handler);
+
     let route_reports_scoring = warp::path!("reports" / "scoring")
         .and(warp::path::end())
         .and(warp::get())
@@ -113,9 +128,12 @@ async fn main() -> Result<(), Error> {
         .or(route_versions)
         .or(route_commissions)
         .or(route_glossary)
+        .or(route_config)
         .or(route_reports_scoring)
         .or(route_reports_staking)
         .with(cors);
+
+    metrics::spawn_server();
 
     warp::serve(routes).run(([0, 0, 0, 0], 8000)).await;
 
