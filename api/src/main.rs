@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(config::handler);
 
-    let route_reports_scoring = warp::path!("reports" / "commission-changes")
+    let route_reports_commission_changes = warp::path!("reports" / "commission-changes")
         .and(warp::path::end())
         .and(warp::get())
         .and(with_context(context.clone()))
@@ -131,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_config)
         .or(route_reports_scoring)
         .or(route_reports_staking)
+        .or(route_reports_commission_changes)
         .with(cors);
 
     metrics::spawn_server();

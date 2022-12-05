@@ -204,6 +204,31 @@ curl -sLfS 'http://localhost:8000/reports/scoring' | jq
 }
 ```
 
+## Reports - commission changes
+```bash
+curl -sfLS localhost:8000/reports/commission-changes | jq
+```
+```json
+{
+  [
+    {
+      "identity": "8xuQB5uNAEAxPz1tTeGc9zU6FVLWiB2WySTL8ZbkydsV",
+      "from": 10,
+      "to": 100,
+      "epoch": 382,
+      "epoch_slot": 55450
+    },
+    {
+      "identity": "EeWuLmFPuEbeAmyNAtQQSLsYJ9ppjLGkGgGYFm2S4WDg",
+      "from": 10,
+      "to": 100,
+      "epoch": 382,
+      "epoch_slot": 55450
+    }
+  ]
+}
+```
+
 ## Config
 ```bash
 curl -sfLS localhost:8000/static/config | jq
