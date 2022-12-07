@@ -409,7 +409,7 @@ pub async fn load_validators(
                     .get::<_, Decimal>("decentralizer_stake")
                     .try_into()
                     .unwrap(),
-                superminority: false,
+                superminority: row.get("superminority"),
                 credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
                 marinade_score: 0,
 
@@ -438,7 +438,7 @@ pub async fn load_validators(
             activated_stake: row.get::<_, Decimal>("activated_stake").try_into()?,
             marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into()?,
             decentralizer_stake: row.get::<_, Decimal>("decentralizer_stake").try_into()?,
-            superminority: false,
+            superminority: row.get("superminority"),
             stake_to_become_superminority: row
                 .get::<_, Decimal>("stake_to_become_superminority")
                 .try_into()?,
