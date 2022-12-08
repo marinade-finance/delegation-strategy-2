@@ -19,6 +19,7 @@ pub struct Response {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct QueryParams {
+    epochs: Option<usize>,
     query: Option<String>,
     query_identities: Option<String>,
     order_field: Option<OrderField>,
