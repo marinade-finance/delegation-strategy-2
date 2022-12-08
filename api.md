@@ -1,6 +1,7 @@
 # API docs
 ## List validators
 Query parameters:
+- `epochs` - Optional, limits history size.
 - `query` - Optional, filters results based on `identity`, `vote_address`, `info_name`.
 - `query_identities` - Optional, comma separated list of identities to fetch.
 - `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MndeVotes`.

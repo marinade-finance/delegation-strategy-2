@@ -133,7 +133,7 @@ pub async fn handler(
         query_identities: query_params
             .query_identities
             .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
-        epochs: DEFAULT_EPOCHS,
+        epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
 
     log::info!("Query validators {:?}", config);
