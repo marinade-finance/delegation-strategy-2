@@ -2,6 +2,7 @@ use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::reponse_error_500;
 use log::error;
+use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::dto::ValidatorRecord;
 use warp::{http::StatusCode, reply::json, Reply};
@@ -33,6 +34,10 @@ pub enum OrderField {
     Stake,
     MndeVotes,
     Credits,
+    MarinadeScore,
+    Apy,
+    Commission,
+    Uptime,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -83,28 +88,28 @@ pub async fn get_validators(
         validators
     };
 
-    let order_fn = match (config.order_field, config.order_direction) {
-        (OrderField::Stake, OrderDirection::ASC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| a.activated_stake.cmp(&b.activated_stake)
+    let field_extractor = match config.order_field {
+        OrderField::Stake => |a: &&ValidatorRecord| a.activated_stake,
+        OrderField::MndeVotes => |a: &&ValidatorRecord| a.mnde_votes.unwrap_or(0.into()),
+        OrderField::Credits => |a: &&ValidatorRecord| Decimal::from(a.credits),
+        OrderField::MarinadeScore => |a: &&ValidatorRecord| Decimal::from(a.marinade_score),
+        OrderField::Apy => {
+            |a: &&ValidatorRecord| Decimal::from((a.avg_apy.unwrap_or(0.0) * 10000.0) as u64)
         }
-        (OrderField::Stake, OrderDirection::DESC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| b.activated_stake.cmp(&a.activated_stake)
+        OrderField::Commission => {
+            |a: &&ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100))
         }
-        (OrderField::MndeVotes, OrderDirection::ASC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| a.mnde_votes.cmp(&b.mnde_votes)
-        }
-        (OrderField::MndeVotes, OrderDirection::DESC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| b.mnde_votes.cmp(&a.mnde_votes)
-        }
-        (OrderField::Credits, OrderDirection::ASC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| a.credits.cmp(&b.credits)
-        }
-        (OrderField::Credits, OrderDirection::DESC) => {
-            |a: &&ValidatorRecord, b: &&ValidatorRecord| b.credits.cmp(&a.credits)
+        OrderField::Uptime => {
+            |a: &&ValidatorRecord| Decimal::from((a.avg_uptime_pct.unwrap_or(0.0) * 10000.0) as u64)
         }
     };
 
-    validators.sort_by(order_fn);
+    validators.sort_by(
+        |a: &&ValidatorRecord, b: &&ValidatorRecord| match config.order_direction {
+            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
+            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
+        },
+    );
 
     Ok(validators
         .into_iter()

@@ -302,6 +302,75 @@ pub async fn load_warnings(
     Ok(records)
 }
 
+fn average(numbers: &Vec<f64>) -> Option<f64> {
+    if numbers.len() == 0 {
+        return None;
+    }
+    Some(numbers.iter().sum::<f64>() / numbers.len() as f64)
+}
+
+pub fn update_validators_with_avgs(validators: &mut HashMap<String, ValidatorRecord>) {
+    for (_, record) in validators.iter_mut() {
+        record.avg_apy = average(
+            &record
+                .epoch_stats
+                .iter()
+                .flat_map(|epoch| epoch.apy)
+                .collect(),
+        );
+        record.avg_uptime_pct = average(
+            &record
+                .epoch_stats
+                .iter()
+                .flat_map(|epoch| epoch.uptime_pct)
+                .collect(),
+        );
+    }
+}
+
+pub fn update_validators_ranks<T>(
+    validators: &mut HashMap<String, ValidatorRecord>,
+    field_extractor: fn(&ValidatorEpochStats) -> T,
+    rank_updater: fn(&mut ValidatorEpochStats, usize) -> (),
+) where
+    T: Ord,
+{
+    let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
+    for (identity, record) in validators.iter() {
+        for validator_epoch_stats in record.epoch_stats.iter() {
+            stats_by_epoch
+                .entry(validator_epoch_stats.epoch)
+                .or_insert(Default::default())
+                .push((identity.clone(), field_extractor(validator_epoch_stats)));
+        }
+    }
+
+    for (epoch, stats) in stats_by_epoch.iter_mut() {
+        stats.sort_by(|(_, stat_a), (_, stat_b)| stat_a.cmp(stat_b));
+        let mut previous_value: Option<&T> = None;
+        let mut same_ranks: usize = 0;
+        for (index, (identity, stat)) in stats.iter().enumerate() {
+            if let Some(some_previous_value) = previous_value {
+                if some_previous_value == stat {
+                    same_ranks += 1;
+                } else {
+                    same_ranks = 0;
+                }
+            }
+            previous_value = Some(stat);
+
+            let validator_epoch_stats = validators
+                .get_mut(identity)
+                .unwrap()
+                .epoch_stats
+                .iter_mut()
+                .find(|a| a.epoch == *epoch)
+                .unwrap();
+            rank_updater(validator_epoch_stats, stats.len() - index + same_ranks);
+        }
+    }
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     epochs: u8,
@@ -312,9 +381,11 @@ pub async fn load_validators(
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+            WITH
+                validators_aggregated AS (SELECT identity, MIN(epoch) first_epoch FROM validators GROUP BY identity),
+                cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                identity, vote_account, epoch,
+                validators.identity, vote_account, epoch,
 
                 info_name,
                 info_url,
@@ -346,8 +417,12 @@ pub async fn load_validators(
                 skip_rate,
                 uptime_pct,
                 uptime,
-                downtime
-            FROM validators, cluster
+                downtime,
+
+                validators_aggregated.first_epoch AS first_epoch
+            FROM validators
+                LEFT JOIN cluster ON 1 = 1
+                LEFT JOIN validators_aggregated ON validators_aggregated.identity = validators.identity
             WHERE epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(epochs)],
@@ -358,6 +433,7 @@ pub async fn load_validators(
     for row in rows {
         let identity: String = row.get("identity");
         let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+        let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
         let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
             let (apr, apy) = c.estimate_yields(
                 row.get::<_, Decimal>("credits").try_into()?,
@@ -399,6 +475,7 @@ pub async fn load_validators(
                 commission_effective: row
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
+                commission_aggregated: None,
                 version: row.get("version"),
                 mnde_votes: row
                     .get::<_, Option<Decimal>>("mnde_votes")
@@ -416,6 +493,11 @@ pub async fn load_validators(
                 epoch_stats: Default::default(),
 
                 warnings: warnings.get(&identity).cloned().unwrap_or(vec![]),
+
+                epochs_count: epoch - first_epoch + 1,
+
+                avg_uptime_pct: None,
+                avg_apy: None,
             });
         record.epoch_stats.push(ValidatorEpochStats {
             epoch,
@@ -455,8 +537,29 @@ pub async fn load_validators(
                 .map(|n| n.try_into().unwrap()),
             apr,
             apy,
+            marinade_score: 0,
+            rank_apy: None,
+            rank_marinade_score: None,
+            rank_activated_stake: None,
         });
     }
+
+    update_validators_with_avgs(&mut records);
+    update_validators_ranks(
+        &mut records,
+        |a: &ValidatorEpochStats| a.activated_stake,
+        |a: &mut ValidatorEpochStats, rank: usize| a.rank_activated_stake = Some(rank),
+    );
+    update_validators_ranks(
+        &mut records,
+        |a: &ValidatorEpochStats| a.marinade_score,
+        |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
+    );
+    update_validators_ranks(
+        &mut records,
+        |a: &ValidatorEpochStats| (a.apy.unwrap_or(0.0) * 1000.0) as u64,
+        |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
+    );
 
     Ok(records)
 }

@@ -121,6 +121,10 @@ pub struct ValidatorEpochStats {
     pub downtime: Option<u64>,
     pub apr: Option<f64>,
     pub apy: Option<f64>,
+    pub marinade_score: u64,
+    pub rank_marinade_score: Option<usize>,
+    pub rank_activated_stake: Option<usize>,
+    pub rank_apy: Option<usize>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -143,6 +147,7 @@ pub struct ValidatorRecord {
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
+    pub commission_aggregated: Option<i32>,
     pub version: Option<String>,
     pub mnde_votes: Option<Decimal>,
     pub activated_stake: Decimal,
@@ -154,6 +159,11 @@ pub struct ValidatorRecord {
     pub warnings: Vec<WarningRecord>,
 
     pub epoch_stats: Vec<ValidatorEpochStats>,
+
+    pub epochs_count: u64,
+
+    pub avg_uptime_pct: Option<f64>,
+    pub avg_apy: Option<f64>,
 }
 
 #[derive(Serialize, Debug, Clone)]
