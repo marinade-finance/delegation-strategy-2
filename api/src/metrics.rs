@@ -4,6 +4,11 @@ use prometheus::{register_int_counter, Encoder, IntCounter, TextEncoder};
 use warp::Filter;
 
 lazy_static! {
+    pub static ref REQUEST_CLUSTER_STATS: IntCounter = register_int_counter!(
+        "request_count_cluster_stats",
+        "How many times /cluster-stats endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VALIDATORS: IntCounter = register_int_counter!(
         "request_count_validators",
         "How many times /validators endpoint was requested"

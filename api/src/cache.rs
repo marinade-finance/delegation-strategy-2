@@ -2,7 +2,7 @@ use crate::context::WrappedContext;
 use log::{error, info};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::dto::{CommissionRecord, UptimeRecord, ValidatorRecord, VersionRecord};
+use store::dto::{ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, VersionRecord};
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_EPOCHS: u64 = 20;
@@ -11,6 +11,7 @@ type CachedValidators = HashMap<String, ValidatorRecord>;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
+type CachedClusterStats = Option<ClusterStats>;
 
 #[derive(Default)]
 pub struct Cache {
@@ -18,6 +19,7 @@ pub struct Cache {
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
+    pub cluster_stats: CachedClusterStats,
 }
 
 impl Cache {
@@ -45,6 +47,26 @@ impl Cache {
 
     pub fn get_uptimes(&self, identity: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(identity).cloned()
+    }
+
+    pub fn get_cluster_stats(&self, epochs: usize) -> CachedClusterStats {
+        match &self.cluster_stats {
+            Some(cluster_stats) => Some(ClusterStats {
+                block_production_stats: cluster_stats
+                    .block_production_stats
+                    .iter()
+                    .take(epochs)
+                    .cloned()
+                    .collect(),
+                dc_concentration_stats: cluster_stats
+                    .dc_concentration_stats
+                    .iter()
+                    .take(epochs)
+                    .cloned()
+                    .collect(),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -102,6 +124,17 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     Ok(())
 }
 
+pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading cluster_stats from DB");
+
+    let cluster_stats =
+        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    context.write().await.cache.cluster_stats = Some(cluster_stats);
+    info!("Loaded cluster_stats to cache");
+
+    Ok(())
+}
+
 pub fn spawn_cache_warmer(context: WrappedContext) {
     tokio::spawn(async move {
         loop {
@@ -117,6 +150,10 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
 
             if let Err(err) = warm_uptimes_cache(&context).await {
                 error!("Failed to update the uptimes: {}", err);
+            }
+
+            if let Err(err) = warm_cluster_stats_cache(&context).await {
+                error!("Failed to update the cluster stats: {}", err);
             }
 
             if let Err(err) = warm_validators_cache(&context).await {

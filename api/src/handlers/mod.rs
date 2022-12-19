@@ -1,3 +1,4 @@
+pub mod cluster_stats;
 pub mod commissions;
 pub mod config;
 pub mod glossary;

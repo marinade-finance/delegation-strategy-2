@@ -1,7 +1,7 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    commissions, config, glossary, list_validators, reports_commission_changes, reports_scoring,
-    reports_staking, uptimes, versions,
+    cluster_stats, commissions, config, glossary, list_validators, reports_commission_changes,
+    reports_scoring, reports_staking, uptimes, versions,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -71,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
 
+    let route_cluster_stats = warp::path!("cluster-stats")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<cluster_stats::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(cluster_stats::handler);
+
     let route_uptimes = warp::path!("validators" / String / "uptimes")
         .and(warp::path::end())
         .and(warp::get())
@@ -123,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(reports_staking::handler);
 
     let routes = top_level
+        .or(route_cluster_stats)
         .or(route_validators)
         .or(route_uptimes)
         .or(route_versions)

@@ -624,7 +624,7 @@ pub async fn load_dc_concentration_stats(
                 .collect()
         };
 
-    for epoch in first_epoch..=last_epoch {
+    for epoch in (first_epoch..=last_epoch).rev() {
         let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
         let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
         let mut dc_stake_by_city: HashMap<_, _> = Default::default();
@@ -663,7 +663,7 @@ pub async fn load_dc_concentration_stats(
         }
 
         stats.push(DCConcentrationStats {
-            epoch: Default::default(),
+            epoch,
             total_activated_stake: Default::default(),
             dc_concentration_by_aso: map_stake_to_concentration(
                 &dc_stake_by_aso,
@@ -704,10 +704,10 @@ pub async fn load_block_production_stats(
 	                epoch,
                     COALESCE(SUM(blocks_produced), 0) blocks_produced,
                     COALESCE(SUM(leader_slots), 0) leader_slots,
-                    1 - COALESCE(SUM(blocks_produced), 0)  / coalesce(SUM(leader_slots), 1) avg_skip_rate
+                    (1 - COALESCE(SUM(blocks_produced), 0)  / coalesce(SUM(leader_slots), 1))::DOUBLE PRECISION avg_skip_rate
                 FROM validators
                 WHERE epoch > $1
-                GROUP BY epoch ORDER BY epoch",
+                GROUP BY epoch ORDER BY epoch DESC",
                 &[&Decimal::from(first_epoch)],
             )
             .await?;
@@ -724,7 +724,7 @@ pub async fn load_block_production_stats(
     Ok(stats)
 }
 
-pub async fn load_cluster_info(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
+pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
     Ok(ClusterStats {
         block_production_stats: load_block_production_stats(psql_client, epochs).await?,
         dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
