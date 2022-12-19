@@ -26,6 +26,10 @@ pub struct QueryParams {
     query_identities: Option<String>,
     order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
+    query_superminority: Option<bool>,
+    query_marinade_score: Option<bool>,
+    query_marinade_stake: Option<bool>,
+    query_with_names: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -55,6 +59,10 @@ pub struct GetValidatorsConfig {
     pub limit: usize,
     pub query: Option<String>,
     pub query_identities: Option<Vec<String>>,
+    pub query_superminority: Option<bool>,
+    pub query_marinade_score: Option<bool>,
+    pub query_marinade_stake: Option<bool>,
+    pub query_with_names: Option<bool>,
     pub epochs: usize,
 }
 
@@ -84,6 +92,42 @@ pub async fn get_validators(
                         info_name.to_lowercase().find(&query).is_some()
                     })
             })
+            .collect()
+    } else {
+        validators
+    };
+
+    let validators: Vec<_> = if let Some(query_superminority) = config.query_superminority {
+        validators
+            .into_iter()
+            .filter(|v| v.superminority == query_superminority)
+            .collect()
+    } else {
+        validators
+    };
+
+    let validators: Vec<_> = if let Some(query_marinade_stake) = config.query_marinade_stake {
+        validators
+            .into_iter()
+            .filter(|v| (v.marinade_stake > Decimal::from(0)) == query_marinade_stake)
+            .collect()
+    } else {
+        validators
+    };
+
+    let validators: Vec<_> = if let Some(query_with_names) = config.query_with_names {
+        validators
+            .into_iter()
+            .filter(|v| query_with_names == v.info_name.is_some())
+            .collect()
+    } else {
+        validators
+    };
+
+    let mut validators: Vec<_> = if let Some(query_marinade_score) = config.query_marinade_score {
+        validators
+            .into_iter()
+            .filter(|v| (v.marinade_stake > Decimal::from(0)) == query_marinade_score)
             .collect()
     } else {
         validators
@@ -140,6 +184,10 @@ pub async fn handler(
         query_identities: query_params
             .query_identities
             .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
+        query_superminority: query_params.query_superminority,
+        query_marinade_score: query_params.query_marinade_score,
+        query_marinade_stake: query_params.query_marinade_stake,
+        query_with_names: query_params.query_with_names,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
 
