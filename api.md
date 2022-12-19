@@ -4,6 +4,10 @@ Query parameters:
 - `epochs` - Optional, limits history size.
 - `query` - Optional, filters results based on `identity`, `vote_address`, `info_name`.
 - `query_identities` - Optional, comma separated list of identities to fetch.
+- `query_superminority` - Optional, if set, filters validators based on them being in superminority.
+- `query_marinade_score` - Optional, if set, filters validators based on them having a positive score from Marinade.
+- `query_marinade_stake` - Optional, if set, filters validators based on them having stake from Marinade.
+- `query_with_names` - Optional, if set, filters validators based on them having/not having `info_name`.
 - `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MndeVotes`.
 - `order_direction` - Default `DESC`, possible values: `ASC`, `DESC`.
 - `offset` - Default `0`.
