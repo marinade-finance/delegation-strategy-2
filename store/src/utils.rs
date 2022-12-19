@@ -377,7 +377,10 @@ pub async fn load_validators(
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let apy_calculators = get_apy_calculators(psql_client).await?;
     let warnings = load_warnings(psql_client).await?;
-    let concentrations = &load_dc_concentration_stats(psql_client, 1).await?.pop();
+    let concentrations = load_dc_concentration_stats(psql_client, 1)
+        .await?
+        .first()
+        .cloned();
 
     log::info!("Querying validators...");
     let rows = psql_client
@@ -432,67 +435,106 @@ pub async fn load_validators(
         )
         .await?;
 
-    log::info!("Aggregating validator records...");
-    let mut records: HashMap<_, _> = Default::default();
-    for row in rows {
-        let identity: String = row.get("identity");
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
-        let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
-            let (apr, apy) = c.estimate_yields(
-                row.get::<_, Decimal>("credits").try_into()?,
-                row.get::<_, Decimal>("activated_stake").try_into()?,
-                row.get::<_, Option<i32>>("commission_effective")
-                    .map(|n| n.try_into().unwrap())
-                    .unwrap_or(100),
-            );
-            (Some(apr), Some(apy))
-        } else {
-            (None, None)
-        };
+    let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
+        log::info!("Aggregating validator records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let identity: String = row.get("identity");
+            let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
+            let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
+            let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
+                let (apr, apy) = c.estimate_yields(
+                    row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
+                    row.get::<_, Option<i32>>("commission_effective")
+                        .map(|n| n.try_into().unwrap())
+                        .unwrap_or(100),
+                );
+                (Some(apr), Some(apy))
+            } else {
+                (None, None)
+            };
 
-        let dc_full_city = row
-            .get::<_, Option<String>>("dc_full_city")
-            .unwrap_or("Unknown".into());
-        let dc_asn = row
-            .get::<_, Option<i32>>("dc_asn")
-            .map(|dc_asn| dc_asn.to_string())
-            .unwrap_or("Unknown".into());
-        let dc_aso = row
-            .get::<_, Option<String>>("dc_aso")
-            .unwrap_or("Unknown".into());
+            let dc_full_city = row
+                .get::<_, Option<String>>("dc_full_city")
+                .unwrap_or("Unknown".into());
+            let dc_asn = row
+                .get::<_, Option<i32>>("dc_asn")
+                .map(|dc_asn| dc_asn.to_string())
+                .unwrap_or("Unknown".into());
+            let dc_aso = row
+                .get::<_, Option<String>>("dc_aso")
+                .unwrap_or("Unknown".into());
 
-        let dcc_full_city = concentrations
-            .clone()
-            .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
-        let dcc_asn = concentrations
-            .clone()
-            .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
-        let dcc_aso = concentrations
-            .clone()
-            .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
+            let dcc_full_city = concentrations
+                .clone()
+                .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
+            let dcc_asn = concentrations
+                .clone()
+                .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
+            let dcc_aso = concentrations
+                .clone()
+                .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
 
-        let record = records
-            .entry(identity.clone())
-            .or_insert_with(|| ValidatorRecord {
-                identity: identity.clone(),
-                vote_account: row.get("vote_account"),
-                info_name: row.get("info_name"),
-                info_url: row.get("info_url"),
-                info_keybase: row.get("info_keybase"),
-                node_ip: row.get("node_ip"),
-                dc_coordinates_lat: row.get("dc_coordinates_lat"),
-                dc_coordinates_lon: row.get("dc_coordinates_lon"),
-                dc_continent: row.get("dc_continent"),
-                dc_country_iso: row.get("dc_country_iso"),
-                dc_country: row.get("dc_country"),
-                dc_city: row.get("dc_city"),
-                dc_full_city: row.get("dc_full_city"),
-                dc_asn: row.get("dc_asn"),
-                dc_aso: row.get("dc_aso"),
-                dcc_full_city,
-                dcc_asn,
-                dcc_aso,
+            let record = records
+                .entry(identity.clone())
+                .or_insert_with(|| ValidatorRecord {
+                    identity: identity.clone(),
+                    vote_account: row.get("vote_account"),
+                    info_name: row.get("info_name"),
+                    info_url: row.get("info_url"),
+                    info_keybase: row.get("info_keybase"),
+                    node_ip: row.get("node_ip"),
+                    dc_coordinates_lat: row.get("dc_coordinates_lat"),
+                    dc_coordinates_lon: row.get("dc_coordinates_lon"),
+                    dc_continent: row.get("dc_continent"),
+                    dc_country_iso: row.get("dc_country_iso"),
+                    dc_country: row.get("dc_country"),
+                    dc_city: row.get("dc_city"),
+                    dc_full_city: row.get("dc_full_city"),
+                    dc_asn: row.get("dc_asn"),
+                    dc_aso: row.get("dc_aso"),
+                    dcc_full_city,
+                    dcc_asn,
+                    dcc_aso,
+                    commission_max_observed: row
+                        .get::<_, Option<i32>>("commission_max_observed")
+                        .map(|n| n.try_into().unwrap()),
+                    commission_min_observed: row
+                        .get::<_, Option<i32>>("commission_min_observed")
+                        .map(|n| n.try_into().unwrap()),
+                    commission_advertised: row
+                        .get::<_, Option<i32>>("commission_advertised")
+                        .map(|n| n.try_into().unwrap()),
+                    commission_effective: row
+                        .get::<_, Option<i32>>("commission_effective")
+                        .map(|n| n.try_into().unwrap()),
+                    commission_aggregated: None,
+                    version: row.get("version"),
+                    mnde_votes: row
+                        .get::<_, Option<Decimal>>("mnde_votes")
+                        .map(|n| n.try_into().unwrap()),
+                    activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
+                    marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
+                    decentralizer_stake: row
+                        .get::<_, Decimal>("decentralizer_stake")
+                        .try_into()
+                        .unwrap(),
+                    superminority: row.get("superminority"),
+                    credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    marinade_score: 0,
+
+                    epoch_stats: Default::default(),
+
+                    warnings: warnings.get(&identity).cloned().unwrap_or(vec![]),
+
+                    epochs_count: epoch - first_epoch + 1,
+
+                    avg_uptime_pct: None,
+                    avg_apy: None,
+                });
+            record.epoch_stats.push(ValidatorEpochStats {
+                epoch,
                 commission_max_observed: row
                     .get::<_, Option<i32>>("commission_max_observed")
                     .map(|n| n.try_into().unwrap()),
@@ -505,7 +547,6 @@ pub async fn load_validators(
                 commission_effective: row
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
-                commission_aggregated: None,
                 version: row.get("version"),
                 mnde_votes: row
                     .get::<_, Option<Decimal>>("mnde_votes")
@@ -517,62 +558,33 @@ pub async fn load_validators(
                     .try_into()
                     .unwrap(),
                 superminority: row.get("superminority"),
+                stake_to_become_superminority: row
+                    .get::<_, Decimal>("stake_to_become_superminority")
+                    .try_into()
+                    .unwrap(),
                 credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
+                leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
+                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
+                skip_rate: row.get("skip_rate"),
+                uptime_pct: row.get("uptime_pct"),
+                uptime: row
+                    .get::<_, Option<Decimal>>("uptime")
+                    .map(|n| n.try_into().unwrap()),
+                downtime: row
+                    .get::<_, Option<Decimal>>("downtime")
+                    .map(|n| n.try_into().unwrap()),
+                apr,
+                apy,
                 marinade_score: 0,
-
-                epoch_stats: Default::default(),
-
-                warnings: warnings.get(&identity).cloned().unwrap_or(vec![]),
-
-                epochs_count: epoch - first_epoch + 1,
-
-                avg_uptime_pct: None,
-                avg_apy: None,
+                rank_apy: None,
+                rank_marinade_score: None,
+                rank_activated_stake: None,
             });
-        record.epoch_stats.push(ValidatorEpochStats {
-            epoch,
-            commission_max_observed: row
-                .get::<_, Option<i32>>("commission_max_observed")
-                .map(|n| n.try_into().unwrap()),
-            commission_min_observed: row
-                .get::<_, Option<i32>>("commission_min_observed")
-                .map(|n| n.try_into().unwrap()),
-            commission_advertised: row
-                .get::<_, Option<i32>>("commission_advertised")
-                .map(|n| n.try_into().unwrap()),
-            commission_effective: row
-                .get::<_, Option<i32>>("commission_effective")
-                .map(|n| n.try_into().unwrap()),
-            version: row.get("version"),
-            mnde_votes: row
-                .get::<_, Option<Decimal>>("mnde_votes")
-                .map(|n| n.try_into().unwrap()),
-            activated_stake: row.get::<_, Decimal>("activated_stake").try_into()?,
-            marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into()?,
-            decentralizer_stake: row.get::<_, Decimal>("decentralizer_stake").try_into()?,
-            superminority: row.get("superminority"),
-            stake_to_become_superminority: row
-                .get::<_, Decimal>("stake_to_become_superminority")
-                .try_into()?,
-            credits: row.get::<_, Decimal>("credits").try_into()?,
-            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            skip_rate: row.get("skip_rate"),
-            uptime_pct: row.get("uptime_pct"),
-            uptime: row
-                .get::<_, Option<Decimal>>("uptime")
-                .map(|n| n.try_into().unwrap()),
-            downtime: row
-                .get::<_, Option<Decimal>>("downtime")
-                .map(|n| n.try_into().unwrap()),
-            apr,
-            apy,
-            marinade_score: 0,
-            rank_apy: None,
-            rank_marinade_score: None,
-            rank_activated_stake: None,
-        });
-    }
+        }
+
+        records
+    })
+    .await?;
 
     log::info!("Updating averages...");
     update_validators_with_avgs(&mut records);
