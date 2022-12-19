@@ -127,7 +127,7 @@ pub async fn get_validators(
     let mut validators: Vec<_> = if let Some(query_marinade_score) = config.query_marinade_score {
         validators
             .into_iter()
-            .filter(|v| (v.marinade_stake > Decimal::from(0)) == query_marinade_score)
+            .filter(|v| (v.marinade_score > Decimal::from(0)) == query_marinade_score)
             .collect()
     } else {
         validators
