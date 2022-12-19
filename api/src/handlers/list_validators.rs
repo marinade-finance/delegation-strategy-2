@@ -4,7 +4,7 @@ use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::dto::ValidatorRecord;
+use store::dto::{ValidatorRecord, ValidatorsAggregated};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
@@ -16,6 +16,7 @@ const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 #[derive(Serialize, Debug)]
 pub struct Response {
     validators: Vec<ValidatorRecord>,
+    validators_aggregated: Vec<ValidatorsAggregated>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -144,10 +145,26 @@ pub async fn handler(
 
     log::info!("Query validators {:?}", config);
 
-    let validators = get_validators(context, config).await;
+    let validators = get_validators(context.clone(), config).await;
+
+    let validators_aggregated = context
+        .read()
+        .await
+        .cache
+        .get_validators_aggregated()
+        .iter()
+        .take(query_params.epochs.unwrap_or(DEFAULT_EPOCHS))
+        .cloned()
+        .collect();
 
     Ok(match validators {
-        Ok(validators) => warp::reply::with_status(json(&Response { validators }), StatusCode::OK),
+        Ok(validators) => warp::reply::with_status(
+            json(&Response {
+                validators,
+                validators_aggregated,
+            }),
+            StatusCode::OK,
+        ),
         Err(err) => {
             error!("Failed to fetch validator records: {}", err);
             response_error_500("Failed to fetch records!".into())

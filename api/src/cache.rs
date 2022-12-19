@@ -2,7 +2,10 @@ use crate::context::WrappedContext;
 use log::{error, info};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::dto::{ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, VersionRecord};
+use store::dto::{
+    ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, ValidatorsAggregated,
+    VersionRecord,
+};
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_EPOCHS: u64 = 20;
@@ -12,6 +15,7 @@ type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
+type CachedValidatorsAggregated = Vec<ValidatorsAggregated>;
 
 #[derive(Default)]
 pub struct Cache {
@@ -20,6 +24,7 @@ pub struct Cache {
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
+    pub validators_aggregated: CachedValidatorsAggregated,
 }
 
 impl Cache {
@@ -47,6 +52,10 @@ impl Cache {
 
     pub fn get_uptimes(&self, identity: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(identity).cloned()
+    }
+
+    pub fn get_validators_aggregated(&self) -> CachedValidatorsAggregated {
+        self.validators_aggregated.clone()
     }
 
     pub fn get_cluster_stats(&self, epochs: usize) -> CachedClusterStats {
@@ -81,6 +90,10 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .cache
         .validators
         .clone_from(&validators);
+
+    context.write().await.cache.validators_aggregated =
+        store::utils::aggregate_validators(&validators);
+
     info!("Loaded validators to cache: {}", validators.len());
 
     Ok(())

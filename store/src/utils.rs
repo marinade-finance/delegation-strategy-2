@@ -1,9 +1,9 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
-    ValidatorEpochStats, ValidatorRecord, VersionRecord, WarningRecord,
+    ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated, VersionRecord, WarningRecord,
 };
 use rust_decimal::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio_postgres::{types::ToSql, Client};
 
 pub struct InsertQueryCombiner<'a> {
@@ -306,7 +306,9 @@ fn average(numbers: &Vec<f64>) -> Option<f64> {
     if numbers.len() == 0 {
         return None;
     }
-    Some(numbers.iter().sum::<f64>() / numbers.len() as f64)
+    let sum = numbers.iter().filter(|n| !n.is_nan()).sum::<f64>();
+    let count = numbers.iter().filter(|n| !n.is_nan()).count() as f64;
+    Some(sum / count)
 }
 
 pub fn update_validators_with_avgs(validators: &mut HashMap<String, ValidatorRecord>) {
@@ -741,4 +743,40 @@ pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Re
         block_production_stats: load_block_production_stats(psql_client, epochs).await?,
         dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
     })
+}
+
+pub fn aggregate_validators(
+    validators: &HashMap<String, ValidatorRecord>,
+) -> Vec<ValidatorsAggregated> {
+    let mut epochs: HashSet<_> = Default::default();
+    let mut marinade_scores: HashMap<u64, Vec<f64>> = Default::default();
+    let mut apys: HashMap<u64, Vec<f64>> = Default::default();
+
+    for (_, validator) in validators.iter() {
+        for epoch_stats in validator.epoch_stats.iter() {
+            epochs.insert(epoch_stats.epoch);
+            marinade_scores
+                .entry(epoch_stats.epoch)
+                .or_insert(Default::default())
+                .push(epoch_stats.marinade_score as f64);
+            if let Some(apy) = epoch_stats.apy {
+                apys.entry(epoch_stats.epoch)
+                    .or_insert(Default::default())
+                    .push(apy);
+            }
+        }
+    }
+
+    let mut agg: Vec<_> = epochs
+        .into_iter()
+        .map(|epoch| ValidatorsAggregated {
+            epoch,
+            avg_marinade_score: average(marinade_scores.get(&epoch).unwrap_or(&vec![])),
+            avg_apy: average(apys.get(&epoch).unwrap_or(&vec![])),
+        })
+        .collect();
+
+    agg.sort_by(|a, b| b.epoch.cmp(&a.epoch));
+
+    agg
 }

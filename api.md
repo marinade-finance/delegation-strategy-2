@@ -80,6 +80,13 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "avg_uptime_pct": 0.9971032356617813,
       "avg_apy": 0.08364469455818813
     }
+  ],
+  "validators_aggregated": [
+    {
+      "epoch": 388,
+      "avg_marinade_score": 0,
+      "avg_apy": null
+    }
   ]
 }
 ```

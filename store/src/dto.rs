@@ -226,3 +226,10 @@ pub struct ClusterStats {
     pub block_production_stats: Vec<BlockProductionStats>,
     pub dc_concentration_stats: Vec<DCConcentrationStats>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorsAggregated {
+    pub epoch: u64,
+    pub avg_marinade_score: Option<f64>,
+    pub avg_apy: Option<f64>,
+}
