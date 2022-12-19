@@ -141,8 +141,12 @@ pub struct ValidatorRecord {
     pub dc_country_iso: Option<String>,
     pub dc_country: Option<String>,
     pub dc_city: Option<String>,
+    pub dc_full_city: Option<String>,
     pub dc_asn: Option<i32>,
     pub dc_aso: Option<String>,
+    pub dcc_full_city: Option<f64>,
+    pub dcc_asn: Option<f64>,
+    pub dcc_aso: Option<f64>,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
@@ -195,4 +199,30 @@ pub struct WarningRecord {
     pub message: String,
     pub details: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DCConcentrationStats {
+    pub epoch: u64,
+    pub total_activated_stake: u64,
+    pub dc_concentration_by_aso: HashMap<String, f64>,
+    pub dc_stake_by_aso: HashMap<String, u64>,
+    pub dc_concentration_by_asn: HashMap<String, f64>,
+    pub dc_stake_by_asn: HashMap<String, u64>,
+    pub dc_concentration_by_city: HashMap<String, f64>,
+    pub dc_stake_by_city: HashMap<String, u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct BlockProductionStats {
+    pub epoch: u64,
+    pub blocks_produced: u64,
+    pub leader_slots: u64,
+    pub avg_skip_rate: f64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ClusterStats {
+    pub block_production_stats: Vec<BlockProductionStats>,
+    pub dc_concentration_stats: Vec<DCConcentrationStats>,
 }

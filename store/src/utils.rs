@@ -1,6 +1,6 @@
 use crate::dto::{
-    CommissionRecord, UptimeRecord, ValidatorEpochStats, ValidatorRecord, VersionRecord,
-    WarningRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
+    ValidatorEpochStats, ValidatorRecord, VersionRecord, WarningRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
@@ -175,7 +175,7 @@ async fn get_apy_calculators(
 
 pub async fn load_uptimes(
     psql_client: &Client,
-    epochs: u8,
+    epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<UptimeRecord>>> {
     let rows = psql_client
         .query(
@@ -207,7 +207,7 @@ pub async fn load_uptimes(
 
 pub async fn load_versions(
     psql_client: &Client,
-    epochs: u8,
+    epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<VersionRecord>>> {
     let rows = psql_client
         .query(
@@ -238,7 +238,7 @@ pub async fn load_versions(
 
 pub async fn load_commissions(
     psql_client: &Client,
-    epochs: u8,
+    epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<CommissionRecord>>> {
     let rows = psql_client
         .query(
@@ -373,11 +373,13 @@ pub fn update_validators_ranks<T>(
 
 pub async fn load_validators(
     psql_client: &Client,
-    epochs: u8,
+    epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let apy_calculators = get_apy_calculators(psql_client).await?;
     let warnings = load_warnings(psql_client).await?;
+    let concentrations = &load_dc_concentration_stats(psql_client, 1).await?.pop();
 
+    log::info!("Querying validators...");
     let rows = psql_client
         .query(
             "
@@ -399,6 +401,7 @@ pub async fn load_validators(
                 dc_city,
                 dc_asn,
                 dc_aso,
+                CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city,
 
                 commission_max_observed,
                 commission_min_observed,
@@ -429,6 +432,7 @@ pub async fn load_validators(
         )
         .await?;
 
+    log::info!("Aggregating validator records...");
     let mut records: HashMap<_, _> = Default::default();
     for row in rows {
         let identity: String = row.get("identity");
@@ -446,6 +450,28 @@ pub async fn load_validators(
         } else {
             (None, None)
         };
+
+        let dc_full_city = row
+            .get::<_, Option<String>>("dc_full_city")
+            .unwrap_or("Unknown".into());
+        let dc_asn = row
+            .get::<_, Option<i32>>("dc_asn")
+            .map(|dc_asn| dc_asn.to_string())
+            .unwrap_or("Unknown".into());
+        let dc_aso = row
+            .get::<_, Option<String>>("dc_aso")
+            .unwrap_or("Unknown".into());
+
+        let dcc_full_city = concentrations
+            .clone()
+            .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
+        let dcc_asn = concentrations
+            .clone()
+            .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
+        let dcc_aso = concentrations
+            .clone()
+            .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
+
         let record = records
             .entry(identity.clone())
             .or_insert_with(|| ValidatorRecord {
@@ -461,8 +487,12 @@ pub async fn load_validators(
                 dc_country_iso: row.get("dc_country_iso"),
                 dc_country: row.get("dc_country"),
                 dc_city: row.get("dc_city"),
+                dc_full_city: row.get("dc_full_city"),
                 dc_asn: row.get("dc_asn"),
                 dc_aso: row.get("dc_aso"),
+                dcc_full_city,
+                dcc_asn,
+                dcc_aso,
                 commission_max_observed: row
                     .get::<_, Option<i32>>("commission_max_observed")
                     .map(|n| n.try_into().unwrap()),
@@ -544,7 +574,9 @@ pub async fn load_validators(
         });
     }
 
+    log::info!("Updating averages...");
     update_validators_with_avgs(&mut records);
+    log::info!("Updating ranks...");
     update_validators_ranks(
         &mut records,
         |a: &ValidatorEpochStats| a.activated_stake,
@@ -560,6 +592,141 @@ pub async fn load_validators(
         |a: &ValidatorEpochStats| (a.apy.unwrap_or(0.0) * 1000.0) as u64,
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
     );
-
+    log::info!("Records prepared...");
     Ok(records)
+}
+
+pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
+    let row = psql_client
+        .query_opt("SELECT MAX(epoch) as last_epoch FROM validators", &[])
+        .await?;
+
+    Ok(row.map(|row| row.get::<_, Decimal>("last_epoch").try_into().unwrap()))
+}
+
+pub async fn load_dc_concentration_stats(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<DCConcentrationStats>> {
+    let last_epoch = match get_last_epoch(psql_client).await? {
+        Some(last_epoch) => last_epoch,
+        _ => return Ok(Default::default()),
+    };
+    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
+
+    let mut stats: Vec<_> = Default::default();
+
+    let map_stake_to_concentration =
+        |stake: &HashMap<String, u64>, total_stake: u64| -> HashMap<_, _> {
+            stake
+                .iter()
+                .map(|(key, stake)| (key.clone(), *stake as f64 / total_stake as f64))
+                .collect()
+        };
+
+    for epoch in first_epoch..=last_epoch {
+        let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
+        let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
+        let mut dc_stake_by_city: HashMap<_, _> = Default::default();
+        let mut total_active_stake = 0;
+
+        let rows = psql_client
+            .query(
+                "SELECT
+                    activated_stake,
+                    dc_aso,
+                    dc_asn,
+                    CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city
+                FROM validators WHERE epoch = $1",
+                &[&Decimal::from(epoch)],
+            )
+            .await?;
+
+        for row in rows.iter() {
+            let activated_stake: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
+            let dc_aso = row
+                .get::<_, Option<String>>("dc_aso")
+                .unwrap_or("Unknown".to_string());
+            let dc_asn: String = row
+                .get::<_, Option<i32>>("dc_asn")
+                .map_or("Unknown".to_string(), |dc_asn| dc_asn.to_string());
+            let dc_city: String = row
+                .get::<_, Option<String>>("dc_full_city")
+                .unwrap_or("Unknown".to_string());
+
+            total_active_stake += activated_stake;
+            *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_city
+                .entry(dc_city)
+                .or_insert(Default::default())) += activated_stake;
+        }
+
+        stats.push(DCConcentrationStats {
+            epoch: Default::default(),
+            total_activated_stake: Default::default(),
+            dc_concentration_by_aso: map_stake_to_concentration(
+                &dc_stake_by_aso,
+                total_active_stake,
+            ),
+            dc_concentration_by_asn: map_stake_to_concentration(
+                &dc_stake_by_asn,
+                total_active_stake,
+            ),
+            dc_stake_by_asn,
+            dc_stake_by_aso,
+            dc_concentration_by_city: map_stake_to_concentration(
+                &dc_stake_by_city,
+                total_active_stake,
+            ),
+            dc_stake_by_city,
+        })
+    }
+
+    Ok(stats)
+}
+
+pub async fn load_block_production_stats(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<BlockProductionStats>> {
+    let last_epoch = match get_last_epoch(psql_client).await? {
+        Some(last_epoch) => last_epoch,
+        _ => return Ok(Default::default()),
+    };
+    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
+
+    let mut stats: Vec<_> = Default::default();
+
+    let rows = psql_client
+            .query(
+                "SELECT
+	                epoch,
+                    COALESCE(SUM(blocks_produced), 0) blocks_produced,
+                    COALESCE(SUM(leader_slots), 0) leader_slots,
+                    1 - COALESCE(SUM(blocks_produced), 0)  / coalesce(SUM(leader_slots), 1) avg_skip_rate
+                FROM validators
+                WHERE epoch > $1
+                GROUP BY epoch ORDER BY epoch",
+                &[&Decimal::from(first_epoch)],
+            )
+            .await?;
+
+    for row in rows {
+        stats.push(BlockProductionStats {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+            avg_skip_rate: row.get("avg_skip_rate"),
+        })
+    }
+
+    Ok(stats)
+}
+
+pub async fn load_cluster_info(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
+    Ok(ClusterStats {
+        block_production_stats: load_block_production_stats(psql_client, epochs).await?,
+        dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
+    })
 }

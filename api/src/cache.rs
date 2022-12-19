@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{CommissionRecord, UptimeRecord, ValidatorRecord, VersionRecord};
 use tokio::time::{sleep, Duration};
 
-const DEFAULT_EPOCHS: u8 = 20;
+const DEFAULT_EPOCHS: u64 = 20;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
