@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::reponse_error;
+use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::VersionRecord;
@@ -28,7 +28,7 @@ pub async fn handler(
         Some(versions) => warp::reply::with_status(json(&Response { versions }), StatusCode::OK),
         _ => {
             error!("No versions found for {}", &identity);
-            reponse_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })
 }

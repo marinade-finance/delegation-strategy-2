@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::reponse_error;
+use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::CommissionRecord;
@@ -30,7 +30,7 @@ pub async fn handler(
         }
         _ => {
             error!("No commissions found for {}", &identity);
-            reponse_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })
 }

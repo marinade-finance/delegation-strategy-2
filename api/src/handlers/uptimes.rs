@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::reponse_error;
+use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::UptimeRecord;
@@ -40,7 +40,7 @@ pub async fn handler(
         Some(uptimes) => warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK),
         _ => {
             error!("No uptimes found for {}", &identity);
-            reponse_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })
 }

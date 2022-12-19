@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::reponse_error_500;
+use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -150,7 +150,7 @@ pub async fn handler(
         Ok(validators) => warp::reply::with_status(json(&Response { validators }), StatusCode::OK),
         Err(err) => {
             error!("Failed to fetch validator records: {}", err);
-            reponse_error_500("Failed to fetch records!".into())
+            response_error_500("Failed to fetch records!".into())
         }
     })
 }
