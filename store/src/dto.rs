@@ -198,7 +198,7 @@ pub struct WarningRecord {
     pub code: String,
     pub message: String,
     pub details: Option<String>,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
