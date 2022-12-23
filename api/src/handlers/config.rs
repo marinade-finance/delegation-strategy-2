@@ -15,7 +15,15 @@ pub async fn handler(_context: WrappedContext) -> Result<impl Reply, warp::Rejec
                     },
                     {
                         "delegation_authority": "noMa7dN4cHQLV4ZonXrC29HTKFpxrpFbDLK5Gub8W8t",
-                        "name": "Marinade's Decentralizer"
+                        "name": "Marinade Decentralizer"
+                    },
+                    {
+                        "delegation_authority": "6iQKfEyhr3bZMotVkW6beNZz5CPAkiwvgV2CTje9pVSS",
+                        "name": "Jito"
+                    },
+                    {
+                        "delegation_authority": "W1ZQRwUfSkDKy2oefRBUWph82Vr2zg9txWMA8RQazN5",
+                        "name": "Lido"
                     }
                 ]
             }
