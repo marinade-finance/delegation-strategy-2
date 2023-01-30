@@ -3,6 +3,7 @@ pub mod commissions;
 pub mod config;
 pub mod glossary;
 pub mod list_validators;
+pub mod mnde_gauges;
 pub mod reports_commission_changes;
 pub mod reports_scoring;
 pub mod reports_staking;

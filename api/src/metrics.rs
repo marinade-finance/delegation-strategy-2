@@ -29,6 +29,11 @@ lazy_static! {
         "How many times /uptimes endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_MNDE_GAUGES: IntCounter = register_int_counter!(
+        "request_count_mnde_gauges",
+        "How many times /mnde-gauges endpoint was requested"
+    )
+    .unwrap();
 }
 
 fn collect_metrics() -> String {

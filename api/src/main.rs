@@ -1,7 +1,7 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    cluster_stats, commissions, config, glossary, list_validators, reports_commission_changes,
-    reports_scoring, reports_staking, uptimes, versions,
+    cluster_stats, commissions, config, glossary, list_validators, mnde_gauges,
+    reports_commission_changes, reports_scoring, reports_staking, uptimes, versions,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -99,6 +99,12 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(commissions::handler);
 
+    let route_mnde_gauges = warp::path!("validators" / "mnde-gauges")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(mnde_gauges::handler);
+
     let route_glossary = warp::path!("static" / "glossary.md")
         .and(warp::path::end())
         .and(warp::get())
@@ -135,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_uptimes)
         .or(route_versions)
         .or(route_commissions)
+        .or(route_mnde_gauges)
         .or(route_glossary)
         .or(route_config)
         .or(route_reports_scoring)
