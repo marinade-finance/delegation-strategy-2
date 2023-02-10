@@ -1,7 +1,6 @@
 use crate::common::*;
 use crate::solana_service::solana_client;
-use anchor_lang::prelude::*;
-use anchor_lang::{prelude::Pubkey, AccountDeserialize, AnchorDeserialize, AnchorSerialize};
+use anchor_lang::AccountDeserialize;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -12,17 +11,8 @@ use solana_client::{
     rpc_filter::RpcFilterType,
 };
 use solana_sdk::clock::Epoch;
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 use tip_distribution::state::TipDistributionAccount;
-
-#[derive(Debug, AnchorSerialize, AnchorDeserialize, Clone, Default)]
-pub struct MerkleRoot {
-    pub root: [u8; 32],
-    pub max_total_claim: u64,
-    pub max_num_nodes: u64,
-    pub total_funds_claimed: u64,
-    pub num_nodes_claimed: u64,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValidatorMEVSnapshot {
