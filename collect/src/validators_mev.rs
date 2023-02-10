@@ -15,8 +15,6 @@ use solana_sdk::clock::Epoch;
 use std::{collections::HashMap, str::FromStr};
 use tip_distribution::state::TipDistributionAccount;
 
-const JITO_PROGRAM: &str = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7";
-
 #[derive(Debug, AnchorSerialize, AnchorDeserialize, Clone, Default)]
 pub struct MerkleRoot {
     pub root: [u8; 32],
@@ -51,7 +49,7 @@ pub fn validators_mev(
 ) -> anyhow::Result<HashMap<String, ValidatorMEVSnapshot>> {
     let mut validators: HashMap<String, ValidatorMEVSnapshot> = Default::default();
 
-    let jito_program = Pubkey::from_str(JITO_PROGRAM)?;
+    let jito_program = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7".try_into()?;
     let config = RpcProgramAccountsConfig {
         filters: Some(vec![RpcFilterType::DataSize(
             TipDistributionAccount::SIZE.try_into().unwrap(),
