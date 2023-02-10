@@ -715,6 +715,7 @@ dependencies = [
  "borsh",
  "chrono",
  "env_logger",
+ "jito-tip-distribution",
  "log",
  "num 0.4.0",
  "reqwest",
@@ -1642,6 +1643,30 @@ name = "itoa"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c8af84674fe1f223a982c933a0ee1086ac4d4052aa0fb8060c12c6ad838e754"
+
+[[package]]
+name = "jito-programs-vote-state"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c5950ab5eeb6a483aa17463b1e7e31d11c4b64d067769fd356d523789be8b81"
+dependencies = [
+ "anchor-lang",
+ "bincode",
+ "serde",
+ "serde_derive",
+ "solana-program",
+]
+
+[[package]]
+name = "jito-tip-distribution"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8870660ada5603104a6c8835841c12517962a5b4801317d3f11d45acdc33d4b3"
+dependencies = [
+ "anchor-lang",
+ "jito-programs-vote-state",
+ "solana-program",
+]
 
 [[package]]
 name = "jobserver"

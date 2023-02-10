@@ -23,6 +23,21 @@ CREATE TABLE commissions (
 );
 CREATE INDEX commission_changes_identity_created_at ON commissions (identity, created_at);
 
+CREATE TABLE mev (
+  id BIGSERIAL NOT NULL,
+  vote_account TEXT NOT NULL,
+  mev_commission INTEGER NOT NULL,
+  total_epoch_rewards NUMERIC,
+  claimed_epoch_rewards NUMERIC,
+  total_epoch_claimants INTEGER,
+  epoch_active_claimants INTEGER,
+  epoch_slot NUMERIC NOT NULL,
+  epoch NUMERIC NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+
+  PRIMARY KEY(id)
+)
+
 CREATE TABLE versions (
   id BIGSERIAL NOT NULL,
   identity TEXT NOT NULL,
