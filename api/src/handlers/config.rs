@@ -28,6 +28,10 @@ pub async fn handler(_context: WrappedContext) -> Result<impl Reply, warp::Rejec
                     {
                         "delegation_authority": "W1ZQRwUfSkDKy2oefRBUWph82Vr2zg9txWMA8RQazN5",
                         "name": "Lido"
+                    },
+                    {
+                        "delegation_authority": "HbJTxftxnXgpePCshA8FubsRj9MW4kfPscfuUfn44fnt",
+                        "name": "Jpool"
                     }
                 ]
             }
