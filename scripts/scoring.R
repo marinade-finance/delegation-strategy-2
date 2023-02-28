@@ -5,10 +5,12 @@ normalize <- function(x, na.rm = TRUE) {
 }
 
 args <- commandArgs(trailingOnly = TRUE)
-file_out <- args[1]
-file_params <- args[2]
-file_validators <- args[3]
-file_self_stake <- args[4]
+file_out_scores <- args[1]
+file_out_stakes <- args[2]
+file_params <- args[3]
+file_validators <- args[4]
+file_self_stake <- args[5]
+
 print(file_out)
 
 t(data.frame(
@@ -57,7 +59,7 @@ STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_MNDE - STAKE_CONTROL_SELF_STAKE
 # Apply self stake to validators dataframe
 validators$target_stake_self <- 0
 for(i in 1:nrow(self_stake)) {
-  validators[validators$vote_account == self_stake[i, "vote_account"], ]$target_stake_self <- self_stake[i, "max_target_stake"] / sum(self_stake$max_target_stake) * self_stake_total_capped
+  validators[validators$vote_account == self_stake[i, "vote_account"], ]$target_stake_self <- round(self_stake[i, "max_target_stake"] / sum(self_stake$max_target_stake) * self_stake_total_capped)
 }
 
 # Perform min-max normalization of algo staking formula's components
@@ -139,8 +141,9 @@ STAKE_CONTROL_MNDE_SOL <- TOTAL_STAKE * STAKE_CONTROL_MNDE
 STAKE_CONTROL_MNDE_OVERFLOW_SOL <- mnde_overflow_power * STAKE_CONTROL_MNDE_SOL
 STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_MNDE_OVERFLOW_SOL
 
-validators$target_stake_mnde <- validators$mnde_power * STAKE_CONTROL_MNDE_SOL
-validators$target_stake_algo <- validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL
+validators$target_stake_mnde <- round(validators$mnde_power * STAKE_CONTROL_MNDE_SOL)
+validators$target_stake_algo <- round(validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL)
+validators$target_stake <- validators$target_stake_mnde + validators$target_stake_algo + validators$target_stake_self
 
 perf_target_stake_mnde <- sum(validators$avg_adjusted_credits * validators$target_stake_mnde) / sum(validators$target_stake_mnde)
 perf_target_stake_algo <- sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)
@@ -159,4 +162,7 @@ t(data.frame(
 ))
 
 validators <- validators[order(validators$rank),]
-write.csv(validators, file_out)
+write.csv(validators, file_out_scores)
+
+validators <- validators[order(validators$stake, decreasing = T),]
+write.csv(validators, file_out_stakes)
