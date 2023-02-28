@@ -233,3 +233,17 @@ pub struct ValidatorsAggregated {
     pub avg_marinade_score: Option<f64>,
     pub avg_apy: Option<f64>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorAggregatedFlat {
+    pub vote_account: String,
+    pub minimum_stake: f64,
+    pub avg_stake: f64,
+    pub avg_dc_concentration: f64,
+    pub avg_skip_rate: f64,
+    pub avg_grace_skip_rate: f64,
+    pub max_commission: u8,
+    pub avg_adjusted_credits: f64,
+    pub dc_aso: String,
+    pub mnde_votes: u64,
+}

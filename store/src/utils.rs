@@ -1,6 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
-    ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated, VersionRecord, WarningRecord,
+    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated,
+    VersionRecord, WarningRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -779,4 +780,60 @@ pub fn aggregate_validators(
     agg.sort_by(|a, b| b.epoch.cmp(&a.epoch));
 
     agg
+}
+
+pub async fn load_validators_aggregated_flat(
+    psql_client: &Client,
+    last_epoch: u64,
+    epochs: u64,
+) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
+    let rows = psql_client
+            .query(
+                "with
+                cluster_stake as (select epoch, sum(activated_stake) as stake from validators group by epoch),
+                cluster_skip_rate as (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
+                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake)
+                select
+                    vote_account,
+                    min(activated_stake / 1e9)::double precision as minimum_stake,
+                    avg(activated_stake / 1e9)::double precision as avg_stake,
+                    coalesce(avg(dc_concentration), 0)::double precision as avg_dc_concentration,
+                    coalesce(avg(skip_rate), 1)::double precision as avg_skip_rate,
+                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision as avg_grace_skip_rate,		
+                    max(coalesce(commission_effective, commission_advertised, 100)) as max_commission,
+                    (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision as avg_adjusted_credits,
+                    coalesce((array_agg(coalesce(validators.dc_aso)))[1], 'Unknown') dc_aso,
+                    coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes
+                from
+                    validators
+                    left join dc on dc.dc_aso = validators.dc_aso and dc.epoch = validators.epoch
+                    left join cluster_skip_rate on cluster_skip_rate.epoch = validators.epoch
+                where
+                validators.epoch between $1 and $2
+                and credits > 0
+                group by vote_account
+                having count(*) = $3
+                order by avg_adjusted_credits desc;
+            ",
+                &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
+            )
+            .await?; // and vote_account not in ('3Z1N2Fkfha4ThNiRwN8RnU6U8dkFJ92DH2TFyLWJf8cj','2Dwg3x37yN4q8SyrrwDaRPGQTp14atcwMPewe3Y8FDoL','GkBrxrDjmx2kfTMUZJgYWAbar9fEpYJW7TgLatrZSjhN','5fdEXhCBKC7FRRsH64asZCSiwgNXRozxmzb1cFzfrtWM','7y4wStv8XxUkuBgwNkidfxdy1V6TMYr4UjaTDwcS3MUr','C33g1CBgcc47XFcrYksA3CEkBKaitKuhs9yD7LLtW98K','964w4qykexipZ7aCur1BEeJtexTMa1ehMUc9tCcxm9J3','Gj63nResvnBrKLw4GyyfWFpTudwQWDe9bExkE9Z1LvB1','9uygnf8zm2A88bS4tjqiYUPKAUuSWkJGeHxKLTndrs6v','A465fkGZut4A7FncUvzbCzGD8QE98yn2Lm8grr93c9dV','13zyX9jfGy1RvM28LcdqfLwR4VSowXx6whAL6AcFERCk','AUgLtpPVz6zL4iVCXZwi3cifLERdvnHsuVhNKzqmW45i','4R2eqfCDqN3UesKPW4kSTZVd55955V4awbof4vBuWibY','97AgcJPr1KGkwhq7tSD2LDMADreeCpGoFcX6hWjEuQpi','dVcK6ZibNvBiiwqxadXEGheznJFsWY9SHiMb8afTQns','C9pfCHG1zx5fTtmbsFwLG6yFoztyUVXoCmirUcCe2dt7','5hVPfoTZcfZTcyondKxjuVczaFap9pBGYBSPKXg9Jrg5','DXv73X82WCjVMsqDszK3z764tTJMU3nPXyCU3UktudBG','FvoZJRfV8LWMbkMeiswKzMHSZ2qvU8KVsEkUaW6MdN8m','6EftrAURp1rwpmy7Jeqem4kwWYeSnKmgYWKbdX5gEBHQ','HCZJjvZbaKaPTE96jz64HnBZTnXHBFv3pugqsBE5Z1D9','9fDyXmKS8Qgf9TNsRoDw8q2FJJL5J8LN7Y52sddigqyi','BHGHrKBJ9z6oE4Rjd7rBTsy9GLiFcTeDbkTkC5YmT5JG','CQCvXh6fDejoKVeMKXWirksnwCnhrLzb6XkyrBoQJzX5','Agsu9fcnH3rKBix59mktDRqJhjR8aStgLDd9njaddcdr','AUYVsW5ZGwPMAiFJUuAYPtCB9Xp5CVA1osJyAasj8CLe','FKCcfoLt2pq7boiNqRGucVq5LE1K5Dt4HALCx2WbEQkv','DHasctf9Gs2hRY2QzSoRiLuJnuEkRcGHSrh2JUxthxwa','467Bg8FwFFq5jqebWPnMQtdDRjpmHUqvCWBW1zYVMzHg','JCHsvHwF6TgeM1fapxgAkhVKDU5QtPox3bfCR5sjWirP','72i2i4D7ehg7k3rKUNZLFiHqvhVFv1UvdCQbiNTFudJa','G4RU9qUt7tG8M8E4L4ZfXtdnwPTcPpaWwLEvSxtdRNHF','JB8zjnRE6FeT8N6Yq2182vj69kKHGdeKJ7kBAhHKuHRq','Amhxcj1nt4BhnmTfy3ncqaoLzVr94QEfGMYY9Lqkg9en','783PrbTTsMojSJWv64ZCFnQ7mYoDj4oqdsAGXf22XVQs','FrWFgD5vfjJkKiCY4WeKBk65X4C7sDhi2X1DVMFCPfJ5','BeNvYv2pd3MRJBBSGiMPSRVYcafKAXocNNp79GoaHfoP','ZBfLjZjz48oS3ArtnjmPn4Fc1bd2VbKeBnxeCSrKE9S','DzhGmMUzpyQ5ruk5rRCfekTZMyvPXBXHtnn6aNnt94x4','8cUmk4UHZXFBXZJBnWnXd48iTSRMYikQ1QYbJddBfAxu','85qJ2DWmav9YgKLLdo6mrVAVLLKRH3fDuWPyiViA362n','5xk3gjstftRwZRqQdme4vTuZonpkgs2wsm734M68Bq1Y','7iC1Uu6QBqNG6oaBimnPgLmtoantH7Nc3RD7SoLHgVET','8sqpHTT3B8kLto6Vb98bNP93MVuRuPKdcUAwZaP6xuYs','4QMtvpJ2cFLWAa363dZsr46aBeDAnEsF66jomv4eVqu4','4rxFGSzXiTXuF9GveXbMr4fJAPPnQVjHmpEZbWV8jz9m','HC1NSDR9cbBeQ8V1XJ62VNceUAbjGdnCcH7f5wVFVZw3','Bm3rPaD62YWXJxvpW5viF9jUVdMmd7Q2HYA6eTbDhxxW','DeNodee9LR1WPokmRqidmAQEq8UbBqNCv6QfFTvU6k69','9xMyJXgxBABzV5bmiCuw4xZ8acao2xgvhC1G1yknW1Zj','9DYSMwSwMbQcckH1Zi7EQ3E6ipJKkChqRVJCQjF5FCWp','DqxQuDD9BZERufL2gTCipHhAqj7Bb2zoAEKfvHuXWNUL','FfE7rncxyYJvsqFu3Kn323sJpjBXkfMNXwd4d8kdURk9','9HvcpT4vGkgDU3TUXuJFtC5DPjMt5jb8MXFFTNTg9Mim','CrZEDyNQfbxakxdFYzMc8dtrYq4XDoRZ51xBa12skDpJ','D7wuZ935mznAM6hRJJQBpWcBWyvVgUK96pPDZT2uZq5g','9c5bpzVRbfsYY2fannb4hyX5CJUPg3BfH2cL6sR7kJM4','CnYYmAhuFcyocBbXxoVzPnu37a5ctpLaSr8ja1NGKNZ7','ESF3vCij1t6K437j7tzDyKspPeuMnYoEtooFN9Suzico','GHRvDXj9BfACkJ9CoLWbpi2UkMVti9DwXJGsaFT9XDcD','5HMtU9ngrq7vhQn4qPxFHzaVJRjbnT2VQxTTPdfwvbUL','3HSgNsx9rQsAFZrL7k2BAUuL8HpCjhgfxXjrPBK9cnjD','5GKFk6ptwtYTUVXZwofK3tgCJXRiQBfY6yS9w8dgZaSS','CZw1sSfjZbCccsk2kTjbFeVSgfzEgV1JxHEsEW69Qce9','6XimUrvgbdoAuavV9WGgSYdYKSw6ghajLGeQgZMG9aZU','13fUogQP3K8jAWgSW5gji5NyqHFprwoW3xVRs9MpLqdp','5KF6gMG6f5GCr4V6BXKzdroHxeXK68oKrLQdiujGsj9m','EAZpeduar1WoSCyR8W4YhurN3FfVmuKwdPx4ruy58VU8','4GhsFrzqekca4FiZQdwqbstzcEXsredqpemF9FdRQBqZ','BCFLyTNSoxQbVrTogK8n7ft1oYAgHYEdzafVfGgqz9WN','DREVB8Ce8nLp9Ha5m66sduRcjJtHeQo8B9BkYxjC4Zx3','A8XYMkTzKNceJT7BKtRwGrg5KGgaXcjyoAYuthrjfKUi','2e6hcXeqPMwskDfQXKuwVuHiFByEwaiG9ohgapNBk6qU','53gnaHMxDzGTZ9A58S4jbc1qzhYT4X51thUD4MdSBiyo','2kQZfvm5tqcBhXnscT3xe5SbCDttkipxgy1wCqhzqL2a','6vJGsbs5jYKEdQGUfMEYN4Nenwscgza1dBXB3WJraFyH','CGWR68eEdSDoj5LUn2MGKBgxRC3By64DCBFHCoHdSV21','DDmp7zGUzKhXsZhnUynohWrrKyWFf9gSJcGacihRRHuU','7yvrrixKhYrxMJHjzsPDz8tSAajLL3oD2arAsgeMdK9N','9DsSqMHnrSXkyHtG8sN4zPhjrsRUgfP9vBQ6hFEpEwM','5HedSkUKfYmusiV7rAppuHbz7fp8JmUoLLJjJqCQLS5j','725My2yzg5ZUpQtpEtivLT7JmRes2gGxF3KeGCbYACDe','9Mi8M1JnRmtcYpB42DxYPVmYy2safgdYFmeHmMgkW8TG','2jevuBmk1TrXA36bRZ4bhdJGPzGqcCDoVzRcyYtxzKHY','CHUF69YeA3gZv484izYuhKk1EjaJYjv1pNoJJ6QeFDQc','8b3JPQtHbw8MBJQNwUDVXC6xfaL26UNx6WA3GShGy5Vw','HHFqy4NJteQJScyoAsjwYjS8wCuV1AjNv4veoeKVACRi','DMYn88X6PkHAc2y5zDWm5jGZ2Tk2CyBUe8K1U2obF8jc','C31ocJKVAi8wxCvyAMjXte2fY9zECV2fKrn786F4WZ4N','6g6jypXGeavZPVkWSu4Ny5bfhTMLFnuSepfGMQkQpWV1','D6AkdRCEAvE8Rjh4AKDSCXZ5BaiKpp79da6XtUJotGq5','3Le35iTn2KXRfomruXiDLcMd4BVLKYVgQ7yssmrFJZXx','9TTpcbiTDUQH9goeRvhAhk4X3ahtZ6XttCjRyH8Pu7MP','7yXM5mUSAtBuh2TcCABvSJa3LouZ8wcLps5zTEMiwxvj','LSV1yYBUsxwY8y7AgL2RcJDVJjnwxfeShxaXm7Edrwr','FQY5UU6THEhRNZRg7YXfYGQhJi45TLXrHg76EsXJmESc','9TUJdBxnHvAapYoq8cVFgh1bMbTh6GYfY4etDqWVKXAT','FSH9xke8FBpx6YxEEzNXVWgjmT3G5SN9HpipmCSVamV','CFtrZKxqGfXSuZrM5G64prTfNM8GqWQFQa3GXq4tdzx2','BifNttkf51HzsPgUf2keDdVBL64YvnAVQGF3fkNDfB56','4e1B3jra6oS7nK5wLn9mPMtX1skUJsEvmhV9MscA6UA4','DZJWKjtj1fCJDWTYL1HvF9rLrxRRKKp6GQgyujEzqc22','3YKcH4c8eoAKkghQeGavg9HZ13fSe77RWM3QoFTCV2Gv','7r4qcfiaWaZ8i9zW2YjqgRLEpGGE7L5hfW8ncpF1HdTs','8aGU18Nxn99AEWEQNrBYy1ZsJBhiHVFrcqYqHQPNhmEv','5TFdzjKE6LnkhQArxWjt26yVCXskPo3fUXE8F351Cfn7','DpodNd2DWRLbNJVuV1R33xW2PkBJyRTFU5aZGmQrVtMi','Dpy1qt9MhoRD5YpmzfM9iBw2LuRvP1nZAa9La77nAHW5','8kcrp8M2c5LGYThHQxVgsp7BGfGjHZ9fLHa6YN3YpFNa','BgjQPDdsHeD9XXs7pYyHsmvKdkLR1A4SBNYs3mLmPUCD','9EzbogBnGi8hVeLXEyFu2xUo6qi5JdEELs4y3cQXQW33','9uASGafRPWpvpfXeuwcA3TzMUuP5BoHfQWtcdGMyYR9x','7aE66BtyfPELpp6hnb6qb3PjQzmzMqXRMKx9EU7tHak6','6JjWRGRM94G2cpnsqDD3KL8p4ravnFSpJP778V6M9LUS','AeHBkLDeWtMHqrM4uwuewwWKtyKd5aBZAygxZJ3MCjRp','6c2FJC1NfzNvivapAzPW8vj9TW63dpHCVh7zzehwnNLH','D7ZCDE1PHe8duMjNpxwHrYbrRzcnsS7p4nD2daLzWwtr','DaNexGpPeQChZTPZAn1BGmd4ASQpHE4hLDv7V4iAe2oA','8HciLEx6hGdb8mxaCx7ExFBxkcgdkpt43FhiJdvPA6XZ','ouLzBTp7vqzT1mhjtg1TpYHwACJpeB5akRC1zDVdg1N','AQB1eoovP55TyjkecjCPTvfXBEzS1JH1sxWguBo1gu9d','J9Go27V87fCdJtjMxmFJu48ctrHzFoe6xQpA6Ecq4Wkw','Fu4wz4US6dV6GzZrv9NnF18KeT47tdbDKRd7pA6DiyS4','CwEsA6kkUZHnuCK2HC1WVpriBpZWFJSKW9xxrdednm6J','5bjKPhoQDcpPVeMhu83SEtXqXA9vw62k7KhL9zpsK31b','2ikGwX24ATJQHPtWpHupEAJvAyp63niaFL5R2sGXwfnd','GAerry2FZncXgLJXohjgGmC3W4JKLDFxwhGz4beTgDeP','8sNLx7RinHfPWeoYE1N4dixtNACvgiUrj9Ty81p7iMhb','9EMmPd6zKqTnpj74rgmkTjkYAsZSZ42jBWcqu6iaoGTR','3v6FfdWMT2bcoQQ9hN4F2syu7qhRHzNuCPPQqV12hsw2','BYNXBFkB89FoRCJ4VxFE9Tfde3anECjZjasTP8qSYQUi','3iD36QhXqWzx5b4HHhkRAyUcbEgCaC42hi1GcBePNsp2','8hpaVczvUK24kogYWxV6s3hajDAbaHb6KGZsVRLDoksi','J61sYWwTT3Kfkjy3gJ1ViRwtfXVp7Bi89DLqvCp5WDgC','A9hwhEeQ7hNm8rPbRX7ZDAZRjTVrUCjgDEDD4Tt8rmT7','9b9F4xYHMenZfbD8pSLm45oJfoFYPQ9RVWPXSEmJQzVn','DawVi7TKkWS81ZKyGTmxLAabL1w5gcw8FhGgbHeGJGnj','5ycsa9WVK6zFcUR13m3yijxbevZehZeCbuSocSawsweW','4qS6unxhpNh6fp2rRU3nnyMZEYyZ4hUbjnP7iEN7Jx1w','BxTUwfMiokzimVDLDupGfVPmWXfLSGVpkGr9TUmetn6b','8J4xNmyAQskmPuyywPf1arig4X8hfza2xKBkKwz8E2gU','6zDrZWRXQ7GWi1W2fBTzSs59PSa2uj2k8w2qkc451rqG','74ibS6YRDBF3jMf3bxiLY1i3ohFhJySQwyeeMWaRsAk2','HTpinijYNYPe2UhfwoX7fHKC9j44QEJoVmStCmfvYZxA','76sb4FZPwewvxtST5tJMp9N43jj4hDC5DQ7bv8kBi1rA','FKyoehgzXD6KVSQoHJuTteXGCrChYe65k98wMckr9MN8','4qSZsB9QjXr97HzhzPd1zuvB8z7tqqDuM1xbxB5PcPFh','1M5USfamd1N4i1z6UZeECrWeu2VfrxjYMBSXThu6TqB','7LCnWqQGpNCiUvBLznYG9Q6Zo7mcLkhAHA7YBjbg8SET','AU4yDLbrnLzcjk2pnxvXwNeKJsj9CiUDRXWQbeSbk6Y9','AeSLUUNmADEM2xzfmWbRhfwomvJW3f3Rd1AdicXf27Gb','4RyNsFHDccFEEnbYJAFt2cNufFduh8Se8eKTqXDVr82h','5enTTfG63W4JUzCpwioeLte7827NrYXUgGr6z7Rm7xf5','8usnMxy6YunbfrjHDHPfRcpLWXigcSvrpVohv3F2v24H','J4ooR8AV8o5Ez2qN8ghQhR7YKhqRY5WEHfE8dTR2Yo6a','HFY5f6PF6cRyVAvVG1xV9X15q87qoZ1o6GDcyBzHSEnX')
+
+    let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
+    for row in rows.iter() {
+        validators.push(ValidatorAggregatedFlat {
+            vote_account: row.get("vote_account"),
+            minimum_stake: row.get("minimum_stake"),
+            avg_stake: row.get("avg_stake"),
+            avg_dc_concentration: row.get("avg_dc_concentration"),
+            avg_skip_rate: row.get("avg_skip_rate"),
+            avg_grace_skip_rate: row.get("avg_grace_skip_rate"),
+            max_commission: row.get::<_, i32>("max_commission").try_into()?,
+            avg_adjusted_credits: row.get("avg_adjusted_credits"),
+            dc_aso: row.get("dc_aso"),
+            mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into()?,
+        });
+    }
+
+    Ok(validators)
 }
