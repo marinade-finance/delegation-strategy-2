@@ -163,5 +163,4 @@ t(data.frame(
 validators <- validators[order(validators$rank),]
 write.csv(validators, file_out_scores)
 
-validators <- validators[order(validators$target_stake, decreasing = T),]
-write.csv(validators, file_out_stakes)
+write.csv(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file_out_stakes)
