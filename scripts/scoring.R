@@ -11,8 +11,6 @@ file_params <- args[3]
 file_validators <- args[4]
 file_self_stake <- args[5]
 
-print(file_out)
-
 t(data.frame(
   file_out,
   file_params,
