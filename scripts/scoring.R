@@ -1,4 +1,5 @@
 library(dotenv)
+library(data.table)
 
 normalize <- function(x, na.rm = TRUE) {
   return ((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
@@ -74,26 +75,26 @@ validators$score <- (0
 ) / (WEIGHT_ADJUSTED_CREDITS + WEIGHT_GRACE_SKIP_RATE + WEIGHT_DC_CONCENTRATION)
 
 # Apply algo staking eligibility criteria
-validators$eligible_algo_stake <- TRUE
-validators$eligible_algo_stake[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- FALSE
-validators$eligible_algo_stake[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- FALSE
+validators$eligible_algo_stake <- 1
+validators$eligible_algo_stake[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_algo_stake[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
 
 # Sort validators to find the eligible validators with the best score
-validators$rank <- rank(-validators$score)
+validators$rank <- rank(-validators$score, ties.method="min")
 validators <- validators[order(validators$rank),]
-validators_algo_set <- head(validators[validators$eligible_algo_stake == TRUE,], MARINADE_VALIDATORS_COUNT)
+validators_algo_set <- head(validators[validators$eligible_algo_stake == 1,], MARINADE_VALIDATORS_COUNT)
 min_score_in_algo_set <- min(validators_algo_set$score)
 
 # Mark validator who should receive algo stake
-validators$in_algo_stake_set <- FALSE
-validators$in_algo_stake_set[validators$score >= min_score_in_algo_set] <- TRUE
-validators$in_algo_stake_set[validators$eligible_algo_stake == FALSE] <- FALSE
+validators$in_algo_stake_set <- 0
+validators$in_algo_stake_set[validators$score >= min_score_in_algo_set] <- 1
+validators$in_algo_stake_set[validators$eligible_algo_stake == 0] <- 0
 
 # Apply mnde staking eligibility criteria
-validators$eligible_mnde_stake <- TRUE
-validators$eligible_mnde_stake[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- FALSE
-validators$eligible_mnde_stake[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- FALSE
-validators$eligible_mnde_stake[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- FALSE
+validators$eligible_mnde_stake <- 1
+validators$eligible_mnde_stake[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_mnde_stake[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
+validators$eligible_mnde_stake[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
 
 # Apply eligibility on votes to get effective votes
 mnde_valid_votes <- round(validators$mnde_votes * validators$eligible_mnde_stake / 1e9)
@@ -160,7 +161,5 @@ t(data.frame(
   perf_target_stake_self
 ))
 
-validators <- validators[order(validators$rank),]
-write.csv(validators, file_out_scores)
-
-write.csv(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file_out_stakes)
+fwrite(validators[order(validators$rank),], file = file_out_scores, scipen = 1000, quote = T)
+fwrite(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file = file_out_stakes, scipen = 1000)
