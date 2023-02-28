@@ -1,8 +1,33 @@
 use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
+use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+pub struct ValidatorMEVInfo {
+    pub vote_account: String,
+    pub mev_commission: i32,
+    pub epoch: i32,
+    pub total_epoch_rewards: Decimal,
+    pub claimed_epoch_rewards: Decimal,
+    pub total_epoch_claimants: i32,
+    pub epoch_active_claimants: i32,
+}
+
+impl ValidatorMEVInfo {
+    pub fn new_from_snapshot(v: &ValidatorMEVSnapshot) -> Self {
+        Self {
+            vote_account: v.vote_account.clone(),
+            mev_commission: (v.mev_commission as i32),
+            epoch: (v.epoch as i32),
+            total_epoch_rewards: v.total_epoch_rewards.into(),
+            claimed_epoch_rewards: v.claimed_epoch_rewards.into(),
+            total_epoch_claimants: (v.total_epoch_claimants as i32),
+            epoch_active_claimants: (v.epoch_active_claimants as i32),
+        }
+    }
+}
 
 pub struct Validator {
     pub identity: String,

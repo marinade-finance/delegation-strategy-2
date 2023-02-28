@@ -1,5 +1,6 @@
 use collect::common::*;
 use collect::validators::*;
+use collect::validators_mev::collect_validators_mev_info;
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceOptions,
 };
@@ -19,6 +20,7 @@ struct Params {
 enum CollectCommand {
     Validators(ValidatorsOptions),
     ValidatorsPerformance(ValidatorsPerformanceOptions),
+    ValidatorsMEV,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -31,5 +33,6 @@ fn main() -> anyhow::Result<()> {
         CollectCommand::ValidatorsPerformance(options) => {
             collect_validators_performance_info(params.common, options)
         }
+        CollectCommand::ValidatorsMEV => collect_validators_mev_info(params.common),
     }?)
 }

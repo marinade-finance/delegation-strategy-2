@@ -7,6 +7,7 @@ use structopt::StructOpt;
 use tokio_postgres::NoTls;
 use uptime::{store_uptime, StoreUptimeOptions};
 use validators::{store_validators, StoreValidatorsOptions};
+use validators_mev::{store_mev, StoreMevOptions};
 use versions::{store_versions, StoreVersionsOptions};
 
 #[derive(Debug, StructOpt)]
@@ -31,6 +32,7 @@ enum StoreCommand {
     Versions(StoreVersionsOptions),
     ClusterInfo(StoreClusterInfoOptions),
     Validators(StoreValidatorsOptions),
+    ValidatorsMev(StoreMevOptions),
     CloseEpoch(CloseEpochOptions),
     LsOpenEpochs(LsOpenEpochsOptions),
 }
@@ -43,6 +45,7 @@ pub mod ls_open_epochs;
 pub mod uptime;
 pub mod utils;
 pub mod validators;
+pub mod validators_mev;
 pub mod versions;
 
 #[tokio::main]
@@ -65,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::Versions(options) => store_versions(options, &mut psql_client).await,
         StoreCommand::ClusterInfo(options) => store_cluster_info(options, &mut psql_client).await,
         StoreCommand::Validators(options) => store_validators(options, &mut psql_client).await,
+        StoreCommand::ValidatorsMev(options) => store_mev(options, &mut psql_client).await,
         StoreCommand::CloseEpoch(options) => close_epoch(options, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_options) => list_open_epochs(&psql_client).await,
     }?)
