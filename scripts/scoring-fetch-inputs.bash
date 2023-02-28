@@ -22,7 +22,7 @@ curl -isfLS http://stake-monitor.marinade.finance > "$file_response_self_stake"
 echo "vote_account,current_balance,deposited_balance" > "$file_parsed_self_stake"
 <"$file_response_self_stake" jq 'fromjson? | .[] | [.voteAccount, .total, .depositStakeAmount + .depositSolAmount] | @csv' -R -r >> "$file_parsed_self_stake"
 
-curl -sfLS "http://validators-api-dev.marinade.finance:8000/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
+curl -sfLS "https://validators-api-dev.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
 
 cat <<EOF > "$file_params"
 TOTAL_STAKE=$TOTAL_STAKE
