@@ -12,7 +12,8 @@ file_validators <- args[4]
 file_self_stake <- args[5]
 
 t(data.frame(
-  file_out,
+  file_out_scores,
+  file_out_stakes,
   file_params,
   file_validators,
   file_self_stake
