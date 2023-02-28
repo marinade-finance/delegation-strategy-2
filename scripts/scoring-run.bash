@@ -1,3 +1,5 @@
 #!/bin/bash
 
-Rscript ./scripts/scoring.R ./score.csv ./params.env ./validators.csv ./self-stake.csv
+file_scoring_r=${SCORING_R:-"./scripts/scoring.R"}
+
+Rscript "$file_scoring_r" ./score.csv ./params.env ./validators.csv ./self-stake.csv
