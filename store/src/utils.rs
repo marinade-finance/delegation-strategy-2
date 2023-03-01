@@ -837,3 +837,81 @@ pub async fn load_validators_aggregated_flat(
 
     Ok(validators)
 }
+
+pub async fn store_scoring(
+    mut psql_client: &mut Client,
+    epoch: i32,
+    ui_id: String,
+    components: Vec<&str>,
+    component_weights: Vec<f64>,
+    scores: Vec<crate::dto::ValidatorScoringCsvRow>,
+) -> anyhow::Result<()> {
+    let scoring_run_result = psql_client
+        .query_one(
+            "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
+            VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
+            &[&epoch, &components, &component_weights, &ui_id],
+        )
+        .await?;
+
+    let scoring_run_id: i64 = scoring_run_result.get("scoring_run_id");
+
+    log::info!("Stored scoring run: {}", scoring_run_id);
+
+    let component_scores_by_vote_account: HashMap<_, _> = scores
+        .iter()
+        .map(|row| {
+            (
+                row.vote_account.clone(),
+                Vec::from([
+                    row.normalized_adjusted_credits,
+                    row.normalized_dc_concentration,
+                    row.normalized_grace_skip_rate,
+                ]),
+            )
+        })
+        .collect();
+
+    let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
+        .iter()
+        .map(|row| {
+            (
+                row.vote_account.clone(),
+                if row.ui_hints.len() == 0 {
+                    Default::default()
+                } else {
+                    row.ui_hints.split(",").collect()
+                },
+            )
+        })
+        .collect();
+
+    for chunk in scores.chunks(500) {
+        let mut query = InsertQueryCombiner::new(
+            "scores".to_string(),
+            "vote_account, score, component_scores, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
+        );
+        for row in chunk {
+            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
+                &row.vote_account,
+                &row.score,
+                component_scores_by_vote_account
+                    .get(&row.vote_account)
+                    .unwrap(),
+                &row.rank,
+                ui_hints_parsed.get(&row.vote_account).unwrap(),
+                &row.eligible_stake_algo,
+                &row.eligible_stake_mnde,
+                &row.eligible_stake_msol,
+                &row.target_stake_algo,
+                &row.target_stake_mnde,
+                &row.target_stake_msol,
+                &scoring_run_id,
+            ];
+            query.add(&mut params);
+        }
+        query.execute(&mut psql_client).await?;
+    }
+
+    Ok(())
+}

@@ -2,10 +2,8 @@ use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error_500;
 use log::error;
-use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::dto::{ValidatorRecord, ValidatorsAggregated};
-use warp::{http::Response, http::StatusCode, reply::json, Reply};
+use warp::Reply;
 
 const DEFAULT_EPOCHS: u64 = 10;
 
@@ -48,5 +46,6 @@ pub async fn handler(
         String::from_utf8(csv_content.into_inner().unwrap()).unwrap(),
         "Content-Type",
         "text/csv",
-    ).into_response())
+    )
+    .into_response())
 }

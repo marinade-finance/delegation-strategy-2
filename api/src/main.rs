@@ -1,7 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    cluster_stats, commissions, config, glossary, list_validators, reports_commission_changes,
-    reports_scoring, reports_staking, uptimes, validators_flat, versions,
+    admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
+    reports_commission_changes, reports_scoring, reports_staking, uptimes, validators_flat,
+    versions,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -136,6 +137,14 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_staking::handler);
 
+    let route_admin_upload_score = warp::path!("admin" / "scores")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::query::<admin_score_upload::QueryParams>())
+        .and(warp::multipart::form().max_length(5_000_000))
+        .and(with_context(context.clone()))
+        .and_then(admin_score_upload::handler);
+
     let routes = top_level
         .or(route_cluster_stats)
         .or(route_validators)
@@ -148,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_reports_scoring)
         .or(route_reports_staking)
         .or(route_reports_commission_changes)
+        .or(route_admin_upload_score)
         .with(cors);
 
     metrics::spawn_server();

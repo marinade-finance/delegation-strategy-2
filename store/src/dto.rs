@@ -3,6 +3,7 @@ use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use serde::de::{self, Deserializer, Unexpected};
 
 pub struct Validator {
     pub identity: String,
@@ -246,4 +247,38 @@ pub struct ValidatorAggregatedFlat {
     pub avg_adjusted_credits: f64,
     pub dc_aso: String,
     pub mnde_votes: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorScoringCsvRow {
+    pub vote_account: String,
+    pub score: f64,
+    pub rank: i32,
+    pub ui_hints: String,
+    #[serde(deserialize_with = "bool_from_int")]
+    pub eligible_stake_algo: bool,
+    #[serde(deserialize_with = "bool_from_int")]
+    pub eligible_stake_mnde: bool,
+    #[serde(deserialize_with = "bool_from_int")]
+    pub eligible_stake_msol: bool,
+    pub normalized_dc_concentration: f64,
+    pub normalized_grace_skip_rate: f64,
+    pub normalized_adjusted_credits: f64,
+    pub target_stake_algo: Decimal,
+    pub target_stake_mnde: Decimal,
+    pub target_stake_msol: Decimal,
+}
+
+fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match u8::deserialize(deserializer)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(de::Error::invalid_value(
+            Unexpected::Unsigned(other as u64),
+            &"zero or one",
+        )),
+    }
 }

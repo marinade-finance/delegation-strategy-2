@@ -57,9 +57,9 @@ STAKE_CONTROL_SELF_STAKE_OVERFLOW_SOL <- max(0, self_stake_total - self_stake_to
 STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_MNDE - STAKE_CONTROL_SELF_STAKE
 
 # Apply self stake to validators dataframe
-validators$target_stake_self <- 0
+validators$target_stake_msol <- 0
 for(i in 1:nrow(self_stake)) {
-  validators[validators$vote_account == self_stake[i, "vote_account"], ]$target_stake_self <- round(self_stake[i, "max_target_stake"] / sum(self_stake$max_target_stake) * self_stake_total_capped)
+  validators[validators$vote_account == self_stake[i, "vote_account"], ]$target_stake_msol <- round(self_stake[i, "max_target_stake"] / sum(self_stake$max_target_stake) * self_stake_total_capped)
 }
 
 # Perform min-max normalization of algo staking formula's components
@@ -69,35 +69,58 @@ validators$normalized_adjusted_credits <- normalize(validators$avg_adjusted_cred
 
 # Apply the algo staking formula on all validators
 validators$score <- (0
-  + validators$normalized_dc_concentration * WEIGHT_DC_CONCENTRATION
-  + validators$normalized_grace_skip_rate * WEIGHT_GRACE_SKIP_RATE
-  + validators$normalized_adjusted_credits * WEIGHT_ADJUSTED_CREDITS
+                     + validators$normalized_dc_concentration * WEIGHT_DC_CONCENTRATION
+                     + validators$normalized_grace_skip_rate * WEIGHT_GRACE_SKIP_RATE
+                     + validators$normalized_adjusted_credits * WEIGHT_ADJUSTED_CREDITS
 ) / (WEIGHT_ADJUSTED_CREDITS + WEIGHT_GRACE_SKIP_RATE + WEIGHT_DC_CONCENTRATION)
 
 # Apply algo staking eligibility criteria
-validators$eligible_algo_stake <- 1
-validators$eligible_algo_stake[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
-validators$eligible_algo_stake[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_algo <- 1
+validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
+
+validators$eligible_stake_msol <- validators$eligible_stake_algo
+
+for (i in 1:nrow(validators)) {
+  if (validators[i, "max_commission"] > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_ALGO_STAKE_MAX_COMMISSION_OVER_10"))
+  }
+  if (validators[i, "minimum_stake"] < ELIGIBILITY_ALGO_STAKE_MIN_STAKE) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_ALGO_STAKE_MIN_STAKE_BELOW_1000"))
+  }
+}
 
 # Sort validators to find the eligible validators with the best score
 validators$rank <- rank(-validators$score, ties.method="min")
 validators <- validators[order(validators$rank),]
-validators_algo_set <- head(validators[validators$eligible_algo_stake == 1,], MARINADE_VALIDATORS_COUNT)
+validators_algo_set <- head(validators[validators$eligible_stake_algo == 1,], MARINADE_VALIDATORS_COUNT)
 min_score_in_algo_set <- min(validators_algo_set$score)
 
 # Mark validator who should receive algo stake
 validators$in_algo_stake_set <- 0
 validators$in_algo_stake_set[validators$score >= min_score_in_algo_set] <- 1
-validators$in_algo_stake_set[validators$eligible_algo_stake == 0] <- 0
+validators$in_algo_stake_set[validators$eligible_stake_algo == 0] <- 0
 
 # Apply mnde staking eligibility criteria
-validators$eligible_mnde_stake <- 1
-validators$eligible_mnde_stake[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
-validators$eligible_mnde_stake[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
-validators$eligible_mnde_stake[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
+validators$eligible_stake_mnde <- 1
+validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_mnde[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
+
+for (i in 1:nrow(validators)) {
+  if (validators[i, "max_commission"] > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_MAX_COMMISSION_OVER_10"))
+  }
+  if (validators[i, "minimum_stake"] < ELIGIBILITY_MNDE_STAKE_MIN_STAKE) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_MIN_STAKE_BELOW_100"))
+  }
+  if (validators[i, "score"] < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_SCORE_TOO_LOW"))
+  }
+}
 
 # Apply eligibility on votes to get effective votes
-mnde_valid_votes <- round(validators$mnde_votes * validators$eligible_mnde_stake / 1e9)
+mnde_valid_votes <- round(validators$mnde_votes * validators$eligible_stake_mnde / 1e9)
 
 # Apply cap on the share of mnde votes
 mnde_power_cap <- round(sum(mnde_valid_votes) * MNDE_VALIDATOR_CAP)
@@ -143,11 +166,11 @@ STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_MNDE_
 
 validators$target_stake_mnde <- round(validators$mnde_power * STAKE_CONTROL_MNDE_SOL)
 validators$target_stake_algo <- round(validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL)
-validators$target_stake <- validators$target_stake_mnde + validators$target_stake_algo + validators$target_stake_self
+validators$target_stake <- validators$target_stake_mnde + validators$target_stake_algo + validators$target_stake_msol
 
 perf_target_stake_mnde <- sum(validators$avg_adjusted_credits * validators$target_stake_mnde) / sum(validators$target_stake_mnde)
 perf_target_stake_algo <- sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)
-perf_target_stake_self <- sum(validators$avg_adjusted_credits * validators$target_stake_self) / sum(validators$target_stake_self)
+perf_target_stake_msol <- sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)
 
 t(data.frame(
   TOTAL_STAKE,
@@ -158,8 +181,10 @@ t(data.frame(
   STAKE_CONTROL_ALGO_SOL,
   perf_target_stake_mnde,
   perf_target_stake_algo,
-  perf_target_stake_self
+  perf_target_stake_msol
 ))
+
+validators$ui_hints <- lapply(validators$ui_hints, paste, collapse = ',')
 
 fwrite(validators[order(validators$rank),], file = file_out_scores, scipen = 1000, quote = T)
 fwrite(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file = file_out_stakes, scipen = 1000)

@@ -34,6 +34,11 @@ lazy_static! {
         "How many times /uptimes endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_ADMIN_SCORE_UPLOAD: IntCounter = register_int_counter!(
+        "request_count_admin_score_upload",
+        "How many times /admin/scores endpoint was requested"
+    )
+    .unwrap();
 }
 
 fn collect_metrics() -> String {
