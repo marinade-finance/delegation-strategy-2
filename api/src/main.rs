@@ -11,7 +11,7 @@ use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
 use tokio_postgres::NoTls;
-use warp::Filter;
+use warp::{Filter, Rejection};
 
 pub mod cache;
 pub mod context;
@@ -26,6 +26,9 @@ pub struct Params {
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
+
+    #[structopt(env = "ADMIN_AUTH_TOKEN", default_value = "foo")]
+    admin_auth_token: String,
 }
 
 #[tokio::main]
@@ -140,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
     let route_admin_upload_score = warp::path!("admin" / "scores")
         .and(warp::path::end())
         .and(warp::post())
+        .and(with_admin_auth(params.admin_auth_token))
         .and(warp::query::<admin_score_upload::QueryParams>())
         .and(warp::multipart::form().max_length(5_000_000))
         .and(with_context(context.clone()))
@@ -171,4 +175,11 @@ fn with_context(
     context: WrappedContext,
 ) -> impl Filter<Extract = (WrappedContext,), Error = Infallible> + Clone {
     warp::any().map(move || context.clone())
+}
+
+fn with_admin_auth(
+    expected_token: String,
+) -> impl Filter<Extract = (bool,), Error = Rejection> + Clone {
+    warp::header::<String>("authorization")
+        .map(move |token: String| token == expected_token.clone())
 }

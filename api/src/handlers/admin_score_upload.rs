@@ -28,12 +28,21 @@ pub struct QueryParams {
 }
 
 pub async fn handler(
+    logged_in: bool,
     query_params: QueryParams,
     form: FormData,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_ADMIN_SCORE_UPLOAD.inc();
     log::info!("Uploading scores {:?}", query_params);
+
+    if !logged_in {
+        log::error!("Unauthorized access!");
+        return Ok(response_error(
+            StatusCode::UNAUTHORIZED,
+            "Not authorized!".into(),
+        ));
+    }
 
     let parts: Vec<Part> = form.try_collect().await.map_err(|err| {
         log::error!("Upload error: {}", err);
