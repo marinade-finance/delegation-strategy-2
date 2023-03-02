@@ -76,8 +76,8 @@ validators$score <- (0
 
 # Apply algo staking eligibility criteria
 validators$eligible_stake_algo <- 1
-validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
-validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_algo[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_stake_algo[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
 
 validators$eligible_stake_msol <- validators$eligible_stake_algo
 
