@@ -184,6 +184,11 @@ t(data.frame(
   perf_target_stake_msol
 ))
 
+stopifnot(TOTAL_STAKE > 3e6)
+stopifnot(STAKE_CONTROL_SELF_STAKE_SOL > 1e6)
+stopifnot(nrow(validators) > 2000)
+stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
+
 validators$ui_hints <- lapply(validators$ui_hints, paste, collapse = ',')
 
 fwrite(validators[order(validators$rank),], file = file_out_scores, scipen = 1000, quote = T)
