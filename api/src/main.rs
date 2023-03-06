@@ -27,7 +27,7 @@ pub struct Params {
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
-    #[structopt(env = "ADMIN_AUTH_TOKEN", default_value = "foo")]
+    #[structopt(env = "ADMIN_AUTH_TOKEN")]
     admin_auth_token: String,
 }
 
