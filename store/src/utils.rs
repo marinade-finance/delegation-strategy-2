@@ -810,9 +810,8 @@ pub async fn load_validators_aggregated_flat(
                     left join cluster_skip_rate on cluster_skip_rate.epoch = validators.epoch
                 where
                 validators.epoch between $1 and $2
-                and credits > 0
                 group by vote_account
-                having count(*) = $3
+                having count(*) = $3 and count(*) filter (where credits > 0) > 0
                 order by avg_adjusted_credits desc;
             ",
                 &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
