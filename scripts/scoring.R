@@ -9,19 +9,22 @@ args <- commandArgs(trailingOnly = TRUE)
 file_out_scores <- args[1]
 file_out_stakes <- args[2]
 file_params <- args[3]
-file_validators <- args[4]
-file_self_stake <- args[5]
+file_blacklist <- args[4]
+file_validators <- args[5]
+file_self_stake <- args[6]
 
 t(data.frame(
   file_out_scores,
   file_out_stakes,
   file_params,
+  file_blacklist,
   file_validators,
   file_self_stake
 ))
 
 self_stake <- read.csv(file_self_stake)
 validators <- read.csv(file_validators)
+blacklist <- read.csv(file_blacklist)
 load_dot_env(file = file_params)
 
 TOTAL_STAKE=as.numeric(Sys.getenv("TOTAL_STAKE"))
@@ -74,8 +77,20 @@ validators$score <- (0
                      + validators$normalized_adjusted_credits * WEIGHT_ADJUSTED_CREDITS
 ) / (WEIGHT_ADJUSTED_CREDITS + WEIGHT_GRACE_SKIP_RATE + WEIGHT_DC_CONCENTRATION)
 
+# Apply blacklist
+validators$blacklisted <- 0
+for (i in 1:nrow(validators)) {
+  blacklist_reasons <- blacklist[blacklist$vote_account == validators[i, "vote_account"],]
+  if (nrow(blacklist_reasons) > 0) {
+    for (j in 1:nrow(blacklist_reasons)) {
+        validators[i, "blacklisted"] <- 1
+        validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], blacklist_reasons[j, "code"]))
+    }
+  }
+}
+
 # Apply algo staking eligibility criteria
-validators$eligible_stake_algo <- 1
+validators$eligible_stake_algo <- 1 - validators$blacklisted
 validators$eligible_stake_algo[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
 validators$eligible_stake_algo[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
 
@@ -102,7 +117,7 @@ validators$in_algo_stake_set[validators$score >= min_score_in_algo_set] <- 1
 validators$in_algo_stake_set[validators$eligible_stake_algo == 0] <- 0
 
 # Apply mnde staking eligibility criteria
-validators$eligible_stake_mnde <- 1
+validators$eligible_stake_mnde <- 1 - validators$blacklisted
 validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
 validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
 validators$eligible_stake_mnde[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0

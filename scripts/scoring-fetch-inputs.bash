@@ -7,22 +7,25 @@ file_response_tvl="./tvl.txt"
 file_response_self_stake="./self-stake.txt"
 file_parsed_self_stake="./self-stake.csv"
 file_validators="./validators.csv"
+file_blacklist="./blacklist.csv"
 file_params="./params.env"
 
 current_epoch=$(curl -sfLS http://api.mainnet-beta.solana.com -X POST -H "Content-Type: application/json" -d '
   {"jsonrpc":"2.0","id":1, "method":"getEpochInfo"}
 ' | jq '.result.epoch' -r)
 
-curl -isfLS http://api.marinade.finance/tlv > "$file_response_tvl"
+curl -sfLS http://api.marinade.finance/tlv > "$file_response_tvl"
 TOTAL_STAKE=$(<"$file_response_tvl" jq 'fromjson? | .total_virtual_staked_sol' -R)
 
 echo "Total Stake: $TOTAL_STAKE"
 
-curl -isfLS http://stake-monitor.marinade.finance > "$file_response_self_stake"
+curl -sfLS http://stake-monitor.marinade.finance > "$file_response_self_stake"
 echo "vote_account,current_balance,deposited_balance" > "$file_parsed_self_stake"
 <"$file_response_self_stake" jq 'fromjson? | .[] | [.voteAccount, .total, .depositStakeAmount + .depositSolAmount] | @csv' -R -r >> "$file_parsed_self_stake"
 
 curl -sfLS "https://validators-api-dev.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
+
+curl -sfLS "https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/scoring/blacklist.csv" > "$file_blacklist"
 
 cat <<EOF > "$file_params"
 TOTAL_STAKE=$TOTAL_STAKE
