@@ -1,7 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    cluster_stats, commissions, config, glossary, list_validators, reports_commission_changes,
-    reports_scoring, reports_staking, uptimes, versions,
+    admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
+    reports_commission_changes, reports_scoring, reports_staking, uptimes, validators_flat,
+    versions,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
 use tokio_postgres::NoTls;
-use warp::Filter;
+use warp::{Filter, Rejection};
 
 pub mod cache;
 pub mod context;
@@ -25,6 +26,9 @@ pub struct Params {
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
+
+    #[structopt(env = "ADMIN_AUTH_TOKEN")]
+    admin_auth_token: String,
 }
 
 #[tokio::main]
@@ -70,6 +74,13 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<list_validators::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
+
+    let route_validators_flat = warp::path!("validators" / "flat")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<validators_flat::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(validators_flat::handler);
 
     let route_cluster_stats = warp::path!("cluster-stats")
         .and(warp::path::end())
@@ -129,9 +140,19 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_staking::handler);
 
+    let route_admin_upload_score = warp::path!("admin" / "scores")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_admin_auth(params.admin_auth_token))
+        .and(warp::query::<admin_score_upload::QueryParams>())
+        .and(warp::multipart::form().max_length(5_000_000))
+        .and(with_context(context.clone()))
+        .and_then(admin_score_upload::handler);
+
     let routes = top_level
         .or(route_cluster_stats)
         .or(route_validators)
+        .or(route_validators_flat)
         .or(route_uptimes)
         .or(route_versions)
         .or(route_commissions)
@@ -140,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_reports_scoring)
         .or(route_reports_staking)
         .or(route_reports_commission_changes)
+        .or(route_admin_upload_score)
         .with(cors);
 
     metrics::spawn_server();
@@ -153,4 +175,11 @@ fn with_context(
     context: WrappedContext,
 ) -> impl Filter<Extract = (WrappedContext,), Error = Infallible> + Clone {
     warp::any().map(move || context.clone())
+}
+
+fn with_admin_auth(
+    expected_token: String,
+) -> impl Filter<Extract = (bool,), Error = Rejection> + Clone {
+    warp::header::<String>("authorization")
+        .map(move |token: String| token == expected_token.clone())
 }

@@ -7,7 +7,10 @@ edition = "2021"
 rust_decimal = { version = "1.26", features = ["db-postgres"] }
 anyhow = "1.0.40"
 borsh = "0.9"
+csv = "1.1"
 log = "0.4.14"
+bytes = "1.0"
+futures = { version = "0.3", default-features = false }
 env_logger = "0.9.0"
 structopt = "0.3.21"
 solana-client = "1.7.11"

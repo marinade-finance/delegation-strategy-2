@@ -309,3 +309,10 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 ```bash
 curl -sLfS 'http://localhost:9000/metrics'
 ```
+
+### Admin - Score upload
+```bash
+curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=a,b,c&component_weights=1,2,3.34&ui_id=fw3' -X POST \
+  -H 'Content-Type: multipart/form-data' \
+  --form 'scores_csv=@./scores.csv'
+```

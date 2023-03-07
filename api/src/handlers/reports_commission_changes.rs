@@ -1,5 +1,4 @@
 use crate::context::WrappedContext;
-use crate::metrics;
 use log::info;
 use serde::Serialize;
 use std::cmp::Ordering;
