@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::de::{Unexpected, self};
+use serde::{Deserialize, Serialize, Deserializer};
 use std::collections::HashMap;
 
 pub struct ValidatorMEVInfo {
