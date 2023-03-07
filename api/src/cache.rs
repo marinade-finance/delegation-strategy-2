@@ -3,7 +3,7 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, ValidatorsAggregated,
+    ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated,
     VersionRecord,
 };
 use tokio::time::{sleep, Duration};
@@ -16,6 +16,7 @@ type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedValidatorsAggregated = Vec<ValidatorsAggregated>;
+type CachedScores = HashMap<String, ValidatorScoreRecord>;
 
 #[derive(Default)]
 pub struct Cache {
@@ -25,6 +26,7 @@ pub struct Cache {
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
     pub validators_aggregated: CachedValidatorsAggregated,
+    pub validators_scores: CachedScores,
 }
 
 impl Cache {
@@ -56,6 +58,10 @@ impl Cache {
 
     pub fn get_validators_aggregated(&self) -> CachedValidatorsAggregated {
         self.validators_aggregated.clone()
+    }
+
+    pub fn get_validators_scores(&self) -> CachedScores {
+        self.validators_scores.clone()
     }
 
     pub fn get_cluster_stats(&self, epochs: usize) -> CachedClusterStats {
@@ -148,6 +154,23 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
     Ok(())
 }
 
+pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading scores from DB");
+
+    let scores =
+        store::utils::load_scores(&context.read().await.psql_client).await?;
+    context
+        .write()
+        .await
+        .cache
+        .validators_scores
+        .clone_from(&scores);
+
+    info!("Loaded scores to cache: {}", scores.len());
+
+    Ok(())
+}
+
 pub fn spawn_cache_warmer(context: WrappedContext) {
     tokio::spawn(async move {
         loop {
@@ -171,6 +194,10 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
 
             if let Err(err) = warm_validators_cache(&context).await {
                 error!("Failed to update the validators: {}", err);
+            }
+
+            if let Err(err) = warm_scores_cache(&context).await {
+                error!("Failed to update the scores: {}", err);
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();

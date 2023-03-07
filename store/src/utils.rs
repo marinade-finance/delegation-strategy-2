@@ -1,6 +1,6 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
-    ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated, VersionRecord, WarningRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord, ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated,
+    VersionRecord, WarningRecord, ValidatorScoreRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -609,6 +609,61 @@ pub async fn load_validators(
     log::info!("Records prepared...");
     Ok(records)
 }
+
+pub async fn load_scores(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
+    log::info!("Querying scores...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account,
+                score,
+                rank,
+                ui_hints,
+                eligible_stake_algo,
+                eligible_stake_mnde,
+                eligible_stake_msol,
+                target_stake_algo,
+                target_stake_mnde,
+                target_stake_msol,
+                scoring_run_id
+            FROM scores
+            WHERE eligible_stake_algo = true AND scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scores) ORDER BY rank",
+            &[],
+        )
+        .await?;
+
+    let records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
+        log::info!("Aggregating scores records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+
+            records
+                .entry(vote_account.clone())
+                .or_insert_with(|| ValidatorScoreRecord {
+                    vote_account: vote_account.clone(),
+                    score: row.get("score"),
+                    rank: row.get("rank"),
+                    ui_hints: row.get("ui_hints"),
+                    eligible_stake_algo: row.get("eligible_stake_algo"),
+                    eligible_stake_mnde: row.get("eligible_stake_mnde"),
+                    eligible_stake_msol: row.get("eligible_stake_msol"),
+                    target_stake_algo: row.get::<_,Decimal>("target_stake_algo").try_into().unwrap(),
+                    target_stake_mnde: row.get::<_,Decimal>("target_stake_mnde").try_into().unwrap(),
+                    target_stake_msol: row.get::<_,Decimal>("target_stake_msol").try_into().unwrap(),
+                    scoring_run_id: row.get("scoring_run_id"),
+                });
+        }
+
+        records
+    })
+    .await?;
+    log::info!("Records prepared...");
+    Ok(records)
+}
+
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client
