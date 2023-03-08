@@ -1,7 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
     ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
-    ValidatorsAggregated, VersionRecord, WarningRecord,
+    ValidatorsAggregated, VersionRecord, WarningRecord, ValidatorCurrentStake,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -630,12 +630,12 @@ pub async fn load_scores(
                 target_stake_msol,
                 scoring_run_id
             FROM scores
-            WHERE eligible_stake_algo = true AND scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scores) ORDER BY rank",
+            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scores) ORDER BY rank",
             &[],
         )
         .await?;
 
-    let records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
+    let records: HashMap<_, _> = {
         log::info!("Aggregating scores records...");
         let mut records: HashMap<_, _> = Default::default();
         for row in rows {
@@ -659,12 +659,48 @@ pub async fn load_scores(
         }
 
         records
-    })
-    .await?;
+    };
     log::info!("Records prepared...");
     Ok(records)
 }
 
+pub async fn load_current_stake(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, ValidatorCurrentStake>> {
+    log::info!("Querying current stakes...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account, 
+                identity, 
+                marinade_stake
+            FROM validators 
+            WHERE epoch IN (SELECT MAX(epoch) FROM cluster_info) 
+            ORDER BY vote_account",
+            &[],
+        )
+        .await?;
+
+    let records: HashMap<_, _> = {
+        log::info!("Aggregating current stakes records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+
+            records
+                .entry(vote_account.clone())
+                .or_insert_with(|| ValidatorCurrentStake {
+                    vote_account: vote_account.clone(),
+                    identity: row.get("identity"),
+                    marinade_stake: row.get::<_,Decimal>("marinade_stake").try_into().unwrap(),
+                });
+        }
+
+        records
+    };
+    log::info!("Records prepared...");
+    Ok(records)
+}
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client

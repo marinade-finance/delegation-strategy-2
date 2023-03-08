@@ -5,7 +5,7 @@ use rust_decimal::prelude::*;
 use serde::de::{Unexpected, self};
 use serde::{Deserialize, Serialize, Deserializer};
 use std::collections::HashMap;
-use serde::de::{self, Deserializer, Unexpected};
+
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
@@ -308,6 +308,13 @@ pub struct ValidatorScoreRecord {
     pub target_stake_mnde: u64,
     pub target_stake_msol: u64,
     pub scoring_run_id: i64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorCurrentStake {
+    pub vote_account: String,
+    pub identity: String,
+    pub marinade_stake: u64,
 }
 
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
