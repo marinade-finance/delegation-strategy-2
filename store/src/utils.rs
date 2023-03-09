@@ -1,7 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
-    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorsAggregated,
-    VersionRecord, WarningRecord,
+    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
+    ValidatorsAggregated, VersionRecord, WarningRecord, ValidatorCurrentStake,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -607,6 +607,97 @@ pub async fn load_validators(
         |a: &ValidatorEpochStats| (a.apy.unwrap_or(0.0) * 1000.0) as u64,
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
     );
+    log::info!("Records prepared...");
+    Ok(records)
+}
+
+pub async fn load_scores(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
+    log::info!("Querying scores...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account,
+                score,
+                rank,
+                ui_hints,
+                eligible_stake_algo,
+                eligible_stake_mnde,
+                eligible_stake_msol,
+                target_stake_algo,
+                target_stake_mnde,
+                target_stake_msol,
+                scoring_run_id
+            FROM scores
+            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scores) ORDER BY rank",
+            &[],
+        )
+        .await?;
+
+    let records: HashMap<_, _> = {
+        log::info!("Aggregating scores records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+
+            records
+                .entry(vote_account.clone())
+                .or_insert_with(|| ValidatorScoreRecord {
+                    vote_account: vote_account.clone(),
+                    score: row.get("score"),
+                    rank: row.get("rank"),
+                    ui_hints: row.get("ui_hints"),
+                    eligible_stake_algo: row.get("eligible_stake_algo"),
+                    eligible_stake_mnde: row.get("eligible_stake_mnde"),
+                    eligible_stake_msol: row.get("eligible_stake_msol"),
+                    target_stake_algo: row.get::<_,Decimal>("target_stake_algo").try_into().unwrap(),
+                    target_stake_mnde: row.get::<_,Decimal>("target_stake_mnde").try_into().unwrap(),
+                    target_stake_msol: row.get::<_,Decimal>("target_stake_msol").try_into().unwrap(),
+                    scoring_run_id: row.get("scoring_run_id"),
+                });
+        }
+
+        records
+    };
+    log::info!("Records prepared...");
+    Ok(records)
+}
+
+pub async fn load_current_stake(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, ValidatorCurrentStake>> {
+    log::info!("Querying current stakes...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account, 
+                identity, 
+                marinade_stake
+            FROM validators 
+            WHERE epoch IN (SELECT MAX(epoch) FROM cluster_info) 
+            ORDER BY vote_account",
+            &[],
+        )
+        .await?;
+
+    let records: HashMap<_, _> = {
+        log::info!("Aggregating current stakes records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+
+            records
+                .entry(vote_account.clone())
+                .or_insert_with(|| ValidatorCurrentStake {
+                    vote_account: vote_account.clone(),
+                    identity: row.get("identity"),
+                    marinade_stake: row.get::<_,Decimal>("marinade_stake").try_into().unwrap(),
+                });
+        }
+
+        records
+    };
     log::info!("Records prepared...");
     Ok(records)
 }

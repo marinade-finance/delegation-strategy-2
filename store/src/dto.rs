@@ -2,9 +2,10 @@ use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::de::{Unexpected, self};
+use serde::{Deserialize, Serialize, Deserializer};
 use std::collections::HashMap;
-use serde::de::{self, Deserializer, Unexpected};
+
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
@@ -292,6 +293,28 @@ pub struct ValidatorScoringCsvRow {
     pub target_stake_algo: Decimal,
     pub target_stake_mnde: Decimal,
     pub target_stake_msol: Decimal,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorScoreRecord {
+    pub vote_account: String,
+    pub score: f64,
+    pub rank: i32,
+    pub ui_hints: Vec<String>,
+    pub eligible_stake_algo: bool,
+    pub eligible_stake_mnde: bool,
+    pub eligible_stake_msol: bool,
+    pub target_stake_algo: u64,
+    pub target_stake_mnde: u64,
+    pub target_stake_msol: u64,
+    pub scoring_run_id: i64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorCurrentStake {
+    pub vote_account: String,
+    pub identity: String,
+    pub marinade_stake: u64,
 }
 
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
