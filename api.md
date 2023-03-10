@@ -316,3 +316,49 @@ curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=a,b,c&componen
   -H 'Content-Type: multipart/form-data' \
   --form 'scores_csv=@./scores.csv'
 ```
+
+### Score breakdown
+```bash
+
+curl -sfLS 'localhost:8000/validators/score-breakdown?query_vote_account=DumiCKHVqoCQKD8roLApzR5Fit8qGV5fVQsJV9sTZk4a' | jq
+```
+```json
+{
+  "score_breakdown": {
+    "vote_account": "DumiCKHVqoCQKD8roLApzR5Fit8qGV5fVQsJV9sTZk4a",
+    "score": 0.86715054931055,
+    "rank": 244,
+    "ui_hints": [],
+    "component_scores": [
+      0.857869700598802,
+      0.892939485089187,
+      0.90838116487076
+    ],
+    "component_ranks": [
+      1,
+      1,
+      1
+    ],
+    "component_weights": [
+      10,
+      1,
+      2
+    ],
+    "components": [
+      "COMMISSION_ADJUSTED_CREDITS",
+      "GRACE_SKIP_RATE",
+      "DC_CONCENTRATION"
+    ],
+    "eligible_stake_algo": true,
+    "eligible_stake_mnde": true,
+    "eligible_stake_msol": true,
+    "target_stake_algo": 0,
+    "target_stake_mnde": 0,
+    "target_stake_msol": 1214035,
+    "scoring_run_id": 4,
+    "created_at": "2023-03-03T06:23:00.734614Z",
+    "epoch": 416,
+    "ui_id": "417.202972"
+  }
+}
+```

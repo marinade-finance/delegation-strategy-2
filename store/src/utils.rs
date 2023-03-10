@@ -1,10 +1,9 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, UptimeRecord,
-    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
-    ValidatorsAggregated, VersionRecord, WarningRecord, ValidatorCurrentStake,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, ScoringRunRecord,
+    UptimeRecord, ValidatorAggregatedFlat, ValidatorCurrentStake, ValidatorEpochStats,
+    ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, VersionRecord, WarningRecord,
 };
 use rust_decimal::prelude::*;
-use solana_program::blake3::Hash;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::{types::ToSql, Client};
 
@@ -623,7 +622,10 @@ pub async fn update_validators_with_scores(
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
     let epochs_range = first_epoch..last_epoch;
 
-    log::info!("Updating validator score with epochs range: {:?}", epochs_range);
+    log::info!(
+        "Updating validator score with epochs range: {:?}",
+        epochs_range
+    );
     let scores_per_epoch = load_scores_in_epochs(psql_client, epochs_range).await?;
 
     let latest_epoch_with_score = match scores_per_epoch.keys().max() {
@@ -685,8 +687,47 @@ pub async fn load_scores_in_epochs(
     Ok(result)
 }
 
+pub async fn load_last_scoring_run(
+    psql_client: &Client,
+) -> anyhow::Result<Option<ScoringRunRecord>> {
+    log::info!("Querying scoring run...");
+    let result = psql_client
+        .query_opt(
+            "
+            SELECT
+                scoring_run_id::numeric,
+                created_at,
+                epoch,
+                components,
+                component_weights,
+                ui_id
+            FROM scoring_runs
+            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scoring_runs)",
+            &[],
+        )
+        .await?;
+
+    let scoring_run = match result {
+        Some(scoring_run) => scoring_run,
+        _ => {
+            log::warn!("No scoring run was found!");
+            return Ok(None);
+        }
+    };
+
+    Ok(Some(ScoringRunRecord {
+        scoring_run_id: scoring_run.get("scoring_run_id"),
+        created_at: scoring_run.get("created_at"),
+        epoch: scoring_run.get("epoch"),
+        components: scoring_run.get("components"),
+        component_weights: scoring_run.get("component_weights"),
+        ui_id: scoring_run.get("ui_id"),
+    }))
+}
+
 pub async fn load_scores(
     psql_client: &Client,
+    scoring_run_id: Decimal,
 ) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
     log::info!("Querying scores...");
     let rows = psql_client
@@ -697,6 +738,7 @@ pub async fn load_scores(
                 rank,
                 ui_hints,
                 component_scores,
+                component_ranks,
                 eligible_stake_algo,
                 eligible_stake_mnde,
                 eligible_stake_msol,
@@ -705,8 +747,8 @@ pub async fn load_scores(
                 target_stake_msol,
                 scoring_run_id
             FROM scores
-            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scores) ORDER BY rank",
-            &[],
+            WHERE scoring_run_id::numeric = $1 ORDER BY rank",
+            &[&scoring_run_id],
         )
         .await?;
 
@@ -724,6 +766,7 @@ pub async fn load_scores(
                     rank: row.get("rank"),
                     ui_hints: row.get("ui_hints"),
                     component_scores: row.get("component_scores"),
+                    component_ranks: row.get("component_ranks"),
                     eligible_stake_algo: row.get("eligible_stake_algo"),
                     eligible_stake_mnde: row.get("eligible_stake_mnde"),
                     eligible_stake_msol: row.get("eligible_stake_msol"),
@@ -777,7 +820,7 @@ pub async fn load_current_stake(
                 .or_insert_with(|| ValidatorCurrentStake {
                     vote_account: vote_account.clone(),
                     identity: row.get("identity"),
-                    marinade_stake: row.get::<_,Decimal>("marinade_stake").try_into().unwrap(),
+                    marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
                 });
         }
 
@@ -1049,6 +1092,20 @@ pub async fn store_scoring(
         })
         .collect();
 
+    let component_ranks_by_vote_account: HashMap<_, _> = scores
+        .iter()
+        .map(|row| {
+            (
+                row.vote_account.clone(),
+                Vec::from([
+                    row.rank_adjusted_credits,
+                    row.rank_dc_concentration,
+                    row.rank_grace_skip_rate,
+                ]),
+            )
+        })
+        .collect();
+
     let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
         .iter()
         .map(|row| {
@@ -1066,13 +1123,16 @@ pub async fn store_scoring(
     for chunk in scores.chunks(500) {
         let mut query = InsertQueryCombiner::new(
             "scores".to_string(),
-            "vote_account, score, component_scores, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
+            "vote_account, score, component_scores, component_ranks, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
         );
         for row in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                 &row.vote_account,
                 &row.score,
                 component_scores_by_vote_account
+                    .get(&row.vote_account)
+                    .unwrap(),
+                component_ranks_by_vote_account
                     .get(&row.vote_account)
                     .unwrap(),
                 &row.rank,

@@ -81,7 +81,7 @@ pub async fn get_validators(
         validators.values().collect()
     };
 
-    let mut validators: Vec<_> = if let Some(query) = config.query {
+    let validators: Vec<_> = if let Some(query) = config.query {
         let query = query.to_lowercase();
         validators
             .into_iter()
