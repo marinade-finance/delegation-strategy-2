@@ -25,7 +25,7 @@ echo "vote_account,current_balance,deposited_balance" > "$file_parsed_self_stake
 
 curl -sfLS "https://validators-api-dev.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
 
-curl -sfLS "https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/scoring/blacklist.csv" > "$file_blacklist"
+curl -sfLS "https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/blacklist.csv" > "$file_blacklist"
 
 cat <<EOF > "$file_params"
 TOTAL_STAKE=$TOTAL_STAKE

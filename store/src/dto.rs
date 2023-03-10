@@ -310,6 +310,13 @@ pub struct ValidatorScoreRecord {
     pub scoring_run_id: i64,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ValidatorCurrentStake {
+    pub vote_account: String,
+    pub identity: String,
+    pub marinade_stake: u64,
+}
+
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
