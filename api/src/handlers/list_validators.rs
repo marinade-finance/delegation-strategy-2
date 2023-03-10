@@ -27,7 +27,7 @@ pub struct QueryParams {
     order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
     query_superminority: Option<bool>,
-    query_marinade_score: Option<bool>,
+    query_score: Option<bool>,
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     offset: Option<usize>,
@@ -60,7 +60,7 @@ pub struct GetValidatorsConfig {
     pub query: Option<String>,
     pub query_identities: Option<Vec<String>>,
     pub query_superminority: Option<bool>,
-    pub query_marinade_score: Option<bool>,
+    pub query_score: Option<bool>,
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
     pub epochs: usize,
@@ -124,10 +124,10 @@ pub async fn get_validators(
         validators
     };
 
-    let mut validators: Vec<_> = if let Some(query_marinade_score) = config.query_marinade_score {
+    let mut validators: Vec<_> = if let Some(query_score) = config.query_score {
         validators
             .into_iter()
-            .filter(|v| (v.marinade_score > 0) == query_marinade_score)
+            .filter(|v| (v.score.unwrap_or(0.0) > 0.0) == query_score)
             .collect()
     } else {
         validators
@@ -137,7 +137,7 @@ pub async fn get_validators(
         OrderField::Stake => |a: &&ValidatorRecord| a.activated_stake,
         OrderField::MndeVotes => |a: &&ValidatorRecord| a.mnde_votes.unwrap_or(0.into()),
         OrderField::Credits => |a: &&ValidatorRecord| Decimal::from(a.credits),
-        OrderField::MarinadeScore => |a: &&ValidatorRecord| Decimal::from(a.marinade_score),
+        OrderField::MarinadeScore => |a: &&ValidatorRecord| Decimal::from((a.score.unwrap_or(0.0) * 10000.0) as u64),
         OrderField::Apy => {
             |a: &&ValidatorRecord| Decimal::from((a.avg_apy.unwrap_or(0.0) * 10000.0) as u64)
         }
@@ -185,7 +185,7 @@ pub async fn handler(
             .query_identities
             .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
         query_superminority: query_params.query_superminority,
-        query_marinade_score: query_params.query_marinade_score,
+        query_score: query_params.query_score,
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),

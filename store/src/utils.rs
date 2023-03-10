@@ -4,6 +4,7 @@ use crate::dto::{
     ValidatorsAggregated, VersionRecord, WarningRecord,
 };
 use rust_decimal::prelude::*;
+use solana_program::blake3::Hash;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::{types::ToSql, Client};
 
@@ -393,7 +394,7 @@ pub async fn load_validators(
                 validators_aggregated AS (SELECT identity, MIN(epoch) first_epoch FROM validators GROUP BY identity),
                 cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                validators.identity, vote_account, epoch,
+                validators.identity, validators.vote_account, epoch,
 
                 info_name,
                 info_url,
@@ -525,7 +526,7 @@ pub async fn load_validators(
                         .unwrap(),
                     superminority: row.get("superminority"),
                     credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
-                    marinade_score: 0,
+                    score: None,
 
                     epoch_stats: Default::default(),
 
@@ -578,9 +579,9 @@ pub async fn load_validators(
                     .map(|n| n.try_into().unwrap()),
                 apr,
                 apy,
-                marinade_score: 0,
+                score: None,
                 rank_apy: None,
-                rank_marinade_score: None,
+                rank_score: None,
                 rank_activated_stake: None,
             });
         }
@@ -588,6 +589,8 @@ pub async fn load_validators(
         records
     })
     .await?;
+    log::info!("Updating with scores...");
+    update_validators_with_scores(psql_client, &mut records, epochs).await?;
 
     log::info!("Updating averages...");
     update_validators_with_avgs(&mut records);
@@ -599,16 +602,87 @@ pub async fn load_validators(
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.marinade_score,
-        |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
+        |a: &ValidatorEpochStats| (a.score.unwrap_or(0.0) * 1000.0) as u64,
+        |a: &mut ValidatorEpochStats, rank: usize| a.rank_score = Some(rank),
     );
     update_validators_ranks(
         &mut records,
         |a: &ValidatorEpochStats| (a.apy.unwrap_or(0.0) * 1000.0) as u64,
-        |a: &mut ValidatorEpochStats, rank: usize| a.rank_marinade_score = Some(rank),
+        |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     log::info!("Records prepared...");
     Ok(records)
+}
+
+pub async fn update_validators_with_scores(
+    psql_client: &Client,
+    validators: &mut HashMap<String, ValidatorRecord>,
+    epochs: u64,
+) -> anyhow::Result<()> {
+    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
+    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
+    let epochs_range = first_epoch..last_epoch;
+
+    log::info!("Updating validator score with epochs range: {:?}", epochs_range);
+    let scores_per_epoch = load_scores_in_epochs(psql_client, epochs_range).await?;
+
+    let latest_epoch_with_score = match scores_per_epoch.keys().max() {
+        Some(epoch) => epoch,
+        _ => return Ok(()),
+    };
+
+    let latest_scores = scores_per_epoch.get(latest_epoch_with_score).unwrap();
+
+    for (_, validator) in validators.iter_mut() {
+        for epoch_record in validator.epoch_stats.iter_mut() {
+            if let Some(scores) = scores_per_epoch.get(&epoch_record.epoch) {
+                epoch_record.score = scores.get(&validator.vote_account).cloned();
+            }
+        }
+
+        validator.score = latest_scores.get(&validator.vote_account).cloned();
+    }
+
+    Ok(())
+}
+
+pub async fn load_scores_in_epochs(
+    psql_client: &Client,
+    epochs: std::ops::Range<u64>,
+) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
+    log::info!("Loading scores for epochs: {:?}", epochs);
+    let rows = psql_client
+        .query(
+            "
+            WITH last_runs_in_epoch AS (SELECT epoch, MAX(scoring_run_id) as id FROM scoring_runs WHERE epoch = ANY($1) GROUP BY epoch)
+            SELECT
+                epoch,
+                vote_account,
+                score
+            FROM last_runs_in_epoch
+                LEFT JOIN scores ON last_runs_in_epoch.id = scores.scoring_run_id
+            ",
+            &[&epochs.clone().map(|epoch| epoch as i32).collect::<Vec<_>>()],
+        )
+        .await?;
+
+    let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
+
+    for row in rows {
+        let epoch = row.get::<_, i32>("epoch") as u64;
+        let epoch_scores = result.entry(epoch).or_insert(Default::default());
+        epoch_scores.insert(row.get("vote_account"), row.get("score"));
+    }
+
+    let mut last_valid_scores: Option<HashMap<String, f64>> = None;
+    for epoch in epochs {
+        if let Some(last_valid_scores) = last_valid_scores {
+            result.entry(epoch).or_insert(last_valid_scores);
+        }
+        last_valid_scores = result.get(&epoch).cloned();
+    }
+
+    Ok(result)
 }
 
 pub async fn load_scores(
@@ -622,6 +696,7 @@ pub async fn load_scores(
                 score,
                 rank,
                 ui_hints,
+                component_scores,
                 eligible_stake_algo,
                 eligible_stake_mnde,
                 eligible_stake_msol,
@@ -648,12 +723,22 @@ pub async fn load_scores(
                     score: row.get("score"),
                     rank: row.get("rank"),
                     ui_hints: row.get("ui_hints"),
+                    component_scores: row.get("component_scores"),
                     eligible_stake_algo: row.get("eligible_stake_algo"),
                     eligible_stake_mnde: row.get("eligible_stake_mnde"),
                     eligible_stake_msol: row.get("eligible_stake_msol"),
-                    target_stake_algo: row.get::<_,Decimal>("target_stake_algo").try_into().unwrap(),
-                    target_stake_mnde: row.get::<_,Decimal>("target_stake_mnde").try_into().unwrap(),
-                    target_stake_msol: row.get::<_,Decimal>("target_stake_msol").try_into().unwrap(),
+                    target_stake_algo: row
+                        .get::<_, Decimal>("target_stake_algo")
+                        .try_into()
+                        .unwrap(),
+                    target_stake_mnde: row
+                        .get::<_, Decimal>("target_stake_mnde")
+                        .try_into()
+                        .unwrap(),
+                    target_stake_msol: row
+                        .get::<_, Decimal>("target_stake_msol")
+                        .try_into()
+                        .unwrap(),
                     scoring_run_id: row.get("scoring_run_id"),
                 });
         }
@@ -664,7 +749,6 @@ pub async fn load_scores(
     log::info!("Records prepared...");
     Ok(records)
 }
-
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client
@@ -811,10 +895,12 @@ pub fn aggregate_validators(
     for (_, validator) in validators.iter() {
         for epoch_stats in validator.epoch_stats.iter() {
             epochs.insert(epoch_stats.epoch);
-            marinade_scores
-                .entry(epoch_stats.epoch)
-                .or_insert(Default::default())
-                .push(epoch_stats.marinade_score as f64);
+            if let Some(score) = epoch_stats.score {
+                marinade_scores
+                    .entry(epoch_stats.epoch)
+                    .or_insert(Default::default())
+                    .push(score);
+            }
             if let Some(apy) = epoch_stats.apy {
                 apys.entry(epoch_stats.epoch)
                     .or_insert(Default::default())
