@@ -4,7 +4,7 @@ use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::dto::{ValidatorRecord, ValidatorsAggregated};
+use store::{dto::{ValidatorRecord, ValidatorsAggregated}, utils::to_fixed_for_sort};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
@@ -137,15 +137,17 @@ pub async fn get_validators(
         OrderField::Stake => |a: &&ValidatorRecord| a.activated_stake,
         OrderField::MndeVotes => |a: &&ValidatorRecord| a.mnde_votes.unwrap_or(0.into()),
         OrderField::Credits => |a: &&ValidatorRecord| Decimal::from(a.credits),
-        OrderField::MarinadeScore => |a: &&ValidatorRecord| Decimal::from((a.score.unwrap_or(0.0) * 10000.0) as u64),
+        OrderField::MarinadeScore => {
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0)))
+        }
         OrderField::Apy => {
-            |a: &&ValidatorRecord| Decimal::from((a.avg_apy.unwrap_or(0.0) * 10000.0) as u64)
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
         }
         OrderField::Commission => {
             |a: &&ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100))
         }
         OrderField::Uptime => {
-            |a: &&ValidatorRecord| Decimal::from((a.avg_uptime_pct.unwrap_or(0.0) * 10000.0) as u64)
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
         }
     };
 

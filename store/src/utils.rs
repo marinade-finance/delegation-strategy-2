@@ -13,6 +13,14 @@ pub struct InsertQueryCombiner<'a> {
     params: Vec<&'a (dyn ToSql + Sync)>,
 }
 
+pub fn to_fixed(a: f64, decimals: i32) -> u64 {
+    (a * 10f64.powi(decimals)).round() as u64
+}
+
+pub fn to_fixed_for_sort(a: f64) -> u64 {
+    to_fixed(a, 4)
+}
+
 impl<'a> InsertQueryCombiner<'a> {
     pub fn new(table_name: String, columns: String) -> Self {
         Self {
@@ -601,12 +609,12 @@ pub async fn load_validators(
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| (a.score.unwrap_or(0.0) * 1000.0) as u64,
+        |a: &ValidatorEpochStats| to_fixed_for_sort(a.score.unwrap_or(0.0)),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_score = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| (a.apy.unwrap_or(0.0) * 1000.0) as u64,
+        |a: &ValidatorEpochStats| to_fixed_for_sort(a.apy.unwrap_or(0.0)),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     log::info!("Records prepared...");
