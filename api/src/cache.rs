@@ -223,6 +223,10 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
                 error!("Failed to update the scores: {}", err);
             }
 
+            if let Err(err) = warm_validator_current_stakes_cache(&context).await {
+                error!("Failed to update the stakes: {}", err);
+            }
+
             if let Err(err) = warm_versions_cache(&context).await {
                 error!("Failed to update the versions: {}", err);
             }
