@@ -4,7 +4,6 @@ use crate::{context::WrappedContext, utils::response_error_500};
 use bytes::BufMut;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use warp::query;
 use warp::{
     http::StatusCode,
     multipart::{FormData, Part},

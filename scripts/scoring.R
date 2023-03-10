@@ -69,6 +69,9 @@ for(i in 1:nrow(self_stake)) {
 validators$normalized_dc_concentration <- normalize(1 - validators$avg_dc_concentration)
 validators$normalized_grace_skip_rate <- normalize(1 - validators$avg_grace_skip_rate)
 validators$normalized_adjusted_credits <- normalize(validators$avg_adjusted_credits)
+validators$rank_dc_concentration <- rank(-validators$normalized_dc_concentration, ties.method="min")
+validators$rank_grace_skip_rate <- rank(-validators$normalized_grace_skip_rate, ties.method="min")
+validators$rank_adjusted_credits <- rank(-validators$normalized_adjusted_credits, ties.method="min")
 
 # Apply the algo staking formula on all validators
 validators$score <- (0

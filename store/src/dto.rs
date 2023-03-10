@@ -2,10 +2,9 @@ use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
-use serde::de::{Unexpected, self};
-use serde::{Deserialize, Serialize, Deserializer};
+use serde::de::{self, Unexpected};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
@@ -148,8 +147,8 @@ pub struct ValidatorEpochStats {
     pub downtime: Option<u64>,
     pub apr: Option<f64>,
     pub apy: Option<f64>,
-    pub marinade_score: u64,
-    pub rank_marinade_score: Option<usize>,
+    pub score: Option<f64>,
+    pub rank_score: Option<usize>,
     pub rank_activated_stake: Option<usize>,
     pub rank_apy: Option<usize>,
 }
@@ -186,7 +185,7 @@ pub struct ValidatorRecord {
     pub decentralizer_stake: Decimal,
     pub superminority: bool,
     pub credits: u64,
-    pub marinade_score: u64,
+    pub score: Option<f64>,
     pub warnings: Vec<WarningRecord>,
 
     pub epoch_stats: Vec<ValidatorEpochStats>,
@@ -290,6 +289,9 @@ pub struct ValidatorScoringCsvRow {
     pub normalized_dc_concentration: f64,
     pub normalized_grace_skip_rate: f64,
     pub normalized_adjusted_credits: f64,
+    pub rank_dc_concentration: f64,
+    pub rank_grace_skip_rate: f64,
+    pub rank_adjusted_credits: f64,
     pub target_stake_algo: Decimal,
     pub target_stake_mnde: Decimal,
     pub target_stake_msol: Decimal,
@@ -301,6 +303,8 @@ pub struct ValidatorScoreRecord {
     pub score: f64,
     pub rank: i32,
     pub ui_hints: Vec<String>,
+    pub component_scores: Vec<f64>,
+    pub component_ranks: Vec<i32>,
     pub eligible_stake_algo: bool,
     pub eligible_stake_mnde: bool,
     pub eligible_stake_msol: bool,
@@ -315,6 +319,16 @@ pub struct ValidatorCurrentStake {
     pub vote_account: String,
     pub identity: String,
     pub marinade_stake: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ScoringRunRecord {
+    pub scoring_run_id: Decimal,
+    pub created_at: DateTime<Utc>,
+    pub epoch: i32,
+    pub components: Vec<String>,
+    pub component_weights: Vec<f64>,
+    pub ui_id: String,
 }
 
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>

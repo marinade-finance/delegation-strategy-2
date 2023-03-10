@@ -4,7 +4,7 @@ use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::dto::{ValidatorRecord, ValidatorsAggregated};
+use store::{dto::{ValidatorRecord, ValidatorsAggregated}, utils::to_fixed_for_sort};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
@@ -27,7 +27,7 @@ pub struct QueryParams {
     order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
     query_superminority: Option<bool>,
-    query_marinade_score: Option<bool>,
+    query_score: Option<bool>,
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     offset: Option<usize>,
@@ -60,7 +60,7 @@ pub struct GetValidatorsConfig {
     pub query: Option<String>,
     pub query_identities: Option<Vec<String>>,
     pub query_superminority: Option<bool>,
-    pub query_marinade_score: Option<bool>,
+    pub query_score: Option<bool>,
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
     pub epochs: usize,
@@ -81,7 +81,7 @@ pub async fn get_validators(
         validators.values().collect()
     };
 
-    let mut validators: Vec<_> = if let Some(query) = config.query {
+    let validators: Vec<_> = if let Some(query) = config.query {
         let query = query.to_lowercase();
         validators
             .into_iter()
@@ -124,10 +124,10 @@ pub async fn get_validators(
         validators
     };
 
-    let mut validators: Vec<_> = if let Some(query_marinade_score) = config.query_marinade_score {
+    let mut validators: Vec<_> = if let Some(query_score) = config.query_score {
         validators
             .into_iter()
-            .filter(|v| (v.marinade_score > 0) == query_marinade_score)
+            .filter(|v| (v.score.unwrap_or(0.0) > 0.0) == query_score)
             .collect()
     } else {
         validators
@@ -137,15 +137,17 @@ pub async fn get_validators(
         OrderField::Stake => |a: &&ValidatorRecord| a.activated_stake,
         OrderField::MndeVotes => |a: &&ValidatorRecord| a.mnde_votes.unwrap_or(0.into()),
         OrderField::Credits => |a: &&ValidatorRecord| Decimal::from(a.credits),
-        OrderField::MarinadeScore => |a: &&ValidatorRecord| Decimal::from(a.marinade_score),
+        OrderField::MarinadeScore => {
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0)))
+        }
         OrderField::Apy => {
-            |a: &&ValidatorRecord| Decimal::from((a.avg_apy.unwrap_or(0.0) * 10000.0) as u64)
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
         }
         OrderField::Commission => {
             |a: &&ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100))
         }
         OrderField::Uptime => {
-            |a: &&ValidatorRecord| Decimal::from((a.avg_uptime_pct.unwrap_or(0.0) * 10000.0) as u64)
+            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
         }
     };
 
@@ -185,7 +187,7 @@ pub async fn handler(
             .query_identities
             .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
         query_superminority: query_params.query_superminority,
-        query_marinade_score: query_params.query_marinade_score,
+        query_score: query_params.query_score,
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),

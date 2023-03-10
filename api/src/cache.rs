@@ -3,8 +3,8 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, UptimeRecord, ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, ValidatorCurrentStake,
-    VersionRecord,
+    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorCurrentStake,
+    ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
 };
 use tokio::time::{sleep, Duration};
 
@@ -16,8 +16,12 @@ type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedValidatorsAggregated = Vec<ValidatorsAggregated>;
-type CachedScores = HashMap<String, ValidatorScoreRecord>;
 type CachedValidatorsCurrentStakes = HashMap<String, ValidatorCurrentStake>;
+#[derive(Default, Clone)]
+pub struct CachedScores {
+    pub scoring_run: Option<ScoringRunRecord>,
+    pub scores: HashMap<String, ValidatorScoreRecord>,
+}
 
 #[derive(Default)]
 pub struct Cache {
@@ -163,16 +167,33 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
 pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading scores from DB");
 
-    let scores =
-        store::utils::load_scores(&context.read().await.psql_client).await?;
+    let last_scoring_run =
+        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+
+    let scores = match &last_scoring_run {
+        Some(scoring_run) => {
+            store::utils::load_scores(
+                &context.read().await.psql_client,
+                scoring_run.scoring_run_id,
+            )
+            .await?
+        }
+        None => Default::default(),
+    };
+
+    let scores_len = scores.len();
+
     context
         .write()
         .await
         .cache
         .validators_scores
-        .clone_from(&scores);
+        .clone_from(&CachedScores {
+            scoring_run: last_scoring_run,
+            scores,
+        });
 
-    info!("Loaded scores to cache: {}", scores.len());
+    info!("Loaded scores to cache: {}", scores_len);
 
     Ok(())
 }
@@ -180,8 +201,7 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
 pub async fn warm_validator_current_stakes_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading current stakes from DB");
 
-    let stakes =
-        store::utils::load_current_stake(&context.read().await.psql_client).await?;
+    let stakes = store::utils::load_current_stake(&context.read().await.psql_client).await?;
     context
         .write()
         .await
@@ -198,6 +218,14 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
     tokio::spawn(async move {
         loop {
             info!("Warming up the cache");
+
+            if let Err(err) = warm_scores_cache(&context).await {
+                error!("Failed to update the scores: {}", err);
+            }
+
+            if let Err(err) = warm_validator_current_stakes_cache(&context).await {
+                error!("Failed to update the stakes: {}", err);
+            }
 
             if let Err(err) = warm_versions_cache(&context).await {
                 error!("Failed to update the versions: {}", err);
@@ -217,14 +245,6 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
 
             if let Err(err) = warm_validators_cache(&context).await {
                 error!("Failed to update the validators: {}", err);
-            }
-
-            if let Err(err) = warm_scores_cache(&context).await {
-                error!("Failed to update the scores: {}", err);
-            }
-
-            if let Err(err) = warm_validator_current_stakes_cache(&context).await {
-                error!("Failed to update the stakes: {}", err);
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
