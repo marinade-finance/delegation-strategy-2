@@ -670,7 +670,7 @@ pub async fn load_scores_in_epochs(
                 vote_account,
                 score
             FROM last_runs_in_epoch
-                LEFT JOIN scores ON last_runs_in_epoch.id = scores.scoring_run_id
+                INNER JOIN scores ON last_runs_in_epoch.id = scores.scoring_run_id
             ",
             &[&epochs.clone().map(|epoch| epoch as i32).collect::<Vec<_>>()],
         )
