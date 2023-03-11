@@ -1093,8 +1093,8 @@ pub async fn store_scoring(
                 row.vote_account.clone(),
                 Vec::from([
                     row.normalized_adjusted_credits,
-                    row.normalized_dc_concentration,
                     row.normalized_grace_skip_rate,
+                    row.normalized_dc_concentration,
                 ]),
             )
         })
@@ -1107,8 +1107,8 @@ pub async fn store_scoring(
                 row.vote_account.clone(),
                 Vec::from([
                     row.rank_adjusted_credits,
-                    row.rank_dc_concentration,
                     row.rank_grace_skip_rate,
+                    row.rank_dc_concentration,
                 ]),
             )
         })
