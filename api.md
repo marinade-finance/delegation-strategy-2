@@ -319,7 +319,7 @@ curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=a,b,c&componen
 
 ### Admin - Metrics upload
 ```bash
-curl -sLfS 'http://localhost:8000/admin/metrics?epoch=1&epoch_slot_current=4000&job_scheduled=true' -X POST
+curl -sLfS 'http://localhost:8000/admin/metrics?job_scheduled=true' -X POST
 ```
 
 ### Score breakdown
