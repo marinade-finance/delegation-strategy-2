@@ -1,4 +1,5 @@
 pub mod admin_score_upload;
+pub mod workflow_metrics_upload;
 pub mod cluster_stats;
 pub mod commissions;
 pub mod config;
