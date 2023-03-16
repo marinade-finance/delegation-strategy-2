@@ -9,7 +9,6 @@ file_scoring_rmd=${SCORING_RMD:-"$script_dir/scoring.Rmd"}
 
 touch "$working_directory/report.html"
 
-# Rscript --vanilla "$file_scoring_r" ./scores.csv ./stakes.csv ./params.env ./blacklist.csv ./validators.csv ./self-stake.csv
 Rscript -e "rmarkdown::render('$file_scoring_rmd', output_file = '$(realpath "$working_directory/report.html")')" \
     "$(realpath "$working_directory/scores.csv")" \
     "$(realpath "$working_directory/stakes.csv")" \
