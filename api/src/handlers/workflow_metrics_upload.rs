@@ -37,8 +37,6 @@ pub async fn handler(
     let job_scheduled = query_params.job_scheduled.unwrap_or(false);
     let job_succeded = query_params.job_success.unwrap_or(false);
     let job_failed = query_params.job_error.unwrap_or(false);
-    let prepare_scoring_duration = query_params.prepare_scoring_duration.unwrap_or(0);
-    let apply_scoring_duration = query_params.apply_scoring_duration.unwrap_or(0);
 
     if job_scheduled {
         metrics::JOB_COUNT_SCHEDULED.inc();
@@ -50,17 +48,16 @@ pub async fn handler(
         metrics::JOB_COUNT_ERROR.inc();
     }
 
-    if prepare_scoring_duration != 0 {
+    if let Some(prepare_scoring_duration) = query_params.prepare_scoring_duration {
         metrics::JOB_DURATION
             .with_label_values(&[&"prepare_scoring"])
             .set(prepare_scoring_duration);
     }
-    if apply_scoring_duration != 0 {
+    if let Some(apply_scoring_duration) = query_params.apply_scoring_duration {
         metrics::JOB_DURATION
             .with_label_values(&[&"apply_scoring"])
             .set(apply_scoring_duration);
     }
-
 
     Ok(warp::reply::with_status(json(&Response { message:("Metrics uploaded").to_string() }), StatusCode::OK))
 }
