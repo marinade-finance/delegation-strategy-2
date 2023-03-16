@@ -2,7 +2,7 @@ use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
     reports_commission_changes, reports_scoring, reports_staking, uptimes,
-    validator_score_breakdown, validators_flat, versions,
+    validator_score_breakdown, validators_flat, versions, workflow_metrics_upload
 };
 use env_logger::Env;
 use log::{error, info};
@@ -150,11 +150,18 @@ async fn main() -> anyhow::Result<()> {
     let route_admin_upload_score = warp::path!("admin" / "scores")
         .and(warp::path::end())
         .and(warp::post())
-        .and(with_admin_auth(params.admin_auth_token))
+        .and(with_admin_auth(params.admin_auth_token.clone()))
         .and(warp::query::<admin_score_upload::QueryParams>())
         .and(warp::multipart::form().max_length(5_000_000))
         .and(with_context(context.clone()))
         .and_then(admin_score_upload::handler);
+
+    let route_workflow_metrics_upload = warp::path!("admin" / "metrics")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_admin_auth(params.admin_auth_token.clone()))
+        .and(warp::query::<workflow_metrics_upload::QueryParams>())
+        .and_then(workflow_metrics_upload::handler);
 
     let routes = top_level
         .or(route_cluster_stats)
@@ -170,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_reports_staking)
         .or(route_reports_commission_changes)
         .or(route_admin_upload_score)
+        .or(route_workflow_metrics_upload)
         .with(cors);
 
     metrics::spawn_server();

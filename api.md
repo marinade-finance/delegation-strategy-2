@@ -317,6 +317,11 @@ curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=a,b,c&componen
   --form 'scores_csv=@./scores.csv'
 ```
 
+### Admin - Metrics upload
+```bash
+curl -sLfS 'http://localhost:8000/admin/metrics?job_scheduled=true' -X POST
+```
+
 ### Score breakdown
 ```bash
 
