@@ -1,0 +1,155 @@
+---
+title: Scoring Report
+author: Marinade Finance - Delegation Strategy
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+---
+```{r setup, include=FALSE}
+source("./scoring.R")
+library(ggplot2)
+library(treemapify)
+library(dplyr)
+```
+
+# Overview
+```{r, echo=FALSE}
+library(knitr)
+df <- data.frame(type = c("Performance Based Stake", "MNDE voting", "mSOL directing", "", "**Total Stake**"),
+                 stake = c(
+                   sum(validators$target_stake_algo),
+                   sum(validators$target_stake_mnde),
+                   sum(validators$target_stake_msol),
+                   "",
+                   sum(validators$target_stake)
+                 ),
+                 validators = c(
+                   sum(validators$target_stake_algo > 0),
+                   sum(validators$target_stake_mnde > 0),
+                   sum(validators$target_stake_msol > 0),
+                   "",
+                   sum(validators$target_stake > 0)
+                 ),
+                 perf = c(
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)),
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_mnde) / sum(validators$target_stake_mnde)),
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)),
+                   "",
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake) / sum(validators$target_stake))
+                 )
+                  
+)
+kable(df, col.names = c("Stake type", "Stake amount", "Validators", "Stake-weighted, commission-adjusted voting performance"))
+```
+
+The plot below shows the voting performance of all validators in Solana. Purple lines denote validators who are supposed to receive any stake from Marinade.
+
+```{r, echo=FALSE, fig.align="center", fig.width = 10}
+df <- validators[validators$avg_adjusted_credits > 0,]
+df$x <- factor(df$vote_account, levels = df$vote_account[order(-df$avg_adjusted_credits)])
+
+df$fill <- ifelse(df$target_stake > 0, "purple", "gray")
+
+
+ggplot(df, aes(x=df$x, y=df$avg_adjusted_credits)) +
+  geom_bar(stat = "identity", width = 1, colour = "transparent", fill = df$fill) +
+  ylim(0, 432000) +
+  labs(title="Validators' voting performance", x = "Validators", y = "Average commission adjusted vote credits") +
+  scale_x_discrete(labels = NULL) +
+  theme_minimal()
+```
+
+The plots below show validators and their scores as calculated by the Delegation Strategy. The plot (A) shows which validators were picked by the performance-based scoring formula. The plot (B) shows which validators were picked by MNDE votes.
+
+```{r, echo=FALSE, fig.align="center", fig.width = 10}
+df <- validators
+df$x <- factor(df$vote_account, levels = df$vote_account[order(-df$score)])
+
+df$fill_algo <- ifelse(df$target_stake_algo > 0, "purple", "gray")
+
+df$fill_mnde <- ifelse(df$target_stake_mnde > 0, "purple", "gray")
+
+
+plot1 <- ggplot(df, aes(x=df$x, y=df$score)) +
+  geom_bar(stat = "identity", width = 1, colour = "transparent", fill = df$fill_algo) +
+  ylim(0, 1) +
+  labs(title="Validators picked by their performance", x = "Validators", y = "Score", tag = "A") +
+  scale_x_discrete(labels = NULL) +
+  theme_minimal()
+
+plot2 <- ggplot(df, aes(x=df$x, y=df$score)) +
+  geom_bar(stat = "identity", width = 1, colour = "transparent", fill = df$fill_mnde) +
+  ylim(0, 1) +
+  labs(title="MNDE voted validators", x = "Validators", y = "Score") +
+  scale_x_discrete(labels = NULL) +
+  theme_minimal()
+
+gridExtra::grid.arrange(plot1, plot2, ncol=2)
+```
+
+# Stake distribution in data centers
+The plots in this section show how Marinade plans to distribute the stake between different data centers and how stake is distributed in the whole Solana cluster.
+
+```{r, echo=FALSE, fig.align="center", fig.width = 10}
+df <- validators %>% 
+  group_by(dc_aso) %>% 
+  summarize(stake = sum(target_stake_algo))
+df$pct <- round(df$stake / sum(df$stake) * 100, digits = 2)
+
+# Create a treemap
+ggplot(df, aes(
+                area = stake,
+                fill = dc_aso,
+                label = paste(dc_aso, stake, paste(pct, "%"), sep = "\n"))
+       ) +
+  geom_treemap() +
+  geom_treemap_text(colour = "white",
+                    place = "centre",
+                    size = 15) +
+  theme(legend.position = "none") +
+  labs(title = "Performance-based part of Marinade stake by ASO")
+```
+
+
+```{r, echo=FALSE, fig.align="center", fig.width = 10}
+df <- validators %>% 
+  group_by(dc_aso) %>% 
+  summarize(stake = sum(target_stake))
+df$pct <- round(df$stake / sum(df$stake) * 100, digits = 2)
+
+# Create a treemap
+ggplot(df, aes(
+                area = stake,
+                fill = dc_aso,
+                label = paste(dc_aso, stake, paste(pct, "%"), sep = "\n"))
+       ) +
+  geom_treemap() +
+  geom_treemap_text(colour = "white",
+                    place = "centre",
+                    size = 15) +
+  theme(legend.position = "none") +
+  labs(title = "Total planned Marinade stake by ASO")
+```
+
+
+```{r, echo=FALSE, fig.align="center", fig.width = 10}
+df <- validators %>% 
+  group_by(dc_aso) %>% 
+  summarize(stake = sum(avg_stake))
+df$pct <- round(df$stake / sum(df$stake) * 100, digits = 2)
+
+# Create a treemap
+ggplot(df, aes(
+                area = stake,
+                fill = dc_aso,
+                label = paste(dc_aso, stake, paste(pct, "%"), sep = "\n"))
+       ) +
+  geom_treemap() +
+  geom_treemap_text(colour = "white",
+                    place = "centre",
+                    size = 15) +
+  theme(legend.position = "none") +
+  labs(title = "Solana stake distribution by ASO")
+```
