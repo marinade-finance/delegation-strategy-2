@@ -66,7 +66,7 @@ lazy_static! {
     .unwrap();
     pub static ref JOB_DURATION: IntGaugeVec = register_int_gauge_vec!(
         "ds_job_duration",
-        "Apply scoring job duration",
+        "Workflow jobs duration",
         &["workflow"]
     )
     .unwrap();
