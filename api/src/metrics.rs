@@ -64,52 +64,10 @@ lazy_static! {
         "How many jobs failed"
     )
     .unwrap();
-    pub static ref JOB_APPLY_SCORING_PENDING: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_apply_scoring_pending",
-        "Apply scoring pending status",
+    pub static ref JOB_DURATION: IntGaugeVec = register_int_gauge_vec!(
+        "ds_job_duration",
+        "Apply scoring job duration",
         &["workflow"]
-    )
-    .unwrap();
-    pub static ref JOB_APPLY_SCORING_START: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_apply_scoring_start",
-        "Last start of the apply scoring job",
-        &["workflow"]
-    )
-    .unwrap();
-    pub static ref JOB_APPLY_SCORING_END: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_apply_scoring_end",
-        "Last end of the apply scoring job",
-        &["workflow"]
-    )
-    .unwrap();
-    pub static ref JOB_PREPARE_SCORING_PENDING: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_prepare_scoring_pending",
-        "Prepare scoring pending status",
-        &["workflow"]
-    )
-    .unwrap();
-    pub static ref JOB_PREPARE_SCORING_START: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_prepare_scoring_start",
-        "Last start of the prepare scoring job",
-        &["workflow"]
-    )
-    .unwrap();
-    pub static ref JOB_PREPARE_SCORING_END: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_prepare_scoring_end",
-        "Last end of the prepare scoring job",
-        &["workflow"]
-    )
-    .unwrap();
-    pub static ref CURRENT_EPOCH: IntGaugeVec = register_int_gauge_vec!(
-        "ds_current_epoch",
-        "Current epoch",
-        &["epoch"]
-    )
-    .unwrap();
-    pub static ref EPOCH_CURRENT_SLOT: IntGaugeVec = register_int_gauge_vec!(
-        "ds_epoch_current_slot",
-        "Epoch current slot",
-        &["epoch"]
     )
     .unwrap();
 }
