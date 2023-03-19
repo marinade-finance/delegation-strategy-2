@@ -1,6 +1,7 @@
 ---
 output:
-  github_document
+  md_document:
+    variant: gfm
 ---
 ```{r setup, include=FALSE}
 if (length(commandArgs(trailingOnly=TRUE)) > 0) {
