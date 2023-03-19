@@ -3,6 +3,10 @@ output:
   md_document:
     variant: gfm
 ---
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(eval = TRUE)
+```
+
 ```{r setup, include=FALSE}
 if (length(commandArgs(trailingOnly=TRUE)) > 0) {
   args <- commandArgs(trailingOnly=TRUE)
