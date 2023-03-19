@@ -1,18 +1,16 @@
 #!/bin/bash
 
-set -uxo
+set -xo
 
 script_dir=$(dirname "$0")
 working_directory=${SCORING_WORKING_DIRECTORY:-"$script_dir/.."}
-file_scoring_r=${SCORING_R:-"$script_dir/scoring.R"}
-file_scoring_rmd=${SCORING_RMD:-"$script_dir/scoring.Rmd"}
+file_scoring_report_rmd=${SCORING_REPORT_RMD:-"$script_dir/scoring-report.Rmd"}
+ui_id="$1"
 
-touch "$working_directory/report.html"
+if [[ -z $ui_id ]]
+then
+    echo "Usage: $0 <ui-id>"
+    exit 1
+fi
 
-Rscript -e "rmarkdown::render('$file_scoring_rmd', output_file = '$(realpath "$working_directory/report.html")')" \
-    "$(realpath "$working_directory/scores.csv")" \
-    "$(realpath "$working_directory/stakes.csv")" \
-    "$(realpath "$working_directory/params.env")" \
-    "$(realpath "$working_directory/blacklist.csv")" \
-    "$(realpath "$working_directory/validators.csv")" \
-    "$(realpath "$working_directory/self-stake.csv")"
+Rscript -e "rmarkdown::render('$file_scoring_report_rmd', output_dir = '$working_directory', output_file = 'report')" "$(realpath "$working_directory/scores.csv")" "$ui_id"
