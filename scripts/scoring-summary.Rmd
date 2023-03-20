@@ -1,0 +1,39 @@
+---
+output:
+  md_document:
+    variant: gfm
+---
+```{r setup, include=FALSE}
+if (length(commandArgs(trailingOnly=TRUE)) > 0) {
+  args <- commandArgs(trailingOnly=TRUE)
+}
+validators <- read.csv(args[1])
+```
+# Scoring results `r args[2]`
+```{r, echo=FALSE}
+library(knitr)
+df <- data.frame(type = c("Performance Based Stake", "MNDE voting", "mSOL directing", "", "**Total Stake**"),
+                 stake = c(
+                   sum(validators$target_stake_algo),
+                   sum(validators$target_stake_mnde),
+                   sum(validators$target_stake_msol),
+                   "",
+                   sum(validators$target_stake)
+                 ),
+                 validators = c(
+                   sum(validators$target_stake_algo > 0),
+                   sum(validators$target_stake_mnde > 0),
+                   sum(validators$target_stake_msol > 0),
+                   "",
+                   sum(validators$target_stake > 0)
+                 ),
+                 perf = c(
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)),
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_mnde) / sum(validators$target_stake_mnde)),
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)),
+                   "",
+                   round(sum(validators$avg_adjusted_credits * validators$target_stake) / sum(validators$target_stake))
+                 )
+)
+kable(df, col.names = c("Stake type", "Stake amount", "Validators", "Stake-weighted, commission-adjusted voting performance"))
+```

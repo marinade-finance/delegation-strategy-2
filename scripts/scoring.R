@@ -5,7 +5,9 @@ normalize <- function(x, na.rm = TRUE) {
   return ((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
 }
 
-args <- commandArgs(trailingOnly = TRUE)
+if (length(commandArgs(trailingOnly=TRUE)) > 0) {
+  args <- commandArgs(trailingOnly=TRUE)
+}
 file_out_scores <- args[1]
 file_out_stakes <- args[2]
 file_params <- args[3]
@@ -190,7 +192,7 @@ perf_target_stake_mnde <- sum(validators$avg_adjusted_credits * validators$targe
 perf_target_stake_algo <- sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)
 perf_target_stake_msol <- sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)
 
-t(data.frame(
+print(t(data.frame(
   TOTAL_STAKE,
   STAKE_CONTROL_SELF_STAKE_SOL,
   STAKE_CONTROL_SELF_STAKE_OVERFLOW_SOL,
@@ -200,7 +202,7 @@ t(data.frame(
   perf_target_stake_mnde,
   perf_target_stake_algo,
   perf_target_stake_msol
-))
+)))
 
 stopifnot(TOTAL_STAKE > 3e6)
 stopifnot(STAKE_CONTROL_SELF_STAKE_SOL > 1e6)
