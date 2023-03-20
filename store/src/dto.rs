@@ -186,7 +186,7 @@ pub struct ValidatorRecord {
     pub superminority: bool,
     pub credits: u64,
     pub score: Option<f64>,
-    pub warnings: Vec<WarningRecord>,
+    pub warnings: Vec<ValidatorWarning>,
 
     pub epoch_stats: Vec<ValidatorEpochStats>,
 
@@ -220,11 +220,10 @@ pub struct CommissionRecord {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct WarningRecord {
-    pub code: String,
-    pub message: String,
-    pub details: Option<String>,
-    pub created_at: DateTime<Utc>,
+pub enum ValidatorWarning {
+    HighCommission,
+    Superminority,
+    LowUptime,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

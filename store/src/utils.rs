@@ -1,7 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, ScoringRunRecord,
     UptimeRecord, ValidatorAggregatedFlat, ValidatorCurrentStake, ValidatorEpochStats,
-    ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, VersionRecord, WarningRecord,
+    ValidatorRecord, ValidatorScoreRecord, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -284,31 +284,33 @@ pub async fn load_commissions(
     Ok(records)
 }
 
-pub async fn load_warnings(
-    psql_client: &Client,
-) -> anyhow::Result<HashMap<String, Vec<WarningRecord>>> {
-    let rows = psql_client
-        .query(
-            "SELECT identity, code, message, details, created_at FROM warnings",
-            &[],
-        )
-        .await?;
+pub async fn update_with_warnings(
+    validators: &mut HashMap<String, ValidatorRecord>,
+) -> anyhow::Result<()> {
+    log::info!("Updating validator records with warnings");
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let identity: String = row.get("identity");
-        let warnings = records
-            .entry(identity.clone())
-            .or_insert(Default::default());
-        warnings.push(WarningRecord {
-            code: row.get("code"),
-            message: row.get("message"),
-            details: row.get("details"),
-            created_at: row.get("created_at"),
-        })
+    for (_, validator) in validators {
+        if validator.superminority {
+            validator.warnings.push(ValidatorWarning::Superminority);
+        }
+        if validator.avg_uptime_pct.unwrap_or(0.0) < 0.9 {
+            validator.warnings.push(ValidatorWarning::LowUptime);
+        }
+        let max_effective_commission = validator.epoch_stats.iter().fold(
+            0,
+            |max_commission, epoch_stats: &ValidatorEpochStats| {
+                epoch_stats
+                    .commission_effective
+                    .unwrap_or(0)
+                    .max(max_commission)
+            },
+        );
+        if max_effective_commission > 10 {
+            validator.warnings.push(ValidatorWarning::HighCommission);
+        }
     }
 
-    Ok(records)
+    Ok(())
 }
 
 fn average(numbers: &Vec<f64>) -> Option<f64> {
@@ -387,7 +389,6 @@ pub async fn load_validators(
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let apy_calculators = get_apy_calculators(psql_client).await?;
-    let warnings = load_warnings(psql_client).await?;
     let concentrations = load_dc_concentration_stats(psql_client, 1)
         .await?
         .first()
@@ -537,7 +538,7 @@ pub async fn load_validators(
 
                     epoch_stats: Default::default(),
 
-                    warnings: warnings.get(&identity).cloned().unwrap_or(vec![]),
+                    warnings: Default::default(),
 
                     epochs_count: epoch - first_epoch + 1,
 
@@ -617,6 +618,7 @@ pub async fn load_validators(
         |a: &ValidatorEpochStats| to_fixed_for_sort(a.apy.unwrap_or(0.0)),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
+    update_with_warnings(&mut records).await?;
     log::info!("Records prepared...");
     Ok(records)
 }
