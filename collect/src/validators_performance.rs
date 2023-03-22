@@ -62,7 +62,7 @@ pub fn validators_performance(
     let delinquent: HashSet<_> = vote_accounts
         .delinquent
         .iter()
-        .map(|v| v.node_pubkey.clone())
+        .map(|v| v.vote_pubkey.clone())
         .collect();
     let production_by_validator = get_block_production_by_validator(&client, epoch)?;
     let node_versions = get_cluster_nodes_versions(&client)?;
@@ -73,6 +73,7 @@ pub fn validators_performance(
         .iter()
         .chain(vote_accounts.delinquent.iter())
     {
+        let vote_pubkey = vote_account.vote_pubkey.clone();
         let identity = vote_account.node_pubkey.clone();
         let (leader_slots, blocks_produced) = production_by_validator
             .get(&identity)
@@ -80,11 +81,11 @@ pub fn validators_performance(
             .unwrap_or((0, 0));
 
         validators.insert(
-            identity.clone(),
+            vote_pubkey.clone(),
             ValidatorPerformance {
                 commission: vote_account.commission,
                 version: node_versions.get(&identity).cloned(),
-                credits: credits.get(&identity).cloned().unwrap_or(0),
+                credits: credits.get(&vote_pubkey).cloned().unwrap_or(0),
                 leader_slots,
                 blocks_produced,
                 skip_rate: if leader_slots == 0 {
@@ -92,7 +93,7 @@ pub fn validators_performance(
                 } else {
                     1f64 - (blocks_produced as f64 / leader_slots as f64)
                 },
-                delinquent: delinquent.contains(&identity),
+                delinquent: delinquent.contains(&vote_pubkey),
             },
         );
     }
@@ -114,7 +115,7 @@ pub fn validator_rewards(
         .chain(vote_accounts.delinquent.iter())
         .map(|vote_account| {
             (
-                vote_account.node_pubkey.clone(),
+                vote_account.vote_pubkey.clone(),
                 ValidatorRewards {
                     commission_effective: commission_from_rewards
                         .get(&vote_account.vote_pubkey)

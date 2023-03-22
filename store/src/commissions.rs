@@ -34,31 +34,31 @@ pub async fn store_commissions(
     for row in psql_client
         .query(
             "
-        SELECT DISTINCT ON (identity)
-            identity,
+        SELECT DISTINCT ON (vote_account)
+            vote_account,
             commission,
             epoch
         FROM commissions
-        ORDER BY identity, created_at DESC
+        ORDER BY vote_account, created_at DESC
     ",
             &[],
         )
         .await?
     {
-        let identity: &str = row.get("identity");
+        let vote_account: &str = row.get("vote_account");
         let commission: i32 = row.get("commission");
         let epoch: Decimal = row.get("epoch");
 
-        if let Some(validator_snapshot) = snapshot.validators.get(identity) {
+        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
             if epoch == snapshot_epoch && commission == validator_snapshot.commission as i32 {
-                skipped_identities.insert(identity.to_string());
+                skipped_identities.insert(vote_account.to_string());
             }
         }
     }
 
     let mut query = InsertQueryCombiner::new(
         "commissions".to_string(),
-        "identity, commission, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, commission, epoch_slot, epoch, created_at".to_string(),
     );
 
     let commissions: HashMap<_, _> = snapshot
@@ -67,10 +67,10 @@ pub async fn store_commissions(
         .map(|(i, v)| (i.clone(), v.commission as i32))
         .collect();
 
-    for (identity, commission) in commissions.iter() {
-        if !skipped_identities.contains(identity) {
+    for (vote_account, commission) in commissions.iter() {
+        if !skipped_identities.contains(vote_account) {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                identity,
+                vote_account,
                 commission,
                 &snapshot_epoch_slot,
                 &snapshot_epoch,

@@ -74,14 +74,14 @@ pub async fn update_observed_commission(psql_client: &Client, epoch: u64) -> any
             .execute("
                 WITH grouped_commissions AS (
                     WITH
-                        commissions AS (SELECT identity, MIN(commission) AS commission_min, MAX(commission) AS commission_max FROM commissions WHERE epoch = $1 GROUP BY identity)
+                        commissions AS (SELECT vote_account, MIN(commission) AS commission_min, MAX(commission) AS commission_max FROM commissions WHERE epoch = $1 GROUP BY vote_account)
                     SELECT
                         commissions.commission_min,
                         commissions.commission_max,
-                        validators.identity
+                        validators.vote_account
                     FROM
                         validators
-                        LEFT JOIN commissions ON validators.identity = commissions.identity
+                        LEFT JOIN commissions ON validators.vote_account = commissions.vote_account
                     WHERE validators.epoch = $1
                 )
                 UPDATE validators
@@ -89,7 +89,7 @@ pub async fn update_observed_commission(psql_client: &Client, epoch: u64) -> any
                     commission_max_observed = GREATEST(commission_max, commission_advertised, commission_effective),
                     commission_min_observed = LEAST(commission_min, commission_advertised, commission_effective)
                 FROM grouped_commissions
-                WHERE grouped_commissions.identity = validators.identity AND validators.epoch = $1
+                WHERE grouped_commissions.vote_account = validators.vote_account AND validators.epoch = $1
                 "
 ,
         &[
@@ -107,23 +107,23 @@ pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<
                 WITH uptimes AS (
                     WITH
                         vars AS (SELECT epoch, end_at - start_at AS epoch_duration FROM epochs WHERE epoch = $1),
-                        downtimes AS (SELECT identity, SUM(end_at - start_at) AS downtime FROM uptimes WHERE epoch = $1 AND status = 'DOWN' GROUP BY identity)
+                        downtimes AS (SELECT vote_account, SUM(end_at - start_at) AS downtime FROM uptimes WHERE epoch = $1 AND status = 'DOWN' GROUP BY vote_account)
                     SELECT
                         LEAST(GREATEST(COALESCE(1 - EXTRACT('epoch' FROM downtimes.downtime) / EXTRACT('epoch' FROM vars.epoch_duration), 1), 0), 1) uptime_pct,
                         EXTRACT('epoch' FROM GREATEST(COALESCE(vars.epoch_duration - downtimes.downtime, vars.epoch_duration), '0 seconds')) uptime,
                         EXTRACT('epoch' FROM COALESCE(downtimes.downtime, '0 seconds')) downtime,
-                        validators.identity,
+                        validators.vote_account,
                         vars.epoch
                     FROM
                         validators
                         INNER JOIN vars ON validators.epoch = vars.epoch
-                        LEFT JOIN downtimes ON validators.identity = downtimes.identity
+                        LEFT JOIN downtimes ON validators.vote_account = downtimes.vote_account
                     WHERE validators.epoch = $1
                 )
                 UPDATE validators
                 SET uptime_pct = uptimes.uptime_pct, uptime = uptimes.uptime, downtime = uptimes.downtime
                 FROM uptimes
-                WHERE uptimes.identity = validators.identity AND uptimes.epoch = validators.epoch
+                WHERE uptimes.vote_account = validators.vote_account AND uptimes.epoch = validators.epoch
                 "
 ,
         &[
@@ -136,7 +136,7 @@ pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<
 }
 
 struct ValidatorUpdateRecord {
-    identity: String,
+    vote_account: String,
     epoch: Decimal,
     commission_effective: Option<i32>,
     credits: Decimal,
@@ -172,11 +172,11 @@ pub async fn close_epoch(
     let validator_update_records: Vec<_> = snapshot
         .validators
         .iter()
-        .map(|(identity, v)| ValidatorUpdateRecord {
-            identity: identity.clone(),
+        .map(|(vote_account, v)| ValidatorUpdateRecord {
+            vote_account: vote_account.clone(),
             epoch: snapshot_epoch,
             commission_effective: rewards
-                .get(identity)
+                .get(vote_account)
                 .map_or(None, |r| r.commission_effective.map(|c| c as i32)),
             credits: v.credits.into(),
             leader_slots: v.leader_slots.into(),
@@ -199,7 +199,7 @@ pub async fn close_epoch(
             "
             .to_string(),
             "u(
-                identity,
+                vote_account,
                 epoch,
                 commission_effective,
                 credits,
@@ -209,11 +209,11 @@ pub async fn close_epoch(
                 updated_at
             )"
             .to_string(),
-            "validators.identity = u.identity AND validators.epoch = u.epoch".to_string(),
+            "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
         );
         for v in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &v.identity,
+                &v.vote_account,
                 &v.epoch,
                 &v.commission_effective,
                 &v.credits,
@@ -234,7 +234,7 @@ pub async fn close_epoch(
                     (7, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                 ]),
             );
-            updated_identities.insert(v.identity.clone());
+            updated_identities.insert(v.vote_account.clone());
         }
         query.execute(&mut psql_client).await?;
         info!(

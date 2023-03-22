@@ -12,7 +12,7 @@ pub struct Response {
 
 #[derive(Serialize, Debug)]
 struct CommissionChange {
-    identity: String,
+    vote_account: String,
     from: u8,
     to: u8,
     epoch: u64,
@@ -24,7 +24,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
     let mut commissions = context.read().await.cache.get_all_commissions();
     let mut commission_changes: Vec<_> = Default::default();
 
-    for (identity, commission_records) in commissions.iter_mut() {
+    for (vote_account, commission_records) in commissions.iter_mut() {
         commission_records.sort_by(|a: &CommissionRecord, b: &CommissionRecord| {
             match a.epoch.cmp(&b.epoch) {
                 Ordering::Equal => a.epoch_slot.cmp(&b.epoch_slot),
@@ -38,7 +38,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
             if let Some(previous_commission) = previous_commission {
                 if record.commission != previous_commission {
                     commission_changes.push(CommissionChange {
-                        identity: identity.clone(),
+                        vote_account: vote_account.clone(),
                         from: previous_commission,
                         to: record.commission,
                         epoch: record.epoch,

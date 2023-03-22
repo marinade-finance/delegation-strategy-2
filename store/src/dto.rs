@@ -191,7 +191,7 @@ pub struct ValidatorRecord {
     pub epoch_stats: Vec<ValidatorEpochStats>,
 
     pub epochs_count: u64,
-
+    pub has_last_epoch_stats: bool,
     pub avg_uptime_pct: Option<f64>,
     pub avg_apy: Option<f64>,
 }
@@ -311,13 +311,6 @@ pub struct ValidatorScoreRecord {
     pub target_stake_mnde: u64,
     pub target_stake_msol: u64,
     pub scoring_run_id: i64,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ValidatorCurrentStake {
-    pub vote_account: String,
-    pub identity: String,
-    pub marinade_stake: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

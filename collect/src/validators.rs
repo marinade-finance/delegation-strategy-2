@@ -195,7 +195,7 @@ pub fn collect_validators_info(
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),
 
-            performance: performance.get(&identity).unwrap().clone(),
+            performance: performance.get(&vote_pubkey).unwrap().clone(),
         });
     }
 

@@ -15,19 +15,19 @@ pub struct Response {
 pub struct QueryParams {}
 
 pub async fn handler(
-    identity: String,
+    vote_account: String,
     _query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
-    info!("Fetching versions {:?}", &identity);
+    info!("Fetching versions {:?}", &vote_account);
     metrics::REQUEST_COUNT_VERSIONS.inc();
 
-    let versions = context.read().await.cache.get_versions(&identity);
+    let versions = context.read().await.cache.get_versions(&vote_account);
 
     Ok(match versions {
         Some(versions) => warp::reply::with_status(json(&Response { versions }), StatusCode::OK),
         _ => {
-            error!("No versions found for {}", &identity);
+            error!("No versions found for {}", &vote_account);
             response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
         }
     })

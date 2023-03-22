@@ -33,7 +33,7 @@ pub async fn store_validators(
         .iter()
         .map(|v| {
             (
-                v.identity.clone(),
+                v.vote_account.clone(),
                 Validator::new_from_snapshot(v, snapshot.epoch),
             )
         })
@@ -46,7 +46,7 @@ pub async fn store_validators(
     for chunk in psql_client
         .query(
             "
-        SELECT identity
+        SELECT vote_account
         FROM validators
         WHERE epoch = $1
     ",
@@ -119,12 +119,12 @@ pub async fn store_validators(
                 updated_at
             )"
             .to_string(),
-            "validators.identity = u.identity AND validators.epoch = u.epoch".to_string(),
+            "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
         );
         for row in chunk {
-            let identity: &str = row.get("identity");
+            let vote_account: &str = row.get("vote_account");
 
-            if let Some(v) = validators.get(identity) {
+            if let Some(v) = validators.get(vote_account) {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                     &v.identity,
                     &v.vote_account,
@@ -176,7 +176,7 @@ pub async fn store_validators(
                         (27, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                     ]),
                 );
-                updated_identities.insert(identity.to_string());
+                updated_identities.insert(vote_account.to_string());
             }
         }
         query.execute(&mut psql_client).await?;
@@ -188,7 +188,7 @@ pub async fn store_validators(
 
     let validators: Vec<_> = validators
         .into_iter()
-        .filter(|(identity, _)| !updated_identities.contains(identity))
+        .filter(|(vote_account, _)| !updated_identities.contains(vote_account))
         .collect();
     let mut insertions = 0;
 
@@ -234,8 +234,8 @@ pub async fn store_validators(
             .to_string(),
         );
 
-        for (identity, v) in chunk {
-            if updated_identities.contains(identity) {
+        for (vote_account, v) in chunk {
+            if updated_identities.contains(vote_account) {
                 continue;
             }
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
