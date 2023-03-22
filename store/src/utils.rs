@@ -1034,7 +1034,9 @@ pub async fn load_validators_aggregated_flat(
                     max(coalesce(commission_effective, commission_advertised, 100)) as max_commission,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision as avg_adjusted_credits,
                     coalesce((array_agg(coalesce(validators.dc_aso)))[1], 'Unknown') dc_aso,
-                    coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes
+                    coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes,
+                    coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) as marinade_stake,
+                    coalesce((array_agg(version ORDER BY validators.epoch DESC))[1], '0.0.0') as version
                 from
                     validators
                     left join dc on dc.dc_aso = validators.dc_aso and dc.epoch = validators.epoch
@@ -1062,6 +1064,8 @@ pub async fn load_validators_aggregated_flat(
             avg_adjusted_credits: row.get("avg_adjusted_credits"),
             dc_aso: row.get("dc_aso"),
             mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into()?,
+            marinade_stake: row.get("marinade_stake"),
+            version: row.get("version"),
         });
     }
 

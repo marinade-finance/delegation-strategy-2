@@ -271,6 +271,8 @@ pub struct ValidatorAggregatedFlat {
     pub avg_adjusted_credits: f64,
     pub dc_aso: String,
     pub mnde_votes: u64,
+    pub marinade_stake: f64,
+    pub version: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
