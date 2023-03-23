@@ -6,14 +6,20 @@ use tokio_postgres::Client;
 pub struct Context {
     pub psql_client: Client,
     pub glossary_path: String,
+    pub blacklist_path: String,
     pub cache: Cache,
 }
 
 impl Context {
-    pub fn new(psql_client: Client, glossary_path: String) -> anyhow::Result<Self> {
+    pub fn new(
+        psql_client: Client,
+        glossary_path: String,
+        blacklist_path: String,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             psql_client,
             glossary_path,
+            blacklist_path,
             cache: Cache::new(),
         })
     }

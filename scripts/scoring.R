@@ -5,41 +5,15 @@ normalize <- function(x, na.rm = TRUE) {
   return ((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
 }
 
-find_priority_unstakes <- function(validators) {
-  staked <- validators[validators$marinade_stake > 0,]
-  COMMISSION_EMERGENCY_THRESHOLD <- 10
-
-  if (nrow(staked) == 0) {
-    return ()
-  }
-
-  for (i in 1:nrow(staked)) {
-    if (staked[i, "max_commission"] > COMMISSION_EMERGENCY_THRESHOLD) {
-      staked[i, "unstake_hints"][[1]] <- list(c(staked[i, "unstake_hints"][[1]], "HIGH_COMMISSION"))
-    }
-    if (staked[i, "blacklisted"] == 1) {
-      staked[i, "unstake_hints"][[1]] <- list(c(staked[i, "unstake_hints"][[1]], "BLACKLISTED"))
-    }
-  }
-
-  unstakes <- staked[lengths(staked$unstake_hints) > 0,]
-  return (data.frame(
-    vote_account = unstakes$vote_account,
-    marinade_stake = unstakes$marinade_stake,
-    unstake_hints = unlist(lapply(unstakes$unstake_hints, paste, collapse = ','))
-  ))
-}
-
 if (length(commandArgs(trailingOnly=TRUE)) > 0) {
   args <- commandArgs(trailingOnly=TRUE)
 }
 file_out_scores <- args[1]
 file_out_stakes <- args[2]
-file_out_unstakes <- args[3]
-file_params <- args[4]
-file_blacklist <- args[5]
-file_validators <- args[6]
-file_self_stake <- args[7]
+file_params <- args[3]
+file_blacklist <- args[4]
+file_validators <- args[5]
+file_self_stake <- args[6]
 
 t(data.frame(
   file_out_scores,
@@ -236,11 +210,6 @@ stopifnot(nrow(validators) > 2000)
 stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
 
 validators$ui_hints <- lapply(validators$ui_hints, paste, collapse = ',')
-
-unstakes <- find_priority_unstakes(validators)
-if (!is.null(unstakes)) {
-  write.table(unstakes, file = "unstakes.txt", sep = " # ", row.names = FALSE, col.names = FALSE, quote = FALSE)
-}
 
 fwrite(validators[order(validators$rank),], file = file_out_scores, scipen = 1000, quote = T)
 fwrite(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file = file_out_stakes, scipen = 1000)

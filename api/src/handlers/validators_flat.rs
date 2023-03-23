@@ -39,7 +39,7 @@ pub async fn handler(
 
     let mut csv_content = csv::Writer::from_writer(Vec::new());
     for validator in validators {
-        csv_content.serialize(validator);
+        let _ = csv_content.serialize(validator);
     }
 
     Ok(warp::reply::with_header(

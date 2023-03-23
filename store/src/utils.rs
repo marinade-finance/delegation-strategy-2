@@ -232,10 +232,10 @@ pub async fn load_versions(
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
         let identity: String = row.get("identity");
-        let commissions = records
+        let versions = records
             .entry(identity.clone())
             .or_insert(Default::default());
-        commissions.push(VersionRecord {
+        versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
             created_at: row.get("created_at"),

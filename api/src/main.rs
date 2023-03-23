@@ -1,8 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
-    reports_commission_changes, reports_scoring, reports_staking, uptimes,
-    validator_score_breakdown, validators_flat, versions, workflow_metrics_upload
+    reports_commission_changes, reports_scoring, reports_staking, unstake_hints, uptimes,
+    validator_score_breakdown, validators_flat, versions, workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -27,6 +27,9 @@ pub struct Params {
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
+    #[structopt(long = "blacklist-path")]
+    blacklist_path: String,
+
     #[structopt(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 }
@@ -48,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
+        params.blacklist_path,
     )?));
     cache::spawn_cache_warmer(context.clone());
 
@@ -147,6 +151,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_staking::handler);
 
+    let route_unstake_hints = warp::path!("unstake-hints")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<unstake_hints::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(unstake_hints::handler);
+
     let route_admin_upload_score = warp::path!("admin" / "scores")
         .and(warp::path::end())
         .and(warp::post())
@@ -175,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_config)
         .or(route_reports_scoring)
         .or(route_reports_staking)
+        .or(route_unstake_hints)
         .or(route_reports_commission_changes)
         .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
