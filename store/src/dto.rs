@@ -4,7 +4,7 @@ use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
@@ -271,6 +271,8 @@ pub struct ValidatorAggregatedFlat {
     pub avg_adjusted_credits: f64,
     pub dc_aso: String,
     pub mnde_votes: u64,
+    pub marinade_stake: f64,
+    pub version: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -328,6 +330,26 @@ pub struct ScoringRunRecord {
     pub components: Vec<String>,
     pub component_weights: Vec<f64>,
     pub ui_id: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Hash, Eq, PartialEq)]
+pub enum UnstakeHint {
+    HighCommission,
+    HighCommissionInPreviousEpoch,
+    Blacklist,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct UnstakeHintRecord {
+    pub vote_account: String,
+    pub marinade_stake: f64,
+    pub hints: HashSet<UnstakeHint>
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct BlacklistRecord {
+    pub vote_account: String,
+    pub code: String,
 }
 
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
