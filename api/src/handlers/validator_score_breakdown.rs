@@ -4,6 +4,7 @@ use crate::{context::WrappedContext, utils::response_error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use store::dto::{ScoringRunRecord, ValidatorScoreRecord};
+use store::utils::to_fixed_for_sort;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug)]
@@ -20,6 +21,7 @@ pub struct QueryParams {
 pub struct ScoreBreakdown {
     pub vote_account: String,
     pub score: f64,
+    pub min_score_eligible_algo: Option<f64>,
     pub rank: i32,
     pub ui_hints: Vec<String>,
     pub component_scores: Vec<f64>,
@@ -94,11 +96,18 @@ pub async fn handler(
         }
     };
 
+    let min_score_eligible_algo = scores
+        .iter()
+        .filter(|(_, score)| score.target_stake_algo > 0)
+        .map(|(_, ValidatorScoreRecord { score, .. })| *score)
+        .min_by(|a, b| to_fixed_for_sort(*a).cmp(&to_fixed_for_sort(*b)));
+
     Ok(warp::reply::with_status(
         json(&Response {
             score_breakdown: ScoreBreakdown {
                 vote_account,
                 score,
+                min_score_eligible_algo,
                 rank,
                 ui_hints,
                 component_scores,
