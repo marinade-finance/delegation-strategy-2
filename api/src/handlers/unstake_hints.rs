@@ -1,7 +1,6 @@
 use crate::{context::WrappedContext, metrics, utils::response_error_500};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize)]
