@@ -1,4 +1,4 @@
-use crate::dto::{BlacklistRecord, UnstakeHint, UnstakeHintRecord};
+use crate::dto::{BlacklistRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
@@ -133,5 +133,34 @@ pub async fn load_unstake_hints(
                 _ => None,
             },
         )
+        .collect())
+}
+
+pub async fn load_scoring_runs(psql_client: &Client) -> anyhow::Result<Vec<ScoringRunRecord>> {
+    log::info!("Querying all scoring runs...");
+    Ok(psql_client
+        .query(
+            "
+            SELECT
+                scoring_run_id::numeric,
+                created_at,
+                epoch,
+                components,
+                component_weights,
+                ui_id
+            FROM scoring_runs
+            ORDER BY scoring_run_id DESC",
+            &[],
+        )
+        .await?
+        .into_iter()
+        .map(|scoring_run| ScoringRunRecord {
+            scoring_run_id: scoring_run.get("scoring_run_id"),
+            created_at: scoring_run.get("created_at"),
+            epoch: scoring_run.get("epoch"),
+            components: scoring_run.get("components"),
+            component_weights: scoring_run.get("component_weights"),
+            ui_id: scoring_run.get("ui_id"),
+        })
         .collect())
 }
