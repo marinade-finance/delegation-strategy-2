@@ -39,7 +39,7 @@ pub async fn store_validators(
         })
         .collect();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let mut updated_identities: HashSet<_> = Default::default();
+    let mut updated_vote_accounts: HashSet<_> = Default::default();
 
     info!("Loaded the snapshot");
 
@@ -176,19 +176,19 @@ pub async fn store_validators(
                         (27, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                     ]),
                 );
-                updated_identities.insert(vote_account.to_string());
+                updated_vote_accounts.insert(vote_account.to_string());
             }
         }
         query.execute(&mut psql_client).await?;
         info!(
             "Updated previously existing validator records: {}",
-            updated_identities.len()
+            updated_vote_accounts.len()
         );
     }
 
     let validators: Vec<_> = validators
         .into_iter()
-        .filter(|(vote_account, _)| !updated_identities.contains(vote_account))
+        .filter(|(vote_account, validator)| !updated_vote_accounts.contains(vote_account))
         .collect();
     let mut insertions = 0;
 
@@ -235,7 +235,7 @@ pub async fn store_validators(
         );
 
         for (vote_account, v) in chunk {
-            if updated_identities.contains(vote_account) {
+            if updated_vote_accounts.contains(vote_account) {
                 continue;
             }
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
