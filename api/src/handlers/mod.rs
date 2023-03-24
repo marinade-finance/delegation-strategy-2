@@ -6,6 +6,7 @@ pub mod glossary;
 pub mod list_validators;
 pub mod reports_commission_changes;
 pub mod reports_scoring;
+pub mod reports_scoring_html;
 pub mod reports_staking;
 pub mod unstake_hints;
 pub mod uptimes;

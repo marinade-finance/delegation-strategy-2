@@ -1,8 +1,9 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
-    reports_commission_changes, reports_scoring, reports_staking, unstake_hints, uptimes,
-    validator_score_breakdown, validators_flat, versions, workflow_metrics_upload,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
+    unstake_hints, uptimes, validator_score_breakdown, validators_flat, versions,
+    workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -145,6 +146,12 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_scoring::handler);
 
+    let route_reports_scoring_html = warp::path!("reports" / "scoring" / String)
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(reports_scoring_html::handler);
+
     let route_reports_staking = warp::path!("reports" / "staking")
         .and(warp::path::end())
         .and(warp::get())
@@ -185,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_glossary)
         .or(route_config)
         .or(route_reports_scoring)
+        .or(route_reports_scoring_html)
         .or(route_reports_staking)
         .or(route_unstake_hints)
         .or(route_reports_commission_changes)
