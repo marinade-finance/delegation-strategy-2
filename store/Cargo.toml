@@ -26,3 +26,4 @@ tokio-postgres = { version = "0.7.7", features = ["with-chrono-0_4"] }
 tokio = { version = "1", features = ["full"] }
 collect = { path = "../collect" }
 chrono = "0.4"
+csv = "1.1"
