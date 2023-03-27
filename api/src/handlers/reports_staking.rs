@@ -41,16 +41,14 @@ fn filter_and_sort_stakes(records: &mut Vec<StakingChange>) {
 }
 
 async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<StakingChange>> {
-    let psql_client = &context.read().await.psql_client;
-    let cache = &context.read().await.cache;
     let mut records = Vec::new();
-    let last_epoch = match get_last_epoch(psql_client).await? {
+    let last_epoch = match get_last_epoch(&context.read().await.psql_client).await? {
         Some(last_epoch) => last_epoch,
         _ => return Ok(Default::default()),
     };
 
-    let CachedScores { scores, .. } = cache.get_validators_scores();
-    let validators = cache.get_validators();
+    let CachedScores { scores, .. } = &context.read().await.cache.get_validators_scores();
+    let validators = &context.read().await.cache.get_validators();
 
     for (vote_account, score_record) in scores.iter() {
         let validator = validators
