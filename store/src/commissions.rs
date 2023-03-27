@@ -36,7 +36,6 @@ pub async fn store_commissions(
             "
         SELECT DISTINCT ON (vote_account)
             vote_account,
-            identity,
             commission,
             epoch
         FROM commissions
@@ -59,7 +58,7 @@ pub async fn store_commissions(
 
     let mut query = InsertQueryCombiner::new(
         "commissions".to_string(),
-        "vote_account, identity, commission, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, commission, epoch_slot, epoch, created_at".to_string(),
     );
 
     let commissions: HashMap<_, _> = snapshot
