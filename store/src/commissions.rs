@@ -29,13 +29,14 @@ pub async fn store_commissions(
 
     info!("Loaded the snapshot");
 
-    let mut skipped_identities: HashSet<String> = Default::default();
+    let mut skipped_vote_accounts: HashSet<String> = Default::default();
 
     for row in psql_client
         .query(
             "
         SELECT DISTINCT ON (vote_account)
             vote_account,
+            identity,
             commission,
             epoch
         FROM commissions
@@ -51,14 +52,14 @@ pub async fn store_commissions(
 
         if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
             if epoch == snapshot_epoch && commission == validator_snapshot.commission as i32 {
-                skipped_identities.insert(vote_account.to_string());
+                skipped_vote_accounts.insert(vote_account.to_string());
             }
         }
     }
 
     let mut query = InsertQueryCombiner::new(
         "commissions".to_string(),
-        "vote_account, commission, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, identity, commission, epoch_slot, epoch, created_at".to_string(),
     );
 
     let commissions: HashMap<_, _> = snapshot
@@ -68,7 +69,7 @@ pub async fn store_commissions(
         .collect();
 
     for (vote_account, commission) in commissions.iter() {
-        if !skipped_identities.contains(vote_account) {
+        if !skipped_vote_accounts.contains(vote_account) {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                 vote_account,
                 commission,

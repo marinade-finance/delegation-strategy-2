@@ -13,6 +13,7 @@ pub struct Response {
 #[derive(Serialize, Debug)]
 pub struct Stake {
     vote_account: String,
+    identity: String,
     current_stake: u64,
     next_stake_sol: u64,
 }
@@ -20,6 +21,7 @@ pub struct Stake {
 #[derive(Serialize, Debug)]
 pub struct StakingChange {
     vote_account: String,
+    identity: String,
     score: f64,
     current_stake: u64,
     next_stake_sol: u64,
@@ -66,6 +68,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                     .last();
                 match current_epoch_stats {
                     Some(current_epoch_stats) => records.push(StakingChange {
+                        identity: validator.identity.clone(),
                         vote_account: validator.vote_account.clone(),
                         score: score_record.score,
                         current_stake: current_epoch_stats.marinade_stake,
@@ -101,6 +104,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
                 if planned_stake.score > 0.0 || planned_stake.current_stake > 0 {
                     stakes.push(Stake {
                         vote_account: planned_stake.vote_account,
+                        identity: planned_stake.identity,
                         current_stake: planned_stake.current_stake,
                         next_stake_sol: planned_stake.next_stake_sol,
                     });

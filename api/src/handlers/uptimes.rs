@@ -34,13 +34,31 @@ pub async fn handler(
     info!("Fetching uptimes {:?}", &vote_account);
     metrics::REQUEST_COUNT_UPTIMES.inc();
 
-    let uptimes = context.read().await.cache.get_uptimes(&vote_account);
+    let validators = context.read().await.cache.get_validators();
+    let validator = validators.iter().find(|(_vote_key, record)| {
+        record.identity == vote_account || record.vote_account == vote_account
+    });
 
-    Ok(match uptimes {
-        Some(uptimes) => warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK),
-        _ => {
-            error!("No uptimes found for {}", &vote_account);
-            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+    match validator {
+        Some((vote_key, _validator)) => {
+            let uptimes = context.read().await.cache.get_uptimes(&vote_key);
+
+            Ok(match uptimes {
+                Some(uptimes) => {
+                    warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK)
+                }
+                _ => {
+                    error!("No uptimes found for {}", &vote_account);
+                    response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+                }
+            })
         }
-    })
+        None => {
+            error!("No validator found for {}", &vote_account);
+            Ok(response_error(
+                StatusCode::NOT_FOUND,
+                "Failed to fetch records!".into(),
+            ))
+        }
+    }
 }

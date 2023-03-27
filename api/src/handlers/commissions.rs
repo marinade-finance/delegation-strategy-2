@@ -22,15 +22,31 @@ pub async fn handler(
     info!("Fetching commissions {:?}", &vote_account);
     metrics::REQUEST_COUNT_COMMISSIONS.inc();
 
-    let commissions = context.read().await.cache.get_commissions(&vote_account);
+    let validators = context.read().await.cache.get_validators();
+    let validator = validators.iter().find(|(_vote_key, record)| {
+        record.identity == vote_account || record.vote_account == vote_account
+    });
 
-    Ok(match commissions {
-        Some(commissions) => {
-            warp::reply::with_status(json(&Response { commissions }), StatusCode::OK)
+    match validator {
+        Some((vote_key, _validator)) => {
+            let commissions = context.read().await.cache.get_commissions(vote_key);
+
+            Ok(match commissions {
+                Some(commissions) => {
+                    warp::reply::with_status(json(&Response { commissions }), StatusCode::OK)
+                }
+                _ => {
+                    error!("No commissions found for {}", &vote_account);
+                    response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+                }
+            })
         }
-        _ => {
-            error!("No commissions found for {}", &vote_account);
-            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+        None => {
+            error!("No validator found for {}", &vote_account);
+            Ok(response_error(
+                StatusCode::NOT_FOUND,
+                "Failed to fetch records!".into(),
+            ))
         }
-    })
+    }
 }

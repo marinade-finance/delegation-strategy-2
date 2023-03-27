@@ -178,7 +178,7 @@ pub fn collect_validators_info(
                 .map_or(None, |v| Some(*v.get(&vote_pubkey).unwrap_or(&0))),
             data_center: data_centers
                 .get(&identity)
-                .map_or(None, |(ip, data_center)| {
+                .map_or(None, |(_ip, data_center)| {
                     Some(ValidatorDataCenter::new(data_center.clone()))
                 }),
 

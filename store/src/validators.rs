@@ -188,7 +188,7 @@ pub async fn store_validators(
 
     let validators: Vec<_> = validators
         .into_iter()
-        .filter(|(vote_account, validator)| !updated_vote_accounts.contains(vote_account))
+        .filter(|(vote_account, _validator)| !updated_vote_accounts.contains(vote_account))
         .collect();
     let mut insertions = 0;
 

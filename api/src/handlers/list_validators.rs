@@ -4,7 +4,6 @@ use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use solana_program::vote;
 use store::{
     dto::{ValidatorRecord, ValidatorsAggregated},
     utils::to_fixed_for_sort,
@@ -12,7 +11,6 @@ use store::{
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
-const MAX_LIMIT: usize = 5000;
 const DEFAULT_LIMIT: usize = 100;
 const DEFAULT_ORDER_FIELD: OrderField = OrderField::Stake;
 const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
@@ -28,6 +26,7 @@ pub struct QueryParams {
     epochs: Option<usize>,
     query: Option<String>,
     query_vote_accounts: Option<String>,
+    query_identities: Option<String>,
     order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
     query_superminority: Option<bool>,
@@ -62,6 +61,7 @@ pub struct GetValidatorsConfig {
     pub offset: usize,
     pub limit: usize,
     pub query: Option<String>,
+    pub query_identities: Option<Vec<String>>,
     pub query_vote_accounts: Option<Vec<String>>,
     pub query_superminority: Option<bool>,
     pub query_score: Option<bool>,
@@ -83,6 +83,15 @@ pub async fn get_validators(
             .collect()
     } else {
         validators.values().collect()
+    };
+
+    let validators: Vec<_> = if let Some(identities) = config.query_identities {
+        validators
+            .into_iter()
+            .filter(|v| identities.contains(&v.identity))
+            .collect()
+    } else {
+        validators
     };
 
     let validators: Vec<_> = if let Some(query) = config.query {
@@ -192,6 +201,9 @@ pub async fn handler(
                 .map(|vote_account| vote_account.to_string())
                 .collect()
         }),
+        query_identities: query_params
+            .query_identities
+            .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
         query_superminority: query_params.query_superminority,
         query_score: query_params.query_score,
         query_marinade_stake: query_params.query_marinade_stake,
