@@ -212,4 +212,5 @@ stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
 validators$ui_hints <- lapply(validators$ui_hints, paste, collapse = ',')
 
 fwrite(validators[order(validators$rank),], file = file_out_scores, scipen = 1000, quote = T)
-fwrite(validators[order(validators$target_stake, decreasing = T),][validators$target_stake > 0,], file = file_out_stakes, scipen = 1000)
+stakes <- validators[validators$target_stake > 0,]
+fwrite(stakes[order(stakes$target_stake, decreasing = T),], file = file_out_stakes, scipen = 1000)
