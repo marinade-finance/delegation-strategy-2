@@ -638,7 +638,7 @@ pub async fn update_validators_with_scores(
 ) -> anyhow::Result<()> {
     let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-    let epochs_range = first_epoch..last_epoch;
+    let epochs_range = first_epoch..=last_epoch;
 
     log::info!(
         "Updating validator score with epochs range: {:?}",
@@ -668,7 +668,7 @@ pub async fn update_validators_with_scores(
 
 pub async fn load_scores_in_epochs(
     psql_client: &Client,
-    epochs: std::ops::Range<u64>,
+    epochs: std::ops::RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
     log::info!("Loading scores for epochs: {:?}", epochs);
     let rows = psql_client
