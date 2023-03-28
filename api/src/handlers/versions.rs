@@ -15,20 +15,38 @@ pub struct Response {
 pub struct QueryParams {}
 
 pub async fn handler(
-    identity: String,
+    vote_account: String,
     _query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
-    info!("Fetching versions {:?}", &identity);
+    info!("Fetching versions {:?}", &vote_account);
     metrics::REQUEST_COUNT_VERSIONS.inc();
 
-    let versions = context.read().await.cache.get_versions(&identity);
+    let validators = context.read().await.cache.get_validators();
+    let validator = validators.iter().find(|(_vote_key, record)| {
+        record.identity == vote_account || record.vote_account == vote_account
+    });
 
-    Ok(match versions {
-        Some(versions) => warp::reply::with_status(json(&Response { versions }), StatusCode::OK),
-        _ => {
-            error!("No versions found for {}", &identity);
-            response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+    match validator {
+        Some((vote_key, _validator)) => {
+            let versions = context.read().await.cache.get_versions(&vote_key);
+
+            Ok(match versions {
+                Some(versions) => {
+                    warp::reply::with_status(json(&Response { versions }), StatusCode::OK)
+                }
+                _ => {
+                    error!("No versions found for {}", &vote_account);
+                    response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
+                }
+            })
         }
-    })
+        None => {
+            error!("No validator found for {}", &vote_account);
+            Ok(response_error(
+                StatusCode::NOT_FOUND,
+                "Failed to fetch records!".into(),
+            ))
+        }
+    }
 }

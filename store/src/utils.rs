@@ -1,7 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorCurrentStake, ValidatorEpochStats,
-    ValidatorRecord, ValidatorScoreRecord, ValidatorWarning, ValidatorsAggregated, VersionRecord,
+    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    ValidatorScoreRecord, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -191,7 +191,7 @@ pub async fn load_uptimes(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                identity, status, epoch, start_at, end_at
+                vote_account, status, epoch, start_at, end_at
             FROM uptimes, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -199,9 +199,9 @@ pub async fn load_uptimes(
 
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        let identity: String = row.get("identity");
+        let vote_account: String = row.get("vote_account");
         let commissions = records
-            .entry(identity.clone())
+            .entry(vote_account.clone())
             .or_insert(Default::default());
         commissions.push(UptimeRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
@@ -223,7 +223,7 @@ pub async fn load_versions(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                identity, version, epoch, created_at
+                vote_account, version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -231,9 +231,9 @@ pub async fn load_versions(
 
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        let identity: String = row.get("identity");
+        let vote_account: String = row.get("vote_account");
         let versions = records
-            .entry(identity.clone())
+            .entry(vote_account.clone())
             .or_insert(Default::default());
         versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
@@ -254,12 +254,12 @@ pub async fn load_commissions(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                identity, commission, epoch, epoch_slot, created_at
+                vote_account, commission, epoch, epoch_slot, created_at
             FROM commissions, cluster
             WHERE epoch > cluster.last_epoch - $1::NUMERIC
             UNION
             SELECT
-                identity, commission_effective, epoch, 432000, updated_at
+                vote_account, commission_effective, epoch, 432000, updated_at
             FROM validators, cluster
             WHERE epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
@@ -269,9 +269,9 @@ pub async fn load_commissions(
 
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
-        let identity: String = row.get("identity");
+        let vote_account: String = row.get("vote_account");
         let commissions = records
-            .entry(identity.clone())
+            .entry(vote_account.clone())
             .or_insert(Default::default());
         commissions.push(CommissionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
@@ -349,12 +349,12 @@ pub fn update_validators_ranks<T>(
     T: Ord,
 {
     let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
-    for (identity, record) in validators.iter() {
+    for (vote_account, record) in validators.iter() {
         for validator_epoch_stats in record.epoch_stats.iter() {
             stats_by_epoch
                 .entry(validator_epoch_stats.epoch)
                 .or_insert(Default::default())
-                .push((identity.clone(), field_extractor(validator_epoch_stats)));
+                .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
         }
     }
 
@@ -362,7 +362,7 @@ pub fn update_validators_ranks<T>(
         stats.sort_by(|(_, stat_a), (_, stat_b)| stat_a.cmp(stat_b));
         let mut previous_value: Option<&T> = None;
         let mut same_ranks: usize = 0;
-        for (index, (identity, stat)) in stats.iter().enumerate() {
+        for (index, (vote_account, stat)) in stats.iter().enumerate() {
             if let Some(some_previous_value) = previous_value {
                 if some_previous_value == stat {
                     same_ranks += 1;
@@ -373,7 +373,7 @@ pub fn update_validators_ranks<T>(
             previous_value = Some(stat);
 
             let validator_epoch_stats = validators
-                .get_mut(identity)
+                .get_mut(vote_account)
                 .unwrap()
                 .epoch_stats
                 .iter_mut()
@@ -388,6 +388,10 @@ pub async fn load_validators(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
+    let last_epoch = match get_last_epoch(psql_client).await? {
+        Some(last_epoch) => last_epoch,
+        _ => return Ok(Default::default()),
+    };
     let apy_calculators = get_apy_calculators(psql_client).await?;
     let concentrations = load_dc_concentration_stats(psql_client, 1)
         .await?
@@ -399,7 +403,7 @@ pub async fn load_validators(
         .query(
             "
             WITH
-                validators_aggregated AS (SELECT identity, MIN(epoch) first_epoch FROM validators GROUP BY identity),
+                validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
                 validators.identity, validators.vote_account, epoch,
@@ -440,7 +444,7 @@ pub async fn load_validators(
                 validators_aggregated.first_epoch AS first_epoch
             FROM validators
                 LEFT JOIN cluster ON 1 = 1
-                LEFT JOIN validators_aggregated ON validators_aggregated.identity = validators.identity
+                LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
             WHERE epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(epochs)],
@@ -451,7 +455,7 @@ pub async fn load_validators(
         log::info!("Aggregating validator records...");
         let mut records: HashMap<_, _> = Default::default();
         for row in rows {
-            let identity: String = row.get("identity");
+            let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
@@ -489,10 +493,10 @@ pub async fn load_validators(
                 .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
 
             let record = records
-                .entry(identity.clone())
+                .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
-                    identity: identity.clone(),
-                    vote_account: row.get("vote_account"),
+                    identity: row.get("identity"),
+                    vote_account: vote_account.clone(),
                     info_name: row.get("info_name"),
                     info_url: row.get("info_url"),
                     info_keybase: row.get("info_keybase"),
@@ -544,7 +548,11 @@ pub async fn load_validators(
 
                     avg_uptime_pct: None,
                     avg_apy: None,
+                    has_last_epoch_stats: false,
                 });
+            if last_epoch == epoch {
+                record.has_last_epoch_stats = true;
+            }
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
                 commission_max_observed: row
@@ -793,44 +801,6 @@ pub async fn load_scores(
                         .try_into()
                         .unwrap(),
                     scoring_run_id: row.get("scoring_run_id"),
-                });
-        }
-
-        records
-    };
-    log::info!("Records prepared...");
-    Ok(records)
-}
-
-pub async fn load_current_stake(
-    psql_client: &Client,
-) -> anyhow::Result<HashMap<String, ValidatorCurrentStake>> {
-    log::info!("Querying current stakes...");
-    let rows = psql_client
-        .query(
-            "
-            SELECT vote_account, 
-                identity, 
-                marinade_stake
-            FROM validators 
-            WHERE epoch IN (SELECT MAX(epoch) FROM cluster_info) 
-            ORDER BY vote_account",
-            &[],
-        )
-        .await?;
-
-    let records: HashMap<_, _> = {
-        log::info!("Aggregating current stakes records...");
-        let mut records: HashMap<_, _> = Default::default();
-        for row in rows {
-            let vote_account: String = row.get("vote_account");
-
-            records
-                .entry(vote_account.clone())
-                .or_insert_with(|| ValidatorCurrentStake {
-                    vote_account: vote_account.clone(),
-                    identity: row.get("identity"),
-                    marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
                 });
         }
 

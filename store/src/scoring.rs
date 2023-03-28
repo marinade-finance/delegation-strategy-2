@@ -37,7 +37,7 @@ async fn voter_max_commission_in_epoch(
                         COALESCE(commission_max_observed, 0),
                         COALESCE(commission_advertised, 0)
                     )) commission
-                FROM validators LEFT JOIN commissions on validators.identity = commissions.identity
+                FROM validators LEFT JOIN commissions on validators.vote_account = commissions.vote_account
                 WHERE commissions.epoch = $1 and validators.epoch = $1
                 GROUP BY vote_account",
             &[&Decimal::from(epoch)],

@@ -35,7 +35,7 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
         for (record_epoch, end_credits, start_credits) in vote_account.epoch_credits.iter() {
             if *record_epoch == epoch {
                 credits.insert(
-                    vote_account.node_pubkey.clone(),
+                    vote_account.vote_pubkey.clone(),
                     end_credits - start_credits,
                 );
             }
@@ -252,14 +252,14 @@ pub fn get_apy(
         .current
         .iter()
         .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.node_pubkey.clone(), v.activated_stake.clone()))
+        .map(|v| (v.vote_pubkey.clone(), v.activated_stake.clone()))
         .collect();
 
     let commission: HashMap<_, _> = vote_accounts
         .current
         .iter()
         .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.node_pubkey.clone(), v.commission.clone()))
+        .map(|v| (v.vote_pubkey.clone(), v.commission.clone()))
         .collect();
 
     let total_activated_stake = activated_stake.iter().map(|(_, s)| s).sum::<u64>();

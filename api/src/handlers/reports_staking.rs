@@ -2,6 +2,7 @@ use crate::{cache::CachedScores, context::WrappedContext, metrics, utils::respon
 use log::{error, info};
 use serde::Serialize;
 use solana_program::native_token::LAMPORTS_PER_SOL;
+use store::utils::get_last_epoch;
 use warp::{http::StatusCode, reply, Reply};
 
 #[derive(Serialize, Debug)]
@@ -11,6 +12,7 @@ pub struct Response {
 
 #[derive(Serialize, Debug)]
 pub struct Stake {
+    vote_account: String,
     identity: String,
     current_stake: u64,
     next_stake_sol: u64,
@@ -18,6 +20,7 @@ pub struct Stake {
 
 #[derive(Serialize, Debug)]
 pub struct StakingChange {
+    vote_account: String,
     identity: String,
     score: f64,
     current_stake: u64,
@@ -38,34 +41,53 @@ fn filter_and_sort_stakes(records: &mut Vec<StakingChange>) {
 }
 
 async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<StakingChange>> {
-    let cache = &context.read().await.cache;
     let mut records = Vec::new();
+    let last_epoch = match get_last_epoch(&context.read().await.psql_client).await? {
+        Some(last_epoch) => last_epoch,
+        _ => return Ok(Default::default()),
+    };
 
-    let CachedScores { scores, .. } = cache.get_validators_scores();
-    let stakes = cache.get_validators_current_stakes();
+    let CachedScores { scores, .. } = &context.read().await.cache.get_validators_scores();
+    let validators = &context.read().await.cache.get_validators();
 
-    for validator_score in scores.values().into_iter() {
-        let should_have = validator_score.target_stake_algo
-            + validator_score.target_stake_mnde
-            + validator_score.target_stake_msol;
-        let stake_info = stakes.get(&validator_score.vote_account);
-
-        match stake_info {
-            Some(stake_info) => records.push(StakingChange {
-                identity: stake_info.identity.clone(),
-                score: validator_score.score,
-                current_stake: stake_info.marinade_stake,
-                next_stake_sol: should_have,
-            }),
+    for (vote_account, score_record) in scores.iter() {
+        let validator = validators
+            .get(vote_account)
+            .filter(|v| v.has_last_epoch_stats);
+        let should_have = score_record.target_stake_algo
+            + score_record.target_stake_mnde
+            + score_record.target_stake_msol;
+        match validator {
+            Some(validator) => {
+                let current_epoch_stats = validator
+                    .epoch_stats
+                    .iter()
+                    .filter(|validator| validator.epoch == last_epoch)
+                    .last();
+                match current_epoch_stats {
+                    Some(current_epoch_stats) => records.push(StakingChange {
+                        identity: validator.identity.clone(),
+                        vote_account: validator.vote_account.clone(),
+                        score: score_record.score,
+                        current_stake: current_epoch_stats.marinade_stake,
+                        next_stake_sol: should_have,
+                    }),
+                    None => {
+                        error!(
+                            "Couldn't find current epoch stats for {}",
+                            validator.vote_account
+                        );
+                        continue;
+                    }
+                }
+            }
             None => {
-                error!(
-                    "Couldn't find current stake info for {}",
-                    validator_score.vote_account
-                );
+                error!("Couldn't find info for {} in current epoch", vote_account);
                 continue;
             }
-        };
+        }
     }
+
     Ok(records)
 }
 
@@ -79,6 +101,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
             for planned_stake in planned_stakes {
                 if planned_stake.score > 0.0 || planned_stake.current_stake > 0 {
                     stakes.push(Stake {
+                        vote_account: planned_stake.vote_account,
                         identity: planned_stake.identity,
                         current_stake: planned_stake.current_stake,
                         next_stake_sol: planned_stake.next_stake_sol,

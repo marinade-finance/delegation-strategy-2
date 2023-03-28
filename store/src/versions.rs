@@ -28,42 +28,42 @@ pub async fn store_versions(
 
     info!("Loaded the snapshot");
 
-    let mut skipped_identities: HashSet<String> = Default::default();
+    let mut skipped_vote_accounts: HashSet<String> = Default::default();
 
     for row in psql_client
         .query(
             "
-        SELECT DISTINCT ON (identity)
-            identity,
+        SELECT DISTINCT ON (vote_account)
+            vote_account,
             version,
             epoch
         FROM versions
-        ORDER BY identity, created_at DESC
+        ORDER BY vote_account, created_at DESC
     ",
             &[],
         )
         .await?
     {
-        let identity: &str = row.get("identity");
+        let vote_account: &str = row.get("vote_account");
         let version: Option<String> = row.get("version");
         let epoch: Decimal = row.get("epoch");
 
-        if let Some(validator_snapshot) = snapshot.validators.get(identity) {
+        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
             if epoch == snapshot_epoch && version == validator_snapshot.version {
-                skipped_identities.insert(identity.to_string());
+                skipped_vote_accounts.insert(vote_account.to_string());
             }
         }
     }
 
     let mut query = InsertQueryCombiner::new(
         "versions".to_string(),
-        "identity, version, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, version, epoch_slot, epoch, created_at".to_string(),
     );
 
-    for (identity, v) in snapshot.validators.iter() {
-        if !skipped_identities.contains(identity) {
+    for (vote_account, v) in snapshot.validators.iter() {
+        if !skipped_vote_accounts.contains(vote_account) {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                identity,
+                vote_account,
                 &v.version,
                 &snapshot_epoch_slot,
                 &snapshot_epoch,

@@ -48,22 +48,22 @@ pub async fn store_uptime(
     for row in psql_client
         .query(
             "
-        SELECT DISTINCT ON (identity)
+        SELECT DISTINCT ON (vote_account)
             id,
-            identity,
+            vote_account,
             status,
             epoch,
             start_at,
             end_at
         FROM uptimes
-        ORDER BY identity, end_at DESC
+        ORDER BY vote_account, end_at DESC
     ",
             &[],
         )
         .await?
     {
         let id: i64 = row.get("id");
-        let identity: &str = row.get("identity");
+        let vote_account: &str = row.get("vote_account");
         let status: &str = row.get("status");
         let epoch: Decimal = row.get("epoch");
         let start_at: DateTime<Utc> = row.get("start_at");
@@ -72,11 +72,11 @@ pub async fn store_uptime(
             .checked_add_signed(status_max_delay_to_extend.clone())
             .unwrap();
 
-        if let Some(validator_snapshot) = snapshot.validators.get(identity) {
+        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
             let status_from_snapshot = status_from_delinquency(validator_snapshot.delinquent);
             if latest_end_extension_at > snapshot_created_at {
                 if status == status_from_snapshot && epoch == snapshot_epoch {
-                    validators_with_extended_status.insert(identity.to_string());
+                    validators_with_extended_status.insert(vote_account.to_string());
                     records_extensions.insert(id, default_status_end_at.clone());
                 } else {
                     records_extensions.insert(id, snapshot_created_at.clone());
@@ -86,7 +86,7 @@ pub async fn store_uptime(
 
         debug!(
             "found uptime record: {} {} {} {} {}",
-            id, identity, status, start_at, end_at
+            id, vote_account, status, start_at, end_at
         );
     }
 
@@ -109,31 +109,31 @@ pub async fn store_uptime(
 
     let mut query = InsertQueryCombiner::new(
         "uptimes".to_string(),
-        "identity, status, epoch, start_at, end_at".to_string(),
+        "vote_account, status, epoch, start_at, end_at".to_string(),
     );
 
-    for (identity, snapshot) in snapshot.validators.iter() {
-        if !validators_with_extended_status.contains(identity) {
+    for (vote_account, snapshot) in snapshot.validators.iter() {
+        if !validators_with_extended_status.contains(vote_account) {
             if snapshot.delinquent {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    identity,
+                    vote_account,
                     &DOWN,
                     &snapshot_epoch,
                     &snapshot_created_at,
                     &default_status_end_at,
                 ];
                 query.add(&mut params);
-                warn!("Validator {} is now DOWN", identity);
+                warn!("Validator {} is now DOWN", vote_account);
             } else {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    identity,
+                    vote_account,
                     &UP,
                     &snapshot_epoch,
                     &snapshot_created_at,
                     &default_status_end_at,
                 ];
                 query.add(&mut params);
-                info!("Validator {} is now UP", identity);
+                info!("Validator {} is now UP", vote_account);
             }
         }
     }

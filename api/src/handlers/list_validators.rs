@@ -4,11 +4,13 @@ use crate::utils::response_error_500;
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::{dto::{ValidatorRecord, ValidatorsAggregated}, utils::to_fixed_for_sort};
+use store::{
+    dto::{ValidatorRecord, ValidatorsAggregated},
+    utils::to_fixed_for_sort,
+};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
-const MAX_LIMIT: usize = 5000;
 const DEFAULT_LIMIT: usize = 100;
 const DEFAULT_ORDER_FIELD: OrderField = OrderField::Stake;
 const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
@@ -23,6 +25,7 @@ pub struct Response {
 pub struct QueryParams {
     epochs: Option<usize>,
     query: Option<String>,
+    query_vote_accounts: Option<String>,
     query_identities: Option<String>,
     order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
@@ -59,6 +62,7 @@ pub struct GetValidatorsConfig {
     pub limit: usize,
     pub query: Option<String>,
     pub query_identities: Option<Vec<String>>,
+    pub query_vote_accounts: Option<Vec<String>>,
     pub query_superminority: Option<bool>,
     pub query_score: Option<bool>,
     pub query_marinade_stake: Option<bool>,
@@ -72,8 +76,8 @@ pub async fn get_validators(
 ) -> anyhow::Result<Vec<ValidatorRecord>> {
     let validators = context.read().await.cache.get_validators();
 
-    let validators: Vec<_> = if let Some(identities) = config.query_identities {
-        identities
+    let validators: Vec<_> = if let Some(vote_accounts) = config.query_vote_accounts {
+        vote_accounts
             .iter()
             .filter_map(|i| validators.get(i))
             .collect()
@@ -81,12 +85,21 @@ pub async fn get_validators(
         validators.values().collect()
     };
 
+    let validators: Vec<_> = if let Some(identities) = config.query_identities {
+        validators
+            .into_iter()
+            .filter(|v| identities.contains(&v.identity))
+            .collect()
+    } else {
+        validators
+    };
+
     let validators: Vec<_> = if let Some(query) = config.query {
         let query = query.to_lowercase();
         validators
             .into_iter()
             .filter(|v| {
-                v.identity.to_lowercase().find(&query).is_some()
+                v.vote_account.to_lowercase().find(&query).is_some()
                     || v.vote_account.to_lowercase().find(&query).is_some()
                     || v.info_name.clone().map_or(false, |info_name| {
                         info_name.to_lowercase().find(&query).is_some()
@@ -183,6 +196,11 @@ pub async fn handler(
         offset: query_params.offset.unwrap_or(0),
         limit: query_params.limit.unwrap_or(DEFAULT_LIMIT),
         query: query_params.query,
+        query_vote_accounts: query_params.query_vote_accounts.map(|i| {
+            i.split(",")
+                .map(|vote_account| vote_account.to_string())
+                .collect()
+        }),
         query_identities: query_params
             .query_identities
             .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
