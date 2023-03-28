@@ -30,7 +30,7 @@ async fn voter_max_commission_in_epoch(
     let rows = psql_client
         .query(
             "SELECT
-                    vote_account,
+                    validators.vote_account,
                     MAX(GREATEST(
                         commission,
                         COALESCE(commission_effective, 0),
@@ -39,7 +39,7 @@ async fn voter_max_commission_in_epoch(
                     )) commission
                 FROM validators LEFT JOIN commissions on validators.vote_account = commissions.vote_account
                 WHERE commissions.epoch = $1 and validators.epoch = $1
-                GROUP BY vote_account",
+                GROUP BY validators.vote_account",
             &[&Decimal::from(epoch)],
         )
         .await?;
