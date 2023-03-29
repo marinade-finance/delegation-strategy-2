@@ -15,7 +15,7 @@ pub struct Stake {
     vote_account: String,
     identity: String,
     current_stake: u64,
-    next_stake_sol: u64,
+    next_stake: u64,
 }
 
 #[derive(Serialize, Debug)]
@@ -24,18 +24,18 @@ pub struct StakingChange {
     identity: String,
     score: f64,
     current_stake: u64,
-    next_stake_sol: u64,
+    next_stake: u64,
 }
 
 fn filter_and_sort_stakes(records: &mut Vec<StakingChange>) {
     records.retain(|stake| {
-        (stake.next_stake_sol * LAMPORTS_PER_SOL) as f64 - stake.current_stake as f64 != 0.0
+        stake.next_stake as f64 - stake.current_stake as f64 != 0.0
     });
     records.sort_by_key(|a| {
-        if a.next_stake_sol > 0 && a.next_stake_sol * LAMPORTS_PER_SOL > a.current_stake {
-            -(a.score as i64)
+        if a.next_stake > 0 && a.next_stake > a.current_stake {
+            -(a.next_stake as i64)
         } else {
-            (a.current_stake - a.next_stake_sol * LAMPORTS_PER_SOL) as i64
+            a.current_stake as i64 - a.next_stake as i64
         }
     });
 }
@@ -70,7 +70,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                         vote_account: validator.vote_account.clone(),
                         score: score_record.score,
                         current_stake: current_epoch_stats.marinade_stake,
-                        next_stake_sol: should_have,
+                        next_stake: should_have * LAMPORTS_PER_SOL,
                     }),
                     None => {
                         error!(
@@ -104,7 +104,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
                         vote_account: planned_stake.vote_account,
                         identity: planned_stake.identity,
                         current_stake: planned_stake.current_stake,
-                        next_stake_sol: planned_stake.next_stake_sol,
+                        next_stake: planned_stake.next_stake,
                     });
                 }
             }
