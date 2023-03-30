@@ -1,4 +1,5 @@
 library(dotenv)
+library(semver)
 library(data.table)
 
 normalize <- function(x, na.rm = TRUE) {
@@ -31,23 +32,25 @@ load_dot_env(file = file_params)
 
 TOTAL_STAKE=as.numeric(Sys.getenv("TOTAL_STAKE"))
 
-MARINADE_VALIDATORS_COUNT=as.numeric(Sys.getenv("MARINADE_VALIDATORS_COUNT"))
+MARINADE_VALIDATORS_COUNT <- as.numeric(Sys.getenv("MARINADE_VALIDATORS_COUNT"))
 
-WEIGHT_ADJUSTED_CREDITS=as.numeric(Sys.getenv("WEIGHT_ADJUSTED_CREDITS"))
-WEIGHT_GRACE_SKIP_RATE=as.numeric(Sys.getenv("WEIGHT_GRACE_SKIP_RATE"))
-WEIGHT_DC_CONCENTRATION=as.numeric(Sys.getenv("WEIGHT_DC_CONCENTRATION"))
+WEIGHT_ADJUSTED_CREDITS <- as.numeric(Sys.getenv("WEIGHT_ADJUSTED_CREDITS"))
+WEIGHT_GRACE_SKIP_RATE <- as.numeric(Sys.getenv("WEIGHT_GRACE_SKIP_RATE"))
+WEIGHT_DC_CONCENTRATION <- as.numeric(Sys.getenv("WEIGHT_DC_CONCENTRATION"))
 
-ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION=as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION"))
-ELIGIBILITY_ALGO_STAKE_MIN_STAKE=as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MIN_STAKE"))
+ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION"))
+ELIGIBILITY_ALGO_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MIN_STAKE"))
 
-ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION=as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION"))
-ELIGIBILITY_MNDE_STAKE_MIN_STAKE=as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MIN_STAKE"))
-ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER=as.numeric(Sys.getenv("ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER"))
+ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION"))
+ELIGIBILITY_MNDE_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MIN_STAKE"))
+ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER"))
 
-MNDE_VALIDATOR_CAP=as.numeric(Sys.getenv("MNDE_VALIDATOR_CAP"))
+ELIGIBILITY_MIN_VERSION <- Sys.getenv("ELIGIBILITY_MIN_VERSION")
 
-STAKE_CONTROL_MNDE=as.numeric(Sys.getenv("STAKE_CONTROL_MNDE"))
-STAKE_CONTROL_SELF_STAKE_MAX=as.numeric(Sys.getenv("STAKE_CONTROL_SELF_STAKE_MAX"))
+MNDE_VALIDATOR_CAP <- as.numeric(Sys.getenv("MNDE_VALIDATOR_CAP"))
+
+STAKE_CONTROL_MNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_MNDE"))
+STAKE_CONTROL_SELF_STAKE_MAX <- as.numeric(Sys.getenv("STAKE_CONTROL_SELF_STAKE_MAX"))
 
 # Cap self stake, so everything above x % of TVL can overflow to algo stake
 self_stake$max_target_stake <- pmin(self_stake$current_balance, self_stake$deposited_balance) * (pmin(self_stake$current_balance, self_stake$deposited_balance) > 10)
@@ -98,6 +101,7 @@ for (i in 1:nrow(validators)) {
 validators$eligible_stake_algo <- 1 - validators$blacklisted
 validators$eligible_stake_algo[validators$max_commission > ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION] <- 0
 validators$eligible_stake_algo[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_algo[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0
 
 validators$eligible_stake_msol <- validators$eligible_stake_algo
 
@@ -107,6 +111,9 @@ for (i in 1:nrow(validators)) {
   }
   if (validators[i, "minimum_stake"] < ELIGIBILITY_ALGO_STAKE_MIN_STAKE) {
     validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_ALGO_STAKE_MIN_STAKE_BELOW_1000"))
+  }
+  if (parse_version(validators[i, "version"]) < ELIGIBILITY_MIN_VERSION) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_VERSION_TOO_LOW"))
   }
 }
 
@@ -126,6 +133,7 @@ validators$eligible_stake_mnde <- 1 - validators$blacklisted
 validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
 validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
 validators$eligible_stake_mnde[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
+validators$eligible_stake_mnde[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
 
 for (i in 1:nrow(validators)) {
   if (validators[i, "max_commission"] > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION) {

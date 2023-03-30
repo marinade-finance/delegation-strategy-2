@@ -1,4 +1,5 @@
 ---
+pagetitle: Marinade Scoring Report
 output:
   html_document
 ---
