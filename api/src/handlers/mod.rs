@@ -11,6 +11,7 @@ pub mod reports_staking;
 pub mod unstake_hints;
 pub mod uptimes;
 pub mod validator_score_breakdown;
+pub mod validator_scores;
 pub mod validators_flat;
 pub mod versions;
 pub mod workflow_metrics_upload;

@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use log::error;
-use prometheus::{register_int_counter, Encoder, IntCounter, TextEncoder, IntGaugeVec, register_int_gauge_vec};
+use prometheus::{
+    register_int_counter, register_int_gauge_vec, Encoder, IntCounter, IntGaugeVec, TextEncoder,
+};
 use warp::Filter;
 
 lazy_static! {
@@ -22,6 +24,11 @@ lazy_static! {
     pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN: IntCounter = register_int_counter!(
         "ds_request_count_validator_score_breakdown",
         "How many times /validators/score-breakdown endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_VALIDATOR_SCORES: IntCounter = register_int_counter!(
+        "ds_request_count_validator_scores",
+        "How many times /validators/scores endpoint was requested"
     )
     .unwrap();
     pub static ref REQUEST_COUNT_REPORT_STAKING: IntCounter = register_int_counter!(
@@ -54,27 +61,15 @@ lazy_static! {
         "How many times /admin/scores endpoint was requested"
     )
     .unwrap();
-    pub static ref JOB_COUNT_SCHEDULED: IntCounter = register_int_counter!(
-        "ds_job_count_scheduled",
-        "How many jobs were scheduled"
-    )
-    .unwrap();
-    pub static ref JOB_COUNT_SUCCESS: IntCounter = register_int_counter!(
-        "ds_job_count_success",
-        "How many jobs succeded"
-    )
-    .unwrap();
-    pub static ref JOB_COUNT_ERROR: IntCounter = register_int_counter!(
-        "ds_job_count_error",
-        "How many jobs failed"
-    )
-    .unwrap();
-    pub static ref JOB_DURATION: IntGaugeVec = register_int_gauge_vec!(
-        "ds_job_duration",
-        "Workflow jobs duration",
-        &["workflow"]
-    )
-    .unwrap();
+    pub static ref JOB_COUNT_SCHEDULED: IntCounter =
+        register_int_counter!("ds_job_count_scheduled", "How many jobs were scheduled").unwrap();
+    pub static ref JOB_COUNT_SUCCESS: IntCounter =
+        register_int_counter!("ds_job_count_success", "How many jobs succeded").unwrap();
+    pub static ref JOB_COUNT_ERROR: IntCounter =
+        register_int_counter!("ds_job_count_error", "How many jobs failed").unwrap();
+    pub static ref JOB_DURATION: IntGaugeVec =
+        register_int_gauge_vec!("ds_job_duration", "Workflow jobs duration", &["workflow"])
+            .unwrap();
 }
 
 fn collect_metrics() -> String {
