@@ -100,7 +100,7 @@ pub async fn get_validators(
             .into_iter()
             .filter(|v| {
                 v.vote_account.to_lowercase().find(&query).is_some()
-                    || v.vote_account.to_lowercase().find(&query).is_some()
+                    || v.identity.to_lowercase().find(&query).is_some()
                     || v.info_name.clone().map_or(false, |info_name| {
                         info_name.to_lowercase().find(&query).is_some()
                     })
