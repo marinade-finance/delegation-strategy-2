@@ -4,18 +4,27 @@ use serde::Serialize;
 use store::dto::ValidatorScoreRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseScores {
     scores: Vec<ValidatorScoreRecord>,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "List last scores for all validators",
+    path = "/validators",
+    responses(
+        (status = 200, body = ResponseScores)
+    )
+)]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATOR_SCORES.inc();
 
     log::info!("Query validator scores");
 
     Ok(warp::reply::with_status(
-        json(&Response {
+        json(&ResponseScores {
             scores: context
                 .read()
                 .await

@@ -4,6 +4,15 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use warp::{http::Response, Reply};
 
+#[utoipa::path(
+    get,
+    tag = "General",
+    operation_id = "Glossary",
+    path = "/static/glossary.md",
+    responses(
+        (status = 200)
+    )
+)]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Serving the glossary");
 

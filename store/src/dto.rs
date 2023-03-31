@@ -124,7 +124,7 @@ impl Validator {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub commission_max_observed: Option<u8>,
@@ -153,7 +153,7 @@ pub struct ValidatorEpochStats {
     pub rank_apy: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -204,14 +204,14 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct CommissionRecord {
     pub epoch: u64,
     pub epoch_slot: u64,
@@ -219,14 +219,14 @@ pub struct CommissionRecord {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub enum ValidatorWarning {
     HighCommission,
     Superminority,
     LowUptime,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct DCConcentrationStats {
     pub epoch: u64,
     pub total_activated_stake: u64,
@@ -238,7 +238,7 @@ pub struct DCConcentrationStats {
     pub dc_stake_by_city: HashMap<String, u64>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct BlockProductionStats {
     pub epoch: u64,
     pub blocks_produced: u64,
@@ -246,13 +246,13 @@ pub struct BlockProductionStats {
     pub avg_skip_rate: f64,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ClusterStats {
     pub block_production_stats: Vec<BlockProductionStats>,
     pub dc_concentration_stats: Vec<DCConcentrationStats>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorsAggregated {
     pub epoch: u64,
     pub avg_marinade_score: Option<f64>,
@@ -298,7 +298,7 @@ pub struct ValidatorScoringCsvRow {
     pub target_stake_msol: Decimal,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorScoreRecord {
     pub vote_account: String,
     pub score: f64,
@@ -332,7 +332,7 @@ pub enum UnstakeHint {
     Blacklist,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,

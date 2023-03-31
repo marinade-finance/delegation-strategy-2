@@ -7,12 +7,22 @@ use warp::Reply;
 
 const DEFAULT_EPOCHS: u64 = 10;
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 pub struct QueryParams {
     epochs: Option<u64>,
     last_epoch: u64,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "List aggregated validators",
+    path = "/validators/flat",
+    params(QueryParams),
+    responses(
+        (status = 200)
+    )
+)]
 pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,

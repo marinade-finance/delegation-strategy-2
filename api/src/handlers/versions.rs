@@ -6,14 +6,23 @@ use serde::{Deserialize, Serialize};
 use store::dto::VersionRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseVersions {
     versions: Vec<VersionRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct QueryParams {}
 
+#[utoipa::path(
+    get,
+    tag = "Validators",
+    operation_id = "List versions of a validator",
+    path = "/validators/<vote_account>/versions",
+    responses(
+        (status = 200, body = ResponseVersions)
+    )
+)]
 pub async fn handler(
     vote_account: String,
     _query_params: QueryParams,
@@ -33,7 +42,7 @@ pub async fn handler(
 
             Ok(match versions {
                 Some(versions) => {
-                    warp::reply::with_status(json(&Response { versions }), StatusCode::OK)
+                    warp::reply::with_status(json(&ResponseVersions { versions }), StatusCode::OK)
                 }
                 _ => {
                     error!("No versions found for {}", &vote_account);

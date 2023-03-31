@@ -6,14 +6,23 @@ use serde::{Deserialize, Serialize};
 use store::dto::CommissionRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseCommissions {
     commissions: Vec<CommissionRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct QueryParams {}
 
+#[utoipa::path(
+    get,
+    tag = "Validators",
+    operation_id = "List commission changes",
+    path = "/validators/<vote_account>/commissions",
+    responses(
+        (status = 200, body = ResponseCommissions)
+    )
+)]
 pub async fn handler(
     vote_account: String,
     _query_params: QueryParams,
@@ -33,7 +42,7 @@ pub async fn handler(
 
             Ok(match commissions {
                 Some(commissions) => {
-                    warp::reply::with_status(json(&Response { commissions }), StatusCode::OK)
+                    warp::reply::with_status(json(&ResponseCommissions { commissions }), StatusCode::OK)
                 }
                 _ => {
                     error!("No commissions found for {}", &vote_account);

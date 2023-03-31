@@ -18,6 +18,15 @@ struct Response {
     reports: HashMap<i32, Vec<Report>>,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "Show the scoring report",
+    path = "/reports/scoring/<report_id>",
+    responses(
+        (status = 200)
+    )
+)]
 pub async fn handler(
     scoring_ui_id: String,
     _context: WrappedContext,

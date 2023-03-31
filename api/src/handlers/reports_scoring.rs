@@ -7,14 +7,15 @@ use serde::Serialize;
 use store::dto::ScoringRunRecord;
 use warp::{http::StatusCode, reply, Reply};
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, utoipa::ToSchema)]
 struct Report {
     created_at: DateTime<Utc>,
     md: String,
 }
 
-#[derive(Serialize, Debug)]
-struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseReportScoring {
+    #[schema(additional_properties)]
     reports: HashMap<i32, Vec<Report>>,
 }
 
@@ -49,6 +50,15 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
     }
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "List scoring reports",
+    path = "reports/scoring",
+    responses(
+        (status = 200, body = ResponseReportScoring)
+    )
+)]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Serving the scoring reports");
 
@@ -62,7 +72,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
         };
 
     Ok(warp::reply::with_status(
-        reply::json(&Response {
+        reply::json(&ResponseReportScoring {
             reports: scoring_runs
                 .into_iter()
                 .fold(Default::default(), |mut acc, scoring_run| {

@@ -2,6 +2,7 @@ pub mod admin_score_upload;
 pub mod cluster_stats;
 pub mod commissions;
 pub mod config;
+pub mod docs;
 pub mod glossary;
 pub mod list_validators;
 pub mod reports_commission_changes;

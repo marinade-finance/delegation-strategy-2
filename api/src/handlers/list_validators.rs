@@ -15,13 +15,14 @@ const DEFAULT_LIMIT: usize = 100;
 const DEFAULT_ORDER_FIELD: OrderField = OrderField::Stake;
 const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseValidators {
     validators: Vec<ValidatorRecord>,
     validators_aggregated: Vec<ValidatorsAggregated>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<usize>,
     query: Option<String>,
@@ -183,6 +184,16 @@ pub async fn get_validators(
         .collect())
 }
 
+#[utoipa::path(
+    get,
+    tag = "Validators",
+    operation_id = "List validators",
+    path = "/validators",
+    params(QueryParams),
+    responses(
+        (status = 200, body = ResponseValidators)
+    )
+)]
 pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
@@ -227,7 +238,7 @@ pub async fn handler(
 
     Ok(match validators {
         Ok(validators) => warp::reply::with_status(
-            json(&Response {
+            json(&ResponseValidators {
                 validators,
                 validators_aggregated,
             }),

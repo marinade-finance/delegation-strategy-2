@@ -6,26 +6,23 @@ use serde::{Deserialize, Serialize};
 use store::dto::UptimeRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseUptimes {
     uptimes: Vec<UptimeRecord>,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-enum OrderField {
-    Stake,
-    OtherField,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-enum OrderDirection {
-    ASC,
-    DESC,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct QueryParams {}
 
+#[utoipa::path(
+    get,
+    tag = "Validators",
+    operation_id = "List uptimes",
+    path = "/validators",
+    responses(
+        (status = 200, body = ResponseUptimes)
+    )
+)]
 pub async fn handler(
     vote_account: String,
     _query_params: QueryParams,
@@ -45,7 +42,7 @@ pub async fn handler(
 
             Ok(match uptimes {
                 Some(uptimes) => {
-                    warp::reply::with_status(json(&Response { uptimes }), StatusCode::OK)
+                    warp::reply::with_status(json(&ResponseUptimes { uptimes }), StatusCode::OK)
                 }
                 _ => {
                     error!("No uptimes found for {}", &vote_account);
