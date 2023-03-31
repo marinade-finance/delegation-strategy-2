@@ -312,8 +312,9 @@ curl -sLfS 'http://localhost:9000/metrics'
 
 ### Admin - Score upload
 ```bash
-curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=a,b,c&component_weights=1,2,3.34&ui_id=fw3' -X POST \
+curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=COMMISSION_ADJUSTED_CREDITS,GRACE_SKIP_RATE,DC_CONCENTRATION&component_weights=10,1,2&ui_id=fw3' -X POST \
   -H 'Content-Type: multipart/form-data' \
+  -H 'Authorization: foo' \
   --form 'scores_csv=@./scores.csv'
 ```
 
