@@ -3,6 +3,9 @@ use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
 
+const MAX_ALLOWED_COMMISSION: u8 = 10;
+const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
+
 fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, HashSet<String>>> {
     let mut blacklist: Vec<BlacklistRecord> = Default::default();
     let mut rdr = csv::Reader::from_path(blacklist_path)?;
@@ -77,13 +80,37 @@ async fn voters_with_marinade_stake_in_epoch(
         .collect())
 }
 
+async fn voters_credits_performance_in_epoch(
+    psql_client: &Client,
+    epoch: u64,
+) -> anyhow::Result<HashMap<String, f64>> {
+    log::info!(
+        "Loading list of poor voters: {}",
+        epoch
+    );
+    Ok(psql_client
+        .query(
+            "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) as stake_weighted_avg_credits FROM validators WHERE epoch = $1)
+            SELECT
+                vote_account,
+                credits,
+                coalesce(credits / stake_weighted_avg_credits, 0)::double precision as credits_performance
+            FROM validators left join stats on 1 = 1
+            WHERE epoch = $1",
+            &[&Decimal::from(epoch)],
+        )
+        .await?
+        .iter()
+        .map(|row| (row.get("vote_account"), row.get("credits_performance")))
+        .collect())
+}
+
 pub async fn load_unstake_hints(
     psql_client: &Client,
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<UnstakeHintRecord>> {
     log::info!("Loading unstake hints in epoch: {}", epoch);
-    let max_allowed_commission = 10;
     let mut hints: HashMap<_, HashSet<_>> = Default::default();
 
     let marinade_staked_validators =
@@ -94,10 +121,11 @@ pub async fn load_unstake_hints(
     } else {
         Default::default()
     };
+    let voters_credits_performance = voters_credits_performance_in_epoch(psql_client, epoch).await?;
     let blacklist = load_blacklist(blacklist_path)?;
 
     for (vote_account, commission) in commissions_in_this_epoch {
-        if commission > max_allowed_commission {
+        if commission > MAX_ALLOWED_COMMISSION {
             hints
                 .entry(vote_account)
                 .or_default()
@@ -106,7 +134,7 @@ pub async fn load_unstake_hints(
     }
 
     for (vote_account, commission) in commissions_in_previous_epoch {
-        if commission > max_allowed_commission {
+        if commission > MAX_ALLOWED_COMMISSION {
             hints
                 .entry(vote_account)
                 .or_default()
@@ -119,6 +147,15 @@ pub async fn load_unstake_hints(
             .entry(vote_account)
             .or_default()
             .insert(UnstakeHint::Blacklist);
+    }
+
+    for (vote_account, performance) in voters_credits_performance {
+        if performance < MIN_REQUIRED_CREDITS_PERFORMANCE {
+            hints
+                .entry(vote_account)
+                .or_default()
+                .insert(UnstakeHint::LowCredits);
+        }
     }
 
     Ok(marinade_staked_validators
