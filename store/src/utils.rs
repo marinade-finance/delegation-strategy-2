@@ -1,7 +1,8 @@
 use crate::dto::{
     BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, ScoringRunRecord,
     UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorWarning, ValidatorsAggregated, VersionRecord,
+    ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
+    VersionRecord,
 };
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -757,6 +758,7 @@ pub async fn load_scores(
                 ui_hints,
                 component_scores,
                 component_ranks,
+                component_values,
                 eligible_stake_algo,
                 eligible_stake_mnde,
                 eligible_stake_msol,
@@ -785,6 +787,7 @@ pub async fn load_scores(
                     ui_hints: row.get("ui_hints"),
                     component_scores: row.get("component_scores"),
                     component_ranks: row.get("component_ranks"),
+                    component_values: row.get("component_values"),
                     eligible_stake_algo: row.get("eligible_stake_algo"),
                     eligible_stake_mnde: row.get("eligible_stake_mnde"),
                     eligible_stake_msol: row.get("eligible_stake_msol"),
@@ -1042,6 +1045,21 @@ pub async fn load_validators_aggregated_flat(
     Ok(validators)
 }
 
+fn map_to_ordered_component_values(
+    components: &Vec<&str>,
+    row: &ValidatorScoringCsvRow,
+) -> Vec<Option<String>> {
+    components
+        .iter()
+        .map(|component| match *component {
+            "COMMISSION_ADJUSTED_CREDITS" => Some(row.avg_adjusted_credits.to_string()),
+            "GRACE_SKIP_RATE" => Some(row.avg_grace_skip_rate.to_string()),
+            "DC_CONCENTRATION" => Some(row.avg_dc_concentration.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 pub async fn store_scoring(
     mut psql_client: &mut Client,
     epoch: i32,
@@ -1090,6 +1108,16 @@ pub async fn store_scoring(
         })
         .collect();
 
+    let component_values_by_vote_account: HashMap<_, _> = scores
+        .iter()
+        .map(|row| {
+            (
+                row.vote_account.clone(),
+                map_to_ordered_component_values(&components, row),
+            )
+        })
+        .collect();
+
     let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
         .iter()
         .map(|row| {
@@ -1107,7 +1135,7 @@ pub async fn store_scoring(
     for chunk in scores.chunks(500) {
         let mut query = InsertQueryCombiner::new(
             "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
+            "vote_account, score, component_scores, component_ranks, component_values, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
         );
         for row in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
@@ -1117,6 +1145,9 @@ pub async fn store_scoring(
                     .get(&row.vote_account)
                     .unwrap(),
                 component_ranks_by_vote_account
+                    .get(&row.vote_account)
+                    .unwrap(),
+                component_values_by_vote_account
                     .get(&row.vote_account)
                     .unwrap(),
                 &row.rank,
