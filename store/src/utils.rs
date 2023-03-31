@@ -993,9 +993,10 @@ pub async fn load_validators_aggregated_flat(
                 "with
                 cluster_stake as (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate as (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake)
+                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
+                agg_versions as (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account)
                 select
-                    vote_account,
+                    validators.vote_account,
                     min(activated_stake / 1e9)::double precision as minimum_stake,
                     avg(activated_stake / 1e9)::double precision as avg_stake,
                     coalesce(avg(dc_concentration), 0)::double precision as avg_dc_concentration,
@@ -1006,14 +1007,15 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(coalesce(validators.dc_aso)))[1], 'Unknown') dc_aso,
                     coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) as marinade_stake,
-                    coalesce((array_agg(version ORDER BY validators.epoch DESC))[1], '0.0.0') as version
+                    coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') as last_version
                 from
                     validators
                     left join dc on dc.dc_aso = validators.dc_aso and dc.epoch = validators.epoch
                     left join cluster_skip_rate on cluster_skip_rate.epoch = validators.epoch
+                    left join agg_versions on validators.vote_account = agg_versions.vote_account
                 where
                 validators.epoch between $1 and $2
-                group by vote_account
+                group by validators.vote_account
                 having count(*) = $3 and count(*) filter (where credits > 0) > 0
                 order by avg_adjusted_credits desc;
             ",
@@ -1035,7 +1037,7 @@ pub async fn load_validators_aggregated_flat(
             dc_aso: row.get("dc_aso"),
             mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into()?,
             marinade_stake: row.get("marinade_stake"),
-            version: row.get("version"),
+            version: row.get("last_version"),
         });
     }
 
