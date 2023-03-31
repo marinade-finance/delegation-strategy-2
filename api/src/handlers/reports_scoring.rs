@@ -30,13 +30,15 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
             ```bash\n\
             mkdir -p \"scoring-{}\"\n\
             cd \"scoring-{}\"\n\
-            wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}\" \
+            wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
                 --input-file - --no-clobber <<<$'validators.csv\nself-stake.csv\nparams.env\nblacklist.csv'\n\
             ```\n\
             Generate scores:\n\
             ```bash\n\
             wget https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring.R\n\
-            SCORING_WORKING_DIRECTORY=. bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
+            export SCORING_WORKING_DIRECTORY=.\n\
+            export SCORING_R=./scoring.R\n\
+            bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
             ```\n\
         ",
             scoring_run.ui_id,
