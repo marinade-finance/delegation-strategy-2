@@ -45,7 +45,7 @@ pub async fn handler(
     Ok(warp::reply::with_header(
         String::from_utf8(csv_content.into_inner().unwrap()).unwrap(),
         "Content-Type",
-        "text/csv",
+        "text/plain", // to confuse browsers and allow inline opening
     )
     .into_response())
 }
