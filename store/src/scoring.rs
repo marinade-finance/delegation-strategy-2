@@ -3,6 +3,9 @@ use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
 
+const MAX_ALLOWED_COMMISSION: u8 = 10;
+const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
+
 fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, HashSet<String>>> {
     let mut blacklist: Vec<BlacklistRecord> = Default::default();
     let mut rdr = csv::Reader::from_path(blacklist_path)?;
@@ -108,8 +111,6 @@ pub async fn load_unstake_hints(
     epoch: u64,
 ) -> anyhow::Result<Vec<UnstakeHintRecord>> {
     log::info!("Loading unstake hints in epoch: {}", epoch);
-    let max_allowed_commission = 10;
-    let min_required_credits_performance = 0.5;
     let mut hints: HashMap<_, HashSet<_>> = Default::default();
 
     let marinade_staked_validators =
@@ -124,7 +125,7 @@ pub async fn load_unstake_hints(
     let blacklist = load_blacklist(blacklist_path)?;
 
     for (vote_account, commission) in commissions_in_this_epoch {
-        if commission > max_allowed_commission {
+        if commission > MAX_ALLOWED_COMMISSION {
             hints
                 .entry(vote_account)
                 .or_default()
@@ -133,7 +134,7 @@ pub async fn load_unstake_hints(
     }
 
     for (vote_account, commission) in commissions_in_previous_epoch {
-        if commission > max_allowed_commission {
+        if commission > MAX_ALLOWED_COMMISSION {
             hints
                 .entry(vote_account)
                 .or_default()
@@ -149,7 +150,7 @@ pub async fn load_unstake_hints(
     }
 
     for (vote_account, performance) in voters_credits_performance {
-        if performance < min_required_credits_performance {
+        if performance < MIN_REQUIRED_CREDITS_PERFORMANCE {
             hints
                 .entry(vote_account)
                 .or_default()
