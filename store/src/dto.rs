@@ -309,6 +309,7 @@ pub struct ValidatorScoreRecord {
     pub ui_hints: Vec<String>,
     pub component_scores: Vec<f64>,
     pub component_ranks: Vec<i32>,
+    pub component_values: Vec<Option<String>>,
     pub eligible_stake_algo: bool,
     pub eligible_stake_mnde: bool,
     pub eligible_stake_msol: bool,
