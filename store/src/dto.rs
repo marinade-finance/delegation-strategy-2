@@ -330,6 +330,7 @@ pub enum UnstakeHint {
     HighCommission,
     HighCommissionInPreviousEpoch,
     Blacklist,
+    LowCredits,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
