@@ -18,7 +18,7 @@ pub struct QueryParams {}
     get,
     tag = "Validators",
     operation_id = "List uptimes",
-    path = "/validators",
+    path = "/validators/<vote_account>/uptimes",
     responses(
         (status = 200, body = ResponseUptimes)
     )

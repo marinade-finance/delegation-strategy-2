@@ -13,7 +13,7 @@ pub struct ResponseScores {
     get,
     tag = "Scoring",
     operation_id = "List last scores for all validators",
-    path = "/validators",
+    path = "/validators/scores",
     responses(
         (status = 200, body = ResponseScores)
     )
