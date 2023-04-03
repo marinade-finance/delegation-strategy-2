@@ -5,13 +5,13 @@ use std::cmp::Ordering;
 use store::dto::CommissionRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseCommissionChanges {
     commission_changes: Vec<CommissionChange>,
 }
 
-#[derive(Serialize, Debug)]
-struct CommissionChange {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct CommissionChange {
     vote_account: String,
     from: u8,
     to: u8,
@@ -19,6 +19,15 @@ struct CommissionChange {
     epoch_slot: u64,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Validators",
+    operation_id = "List commission changes",
+    path = "reports/commission-changes",
+    responses(
+        (status = 200, body = ResponseCommissionChanges)
+    )
+)]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching commission changes");
     let mut commissions = context.read().await.cache.get_all_commissions();
@@ -59,7 +68,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
     });
 
     Ok(warp::reply::with_status(
-        json(&Response { commission_changes }),
+        json(&ResponseCommissionChanges { commission_changes }),
         StatusCode::OK,
     ))
 }

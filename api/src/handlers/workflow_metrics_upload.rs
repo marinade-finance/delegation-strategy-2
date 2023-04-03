@@ -1,13 +1,9 @@
 use crate::metrics;
 use crate::utils::response_error;
 use serde::{Deserialize, Serialize};
-use warp::{
-    http::StatusCode,
-    reply::json,
-    Reply,
-};
+use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 pub struct QueryParams {
     job_scheduled: Option<bool>,
     job_success: Option<bool>,
@@ -16,11 +12,21 @@ pub struct QueryParams {
     apply_scoring_duration: Option<i64>,
 }
 
-#[derive(Serialize)]
-struct Response {
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ResponseAdminWorkflowMetrics {
     message: String,
 }
 
+#[utoipa::path(
+    post,
+    tag = "Admin",
+    operation_id = "Push workflow metrics",
+    path = "/admin/metrics",
+    params(QueryParams),
+    responses(
+        (status = 200, body = ResponseAdminWorkflowMetrics)
+    )
+)]
 pub async fn handler(
     logged_in: bool,
     query_params: QueryParams,
@@ -59,5 +65,10 @@ pub async fn handler(
             .set(apply_scoring_duration);
     }
 
-    Ok(warp::reply::with_status(json(&Response { message:("Metrics uploaded").to_string() }), StatusCode::OK))
+    Ok(warp::reply::with_status(
+        json(&ResponseAdminWorkflowMetrics {
+            message: "Metrics uploaded".into(),
+        }),
+        StatusCode::OK,
+    ))
 }

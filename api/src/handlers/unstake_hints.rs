@@ -3,16 +3,26 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize)]
-pub struct Response {
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ResponseUnstakeHints {
     unstake_hints: Vec<store::dto::UnstakeHintRecord>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 pub struct QueryParams {
     epoch: u64,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "List unstake hints",
+    path = "/unstake-hints",
+    params(QueryParams),
+    responses(
+        (status = 200, body = ResponseValidators)
+    )
+)]
 pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
@@ -29,7 +39,7 @@ pub async fn handler(
 
     Ok(match unstake_hints {
         Ok(unstake_hints) => {
-            warp::reply::with_status(json(&Response { unstake_hints }), StatusCode::OK)
+            warp::reply::with_status(json(&ResponseUnstakeHints { unstake_hints }), StatusCode::OK)
         }
         Err(err) => {
             error!("Failed to load unstake hints: {}", err);

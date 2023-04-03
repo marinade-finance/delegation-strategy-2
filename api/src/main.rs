@@ -1,6 +1,6 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, glossary, list_validators,
+    admin_score_upload, cluster_stats, commissions, config, docs, glossary, list_validators,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
     unstake_hints, uptimes, validator_score_breakdown, validator_scores, validators_flat, versions,
     workflow_metrics_upload,
@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use tokio_postgres::NoTls;
 use warp::{Filter, Rejection};
 
+pub mod api_docs;
 pub mod cache;
 pub mod context;
 pub mod handlers;
@@ -72,6 +73,14 @@ async fn main() -> anyhow::Result<()> {
     let top_level = warp::path::end()
         .and(warp::get())
         .map(|| "API for Delegation Strategy 2.0");
+
+    let route_api_docs_oas = warp::path("docs.json")
+        .and(warp::get())
+        .map(|| warp::reply::json(&<crate::api_docs::ApiDoc as utoipa::OpenApi>::openapi()));
+
+    let route_api_docs_html = warp::path("docs")
+        .and(warp::get())
+        .and_then(docs::handler);
 
     let route_validators = warp::path!("validators")
         .and(warp::path::end())
@@ -188,6 +197,8 @@ async fn main() -> anyhow::Result<()> {
         .and_then(workflow_metrics_upload::handler);
 
     let routes = top_level
+        .or(route_api_docs_oas)
+        .or(route_api_docs_html)
         .or(route_cluster_stats)
         .or(route_validators)
         .or(route_validator_score_breakdown)

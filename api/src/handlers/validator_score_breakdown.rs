@@ -5,19 +5,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use store::dto::{ScoringRunRecord, ValidatorScoreRecord};
 use store::utils::to_fixed_for_sort;
+use utoipa::IntoParams;
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseScoreBreakdown {
     score_breakdown: ScoreBreakdown,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, IntoParams)]
 pub struct QueryParams {
     query_vote_account: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
 pub struct ScoreBreakdown {
     pub vote_account: String,
     pub score: f64,
@@ -41,6 +42,16 @@ pub struct ScoreBreakdown {
     pub ui_id: String,
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "Show last score breakdown for a validator",
+    path = "/validators/score-breakdown",
+    params(QueryParams),
+    responses(
+        (status = 200, body = ResponseScoreBreakdown)
+    )
+)]
 pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
@@ -105,7 +116,7 @@ pub async fn handler(
         .min_by(|a, b| to_fixed_for_sort(*a).cmp(&to_fixed_for_sort(*b)));
 
     Ok(warp::reply::with_status(
-        json(&Response {
+        json(&ResponseScoreBreakdown {
             score_breakdown: ScoreBreakdown {
                 vote_account,
                 score,

@@ -4,6 +4,7 @@ use crate::{context::WrappedContext, utils::response_error_500};
 use bytes::BufMut;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
+use utoipa::IntoParams;
 use warp::{
     http::StatusCode,
     multipart::{FormData, Part},
@@ -13,12 +14,12 @@ use warp::{
 
 const SCORES_CSV_PART_NAME: &str = "scores_csv";
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseAdminScoreUpload {
     rows_processed: u64,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, IntoParams)]
 pub struct QueryParams {
     epoch: i32,
     components: String,
@@ -26,6 +27,16 @@ pub struct QueryParams {
     ui_id: String,
 }
 
+#[utoipa::path(
+    post,
+    tag = "Admin",
+    operation_id = "Upload score results",
+    path = "/admin/scores",
+    params(QueryParams),
+    responses(
+        (status = 200, body = ResponseAdminScoreUpload)
+    )
+)]
 pub async fn handler(
     logged_in: bool,
     query_params: QueryParams,
@@ -115,7 +126,7 @@ pub async fn handler(
     .await;
 
     Ok(match result {
-        Ok(_) => warp::reply::with_status(json(&Response { rows_processed }), StatusCode::OK),
+        Ok(_) => warp::reply::with_status(json(&ResponseAdminScoreUpload { rows_processed }), StatusCode::OK),
         Err(err) => {
             log::error!("Failed to store the scoring: {}", err);
             response_error_500("Failed to store the scoring!".into())

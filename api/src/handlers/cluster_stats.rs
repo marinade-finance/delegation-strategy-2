@@ -8,8 +8,8 @@ use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseClusterStats {
     cluster_stats: ClusterStats,
 }
 
@@ -18,6 +18,15 @@ pub struct QueryParams {
     epochs: Option<usize>,
 }
 
+#[utoipa::path(
+    get,
+    tag = "General",
+    operation_id = "Show cluster stats",
+    path = "/cluster-stats",
+    responses(
+        (status = 200, body = ResponseClusterStats)
+    )
+)]
 pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
@@ -34,7 +43,7 @@ pub async fn handler(
 
     Ok(match cluster_stats {
         Some(cluster_stats) => {
-            warp::reply::with_status(json(&Response { cluster_stats }), StatusCode::OK)
+            warp::reply::with_status(json(&ResponseClusterStats { cluster_stats }), StatusCode::OK)
         }
         _ => {
             error!("No cluster stats found");

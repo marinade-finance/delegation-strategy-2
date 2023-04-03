@@ -5,12 +5,12 @@ use solana_program::native_token::LAMPORTS_PER_SOL;
 use store::utils::get_last_epoch;
 use warp::{http::StatusCode, reply, Reply};
 
-#[derive(Serialize, Debug)]
-pub struct Response {
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseReportStaking {
     planned: Vec<Stake>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct Stake {
     vote_account: String,
     identity: String,
@@ -91,6 +91,15 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
     Ok(records)
 }
 
+#[utoipa::path(
+    get,
+    tag = "Scoring",
+    operation_id = "Show planned stakes",
+    path = "/reports/staking",
+    responses(
+        (status = 200, body = ResponseReportStaking)
+    )
+)]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Serving the staking report");
     metrics::REQUEST_COUNT_REPORT_STAKING.inc();
@@ -109,7 +118,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
                 }
             }
             return Ok(warp::reply::with_status(
-                reply::json(&Response { planned: stakes }),
+                reply::json(&ResponseReportStaking { planned: stakes }),
                 StatusCode::OK,
             ));
         }
