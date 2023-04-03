@@ -1,7 +1,11 @@
 use log::info;
 use warp::{http::Response, Reply};
 
-const HTML: &str = "<html>
+const HTML: &str = "<!doctype html>
+<html>
+<head>
+  <meta charset=\"UTF-8\"/>
+</head>
 <body>
   <redoc spec-url=\"/docs.json\" native-scrollbars></redoc>
   <script src=\"https://public.marinade.finance/redoc.v2.0.0.standalone.js\"></script>
