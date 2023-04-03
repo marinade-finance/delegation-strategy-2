@@ -14,6 +14,13 @@ This repository contains all necessary components to track and collect validator
 Follow the steps described for each report on [the staking reports page](https://marinade.finance/validators/reports/)
 
 ### Create a new report
+Prerequisities:
+- [R installed](https://cran.r-project.org/)
+- R packages installed (run from the cloned repository):
+```bash
+./scripts/scoring-install.bash
+```
+
 Inside the cloned repository run:
 ```bash
 ./scripts/scoring-fetch-inputs.bash                   # To fetch the latest data from API
