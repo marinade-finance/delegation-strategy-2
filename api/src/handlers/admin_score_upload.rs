@@ -30,7 +30,7 @@ pub struct QueryParams {
 #[utoipa::path(
     post,
     tag = "Admin",
-    operation_id = "List validators",
+    operation_id = "Upload score results",
     path = "/admin/scores",
     params(QueryParams),
     responses(
