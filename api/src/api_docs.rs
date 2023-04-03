@@ -34,6 +34,7 @@ use utoipa::OpenApi;
         schemas(store::dto::CommissionRecord),
         schemas(store::dto::DCConcentrationStats),
         schemas(store::dto::UnstakeHintRecord),
+        schemas(store::dto::UptimeRecord),
         schemas(store::dto::ValidatorEpochStats),
         schemas(store::dto::ValidatorRecord),
         schemas(store::dto::ValidatorsAggregated),

@@ -196,7 +196,7 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct UptimeRecord {
     pub epoch: u64,
     pub status: String,
