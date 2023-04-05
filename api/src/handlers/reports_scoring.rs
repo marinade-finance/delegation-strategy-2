@@ -34,6 +34,10 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
             wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
                 --input-file - --no-clobber <<<$'validators.csv\nself-stake.csv\nparams.env\nblacklist.csv'\n\
             ```\n\
+            Install dependencies for R (assumes you have R installed already):\n\
+            ```bash\n\
+            bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-install.bash)\"\n\
+            ```\n\
             Generate scores:\n\
             ```bash\n\
             wget https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring.R\n\
