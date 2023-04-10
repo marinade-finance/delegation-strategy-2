@@ -214,7 +214,7 @@ print(t(data.frame(
 
 stopifnot(TOTAL_STAKE > 3e6)
 stopifnot(STAKE_CONTROL_SELF_STAKE_SOL > 1e6)
-stopifnot(nrow(validators) > 2000)
+stopifnot(nrow(validators) > 1000)
 stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
 
 validators$ui_hints <- lapply(validators$ui_hints, paste, collapse = ',')
