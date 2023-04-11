@@ -1007,7 +1007,7 @@ pub async fn load_validators_aggregated_flat(
                     coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision as avg_grace_skip_rate,		
                     max(coalesce(commission_effective, commission_advertised, 100)) as max_commission,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision as avg_adjusted_credits,
-                    coalesce((array_agg(coalesce(validators.dc_aso)))[1], 'Unknown') dc_aso,
+                    coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) as marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') as last_version
