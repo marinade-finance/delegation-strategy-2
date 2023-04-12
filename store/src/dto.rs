@@ -280,6 +280,7 @@ pub struct ValidatorScoringCsvRow {
     pub vote_account: String,
     pub score: f64,
     pub rank: i32,
+    pub mnde_votes: Decimal,
     pub ui_hints: String,
     #[serde(deserialize_with = "bool_from_int")]
     pub eligible_stake_algo: bool,
@@ -306,6 +307,7 @@ pub struct ValidatorScoreRecord {
     pub vote_account: String,
     pub score: f64,
     pub rank: i32,
+    pub mnde_votes: u64,
     pub ui_hints: Vec<String>,
     pub component_scores: Vec<f64>,
     pub component_ranks: Vec<i32>,
