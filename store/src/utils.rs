@@ -755,6 +755,7 @@ pub async fn load_scores(
             SELECT vote_account,
                 score,
                 rank,
+                mnde_votes,
                 ui_hints,
                 component_scores,
                 component_ranks,
@@ -784,6 +785,7 @@ pub async fn load_scores(
                     vote_account: vote_account.clone(),
                     score: row.get("score"),
                     rank: row.get("rank"),
+                    mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into().unwrap(),
                     ui_hints: row.get("ui_hints"),
                     component_scores: row.get("component_scores"),
                     component_ranks: row.get("component_ranks"),
@@ -1137,7 +1139,7 @@ pub async fn store_scoring(
     for chunk in scores.chunks(500) {
         let mut query = InsertQueryCombiner::new(
             "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, component_values, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
+            "vote_account, score, component_scores, component_ranks, component_values, mnde_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
         );
         for row in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
@@ -1152,6 +1154,7 @@ pub async fn store_scoring(
                 component_values_by_vote_account
                     .get(&row.vote_account)
                     .unwrap(),
+                &row.mnde_votes,
                 &row.rank,
                 ui_hints_parsed.get(&row.vote_account).unwrap(),
                 &row.eligible_stake_algo,
