@@ -8,15 +8,20 @@ if (length(commandArgs(trailingOnly=TRUE)) > 0) {
   args <- commandArgs(trailingOnly=TRUE)
 }
 validators <- read.csv(args[1])
+
+library(knitr)
 library(ggplot2)
 library(treemapify)
 library(dplyr)
+
+knit_hooks$set(inline = function(x) {
+  prettyNum(x, big.mark=",")
+})
 ```
 # Marinade Scoring Report `r args[2]`
 ## Overview
 ```{r, echo=FALSE}
-library(knitr)
-df <- data.frame(type = c("Performance Based Stake", "MNDE voting", "mSOL directing", "", "**Total Stake**"),
+df <- data.frame(type = c("Performance-based stake", "MNDE directed stake", "mSOL directed stake", "", "**Total stake**"),
                  stake = c(
                    sum(validators$target_stake_algo),
                    sum(validators$target_stake_mnde),
@@ -39,7 +44,7 @@ df <- data.frame(type = c("Performance Based Stake", "MNDE voting", "mSOL direct
                    round(sum(validators$avg_adjusted_credits * validators$target_stake) / sum(validators$target_stake))
                  )
 )
-kable(df, col.names = c("Stake type", "Stake amount", "Validators", "Stake-weighted, commission-adjusted voting performance"))
+kable(df, col.names = c("Delegation strategy", "Stake (SOL)", "Validators", "Stake-weighted performance"), align = "r")
 ```
 
 The plot below shows the voting performance of all validators in Solana. Purple lines denote validators who are supposed to receive any stake from Marinade.

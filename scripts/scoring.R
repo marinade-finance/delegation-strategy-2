@@ -14,7 +14,7 @@ file_out_stakes <- args[2]
 file_params <- args[3]
 file_blacklist <- args[4]
 file_validators <- args[5]
-file_self_stake <- args[6]
+file_msol_votes <- args[6]
 
 t(data.frame(
   file_out_scores,
@@ -22,10 +22,10 @@ t(data.frame(
   file_params,
   file_blacklist,
   file_validators,
-  file_self_stake
+  file_msol_votes
 ))
 
-self_stake <- read.csv(file_self_stake)
+msol_votes <- read.csv(file_msol_votes)
 validators <- read.csv(file_validators)
 blacklist <- read.csv(file_blacklist)
 load_dot_env(file = file_params)
@@ -45,30 +45,17 @@ ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE
 ELIGIBILITY_MNDE_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MIN_STAKE"))
 ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER"))
 
+ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION"))
+ELIGIBILITY_MSOL_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_MSOL_STAKE_MIN_STAKE"))
+ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER"))
+
 ELIGIBILITY_MIN_VERSION <- Sys.getenv("ELIGIBILITY_MIN_VERSION")
 
 MNDE_VALIDATOR_CAP <- as.numeric(Sys.getenv("MNDE_VALIDATOR_CAP"))
 
 STAKE_CONTROL_MNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_MNDE"))
-STAKE_CONTROL_SELF_STAKE_MAX <- as.numeric(Sys.getenv("STAKE_CONTROL_SELF_STAKE_MAX"))
-
-# Cap self stake, so everything above x % of TVL can overflow to algo stake
-self_stake$max_target_stake <- pmin(self_stake$current_balance, self_stake$deposited_balance) * (pmin(self_stake$current_balance, self_stake$deposited_balance) > 10)
-self_stake_total <- sum(self_stake$max_target_stake)
-self_stake_total_max <- STAKE_CONTROL_SELF_STAKE_MAX * TOTAL_STAKE
-self_stake_total_capped <- min(self_stake_total, self_stake_total_max)
-
-STAKE_CONTROL_SELF_STAKE <- self_stake_total_capped / TOTAL_STAKE
-STAKE_CONTROL_SELF_STAKE_SOL <- self_stake_total_capped
-STAKE_CONTROL_SELF_STAKE_OVERFLOW_SOL <- max(0, self_stake_total - self_stake_total_capped)
-
-STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_MNDE - STAKE_CONTROL_SELF_STAKE
-
-# Apply self stake to validators dataframe
-validators$target_stake_msol <- 0
-for(i in 1:nrow(self_stake)) {
-  validators[validators$vote_account == self_stake[i, "vote_account"], ]$target_stake_msol <- round(self_stake[i, "max_target_stake"] / sum(self_stake$max_target_stake) * self_stake_total_capped)
-}
+STAKE_CONTROL_MSOL <- as.numeric(Sys.getenv("STAKE_CONTROL_MSOL"))
+STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_MNDE - STAKE_CONTROL_MSOL
 
 # Perform min-max normalization of algo staking formula's components
 validators$normalized_dc_concentration <- normalize(1 - validators$avg_dc_concentration)
@@ -127,6 +114,42 @@ min_score_in_algo_set <- min(validators_algo_set$score)
 validators$in_algo_stake_set <- 0
 validators$in_algo_stake_set[validators$score >= min_score_in_algo_set] <- 1
 validators$in_algo_stake_set[validators$eligible_stake_algo == 0] <- 0
+
+# Mark msol votes for each validator
+validators$msol_votes <- 0
+if (nrow(msol_votes) > 0) {
+  for(i in 1:nrow(msol_votes)) {
+    validators[validators$vote_account == msol_votes[i, "vote_account"], ]$msol_votes <- msol_votes[i, "msol_votes"]
+  }
+}
+
+# Apply msol staking eligibility criteria
+validators$eligible_stake_msol <- 1 - validators$blacklisted
+validators$eligible_stake_msol[validators$max_commission > ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_stake_msol[validators$minimum_stake < ELIGIBILITY_MSOL_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_msol[validators$score < min_score_in_algo_set * ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER] <- 0
+validators$eligible_stake_msol[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
+
+for (i in 1:nrow(validators)) {
+  if (validators[i, "max_commission"] > ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MSOL_STAKE_MAX_COMMISSION_OVER_10"))
+  }
+  if (validators[i, "minimum_stake"] < ELIGIBILITY_MSOL_STAKE_MIN_STAKE) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MSOL_STAKE_MIN_STAKE_BELOW_100"))
+  }
+  if (validators[i, "score"] < min_score_in_algo_set * ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MSOL_STAKE_SCORE_TOO_LOW"))
+  }
+}
+
+# Apply eligibility on votes to get effective votes
+msol_valid_votes <- round(validators$msol_votes * validators$eligible_stake_msol)
+msol_valid_votes_total <- sum(msol_valid_votes)
+
+validators$msol_power <- 0
+if (msol_valid_votes_total > 0) {
+  validators$msol_power <- msol_valid_votes / msol_valid_votes_total
+}
 
 # Apply mnde staking eligibility criteria
 validators$eligible_stake_mnde <- 1 - validators$blacklisted
@@ -188,11 +211,14 @@ if (sum(validators$mnde_power) > 0) {
   mnde_overflow_power <- 1
 }
 
-STAKE_CONTROL_MNDE_SOL <- TOTAL_STAKE * STAKE_CONTROL_MNDE
-STAKE_CONTROL_MNDE_OVERFLOW_SOL <- mnde_overflow_power * STAKE_CONTROL_MNDE_SOL
-STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_MNDE_OVERFLOW_SOL
+STAKE_CONTROL_MNDE_SOL <- TOTAL_STAKE * STAKE_CONTROL_MNDE * (1 - mnde_overflow_power)
+STAKE_CONTROL_MNDE_OVERFLOW_SOL <- mnde_overflow_power * TOTAL_STAKE * STAKE_CONTROL_MNDE
+STAKE_CONTROL_MSOL_SOL <- if (msol_valid_votes_total > 0) { TOTAL_STAKE * STAKE_CONTROL_MSOL } else { 0 }
+STAKE_CONTROL_MSOL_UNUSED_SOL <- if (msol_valid_votes_total > 0) { 0 } else { TOTAL_STAKE * STAKE_CONTROL_MSOL }
+STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_MNDE_OVERFLOW_SOL + STAKE_CONTROL_MSOL_UNUSED_SOL
 
 validators$target_stake_mnde <- round(validators$mnde_power * STAKE_CONTROL_MNDE_SOL)
+validators$target_stake_msol <- round(validators$msol_power * STAKE_CONTROL_MSOL_SOL)
 validators$target_stake_algo <- round(validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL)
 validators$target_stake <- validators$target_stake_mnde + validators$target_stake_algo + validators$target_stake_msol
 
@@ -202,8 +228,8 @@ perf_target_stake_msol <- sum(validators$avg_adjusted_credits * validators$targe
 
 print(t(data.frame(
   TOTAL_STAKE,
-  STAKE_CONTROL_SELF_STAKE_SOL,
-  STAKE_CONTROL_SELF_STAKE_OVERFLOW_SOL,
+  STAKE_CONTROL_MSOL_SOL,
+  STAKE_CONTROL_MSOL_UNUSED_SOL,
   STAKE_CONTROL_MNDE_SOL,
   STAKE_CONTROL_MNDE_OVERFLOW_SOL,
   STAKE_CONTROL_ALGO_SOL,
@@ -213,7 +239,7 @@ print(t(data.frame(
 )))
 
 stopifnot(TOTAL_STAKE > 3e6)
-stopifnot(STAKE_CONTROL_SELF_STAKE_SOL > 1e6)
+stopifnot(STAKE_CONTROL_MSOL_SOL > 900000)
 stopifnot(nrow(validators) > 1000)
 stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
 

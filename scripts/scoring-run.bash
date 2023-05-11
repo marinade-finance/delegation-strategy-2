@@ -15,4 +15,4 @@ Rscript --vanilla "$file_scoring_r" \
     "$(realpath "$working_directory/params.env")" \
     "$(realpath "$working_directory/blacklist.csv")" \
     "$(realpath "$working_directory/validators.csv")" \
-    "$(realpath "$working_directory/self-stake.csv")"
+    "$(realpath "$working_directory/msol-votes.csv")"
