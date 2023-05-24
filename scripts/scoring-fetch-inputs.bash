@@ -4,8 +4,8 @@ set -exu
 
 file_epoch_info_response="./epoch-info.txt"
 file_response_tvl="./tvl.txt"
-file_response_self_stake="./self-stake.txt"
-file_parsed_self_stake="./self-stake.csv"
+file_response_msol_votes="./msol-votes.json"
+file_parsed_msol_votes="./msol-votes.csv"
 file_validators="./validators.csv"
 file_blacklist="./blacklist.csv"
 file_params="./params.env"
@@ -20,13 +20,13 @@ TOTAL_STAKE=$(<"$file_response_tvl" jq 'fromjson? | .total_virtual_staked_sol' -
 
 echo "Total Stake: $TOTAL_STAKE"
 
-curl -sfLS http://stake-monitor.marinade.finance > "$file_response_self_stake"
-echo "vote_account,current_balance,deposited_balance" > "$file_parsed_self_stake"
-<"$file_response_self_stake" jq 'fromjson? | .[] | [.voteAccount, .total, .depositStakeAmount + .depositSolAmount] | @csv' -R -r >> "$file_parsed_self_stake"
+curl -sfLS https://snapshots-api.marinade.finance/v1/votes/msol/latest > "$file_response_msol_votes"
+echo "vote_account,msol_votes" > "$file_parsed_msol_votes"
+jq '.records | group_by(.validatorVoteAccount) | map(.[0].validatorVoteAccount + "," + (map(.amount | tonumber? // 0) | add | tostring)) | join("\n")' -r "$file_response_msol_votes" >> "$file_parsed_msol_votes"
 
-curl -sfLS "https://validators-api-dev.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
+curl -sfLS "https://validators-api.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
 
-curl -sfLS "https://validators-api-dev.marinade.finance/unstake-hints?epoch=$(( current_epoch ))" | jq > "$file_unstake_hints"
+curl -sfLS "https://validators-api.marinade.finance/unstake-hints?epoch=$(( current_epoch ))" | jq > "$file_unstake_hints"
 
 curl -sfLS "https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/blacklist.csv" > "$file_blacklist"
 
@@ -49,12 +49,16 @@ ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION=10
 ELIGIBILITY_MNDE_STAKE_MIN_STAKE=100
 ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER=0.9
 
+ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION=10
+ELIGIBILITY_MSOL_STAKE_MIN_STAKE=100
+ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER=0.8
+
 ELIGIBILITY_MIN_VERSION=1.13.5
 
 MNDE_VALIDATOR_CAP=0.1
 
 STAKE_CONTROL_MNDE=0.2
-STAKE_CONTROL_SELF_STAKE_MAX=0.3
+STAKE_CONTROL_MSOL=0.2
 EOF
 
 cat "$file_params"
