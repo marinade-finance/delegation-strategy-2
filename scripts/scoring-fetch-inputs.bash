@@ -23,7 +23,6 @@ echo "Total Stake: $TOTAL_STAKE"
 curl -sfLS https://snapshots-api.marinade.finance/v1/votes/msol/latest > "$file_response_msol_votes"
 echo "vote_account,msol_votes" > "$file_parsed_msol_votes"
 jq '.records | group_by(.validatorVoteAccount) | map(.[0].validatorVoteAccount + "," + (map(.amount | tonumber? // 0) | add | tostring)) | join("\n")' -r "$file_response_msol_votes" >> "$file_parsed_msol_votes"
-echo "DumiCKHVqoCQKD8roLApzR5Fit8qGV5fVQsJV9sTZk4a,1170000" >> "$file_parsed_msol_votes"
 
 curl -sfLS "https://validators-api.marinade.finance/validators/flat?last_epoch=$(( current_epoch - 1 ))" > "$file_validators"
 
