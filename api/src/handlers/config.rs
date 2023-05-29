@@ -57,7 +57,6 @@ pub async fn handler(_context: WrappedContext) -> Result<impl Reply, warp::Rejec
                         delegation_authority: "HbJTxftxnXgpePCshA8FubsRj9MW4kfPscfuUfn44fnt".into(),
                         name: "Jpool".into(),
                     },
-                     },
                     StakeDelegationAuthorityRecord {
                         delegation_authority: "6WecYymEARvjG5ZyqkrVQ6YkhPfujNzWpSPwNKXHCbV2".into(),
                         name: "Blaze Stake".into(),
