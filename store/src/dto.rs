@@ -127,6 +127,8 @@ impl Validator {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
+    pub epoch_start_at: Option<DateTime<Utc>>,
+    pub epoch_end_at: Option<DateTime<Utc>>,
     pub commission_max_observed: Option<u8>,
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,
