@@ -157,6 +157,8 @@ pub struct ValidatorEpochStats {
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
+    pub start_epoch: u64,
+    pub start_date: Option<DateTime<Utc>>,
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
