@@ -5,6 +5,7 @@ use crate::handlers::{
     unstake_hints, uptimes, validator_score_breakdown, validator_scores, validators_flat, versions,
     workflow_metrics_upload,
 };
+use crate::redis_context::RedisContext;
 use env_logger::Env;
 use log::{error, info};
 use std::convert::Infallible;
@@ -17,6 +18,7 @@ use warp::{Filter, Rejection};
 pub mod api_docs;
 pub mod cache;
 pub mod context;
+pub mod redis_context;
 pub mod handlers;
 pub mod metrics;
 pub mod utils;
@@ -25,6 +27,9 @@ pub mod utils;
 pub struct Params {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
+
+    #[structopt(long = "redis-url")]
+    redis_url: String,
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
@@ -50,12 +55,21 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let redis_client = redis::Client::open(params.redis_url)?;
+    if let Err(err) = redis_client.get_connection() {
+            error!("Redis Connection error: {}", err);
+            std::process::exit(1);
+    }
+    let redis_context = Arc::new(RwLock::new(RedisContext::new(
+        redis_client,
+    )?));
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
         params.blacklist_path,
     )?));
-    cache::spawn_cache_warmer(context.clone());
+    cache::spawn_redis_warmer(context.clone(), redis_context.clone());
+    cache::spawn_cache_warmer(context.clone(), redis_context.clone());
 
     let cors = warp::cors()
         .allow_any_origin()
