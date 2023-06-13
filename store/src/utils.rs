@@ -4,6 +4,7 @@ use crate::dto::{
     ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
     VersionRecord,
 };
+use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::{types::ToSql, Client};
@@ -405,10 +406,16 @@ pub async fn load_validators(
             "
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
-                cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+                cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info),
+                epochs_dates AS (SELECT vote_account, starting_epoch, start_at FROM (SELECT vote_account, MIN(validators.epoch) as starting_epoch FROM validators WHERE credits > 0 GROUP BY vote_account) AS s JOIN epochs ON s.starting_epoch = epochs.epoch)
             SELECT
-                validators.identity, validators.vote_account, epoch,
-
+                validators.identity,
+                validators.vote_account,
+                validators.epoch,
+                epochs.start_at AS epoch_start,
+				epochs.end_at AS epoch_end,
+                COALESCE(epochs_dates.starting_epoch, 0) AS starting_epoch,
+                epochs_dates.start_at AS starting_epoch_date,
                 info_name,
                 info_url,
                 info_keybase,
@@ -446,7 +453,9 @@ pub async fn load_validators(
             FROM validators
                 LEFT JOIN cluster ON 1 = 1
                 LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
-            WHERE epoch > cluster.last_epoch - $1::NUMERIC
+                LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
+                LEFT JOIN epochs ON epochs.epoch = validators.epoch
+            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(epochs)],
         )
@@ -458,7 +467,12 @@ pub async fn load_validators(
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
+            let starting_epoch_date: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("starting_epoch_date").try_into().unwrap();
+            let epoch_start_at: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("epoch_start").try_into().unwrap();
+            let epoch_end_at: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("epoch_end").try_into().unwrap();
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
+            let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
+
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
                 let (apr, apy) = c.estimate_yields(
                     row.get::<_, Decimal>("credits").try_into().unwrap(),
@@ -497,6 +511,8 @@ pub async fn load_validators(
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
                     identity: row.get("identity"),
+                    start_epoch: starting_epoch.clone(),
+                    start_date: starting_epoch_date.clone(),
                     vote_account: vote_account.clone(),
                     info_name: row.get("info_name"),
                     info_url: row.get("info_url"),
@@ -556,6 +572,8 @@ pub async fn load_validators(
             }
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
+                epoch_start_at: epoch_start_at,
+                epoch_end_at: epoch_end_at,
                 commission_max_observed: row
                     .get::<_, Option<i32>>("commission_max_observed")
                     .map(|n| n.try_into().unwrap()),
