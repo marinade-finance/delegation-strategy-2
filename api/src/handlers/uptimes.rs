@@ -1,6 +1,7 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error;
+use chrono::{DateTime, Duration, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::UptimeRecord;
@@ -12,7 +13,9 @@ pub struct ResponseUptimes {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub struct QueryParams {}
+pub struct QueryParams {
+    query_from_date: Option<DateTime<Utc>>,
+}
 
 #[utoipa::path(
     get,
@@ -25,7 +28,7 @@ pub struct QueryParams {}
 )]
 pub async fn handler(
     vote_account: String,
-    _query_params: QueryParams,
+    query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching uptimes {:?}", &vote_account);
@@ -41,7 +44,18 @@ pub async fn handler(
             let uptimes = context.read().await.cache.get_uptimes(&vote_key);
 
             Ok(match uptimes {
-                Some(uptimes) => {
+                Some(mut uptimes) => {
+                    uptimes = uptimes
+                        .iter()
+                        .filter(|v| {
+                            v.epoch_start_at
+                                > query_params
+                                    .query_from_date
+                                    .clone()
+                                    .unwrap_or(Utc::now() - Duration::weeks(5))
+                        })
+                        .cloned()
+                        .collect();
                     warp::reply::with_status(json(&ResponseUptimes { uptimes }), StatusCode::OK)
                 }
                 _ => {

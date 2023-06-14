@@ -6,12 +6,8 @@ pub struct RedisContext {
 }
 
 impl RedisContext {
-    pub fn new(
-        redis_client: redis::Client,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            redis_client,
-        })
+    pub fn new(redis_client: redis::Client) -> anyhow::Result<Self> {
+        Ok(Self { redis_client })
     }
 }
 

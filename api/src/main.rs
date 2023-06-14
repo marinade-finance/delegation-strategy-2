@@ -18,9 +18,9 @@ use warp::{Filter, Rejection};
 pub mod api_docs;
 pub mod cache;
 pub mod context;
-pub mod redis_context;
 pub mod handlers;
 pub mod metrics;
+pub mod redis_context;
 pub mod utils;
 
 #[derive(Debug, StructOpt)]
@@ -57,12 +57,10 @@ async fn main() -> anyhow::Result<()> {
 
     let redis_client = redis::Client::open(params.redis_url)?;
     if let Err(err) = redis_client.get_connection() {
-            error!("Redis Connection error: {}", err);
-            std::process::exit(1);
+        error!("Redis Connection error: {}", err);
+        std::process::exit(1);
     }
-    let redis_context = Arc::new(RwLock::new(RedisContext::new(
-        redis_client,
-    )?));
+    let redis_context = Arc::new(RwLock::new(RedisContext::new(redis_client)?));
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
@@ -92,9 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::get())
         .map(|| warp::reply::json(&<crate::api_docs::ApiDoc as utoipa::OpenApi>::openapi()));
 
-    let route_api_docs_html = warp::path("docs")
-        .and(warp::get())
-        .and_then(docs::handler);
+    let route_api_docs_html = warp::path("docs").and(warp::get()).and_then(docs::handler);
 
     let route_validators = warp::path!("validators")
         .and(warp::path::end())

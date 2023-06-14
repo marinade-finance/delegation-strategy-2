@@ -203,6 +203,8 @@ pub struct ValidatorRecord {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct UptimeRecord {
     pub epoch: u64,
+    pub epoch_start_at: DateTime<Utc>,
+    pub epoch_end_at: DateTime<Utc>,
     pub status: String,
     pub start_at: DateTime<Utc>,
     pub end_at: DateTime<Utc>,
@@ -218,6 +220,8 @@ pub struct VersionRecord {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct CommissionRecord {
     pub epoch: u64,
+    pub epoch_start_at: DateTime<Utc>,
+    pub epoch_end_at: DateTime<Utc>,
     pub epoch_slot: u64,
     pub commission: u8,
     pub created_at: DateTime<Utc>,
@@ -259,6 +263,7 @@ pub struct ClusterStats {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorsAggregated {
     pub epoch: u64,
+    pub epoch_start_date: Option<DateTime<Utc>>,
     pub avg_marinade_score: Option<f64>,
     pub avg_apy: Option<f64>,
 }
@@ -347,7 +352,7 @@ pub enum UnstakeHint {
 pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,
-    pub hints: HashSet<UnstakeHint>
+    pub hints: HashSet<UnstakeHint>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

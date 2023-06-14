@@ -1,6 +1,7 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error;
+use chrono::{DateTime, Duration, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::CommissionRecord;
@@ -12,7 +13,9 @@ pub struct ResponseCommissions {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub struct QueryParams {}
+pub struct QueryParams {
+    query_from_date: Option<DateTime<Utc>>,
+}
 
 #[utoipa::path(
     get,
@@ -25,7 +28,7 @@ pub struct QueryParams {}
 )]
 pub async fn handler(
     vote_account: String,
-    _query_params: QueryParams,
+    query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching commissions {:?}", &vote_account);
@@ -41,8 +44,22 @@ pub async fn handler(
             let commissions = context.read().await.cache.get_commissions(vote_key);
 
             Ok(match commissions {
-                Some(commissions) => {
-                    warp::reply::with_status(json(&ResponseCommissions { commissions }), StatusCode::OK)
+                Some(mut commissions) => {
+                    commissions = commissions
+                        .iter()
+                        .filter(|v| {
+                            v.epoch_start_at
+                                > query_params
+                                    .query_from_date
+                                    .clone()
+                                    .unwrap_or(Utc::now() - Duration::weeks(5))
+                        })
+                        .cloned()
+                        .collect();
+                    warp::reply::with_status(
+                        json(&ResponseCommissions { commissions }),
+                        StatusCode::OK,
+                    )
                 }
                 _ => {
                     error!("No commissions found for {}", &vote_account);

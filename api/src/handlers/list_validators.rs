@@ -1,6 +1,7 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error_500;
+use chrono::{DateTime, Utc};
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ pub struct ResponseValidators {
 pub struct QueryParams {
     epochs: Option<usize>,
     query: Option<String>,
+    query_from_date: Option<DateTime<Utc>>,
     query_vote_accounts: Option<String>,
     query_identities: Option<String>,
     order_field: Option<OrderField>,
@@ -68,6 +70,7 @@ pub struct GetValidatorsConfig {
     pub query_score: Option<bool>,
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
+    pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
 
@@ -172,16 +175,34 @@ pub async fn get_validators(
         },
     );
 
-    Ok(validators
-        .into_iter()
-        .skip(config.offset)
-        .take(config.limit)
-        .cloned()
-        .map(|v| ValidatorRecord {
-            epoch_stats: v.epoch_stats.into_iter().take(config.epochs).collect(),
-            ..v
-        })
-        .collect())
+    if let Some(from_data) = config.query_from_date {
+        Ok(validators
+            .into_iter()
+            .skip(config.offset)
+            .take(config.limit)
+            .cloned()
+            .map(|v| ValidatorRecord {
+                epoch_stats: v
+                    .epoch_stats
+                    .into_iter()
+                    .filter(|es| es.epoch_start_at.is_some())
+                    .filter(|v| v.epoch_start_at.unwrap() > from_data)
+                    .collect(),
+                ..v
+            })
+            .collect())
+    } else {
+        Ok(validators
+            .into_iter()
+            .skip(config.offset)
+            .take(config.limit)
+            .cloned()
+            .map(|v| ValidatorRecord {
+                epoch_stats: v.epoch_stats.into_iter().take(config.epochs).collect(),
+                ..v
+            })
+            .collect())
+    }
 }
 
 #[utoipa::path(
@@ -219,6 +240,7 @@ pub async fn handler(
         query_score: query_params.query_score,
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
+        query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
 
@@ -226,15 +248,22 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
-    let validators_aggregated = context
-        .read()
-        .await
-        .cache
-        .get_validators_aggregated()
-        .iter()
-        .take(query_params.epochs.unwrap_or(DEFAULT_EPOCHS))
-        .cloned()
-        .collect();
+    let mut validators_aggregated = context.read().await.cache.get_validators_aggregated();
+
+    if let Some(from_date) = query_params.query_from_date {
+        validators_aggregated = validators_aggregated
+            .iter()
+            .filter(|v| v.epoch_start_date.is_some())
+            .filter(|v| v.epoch_start_date.unwrap() > from_date)
+            .cloned()
+            .collect();
+    } else {
+        validators_aggregated = validators_aggregated
+            .iter()
+            .take(query_params.epochs.unwrap_or(DEFAULT_EPOCHS))
+            .cloned()
+            .collect();
+    }
 
     Ok(match validators {
         Ok(validators) => warp::reply::with_status(
