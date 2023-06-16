@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::metrics;
 use crate::utils::response_error;
 use crate::{cache::CachedAllScores, context::WrappedContext};
 use chrono::{DateTime, Utc};
@@ -38,7 +39,7 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     log::info!("Query validator score breakdown for {:?}", query_params);
-
+    metrics::REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWNS.inc();
     let CachedAllScores {
         scoring_runs,
         scores,
@@ -47,10 +48,10 @@ pub async fn handler(
     let mut all_scores = match scores.get(&vote_account).cloned() {
         Some(all_scores) => all_scores,
         None => {
-            log::warn!("No score found for the validator!");
+            log::warn!("No scores found for the validators!");
             return Ok(response_error(
                 StatusCode::OK,
-                "No score found for the validator!".into(),
+                "No scores found for the validators!".into(),
             ));
         }
     };
@@ -71,7 +72,7 @@ pub async fn handler(
             log::warn!("No scoring runs found!");
             return Ok(response_error(
                 StatusCode::OK,
-                "No scoring run found!".into(),
+                "No scoring runs found!".into(),
             ));
         }
     };

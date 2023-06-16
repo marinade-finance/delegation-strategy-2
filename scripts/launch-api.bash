@@ -14,8 +14,7 @@ then
 fi
 
 "$BIN_DIR/api" \
-  --admin-auth-token "123" \
-  --redis-url "redis://127.0.0.1/" \
+  --redis-url "$REDIS_URL" \
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
   --blacklist-path "$BLACKLIST_CSV"
