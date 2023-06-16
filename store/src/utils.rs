@@ -813,6 +813,42 @@ pub async fn load_last_scoring_run(
     }))
 }
 
+pub async fn load_all_scoring_runs(
+    psql_client: &Client,
+) -> anyhow::Result<Option<Vec<ScoringRunRecord>>> {
+    log::info!("Querying scoring run...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT
+                scoring_run_id::numeric,
+                created_at,
+                epoch,
+                components,
+                component_weights,
+                ui_id
+            FROM scoring_runs
+            WHERE created_at > CURRENT_DATE - INTERVAL '6 months'",
+            &[],
+        )
+        .await?;
+
+    let mut records: Vec<ScoringRunRecord> = Default::default();
+
+    for row in rows {
+        records.push(ScoringRunRecord {
+            scoring_run_id: row.get("scoring_run_id"),
+            created_at: row.get("created_at"),
+            epoch: row.get("epoch"),
+            components: row.get("components"),
+            component_weights: row.get("component_weights"),
+            ui_id: row.get("ui_id"),
+        })
+    }
+
+    Ok(Some(records))
+}
+
 pub async fn load_scores(
     psql_client: &Client,
     scoring_run_id: Decimal,
@@ -835,9 +871,11 @@ pub async fn load_scores(
                 target_stake_algo,
                 target_stake_mnde,
                 target_stake_msol,
-                scoring_run_id
+                scores.scoring_run_id,
+                scoring_runs.created_at as created_at
             FROM scores
-            WHERE scoring_run_id::numeric = $1 ORDER BY rank",
+            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
+            WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
             &[&scoring_run_id],
         )
         .await?;
@@ -875,7 +913,88 @@ pub async fn load_scores(
                         .try_into()
                         .unwrap(),
                     scoring_run_id: row.get("scoring_run_id"),
+                    created_at: row
+                        .get::<_, DateTime<Utc>>("created_at")
+                        .try_into()
+                        .unwrap(),
                 });
+        }
+
+        records
+    };
+    log::info!("Records prepared...");
+    Ok(records)
+}
+
+pub async fn load_all_scores(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<String, Vec<ValidatorScoreRecord>>> {
+    log::info!("Querying all scores...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account,
+                score,
+                rank,
+                mnde_votes,
+                ui_hints,
+                component_scores,
+                component_ranks,
+                component_values,
+                eligible_stake_algo,
+                eligible_stake_mnde,
+                eligible_stake_msol,
+                target_stake_algo,
+                target_stake_mnde,
+                target_stake_msol,
+                scores.scoring_run_id,
+                scoring_runs.created_at as created_at
+            FROM scores
+            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
+            WHERE created_at > CURRENT_DATE - INTERVAL '6 months'
+            ORDER BY rank",
+            &[],
+        )
+        .await?;
+
+    let records: HashMap<_, Vec<_>> = {
+        log::info!("Aggregating scores records...");
+        let mut records: HashMap<_, Vec<_>> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+            let scores = records
+                .entry(vote_account.clone())
+                .or_insert(Default::default());
+            scores.push(ValidatorScoreRecord {
+                vote_account: vote_account.clone(),
+                score: row.get("score"),
+                rank: row.get("rank"),
+                mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into().unwrap(),
+                ui_hints: row.get("ui_hints"),
+                component_scores: row.get("component_scores"),
+                component_ranks: row.get("component_ranks"),
+                component_values: row.get("component_values"),
+                eligible_stake_algo: row.get("eligible_stake_algo"),
+                eligible_stake_mnde: row.get("eligible_stake_mnde"),
+                eligible_stake_msol: row.get("eligible_stake_msol"),
+                target_stake_algo: row
+                    .get::<_, Decimal>("target_stake_algo")
+                    .try_into()
+                    .unwrap(),
+                target_stake_mnde: row
+                    .get::<_, Decimal>("target_stake_mnde")
+                    .try_into()
+                    .unwrap(),
+                target_stake_msol: row
+                    .get::<_, Decimal>("target_stake_msol")
+                    .try_into()
+                    .unwrap(),
+                scoring_run_id: row.get("scoring_run_id"),
+                created_at: row
+                    .get::<_, DateTime<Utc>>("created_at")
+                    .try_into()
+                    .unwrap(),
+            })
         }
 
         records

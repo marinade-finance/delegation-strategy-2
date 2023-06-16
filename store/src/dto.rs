@@ -328,6 +328,7 @@ pub struct ValidatorScoreRecord {
     pub target_stake_mnde: u64,
     pub target_stake_msol: u64,
     pub scoring_run_id: i64,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -25,6 +25,12 @@ pub struct CachedScores {
     pub scores: HashMap<String, ValidatorScoreRecord>,
 }
 
+#[derive(Default, Clone)]
+pub struct CachedAllScores {
+    pub scoring_runs: Option<Vec<ScoringRunRecord>>,
+    pub scores: HashMap<String, Vec<ValidatorScoreRecord>>,
+}
+
 #[derive(Default)]
 pub struct Cache {
     pub validators: CachedValidators,
@@ -34,6 +40,7 @@ pub struct Cache {
     pub cluster_stats: CachedClusterStats,
     pub validators_aggregated: CachedValidatorsAggregated,
     pub validators_scores: CachedScores,
+    pub validators_all_scores: CachedAllScores,
 }
 
 impl Cache {
@@ -65,6 +72,10 @@ impl Cache {
 
     pub fn get_validators_aggregated(&self) -> CachedValidatorsAggregated {
         self.validators_aggregated.clone()
+    }
+
+    pub fn get_validators_all_scores(&self) -> CachedAllScores {
+        self.validators_all_scores.clone()
     }
 
     pub fn get_validators_scores(&self) -> CachedScores {
@@ -279,11 +290,18 @@ pub async fn warm_scores_cache(
     let mut conn = client.get_connection()?;
     let scores_json: String = conn.json_get("scores", ".")?;
     let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json).unwrap();
+    let all_scores_json: String = conn.json_get("scores_all", ".")?;
+    let all_scores: HashMap<String, Vec<ValidatorScoreRecord>> =
+        serde_json::from_str(&all_scores_json).unwrap();
 
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
 
+    let all_scoring_runs =
+        store::utils::load_all_scoring_runs(&context.read().await.psql_client).await?;
+
     let scores_len = scores.len();
+    let all_scores_len = all_scores.len();
 
     context
         .write()
@@ -294,8 +312,18 @@ pub async fn warm_scores_cache(
             scoring_run: last_scoring_run,
             scores,
         });
-
     info!("Loaded scores to cache: {}", scores_len);
+
+    context
+        .write()
+        .await
+        .cache
+        .validators_all_scores
+        .clone_from(&CachedAllScores {
+            scoring_runs: all_scoring_runs,
+            scores: all_scores,
+        });
+    info!("Loaded all scores to cache: {}", all_scores_len);
 
     Ok(())
 }
@@ -321,11 +349,16 @@ pub async fn warm_scores_redis(
 
     let scores_len = scores.len();
 
+    let all_scores = store::utils::load_all_scores(&context.read().await.psql_client).await?;
+    let all_scores_len = all_scores.len();
+
     let client = &redis_context.write().await.redis_client;
     let mut conn = client.get_connection()?;
     conn.json_set("scores", ".", &scores)?;
-
     info!("Loaded scores to Redis: {}", scores_len);
+
+    conn.json_set("scores_all", ".", &all_scores)?;
+    info!("Loaded all scores to Redis: {}", all_scores_len);
 
     Ok(())
 }

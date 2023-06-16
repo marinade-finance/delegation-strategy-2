@@ -67,7 +67,6 @@ pub async fn handler(
     } = context.read().await.cache.get_validators_scores();
 
     let ScoringRunRecord {
-        created_at,
         epoch,
         components,
         component_weights,
@@ -100,6 +99,7 @@ pub async fn handler(
         target_stake_mnde,
         target_stake_msol,
         scoring_run_id,
+        created_at,
     } = match scores.get(&query_params.query_vote_account).cloned() {
         Some(score) => score,
         None => {
