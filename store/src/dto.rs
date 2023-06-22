@@ -343,7 +343,7 @@ pub enum UnstakeHint {
 pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,
-    pub hints: HashSet<UnstakeHint>
+    pub hints: HashSet<UnstakeHint>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
