@@ -827,8 +827,7 @@ pub async fn load_all_scoring_runs(
                 components,
                 component_weights,
                 ui_id
-            FROM scoring_runs
-            WHERE created_at > CURRENT_DATE - INTERVAL '6 months'",
+            FROM scoring_runs",
             &[],
         )
         .await?;
@@ -951,7 +950,6 @@ pub async fn load_all_scores(
                 scoring_runs.created_at as created_at
             FROM scores
             LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
-            WHERE created_at > CURRENT_DATE - INTERVAL '6 months'
             ORDER BY rank",
             &[],
         )

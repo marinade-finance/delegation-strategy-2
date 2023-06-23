@@ -19,12 +19,16 @@ pub async fn warm_validators(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading validators from DB");
+    let warmup_timer = Instant::now();
     let validators =
         store::utils::load_validators(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let mut conn = get_redis_connection(redis_client).await?;
     conn.json_set("validators", ".", &validators)?;
-    info!("Loaded validators to Redis: {}", validators.len());
-
+    info!(
+        "Loaded {} validators to Redis in {} ms",
+        validators.len(),
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -33,12 +37,16 @@ pub async fn warm_commissions(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading commissions from DB");
+    let warmup_timer = Instant::now();
     let commissions =
         store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let mut conn = get_redis_connection(redis_client).await.unwrap();
     conn.json_set("commissions", ".", &commissions)?;
-    info!("Loaded commissions to Redis: {}", commissions.len());
-
+    info!(
+        "Loaded {} commissions to Redis in {} ms",
+        commissions.len(),
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -47,13 +55,16 @@ pub async fn warm_versions(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading versions from DB");
-
+    let warmup_timer = Instant::now();
     let versions =
         store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let mut conn = get_redis_connection(redis_client).await?;
     conn.json_set("versions", ".", &versions)?;
-    info!("Loaded versions to Redis: {}", versions.len());
-
+    info!(
+        "Loaded {} versions to Redis in {} ms",
+        versions.len(),
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -62,12 +73,16 @@ pub async fn warm_uptimes(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading uptimes from DB");
+    let warmup_timer = Instant::now();
     let uptimes =
         store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let mut conn = get_redis_connection(redis_client).await?;
     conn.json_set("uptimes", ".", &uptimes)?;
-    info!("Loaded uptimes to Redis: {}", uptimes.len());
-
+    info!(
+        "Loaded {} uptimes to Redis in {} ms",
+        uptimes.len(),
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -76,12 +91,15 @@ pub async fn warm_cluster_stats(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading cluster_stats from DB");
+    let warmup_timer = Instant::now();
     let cluster_stats =
         store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let mut conn = get_redis_connection(redis_client).await?;
     conn.json_set("cluster_stats", ".", &cluster_stats)?;
-    info!("Loaded cluster_stats to Redis");
-
+    info!(
+        "Loaded cluster stats to Redis in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -90,6 +108,7 @@ pub async fn warm_scores(
     redis_client: &Arc<RwLock<redis::Client>>,
 ) -> anyhow::Result<()> {
     info!("Loading scores from DB");
+    let warmup_timer = Instant::now();
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
     let scores = match &last_scoring_run {
@@ -107,9 +126,17 @@ pub async fn warm_scores(
     let all_scores_len = all_scores.len();
     let mut conn = get_redis_connection(redis_client).await?;
     conn.json_set("scores", ".", &scores)?;
-    info!("Loaded scores to Redis: {}", scores_len);
+    info!(
+        "Loaded {} single run scores to Redis in {} ms",
+        scores_len,
+        warmup_timer.elapsed().as_millis()
+    );
     conn.json_set("scores_all", ".", &all_scores)?;
-    info!("Loaded all scores to Redis: {}", all_scores_len);
+    info!(
+        "Loaded {} multiple run scores to Redis in {} ms",
+        all_scores_len,
+        warmup_timer.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -160,7 +187,6 @@ pub fn spawn_redis_warmer(
 
             if let Ok(acquired_lock) = lock {
                 info!("Warming up Redis");
-                let warmup_timer = Instant::now();
                 if let Err(err) = warm_scores(&context, &redis_client).await {
                     error!("Failed to update the scores in Redis: {}", err);
                 }
@@ -185,10 +211,6 @@ pub fn spawn_redis_warmer(
                     error!("Failed to update the validators in Redis: {}", err);
                 }
                 update_redis_timestamp(&redis_client).await;
-                info!(
-                    "Warming up done in {} ms",
-                    warmup_timer.elapsed().as_millis()
-                );
                 redis_locker.unlock(&acquired_lock).await;
             }
 

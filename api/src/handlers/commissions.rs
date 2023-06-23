@@ -1,11 +1,13 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::CommissionRecord;
 use warp::{http::StatusCode, reply::json, Reply};
+
+const DEFAULT_EPOCHS: u64 = 20;
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseCommissions {
@@ -45,17 +47,24 @@ pub async fn handler(
 
             Ok(match commissions {
                 Some(mut commissions) => {
-                    commissions = commissions
-                        .iter()
-                        .filter(|v| {
-                            v.epoch_start_at
-                                > query_params
-                                    .query_from_date
-                                    .clone()
-                                    .unwrap_or(Utc::now() - Duration::weeks(5))
-                        })
-                        .cloned()
-                        .collect();
+                    if let Some(query_from_date) = query_params.query_from_date {
+                        commissions = commissions
+                            .iter()
+                            .filter(|v| v.epoch_start_at > query_from_date)
+                            .cloned()
+                            .collect();
+                    } else {
+                        let max_epoch = commissions
+                            .iter()
+                            .max_by(|x, y| x.epoch.cmp(&y.epoch))
+                            .unwrap()
+                            .epoch;
+                        commissions = commissions
+                            .iter()
+                            .filter(|v| v.epoch > max_epoch - DEFAULT_EPOCHS)
+                            .cloned()
+                            .collect();
+                    }
                     warp::reply::with_status(
                         json(&ResponseCommissions { commissions }),
                         StatusCode::OK,

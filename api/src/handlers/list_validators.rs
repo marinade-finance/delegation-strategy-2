@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::response_error_500;
@@ -80,129 +82,97 @@ pub async fn get_validators(
 ) -> anyhow::Result<Vec<ValidatorRecord>> {
     let validators = context.read().await.cache.get_validators();
 
-    let validators: Vec<_> = if let Some(vote_accounts) = config.query_vote_accounts {
-        vote_accounts
-            .iter()
-            .filter_map(|i| validators.get(i))
-            .collect()
-    } else {
-        validators.values().collect()
-    };
+    let mut validators = filter_validators(validators, &config);
 
-    let validators: Vec<_> = if let Some(identities) = config.query_identities {
-        validators
-            .into_iter()
-            .filter(|v| identities.contains(&v.identity))
-            .collect()
-    } else {
-        validators
-    };
-
-    let validators: Vec<_> = if let Some(query) = config.query {
-        let query = query.to_lowercase();
-        validators
-            .into_iter()
-            .filter(|v| {
-                v.vote_account.to_lowercase().find(&query).is_some()
-                    || v.identity.to_lowercase().find(&query).is_some()
-                    || v.info_name.clone().map_or(false, |info_name| {
-                        info_name.to_lowercase().find(&query).is_some()
-                    })
-            })
-            .collect()
-    } else {
-        validators
-    };
-
-    let validators: Vec<_> = if let Some(query_superminority) = config.query_superminority {
-        validators
-            .into_iter()
-            .filter(|v| v.superminority == query_superminority)
-            .collect()
-    } else {
-        validators
-    };
-
-    let validators: Vec<_> = if let Some(query_marinade_stake) = config.query_marinade_stake {
-        validators
-            .into_iter()
-            .filter(|v| (v.marinade_stake > Decimal::from(0)) == query_marinade_stake)
-            .collect()
-    } else {
-        validators
-    };
-
-    let validators: Vec<_> = if let Some(query_with_names) = config.query_with_names {
-        validators
-            .into_iter()
-            .filter(|v| query_with_names == v.info_name.is_some())
-            .collect()
-    } else {
-        validators
-    };
-
-    let mut validators: Vec<_> = if let Some(query_score) = config.query_score {
-        validators
-            .into_iter()
-            .filter(|v| (v.score.unwrap_or(0.0) > 0.0) == query_score)
-            .collect()
-    } else {
-        validators
-    };
-
-    let field_extractor = match config.order_field {
-        OrderField::Stake => |a: &&ValidatorRecord| a.activated_stake,
-        OrderField::MndeVotes => |a: &&ValidatorRecord| a.mnde_votes.unwrap_or(0.into()),
-        OrderField::Credits => |a: &&ValidatorRecord| Decimal::from(a.credits),
-        OrderField::MarinadeScore => {
-            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0)))
-        }
-        OrderField::Apy => {
-            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
-        }
-        OrderField::Commission => {
-            |a: &&ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100))
-        }
-        OrderField::Uptime => {
-            |a: &&ValidatorRecord| Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
-        }
-    };
+    let field_extractor = get_field_extractor(config.order_field);
 
     validators.sort_by(
-        |a: &&ValidatorRecord, b: &&ValidatorRecord| match config.order_direction {
-            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
-            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
+        |a: &ValidatorRecord, b: &ValidatorRecord| match config.order_direction {
+            OrderDirection::ASC => field_extractor(&a).cmp(&field_extractor(&b)),
+            OrderDirection::DESC => field_extractor(&b).cmp(&field_extractor(&a)),
         },
     );
 
-    if let Some(from_data) = config.query_from_date {
-        Ok(validators
-            .into_iter()
-            .skip(config.offset)
-            .take(config.limit)
-            .cloned()
-            .map(|v| ValidatorRecord {
-                epoch_stats: v
+    Ok(validators
+        .into_iter()
+        .skip(config.offset)
+        .take(config.limit)
+        .map(|mut v| {
+            v.epoch_stats = match config.query_from_date {
+                Some(from_date) => v
                     .epoch_stats
                     .into_iter()
                     .filter(|es| es.epoch_start_at.is_some())
-                    .filter(|v| v.epoch_start_at.unwrap() > from_data)
+                    .filter(|es| es.epoch_start_at.unwrap() > from_date)
                     .collect(),
-                ..v
-            })
-            .collect())
-    } else {
-        Ok(validators
-            .into_iter()
-            .skip(config.offset)
-            .take(config.limit)
-            .cloned()
-            .map(|v| ValidatorRecord {
-                epoch_stats: v.epoch_stats.into_iter().take(config.epochs).collect(),
-                ..v
-            })
-            .collect())
+                None => v.epoch_stats.into_iter().take(config.epochs).collect(),
+            };
+
+            v
+        })
+        .collect())
+}
+
+fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
+    match order_field {
+        OrderField::Stake => Box::new(|a: &ValidatorRecord| a.activated_stake),
+        OrderField::MndeVotes => Box::new(|a: &ValidatorRecord| a.mnde_votes.unwrap_or(0.into())),
+        OrderField::Credits => Box::new(|a: &ValidatorRecord| Decimal::from(a.credits)),
+        OrderField::MarinadeScore => {
+            Box::new(|a: &ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))
+        }
+        OrderField::Apy => Box::new(|a: &ValidatorRecord| {
+            Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
+        }),
+        OrderField::Commission => {
+            Box::new(|a: &ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100)))
+        }
+        OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
+            Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
+        }),
     }
+}
+
+pub fn filter_validators(
+    mut validators: HashMap<String, ValidatorRecord>,
+    config: &GetValidatorsConfig,
+) -> Vec<ValidatorRecord> {
+    if let Some(vote_accounts) = &config.query_vote_accounts {
+        validators.retain(|key, _| vote_accounts.contains(key));
+    }
+
+    if let Some(identities) = &config.query_identities {
+        validators.retain(|_, v| identities.contains(&v.identity));
+    }
+
+    if let Some(query) = &config.query {
+        let query = query.to_lowercase();
+        validators.retain(|_, v| {
+            v.vote_account.to_lowercase().find(&query).is_some()
+                || v.identity.to_lowercase().find(&query).is_some()
+                || v.info_name.clone().map_or(false, |info_name| {
+                    info_name.to_lowercase().find(&query).is_some()
+                })
+        });
+    }
+
+    if let Some(query_superminority) = config.query_superminority {
+        validators.retain(|_, v| v.superminority == query_superminority);
+    }
+
+    if let Some(query_marinade_stake) = config.query_marinade_stake {
+        validators.retain(|_, v| (v.marinade_stake > Decimal::from(0)) == query_marinade_stake);
+    }
+
+    if let Some(query_with_names) = config.query_with_names {
+        validators.retain(|_, v| query_with_names == v.info_name.is_some());
+    }
+
+    if let Some(query_score) = config.query_score {
+        validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
+    }
+
+    validators.into_iter().map(|(_, v)| v).collect()
 }
 
 #[utoipa::path(
