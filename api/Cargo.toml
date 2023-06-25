@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-redis = { version = "0.23.0", features = ["json"] }
+redis = { version = "0.23.0", features = ["tokio-comp", "aio"] }
 redis-macros = "0.1.0"
 rust_decimal = { version = "1.26", features = ["db-postgres"] }
 anyhow = "1.0.40"

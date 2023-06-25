@@ -816,7 +816,7 @@ pub async fn load_last_scoring_run(
 pub async fn load_all_scoring_runs(
     psql_client: &Client,
 ) -> anyhow::Result<Option<Vec<ScoringRunRecord>>> {
-    log::info!("Querying scoring run...");
+    log::info!("Querying all scoring runs...");
     let rows = psql_client
         .query(
             "

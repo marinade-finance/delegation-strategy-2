@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_client = redis::Client::open(params.redis_url.clone())?;
     let redis_locker = LockManager::new(vec![params.redis_url.clone()]);
 
-    if let Err(err) = redis_client.get_connection() {
+    if let Err(err) = redis_client.get_async_connection().await {
         error!("Redis Connection error: {}", err);
         std::process::exit(1);
     }

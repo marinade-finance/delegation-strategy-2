@@ -1,7 +1,7 @@
 use crate::context::WrappedContext;
 use crate::redis_cache;
 use log::{error, info, warn};
-use redis::JsonCommands;
+use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,8 +13,7 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};
 
 pub(crate) const DEFAULT_EPOCHS: u64 = 80;
-const CACHE_WARMUP_TIME_S: u64 = 15 * 60;
-const CACHE_WARMUP_OFFSET_S: u64 = 5 * 60 + 30;
+const CACHE_WARMUP_TIME_S: u64 = 2 * 60;
 const CACHE_WARMUP_RETRY_TIME_S: u64 = 120;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
@@ -115,7 +114,7 @@ pub async fn warm_validators_cache(
     info!("Loading validators from Redis");
     let warmup_timer = Instant::now();
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let validators_json: String = conn.json_get("validators", ".")?;
+    let validators_json: String = conn.get("validators").await?;
     let validators: HashMap<String, ValidatorRecord> =
         serde_json::from_str(&validators_json).unwrap();
 
@@ -144,7 +143,7 @@ pub async fn warm_commissions_cache(
     info!("Loading commissions from Redis");
     let warmup_timer = Instant::now();
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let commissions_json: String = conn.json_get("commissions", ".")?;
+    let commissions_json: String = conn.get("commissions").await?;
     let commissions: HashMap<String, Vec<CommissionRecord>> =
         serde_json::from_str(&commissions_json).unwrap();
 
@@ -170,7 +169,7 @@ pub async fn warm_versions_cache(
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let versions_json: String = conn.json_get("versions", ".")?;
+    let versions_json: String = conn.get("versions").await?;
     let versions: HashMap<String, Vec<VersionRecord>> =
         serde_json::from_str(&versions_json).unwrap();
 
@@ -191,7 +190,7 @@ pub async fn warm_uptimes_cache(
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let uptimes_json: String = conn.json_get("uptimes", ".")?;
+    let uptimes_json: String = conn.get("uptimes").await?;
     let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json).unwrap();
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
@@ -211,7 +210,7 @@ pub async fn warm_cluster_stats_cache(
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let cluster_stats_json: String = conn.json_get("cluster_stats", ".")?;
+    let cluster_stats_json: String = conn.get("cluster_stats").await?;
     let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json).unwrap();
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
@@ -230,10 +229,10 @@ pub async fn warm_scores_cache(
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let scores_json: String = conn.json_get("scores", ".")?;
+    let scores_json: String = conn.get("scores").await?;
     let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json).unwrap();
 
-    let multi_run_scores_json: String = conn.json_get("scores_all", ".")?;
+    let multi_run_scores_json: String = conn.get("scores_all").await?;
     let multi_run_scores: HashMap<String, Vec<ValidatorScoreRecord>> =
         serde_json::from_str(&multi_run_scores_json).unwrap();
 
@@ -331,10 +330,7 @@ pub fn spawn_cache_warmer(context: WrappedContext, redis_client: Arc<RwLock<redi
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let run_every = Duration::from_secs(CACHE_WARMUP_TIME_S);
             let sleep_seconds = now.as_secs() % run_every.as_secs();
-            sleep(Duration::from_secs(
-                run_every.as_secs() - sleep_seconds + CACHE_WARMUP_OFFSET_S,
-            ))
-            .await;
+            sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
         }
     });
 }
