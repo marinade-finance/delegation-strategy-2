@@ -240,7 +240,7 @@ pub async fn warm_scores_cache(
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
 
     let multi_run_scoring_runs =
-        store::utils::load_all_scoring_runs(&context.read().await.psql_client).await?;
+        store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
 
     let scores_len = scores.len();
     let multi_run_scores_len = multi_run_scores.len();
@@ -266,7 +266,7 @@ pub async fn warm_scores_cache(
         .cache
         .validators_multi_run_scores
         .clone_from(&CachedMultiRunScores {
-            scoring_runs: multi_run_scoring_runs,
+            scoring_runs: Some(multi_run_scoring_runs),
             scores: multi_run_scores,
         });
     info!(

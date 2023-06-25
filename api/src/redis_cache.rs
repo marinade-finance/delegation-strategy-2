@@ -1,7 +1,7 @@
 use crate::cache::DEFAULT_EPOCHS;
 use crate::context::WrappedContext;
 use chrono::Utc;
-use log::{error, info};
+use log::{error, info, warn};
 use redis::{AsyncCommands, RedisError};
 use rslock::LockManager;
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use tokio::time::{sleep, Duration, Instant};
 const REDIS_LOCK_NAME: &str = "REDIS_WRITE_LOCK";
 const REDIS_LOCK_PERIOD_S: usize = 10 * 60;
 const REDIS_WARMUP_TIME_S: u64 = 15 * 60;
-const REDIS_WARMUP_OFFSET_S: u64 = 5 * 60 + 30;
 
 pub async fn warm_validators(
     context: &WrappedContext,
@@ -128,7 +127,7 @@ pub async fn warm_scores(
     };
     let scores_json = serde_json::to_string(&scores).unwrap();
     let scores_len = scores.len();
-    let all_scores = store::utils::load_all_scores(&context.read().await.psql_client).await?;
+    let all_scores = store::scoring::load_all_scores(&context.read().await.psql_client).await?;
     let all_scores_json = serde_json::to_string(&all_scores).unwrap();
     let all_scores_len = all_scores.len();
     let mut conn = get_redis_connection(redis_client).await?;
@@ -222,15 +221,14 @@ pub fn spawn_redis_warmer(
                 }
                 update_redis_timestamp(&redis_client).await;
                 redis_locker.unlock(&acquired_lock).await;
+            } else {
+                warn!("Couldn't acquire lock. Skipping updating Redis up.");
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let run_every = Duration::from_secs(REDIS_WARMUP_TIME_S);
             let sleep_seconds = now.as_secs() % run_every.as_secs();
-            sleep(Duration::from_secs(
-                run_every.as_secs() - sleep_seconds + REDIS_WARMUP_OFFSET_S,
-            ))
-            .await;
+            sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
         }
     });
 }
