@@ -200,7 +200,7 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
 }
 
-#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct UptimeRecord {
     pub epoch: u64,
     pub status: String,
@@ -208,14 +208,14 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct CommissionRecord {
     pub epoch: u64,
     pub epoch_slot: u64,
@@ -347,7 +347,7 @@ pub enum UnstakeHint {
 pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,
-    pub hints: HashSet<UnstakeHint>
+    pub hints: HashSet<UnstakeHint>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
