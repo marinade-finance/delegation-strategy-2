@@ -29,7 +29,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
                 .read()
                 .await
                 .cache
-                .get_validators_scores()
+                .get_validators_single_run_scores()
                 .scores
                 .values()
                 .cloned()

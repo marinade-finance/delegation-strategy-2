@@ -2,8 +2,8 @@ use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, glossary, list_validators,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
-    unstake_hints, uptimes, validator_score_breakdown, validator_scores, validators_flat, versions,
-    workflow_metrics_upload,
+    unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_flat, versions, workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_client = redis::Client::open(params.redis_url.clone())?;
     let redis_locker = LockManager::new(vec![params.redis_url.clone()]);
 
-    if let Err(err) = redis_client.get_connection() {
+    if let Err(err) = redis_client.get_async_connection().await {
         error!("Redis Connection error: {}", err);
         std::process::exit(1);
     }
@@ -107,6 +107,13 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<validator_score_breakdown::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(validator_score_breakdown::handler);
+
+    let route_validator_score_breakdowns = warp::path!("validators" / String / "score-breakdowns")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<validator_score_breakdowns::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(validator_score_breakdowns::handler);
 
     let route_validator_scores = warp::path!("validators" / "scores")
         .and(warp::path::end())
@@ -214,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_cluster_stats)
         .or(route_validators)
         .or(route_validator_score_breakdown)
+        .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
         .or(route_validators_flat)
         .or(route_uptimes)

@@ -1,4 +1,6 @@
-use crate::{cache::CachedScores, context::WrappedContext, metrics, utils::response_error};
+use crate::{
+    cache::CachedSingleRunScores, context::WrappedContext, metrics, utils::response_error,
+};
 use log::{error, info};
 use serde::Serialize;
 use solana_program::native_token::LAMPORTS_PER_SOL;
@@ -28,9 +30,7 @@ pub struct StakingChange {
 }
 
 fn filter_and_sort_stakes(records: &mut Vec<StakingChange>) {
-    records.retain(|stake| {
-        stake.next_stake as f64 - stake.current_stake as f64 != 0.0
-    });
+    records.retain(|stake| stake.next_stake as f64 - stake.current_stake as f64 != 0.0);
     records.sort_by_key(|a| {
         if a.next_stake > 0 && a.next_stake > a.current_stake {
             -(a.next_stake as i64)
@@ -47,7 +47,11 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
         _ => return Ok(Default::default()),
     };
 
-    let CachedScores { scores, .. } = &context.read().await.cache.get_validators_scores();
+    let CachedSingleRunScores { scores, .. } = &context
+        .read()
+        .await
+        .cache
+        .get_validators_single_run_scores();
     let validators = &context.read().await.cache.get_validators();
 
     for (vote_account, score_record) in scores.iter() {

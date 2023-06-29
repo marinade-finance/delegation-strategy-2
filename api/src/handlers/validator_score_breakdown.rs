@@ -1,4 +1,4 @@
-use crate::cache::CachedScores;
+use crate::cache::CachedSingleRunScores;
 use crate::metrics;
 use crate::{context::WrappedContext, utils::response_error};
 use chrono::{DateTime, Utc};
@@ -61,13 +61,16 @@ pub async fn handler(
 
     log::info!("Query validator score breakdown {:?}", query_params);
 
-    let CachedScores {
+    let CachedSingleRunScores {
         scores,
         scoring_run,
-    } = context.read().await.cache.get_validators_scores();
+    } = context
+        .read()
+        .await
+        .cache
+        .get_validators_single_run_scores();
 
     let ScoringRunRecord {
-        created_at,
         epoch,
         components,
         component_weights,
@@ -100,6 +103,7 @@ pub async fn handler(
         target_stake_mnde,
         target_stake_msol,
         scoring_run_id,
+        created_at,
     } = match scores.get(&query_params.query_vote_account).cloned() {
         Some(score) => score,
         None => {

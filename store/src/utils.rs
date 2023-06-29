@@ -191,10 +191,22 @@ pub async fn load_uptimes(
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+            WITH cluster AS (
+                SELECT MAX(epoch) as last_epoch 
+                FROM cluster_info
+            )
             SELECT
-                vote_account, status, epoch, start_at, end_at
-            FROM uptimes, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
+                vote_account, 
+                status, 
+                uptimes.epoch, 
+                epochs.start_at AS epoch_start,
+                epochs.end_at AS epoch_end,
+                uptimes.start_at,
+                uptimes.end_at
+            FROM uptimes
+            LEFT JOIN epochs ON uptimes.epoch = epochs.epoch
+            CROSS JOIN cluster
+            WHERE uptimes.epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
         .await?;
@@ -202,11 +214,21 @@ pub async fn load_uptimes(
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
-        let commissions = records
+        let uptimes = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        commissions.push(UptimeRecord {
+        let epoch_start_at: Option<DateTime<Utc>> = row
+            .get::<_, Option<DateTime<Utc>>>("epoch_start")
+            .try_into()
+            .unwrap();
+        let epoch_end_at: Option<DateTime<Utc>> = row
+            .get::<_, Option<DateTime<Utc>>>("epoch_end")
+            .try_into()
+            .unwrap();
+        uptimes.push(UptimeRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
+            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
             status: row.get("status"),
             start_at: row.get("start_at"),
             end_at: row.get("end_at"),
@@ -256,14 +278,21 @@ pub async fn load_commissions(
             "
             WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
             SELECT
-                vote_account, commission, epoch, epoch_slot, created_at
-            FROM commissions, cluster
-            WHERE epoch > cluster.last_epoch - $1::NUMERIC
+                vote_account, commission, commissions.epoch, epochs.start_at as epoch_start,
+				epochs.end_at as epoch_end,
+				epoch_slot, created_at
+            FROM commissions
+            LEFT JOIN epochs ON commissions.epoch = epochs.epoch
+            CROSS JOIN cluster
+            WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
             UNION
             SELECT
-                vote_account, commission_effective, epoch, 432000, updated_at
-            FROM validators, cluster
-            WHERE epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
+                vote_account, commission_effective, validators.epoch, epochs.start_at as epoch_start,
+				epochs.end_at as epoch_end, 432000, updated_at
+            FROM validators
+            LEFT JOIN epochs ON validators.epoch = epochs.epoch
+            CROSS JOIN cluster
+            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
             &[&Decimal::from(epochs)],
         )
@@ -275,8 +304,18 @@ pub async fn load_commissions(
         let commissions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
+        let epoch_start_at: Option<DateTime<Utc>> = row
+            .get::<_, Option<DateTime<Utc>>>("epoch_start")
+            .try_into()
+            .unwrap();
+        let epoch_end_at: Option<DateTime<Utc>> = row
+            .get::<_, Option<DateTime<Utc>>>("epoch_end")
+            .try_into()
+            .unwrap();
         commissions.push(CommissionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
+            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
             created_at: row.get("created_at"),
@@ -467,9 +506,18 @@ pub async fn load_validators(
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
-            let starting_epoch_date: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("starting_epoch_date").try_into().unwrap();
-            let epoch_start_at: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("epoch_start").try_into().unwrap();
-            let epoch_end_at: Option<DateTime<Utc>> = row.get::<_,Option<DateTime<Utc>>>("epoch_end").try_into().unwrap();
+            let starting_epoch_date: Option<DateTime<Utc>> = row
+                .get::<_, Option<DateTime<Utc>>>("starting_epoch_date")
+                .try_into()
+                .unwrap();
+            let mut epoch_start_at: Option<DateTime<Utc>> = row
+                .get::<_, Option<DateTime<Utc>>>("epoch_start")
+                .try_into()
+                .unwrap();
+            let epoch_end_at: Option<DateTime<Utc>> = row
+                .get::<_, Option<DateTime<Utc>>>("epoch_end")
+                .try_into()
+                .unwrap();
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
             let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
 
@@ -569,6 +617,9 @@ pub async fn load_validators(
                 });
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
+            }
+            if let None = epoch_start_at {
+                epoch_start_at = Some(Utc::now());
             }
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
@@ -784,9 +835,11 @@ pub async fn load_scores(
                 target_stake_algo,
                 target_stake_mnde,
                 target_stake_msol,
-                scoring_run_id
+                scores.scoring_run_id,
+                scoring_runs.created_at as created_at
             FROM scores
-            WHERE scoring_run_id::numeric = $1 ORDER BY rank",
+            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
+            WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
             &[&scoring_run_id],
         )
         .await?;
@@ -824,6 +877,10 @@ pub async fn load_scores(
                         .try_into()
                         .unwrap(),
                     scoring_run_id: row.get("scoring_run_id"),
+                    created_at: row
+                        .get::<_, DateTime<Utc>>("created_at")
+                        .try_into()
+                        .unwrap(),
                 });
         }
 
@@ -972,12 +1029,17 @@ pub fn aggregate_validators(
     validators: &HashMap<String, ValidatorRecord>,
 ) -> Vec<ValidatorsAggregated> {
     let mut epochs: HashSet<_> = Default::default();
+    let mut epochs_start_dates: HashMap<u64, DateTime<Utc>> = Default::default();
     let mut marinade_scores: HashMap<u64, Vec<f64>> = Default::default();
     let mut apys: HashMap<u64, Vec<f64>> = Default::default();
 
     for (_, validator) in validators.iter() {
         for epoch_stats in validator.epoch_stats.iter() {
             epochs.insert(epoch_stats.epoch);
+            epochs_start_dates.insert(
+                epoch_stats.epoch,
+                epoch_stats.epoch_start_at.unwrap_or(Utc::now()),
+            );
             if let Some(score) = epoch_stats.score {
                 marinade_scores
                     .entry(epoch_stats.epoch)
@@ -996,6 +1058,7 @@ pub fn aggregate_validators(
         .into_iter()
         .map(|epoch| ValidatorsAggregated {
             epoch,
+            epoch_start_date: epochs_start_dates.get(&epoch).copied(),
             avg_marinade_score: average(marinade_scores.get(&epoch).unwrap_or(&vec![])),
             avg_apy: average(apys.get(&epoch).unwrap_or(&vec![])),
         })
