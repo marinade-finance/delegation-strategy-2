@@ -7,19 +7,21 @@ use crate::whois_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
-use solana_sdk::pubkey::Pubkey;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 pub struct ValidatorsOptions {
-    #[structopt(long = "gauge-meister", help = "Gauge meister of the vote gauges.")]
-    gauge_meister: Option<Pubkey>,
-
-    #[structopt(long = "escrow-relocker", help = "Escrow relocker program address.")]
-    escrow_relocker: Option<Pubkey>,
-
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
+
+    #[structopt(long = "snapshots-url", help = "Base URL for Snapshots API.")]
+    pub snapshots_url: Option<String>,
+
+    #[structopt(
+        long = "mnde-votes-json",
+        help = "Static JSON file containing MNDE votes data."
+    )]
+    pub votes_json: Option<String>,
 
     #[structopt(
         long = "whois-bearer-token",
@@ -132,13 +134,7 @@ pub fn collect_validators_info(
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
 
     let validators_info = get_validators_info(&client)?;
-    let mnde_votes = if let (Some(escrow_relocker), Some(gauge_meister)) =
-        (options.escrow_relocker, options.gauge_meister)
-    {
-        Some(get_mnde_votes(&client, escrow_relocker, gauge_meister)?)
-    } else {
-        None
-    };
+    let mnde_votes = Some(get_vemnde_votes(options.votes_json, options.snapshots_url)?);
     let node_ips = get_cluster_nodes_ips(&client)?;
 
     let data_centers = match options.whois {

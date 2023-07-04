@@ -76,7 +76,11 @@ fn md_latest(ui_id: &String) -> String {
 fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
     Report {
         created_at: scoring_run.created_at,
-        md: if scoring_run.epoch < 500 { md_pre_msol_votes(&scoring_run.ui_id) } else { md_latest(&scoring_run.ui_id) },
+        md: if scoring_run.epoch < 500 {
+            md_pre_msol_votes(&scoring_run.ui_id)
+        } else {
+            md_latest(&scoring_run.ui_id)
+        },
     }
 }
 

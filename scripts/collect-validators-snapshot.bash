@@ -22,5 +22,4 @@ fi
   validators \
     --whois "https://whois.marinade.finance" \
     --whois-bearer-token "$WHOIS_BEARER_TOKEN" \
-    --escrow-relocker "tovt1VkTE2T4caWoeFP6a2xSFoew5mNpd7FWidyyMuk" \
-    --gauge-meister "mvgmBamY7hDWxLNGLshMoZn8nt2P8tKnKhaBeXMVajZ"
+    --vemnde-votes-json "./mnde_votes_snapshot.json"
