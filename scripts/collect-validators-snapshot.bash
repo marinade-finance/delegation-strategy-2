@@ -22,4 +22,4 @@ fi
   validators \
     --whois "https://whois.marinade.finance" \
     --whois-bearer-token "$WHOIS_BEARER_TOKEN" \
-    --mnde-votes-json "./mnde_votes_snapshot.json"
+    --snapshots-url "$SNAPSHOTS_API_URL"

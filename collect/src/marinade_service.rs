@@ -9,7 +9,7 @@ use solana_client::{
 };
 use solana_program::{clock::*, pubkey::Pubkey};
 use solana_sdk::stake;
-use std::{collections::*, fs};
+use std::{collections::*};
 
 pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from state
@@ -175,24 +175,16 @@ struct Votes {
     records: Vec<Vote>,
 }
 
-pub fn get_vemnde_votes(
-    json_path: Option<String>,
-    snapshots_url: Option<String>,
-) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_vemnde_votes(snapshots_url: Option<String>) -> anyhow::Result<HashMap<String, u64>> {
     info!("Getting veMNDE votes");
     let mut votes = HashMap::new();
-    let response: Votes = match (json_path, snapshots_url) {
-        (Some(path), _) => {
-            let file_contents = fs::read_to_string(path)?;
-            serde_json::from_str(&file_contents)?
-        }
-        (_, Some(url)) => reqwest::blocking::get(url)?.json()?,
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Either json_path or snapshots_url must be provided"
-            ))
-        }
-    };
+    let snapshots_url =
+        snapshots_url.ok_or_else(|| anyhow::anyhow!("snapshots_url must be provided"))?;
+
+    let response: Votes = reqwest::blocking::get(&snapshots_url)
+        .map_err(|e| anyhow::anyhow!("Failed to fetch the URL: {:?}", e))?
+        .json()
+        .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {:?}", e))?;
     for vote in response.records {
         if let Some(amount_str) = vote.amount {
             let amount = amount_str.parse::<u64>().unwrap_or(0);

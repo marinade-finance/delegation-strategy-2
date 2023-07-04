@@ -18,12 +18,6 @@ pub struct ValidatorsOptions {
     pub snapshots_url: Option<String>,
 
     #[structopt(
-        long = "mnde-votes-json",
-        help = "Static JSON file containing MNDE votes data."
-    )]
-    pub votes_json: Option<String>,
-
-    #[structopt(
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
@@ -134,7 +128,7 @@ pub fn collect_validators_info(
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
 
     let validators_info = get_validators_info(&client)?;
-    let mnde_votes = Some(get_vemnde_votes(options.votes_json, options.snapshots_url)?);
+    let mnde_votes = Some(get_vemnde_votes(options.snapshots_url)?);
     let node_ips = get_cluster_nodes_ips(&client)?;
 
     let data_centers = match options.whois {
