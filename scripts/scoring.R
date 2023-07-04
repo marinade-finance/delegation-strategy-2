@@ -181,7 +181,7 @@ for (i in 1:nrow(validators)) {
 }
 
 # Apply eligibility on votes to get effective votes
-vemnde_valid_votes <- round(validators$vemnde_votes * validators$eligible_stake_vemnde)
+vemnde_valid_votes <- round(validators$vemnde_votes * validators$eligible_stake_vemnde / 1e9)
 vemnde_valid_votes_total <- sum(vemnde_valid_votes)
 
 # Apply cap on the share of vemnde votes
