@@ -1,6 +1,4 @@
 use anchor_lang::prelude::*;
-use log::info;
-use serde::Deserialize;
 use solana_account_decoder::*;
 use solana_client::{
     rpc_client::RpcClient,
@@ -9,7 +7,7 @@ use solana_client::{
 };
 use solana_program::{clock::*, pubkey::Pubkey};
 use solana_sdk::stake;
-use std::{collections::*, fs};
+use std::{collections::*};
 
 pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from state
@@ -123,82 +121,4 @@ pub struct Gauge {
 
 impl Gauge {
     pub const LEN: usize = 200;
-}
-
-pub fn get_mnde_votes(
-    rpc_client: &RpcClient,
-    escrow_relocker: Pubkey,
-    gauge_meister: Pubkey,
-) -> anyhow::Result<HashMap<String, u64>> {
-    info!("Getting MNDE votes");
-    let accounts = rpc_client.get_program_accounts_with_config(
-        &escrow_relocker,
-        RpcProgramAccountsConfig {
-            filters: Some(vec![RpcFilterType::Memcmp(Memcmp {
-                offset: 8,
-                bytes: MemcmpEncodedBytes::Binary(gauge_meister.to_string()),
-                encoding: None,
-            })]),
-            account_config: RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                commitment: Some(rpc_client.commitment()),
-                min_context_slot: None,
-                data_slice: None,
-            },
-            with_context: None,
-        },
-    )?;
-
-    let gauges: Vec<Gauge> = accounts
-        .iter()
-        .flat_map(|(_, account)| Gauge::deserialize(&mut &account.data[8..]))
-        .collect();
-
-    Ok(gauges
-        .iter()
-        .flat_map(|gauge| match Pubkey::try_from_slice(&gauge.info) {
-            Ok(vote_address) => Some((vote_address.to_string(), gauge.total_weight)),
-            _ => None,
-        })
-        .collect())
-}
-
-#[derive(Deserialize, Debug)]
-struct Vote {
-    amount: Option<String>,
-    #[serde(rename = "validatorVoteAccount")]
-    validator_vote_account: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct Votes {
-    records: Vec<Vote>,
-}
-
-pub fn get_vemnde_votes(
-    json_path: Option<String>,
-    snapshots_url: Option<String>,
-) -> anyhow::Result<HashMap<String, u64>> {
-    info!("Getting veMNDE votes");
-    let mut votes = HashMap::new();
-    let response: Votes = match (json_path, snapshots_url) {
-        (Some(path), _) => {
-            let file_contents = fs::read_to_string(path)?;
-            serde_json::from_str(&file_contents)?
-        }
-        (_, Some(url)) => reqwest::blocking::get(url)?.json()?,
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Either json_path or snapshots_url must be provided"
-            ))
-        }
-    };
-    for vote in response.records {
-        if let Some(amount_str) = vote.amount {
-            let amount = amount_str.parse::<u64>().unwrap_or(0);
-            let total = votes.entry(vote.validator_vote_account).or_insert(0);
-            *total += amount;
-        }
-    }
-    Ok(votes)
 }

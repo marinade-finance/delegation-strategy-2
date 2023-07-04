@@ -146,7 +146,6 @@ fn compute_score_breakdowns(
                     .get(&scoring_run.scoring_run_id)
                     .unwrap(),
                 ui_hints: score.ui_hints.clone(),
-                mnde_votes: score.mnde_votes,
                 component_scores: score.component_scores.clone(),
                 component_ranks: score.component_ranks.clone(),
                 component_values: score.component_values.clone(),

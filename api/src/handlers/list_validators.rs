@@ -45,7 +45,6 @@ pub struct QueryParams {
 #[derive(Deserialize, Serialize, Debug)]
 pub enum OrderField {
     Stake,
-    MndeVotes,
     Credits,
     MarinadeScore,
     Apy,
@@ -116,7 +115,6 @@ pub async fn get_validators(
 fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
     match order_field {
         OrderField::Stake => Box::new(|a: &ValidatorRecord| a.activated_stake),
-        OrderField::MndeVotes => Box::new(|a: &ValidatorRecord| a.mnde_votes.unwrap_or(0.into())),
         OrderField::Credits => Box::new(|a: &ValidatorRecord| Decimal::from(a.credits)),
         OrderField::MarinadeScore => {
             Box::new(|a: &ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))

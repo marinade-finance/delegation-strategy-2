@@ -14,15 +14,6 @@ pub struct ValidatorsOptions {
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
-    #[structopt(long = "snapshots-url", help = "Base URL for Snapshots API.")]
-    pub snapshots_url: Option<String>,
-
-    #[structopt(
-        long = "mnde-votes-json",
-        help = "Static JSON file containing MNDE votes data."
-    )]
-    pub votes_json: Option<String>,
-
     #[structopt(
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
@@ -75,7 +66,6 @@ pub struct ValidatorSnapshot {
     pub info_url: Option<String>,
     pub info_details: Option<String>,
     pub info_keybase: Option<String>,
-    pub mnde_votes: Option<u64>,
     pub data_center: Option<ValidatorDataCenter>,
     pub activated_stake: u64,
     pub marinade_stake: u64,
@@ -134,7 +124,6 @@ pub fn collect_validators_info(
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
 
     let validators_info = get_validators_info(&client)?;
-    let mnde_votes = Some(get_vemnde_votes(options.votes_json, options.snapshots_url)?);
     let node_ips = get_cluster_nodes_ips(&client)?;
 
     let data_centers = match options.whois {
@@ -169,9 +158,6 @@ pub fn collect_validators_info(
             vote_account: vote_pubkey.clone(),
             identity: identity.clone(),
             node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
-            mnde_votes: mnde_votes
-                .clone()
-                .map_or(None, |v| Some(*v.get(&vote_pubkey).unwrap_or(&0))),
             data_center: data_centers
                 .get(&identity)
                 .map_or(None, |(_ip, data_center)| {
