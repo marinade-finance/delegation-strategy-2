@@ -22,7 +22,7 @@ TOTAL_STAKE=$(<"$file_response_tvl" jq 'fromjson? | .total_virtual_staked_sol' -
 
 echo "Total Stake: $TOTAL_STAKE"
 
-curl -sfLS http://localhost:3000/v1/votes/vemnde/latest > "$file_response_vemnde_votes"
+curl -sfLS https://snapshots-api.marinade.finance/v1/votes/vemnde/latest > "$file_response_vemnde_votes"
 echo "vote_account,vemnde_votes" > "$file_parsed_vemnde_votes"
 jq '.records | group_by(.validatorVoteAccount) | map(.[0].validatorVoteAccount + "," + (map(.amount | tonumber? // 0) | add | tostring)) | join("\n")' -r "$file_response_vemnde_votes" >> "$file_parsed_vemnde_votes"
 
