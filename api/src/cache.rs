@@ -2,6 +2,7 @@ use crate::context::WrappedContext;
 use crate::redis_cache;
 use log::{error, info, warn};
 use redis::AsyncCommands;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,7 +33,7 @@ pub struct CachedSingleRunScores {
 #[derive(Default, Clone)]
 pub struct CachedMultiRunScores {
     pub scoring_runs: Option<Vec<ScoringRunRecord>>,
-    pub scores: HashMap<String, Vec<ValidatorScoreRecord>>,
+    pub scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
 }
 
 #[derive(Default)]
@@ -233,7 +234,7 @@ pub async fn warm_scores_cache(
     let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json).unwrap();
 
     let multi_run_scores_json: String = conn.get("scores_all").await?;
-    let multi_run_scores: HashMap<String, Vec<ValidatorScoreRecord>> =
+    let multi_run_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>> =
         serde_json::from_str(&multi_run_scores_json).unwrap();
 
     let last_scoring_run =
@@ -243,7 +244,7 @@ pub async fn warm_scores_cache(
         store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
 
     let scores_len = scores.len();
-    let multi_run_scores_len = multi_run_scores.len();
+    let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
 
     context
         .write()

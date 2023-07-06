@@ -176,7 +176,7 @@ pub async fn load_unstake_hints(
 
 pub async fn load_all_scores(
     psql_client: &Client,
-) -> anyhow::Result<HashMap<String, Vec<ValidatorScoreRecord>>> {
+) -> anyhow::Result<HashMap<Decimal, Vec<ValidatorScoreRecord>>> {
     log::info!("Querying all scores...");
     let rows = psql_client
         .query(
@@ -208,12 +208,12 @@ pub async fn load_all_scores(
         log::info!("Aggregating scores records...");
         let mut records: HashMap<_, Vec<_>> = Default::default();
         for row in rows {
-            let vote_account: String = row.get("vote_account");
+            let scoring_run_id: i64 = row.get("scoring_run_id");
             let scores = records
-                .entry(vote_account.clone())
+                .entry(Decimal::from_i64(scoring_run_id).unwrap())
                 .or_insert(Default::default());
             scores.push(ValidatorScoreRecord {
-                vote_account: vote_account.clone(),
+                vote_account: row.get("vote_account"),
                 score: row.get("score"),
                 rank: row.get("rank"),
                 mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into().unwrap(),
