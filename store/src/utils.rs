@@ -5,7 +5,6 @@ use crate::dto::{
     VersionRecord,
 };
 use chrono::{DateTime, Utc};
-use log::info;
 use rust_decimal::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
@@ -689,11 +688,14 @@ pub async fn load_validators(
     .await?;
 
     let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
-    let first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
-    let epochs_range = first_epoch..=last_epoch;
+    let mut first_epoch = last_epoch - display_epochs.min(last_epoch) + 1;
+    let mut epochs_range = first_epoch..=last_epoch;
 
     log::info!("Updating with scores...");
     update_validators_with_scores(psql_client, &mut records, epochs_range.clone()).await?;
+
+    first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
+    epochs_range = first_epoch..=last_epoch;
 
     log::info!("Updating averages...");
     update_validators_with_avgs(&mut records, epochs_range.clone());
