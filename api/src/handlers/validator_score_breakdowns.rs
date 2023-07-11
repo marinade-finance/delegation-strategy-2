@@ -44,7 +44,7 @@ pub async fn handler(
     log::info!("Query validator score breakdown for {:?}", query_params);
     metrics::REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWNS.inc();
 
-    match get_and_validate_scores(&vote_account, context).await {
+    match get_and_validate_scores(context).await {
         Ok((scoring_runs, mut validator_scores)) => {
             if let Some(from_date) = query_params.query_from_date {
                 validator_scores = filter_scores_by_date(from_date, validator_scores);
@@ -52,8 +52,17 @@ pub async fn handler(
 
             let runs_min_elig_scores =
                 compute_runs_min_elig_scores(&scoring_runs, &validator_scores);
-            let score_breakdowns =
-                compute_score_breakdowns(&scoring_runs, &validator_scores, &runs_min_elig_scores);
+
+            let filtered_validator_scores =
+                filter_scores_by_vote_account(vote_account, validator_scores)
+                    .values()
+                    .flat_map(|v| v.clone())
+                    .collect();
+            let score_breakdowns = compute_score_breakdowns(
+                &scoring_runs,
+                &filtered_validator_scores,
+                &runs_min_elig_scores,
+            );
 
             Ok(warp::reply::with_status(
                 json(&ResponseScoreBreakdowns { score_breakdowns }),
@@ -65,9 +74,14 @@ pub async fn handler(
 }
 
 async fn get_and_validate_scores(
-    vote_account: &str,
     context: WrappedContext,
-) -> Result<(Vec<ScoringRunRecord>, Vec<ValidatorScoreRecord>), WithStatus<Json>> {
+) -> Result<
+    (
+        Vec<ScoringRunRecord>,
+        HashMap<Decimal, Vec<ValidatorScoreRecord>>,
+    ),
+    WithStatus<Json>,
+> {
     let CachedMultiRunScores {
         scoring_runs,
         scores,
@@ -78,39 +92,63 @@ async fn get_and_validate_scores(
         response_error(StatusCode::NOT_FOUND, "No scoring runs found!".to_string())
     })?;
 
-    let validator_scores = scores.get(vote_account).cloned().ok_or_else(|| {
-        log::warn!("No scores found for the validators!");
-        response_error(
-            StatusCode::NOT_FOUND,
-            "No scores found for the validators!".to_string(),
-        )
-    })?;
-
-    Ok((scoring_runs, validator_scores))
+    Ok((scoring_runs, scores))
 }
 
 fn filter_scores_by_date(
     from_date: DateTime<Utc>,
-    validator_scores: Vec<ValidatorScoreRecord>,
-) -> Vec<ValidatorScoreRecord> {
+    validator_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
+) -> HashMap<Decimal, Vec<ValidatorScoreRecord>> {
     validator_scores
         .into_iter()
-        .filter(|s| s.created_at > from_date)
+        .filter_map(|(key, v)| {
+            let filtered_records: Vec<ValidatorScoreRecord> =
+                v.into_iter().filter(|v| v.created_at > from_date).collect();
+
+            if filtered_records.is_empty() {
+                None
+            } else {
+                Some((key, filtered_records))
+            }
+        })
+        .collect()
+}
+
+fn filter_scores_by_vote_account(
+    vote_account: String,
+    validator_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
+) -> HashMap<Decimal, Vec<ValidatorScoreRecord>> {
+    validator_scores
+        .into_iter()
+        .filter_map(|(key, v)| {
+            let filtered_records: Vec<ValidatorScoreRecord> = v
+                .into_iter()
+                .filter(|v| v.vote_account == vote_account)
+                .collect();
+
+            if filtered_records.is_empty() {
+                None
+            } else {
+                Some((key, filtered_records))
+            }
+        })
         .collect()
 }
 
 fn compute_runs_min_elig_scores(
     scoring_runs: &Vec<ScoringRunRecord>,
-    validator_scores: &Vec<ValidatorScoreRecord>,
+    validator_scores: &HashMap<Decimal, Vec<ValidatorScoreRecord>>,
 ) -> HashMap<Decimal, Option<f64>> {
     let mut runs_min_elig_scores: HashMap<Decimal, Option<f64>> = Default::default();
 
     for scoring_run in scoring_runs {
-        let scoring_run_scores: HashMap<String, ValidatorScoreRecord> = validator_scores
-            .iter()
-            .filter(|v| scoring_run.scoring_run_id == v.scoring_run_id.into())
-            .map(|item| (item.vote_account.clone(), item.clone()))
-            .collect();
+        let mut scoring_run_scores: HashMap<String, ValidatorScoreRecord> = HashMap::new();
+
+        if let Some(records) = validator_scores.get(&scoring_run.scoring_run_id) {
+            for record in records {
+                scoring_run_scores.insert(record.vote_account.clone(), record.clone());
+            }
+        }
 
         let min_score_eligible_algo = scoring_run_scores
             .iter()

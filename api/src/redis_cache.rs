@@ -133,7 +133,7 @@ pub async fn warm_scores(
     let scores_len = scores.len();
     let all_scores = store::scoring::load_all_scores(&context.read().await.psql_client).await?;
     let all_scores_json = serde_json::to_string(&all_scores).unwrap();
-    let all_scores_len = all_scores.len();
+    let all_scores_len: usize = all_scores.values().map(|v| v.len()).sum();
     let mut conn = get_redis_connection(redis_client).await?;
     conn.set("scores", &scores_json).await?;
     info!(
