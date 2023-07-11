@@ -5,8 +5,12 @@ use crate::dto::{
     VersionRecord,
 };
 use chrono::{DateTime, Utc};
+use log::info;
 use rust_decimal::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::RangeInclusive,
+};
 use tokio_postgres::{types::ToSql, Client};
 
 pub struct InsertQueryCombiner<'a> {
@@ -327,6 +331,7 @@ pub async fn load_commissions(
 
 pub async fn update_with_warnings(
     validators: &mut HashMap<String, ValidatorRecord>,
+    epochs_range: RangeInclusive<u64>,
 ) -> anyhow::Result<()> {
     log::info!("Updating validator records with warnings");
 
@@ -337,15 +342,16 @@ pub async fn update_with_warnings(
         if validator.avg_uptime_pct.unwrap_or(0.0) < 0.9 {
             validator.warnings.push(ValidatorWarning::LowUptime);
         }
-        let max_effective_commission = validator.epoch_stats.iter().fold(
-            0,
-            |max_commission, epoch_stats: &ValidatorEpochStats| {
+        let max_effective_commission = validator
+            .epoch_stats
+            .iter()
+            .filter(|stat| epochs_range.contains(&stat.epoch))
+            .fold(0, |max_commission, epoch_stats: &ValidatorEpochStats| {
                 epoch_stats
                     .commission_effective
                     .unwrap_or(0)
                     .max(max_commission)
-            },
-        );
+            });
         if max_effective_commission > 10 {
             validator.warnings.push(ValidatorWarning::HighCommission);
         }
@@ -363,12 +369,16 @@ fn average(numbers: &Vec<f64>) -> Option<f64> {
     Some(sum / count)
 }
 
-pub fn update_validators_with_avgs(validators: &mut HashMap<String, ValidatorRecord>) {
+pub fn update_validators_with_avgs(
+    validators: &mut HashMap<String, ValidatorRecord>,
+    epochs_range: RangeInclusive<u64>,
+) {
     for (_, record) in validators.iter_mut() {
         record.avg_apy = average(
             &record
                 .epoch_stats
                 .iter()
+                .filter(|stat| epochs_range.contains(&stat.epoch))
                 .flat_map(|epoch| epoch.apy)
                 .collect(),
         );
@@ -376,6 +386,7 @@ pub fn update_validators_with_avgs(validators: &mut HashMap<String, ValidatorRec
             &record
                 .epoch_stats
                 .iter()
+                .filter(|stat| epochs_range.contains(&stat.epoch))
                 .flat_map(|epoch| epoch.uptime_pct)
                 .collect(),
         );
@@ -427,7 +438,8 @@ pub fn update_validators_ranks<T>(
 
 pub async fn load_validators(
     psql_client: &Client,
-    epochs: u64,
+    display_epochs: u64,
+    computing_epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -496,7 +508,7 @@ pub async fn load_validators(
                 LEFT JOIN epochs ON epochs.epoch = validators.epoch
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
-            &[&Decimal::from(epochs)],
+            &[&Decimal::from(display_epochs)],
         )
         .await?;
 
@@ -675,11 +687,16 @@ pub async fn load_validators(
         records
     })
     .await?;
+
+    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
+    let first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
+    let epochs_range = first_epoch..=last_epoch;
+
     log::info!("Updating with scores...");
-    update_validators_with_scores(psql_client, &mut records, epochs).await?;
+    update_validators_with_scores(psql_client, &mut records, epochs_range.clone()).await?;
 
     log::info!("Updating averages...");
-    update_validators_with_avgs(&mut records);
+    update_validators_with_avgs(&mut records, epochs_range.clone());
     log::info!("Updating ranks...");
     update_validators_ranks(
         &mut records,
@@ -696,7 +713,7 @@ pub async fn load_validators(
         |a: &ValidatorEpochStats| to_fixed_for_sort(a.apy.unwrap_or(0.0)),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
-    update_with_warnings(&mut records).await?;
+    update_with_warnings(&mut records, epochs_range.clone()).await?;
     log::info!("Records prepared...");
     Ok(records)
 }
@@ -704,12 +721,8 @@ pub async fn load_validators(
 pub async fn update_validators_with_scores(
     psql_client: &Client,
     validators: &mut HashMap<String, ValidatorRecord>,
-    epochs: u64,
+    epochs_range: RangeInclusive<u64>,
 ) -> anyhow::Result<()> {
-    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-    let epochs_range = first_epoch..=last_epoch;
-
     log::info!(
         "Updating validator score with epochs range: {:?}",
         epochs_range

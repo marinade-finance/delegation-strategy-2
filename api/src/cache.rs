@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};
 
 pub(crate) const DEFAULT_EPOCHS: u64 = 80;
+pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
 const CACHE_WARMUP_TIME_S: u64 = 2 * 60;
 const CACHE_WARMUP_RETRY_TIME_S: u64 = 120;
 
