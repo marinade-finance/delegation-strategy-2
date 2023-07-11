@@ -1,4 +1,4 @@
-use crate::cache::DEFAULT_EPOCHS;
+use crate::cache::{DEFAULT_COMPUTING_EPOCHS, DEFAULT_EPOCHS};
 use crate::context::WrappedContext;
 use chrono::Utc;
 use log::{error, info, warn};
@@ -19,8 +19,12 @@ pub async fn warm_validators(
 ) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
-    let validators =
-        store::utils::load_validators(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+    let validators = store::utils::load_validators(
+        &context.read().await.psql_client,
+        DEFAULT_EPOCHS,
+        DEFAULT_COMPUTING_EPOCHS,
+    )
+    .await?;
     let validators_json = serde_json::to_string(&validators).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
     conn.set("validators", &validators_json).await?;
