@@ -210,7 +210,7 @@ pub async fn load_all_scores(
         for row in rows {
             let scoring_run_id: i64 = row.get("scoring_run_id");
             let scores = records
-                .entry(Decimal::from_i64(scoring_run_id).unwrap())
+                .entry(scoring_run_id.try_into()?)
                 .or_insert(Default::default());
             scores.push(ValidatorScoreRecord {
                 vote_account: row.get("vote_account"),
