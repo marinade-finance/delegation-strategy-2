@@ -75,7 +75,6 @@ pub async fn store_validators(
             dc_aso = u.dc_aso,
             commission_advertised = u.commission_advertised,
             version = u.version,
-            mnde_votes = u.mnde_votes,
             activated_stake = u.activated_stake,
             marinade_stake = u.marinade_stake,
             decentralizer_stake = u.decentralizer_stake,
@@ -106,7 +105,6 @@ pub async fn store_validators(
                 dc_aso,
                 commission_advertised,
                 version,
-                mnde_votes,
                 activated_stake,
                 marinade_stake,
                 decentralizer_stake,
@@ -143,7 +141,6 @@ pub async fn store_validators(
                     &v.dc_aso,
                     &v.commission_advertised,
                     &v.version,
-                    &v.mnde_votes,
                     &v.activated_stake,
                     &v.marinade_stake,
                     &v.decentralizer_stake,
@@ -163,7 +160,6 @@ pub async fn store_validators(
                         (8, "DOUBLE PRECISION".into()),          // dc_coordinates_lon
                         (13, "INTEGER".into()),                  // dc_asn
                         (15, "INTEGER".into()),                  // commission_advertised
-                        (17, "NUMERIC".into()),                  // mnde_votes
                         (18, "NUMERIC".into()),                  // activated_stake
                         (19, "NUMERIC".into()),                  // marinade_stake
                         (20, "NUMERIC".into()),                  // decentralizer_stake
@@ -216,7 +212,6 @@ pub async fn store_validators(
         commission_advertised,
         commission_effective,
         version,
-        mnde_votes,
         activated_stake,
         marinade_stake,
         decentralizer_stake,
@@ -259,7 +254,6 @@ pub async fn store_validators(
                 &v.commission_advertised,
                 &v.commission_effective,
                 &v.version,
-                &v.mnde_votes,
                 &v.activated_stake,
                 &v.marinade_stake,
                 &v.decentralizer_stake,

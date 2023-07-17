@@ -485,7 +485,6 @@ pub async fn load_validators(
                 commission_advertised,
                 commission_effective,
                 version,
-                mnde_votes,
                 activated_stake,
                 marinade_stake,
                 decentralizer_stake,
@@ -603,9 +602,6 @@ pub async fn load_validators(
                         .map(|n| n.try_into().unwrap()),
                     commission_aggregated: None,
                     version: row.get("version"),
-                    mnde_votes: row
-                        .get::<_, Option<Decimal>>("mnde_votes")
-                        .map(|n| n.try_into().unwrap()),
                     activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
                     decentralizer_stake: row
@@ -649,9 +645,6 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
                 version: row.get("version"),
-                mnde_votes: row
-                    .get::<_, Option<Decimal>>("mnde_votes")
-                    .map(|n| n.try_into().unwrap()),
                 activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
                 decentralizer_stake: row
@@ -839,16 +832,17 @@ pub async fn load_scores(
             SELECT vote_account,
                 score,
                 rank,
-                mnde_votes,
+                vemnde_votes,
+                msol_votes,
                 ui_hints,
                 component_scores,
                 component_ranks,
                 component_values,
                 eligible_stake_algo,
-                eligible_stake_mnde,
+                eligible_stake_vemnde,
                 eligible_stake_msol,
                 target_stake_algo,
-                target_stake_mnde,
+                target_stake_vemnde,
                 target_stake_msol,
                 scores.scoring_run_id,
                 scoring_runs.created_at as created_at
@@ -871,20 +865,21 @@ pub async fn load_scores(
                     vote_account: vote_account.clone(),
                     score: row.get("score"),
                     rank: row.get("rank"),
-                    mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into().unwrap(),
+                    vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
+                    msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
                     ui_hints: row.get("ui_hints"),
                     component_scores: row.get("component_scores"),
                     component_ranks: row.get("component_ranks"),
                     component_values: row.get("component_values"),
                     eligible_stake_algo: row.get("eligible_stake_algo"),
-                    eligible_stake_mnde: row.get("eligible_stake_mnde"),
+                    eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
                     eligible_stake_msol: row.get("eligible_stake_msol"),
                     target_stake_algo: row
                         .get::<_, Decimal>("target_stake_algo")
                         .try_into()
                         .unwrap(),
-                    target_stake_mnde: row
-                        .get::<_, Decimal>("target_stake_mnde")
+                    target_stake_vemnde: row
+                        .get::<_, Decimal>("target_stake_vemnde")
                         .try_into()
                         .unwrap(),
                     target_stake_msol: row
@@ -1106,7 +1101,6 @@ pub async fn load_validators_aggregated_flat(
                     max(coalesce(commission_effective, commission_advertised, 100)) as max_commission,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision as avg_adjusted_credits,
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
-                    coalesce((array_agg(mnde_votes ORDER BY validators.epoch DESC))[1], 0) as mnde_votes,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) as marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') as last_version
                 from
@@ -1136,7 +1130,6 @@ pub async fn load_validators_aggregated_flat(
             max_commission: row.get::<_, i32>("max_commission").try_into()?,
             avg_adjusted_credits: row.get("avg_adjusted_credits"),
             dc_aso: row.get("dc_aso"),
-            mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into()?,
             marinade_stake: row.get("marinade_stake"),
             version: row.get("last_version"),
         });
@@ -1235,7 +1228,7 @@ pub async fn store_scoring(
     for chunk in scores.chunks(500) {
         let mut query = InsertQueryCombiner::new(
             "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, component_values, mnde_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_mnde, eligible_stake_msol, target_stake_algo, target_stake_mnde, target_stake_msol, scoring_run_id".to_string(),
+            "vote_account, score, component_scores, component_ranks, component_values, vemnde_votes, msol_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_vemnde, eligible_stake_msol, target_stake_algo, target_stake_vemnde, target_stake_msol, scoring_run_id".to_string(),
         );
         for row in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
@@ -1250,14 +1243,15 @@ pub async fn store_scoring(
                 component_values_by_vote_account
                     .get(&row.vote_account)
                     .unwrap(),
-                &row.mnde_votes,
+                &row.vemnde_votes,
+                &row.msol_votes,
                 &row.rank,
                 ui_hints_parsed.get(&row.vote_account).unwrap(),
                 &row.eligible_stake_algo,
-                &row.eligible_stake_mnde,
+                &row.eligible_stake_vemnde,
                 &row.eligible_stake_msol,
                 &row.target_stake_algo,
-                &row.target_stake_mnde,
+                &row.target_stake_vemnde,
                 &row.target_stake_msol,
                 &scoring_run_id,
             ];
