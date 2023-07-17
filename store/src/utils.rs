@@ -12,6 +12,12 @@ use std::{
 };
 use tokio_postgres::{types::ToSql, Client};
 
+const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
+const IDEAL_SLOT_DURATION_MS: u64 = 400;
+const SLOTS_IN_EPOCH: u64 = 432000;
+const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
+const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
+
 pub struct InsertQueryCombiner<'a> {
     pub insertions: u64,
     statement: String,
@@ -125,25 +131,32 @@ impl<'a> UpdateQueryCombiner<'a> {
     }
 }
 
+#[derive(Debug)]
 struct InflationApyCalculator {
     supply: u64,
     duration: u64,
     inflation: f64,
-    inflation_taper: f64,
     total_weighted_credits: u128,
 }
 impl InflationApyCalculator {
-    fn estimate_yields(&self, credits: u64, stake: u64, commission: u8) -> (f64, f64) {
-        let epochs_per_year = 365.25 * 24f64 * 3600f64 / self.duration as f64;
-        let rewards_share = credits as f64 * stake as f64 / self.total_weighted_credits as f64;
-        let inflation_change_per_epoch = (1.0 - self.inflation_taper).powf(1.0 / epochs_per_year);
-        let generated_rewards =
-            self.inflation * self.supply as f64 * rewards_share * self.inflation_taper
-                / epochs_per_year
-                / (1.0 - inflation_change_per_epoch);
-        let staker_rewards = generated_rewards * (1.0 - commission as f64 / 100.0);
-        let apr = staker_rewards / stake as f64;
-        let apy = (1.0 + apr / epochs_per_year).powf(epochs_per_year - 1.0) - 1.0;
+    fn estimate_yields(&self, credits: u64, commission: u8) -> (f64, f64) {
+        if self.total_weighted_credits == 0 || self.duration == 0 {
+            return (0.0, 0.0)
+        }
+
+        let commission = commission.clamp(0, 100) as f64 / 100.0;
+        let staker_share = 1.0 - commission;
+        let actual_epochs_per_year = SECONDS_IN_YEAR / self.duration as f64;
+
+        let cluster_rewards_per_year = self.supply as f64 * self.inflation;
+        let cluster_rewards_per_ideal_epoch = cluster_rewards_per_year / IDEAL_EPOCHS_PER_YEAR;
+
+        let stake_fraction_per_epoch =
+            staker_share * cluster_rewards_per_ideal_epoch * credits as f64
+                / self.total_weighted_credits as f64;
+
+        let apr = stake_fraction_per_epoch * actual_epochs_per_year;
+        let apy = (1.0 + stake_fraction_per_epoch).powf(actual_epochs_per_year) - 1.0;
 
         (apr, apy)
     }
@@ -158,7 +171,6 @@ async fn get_apy_calculators(
                     (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER as duration,
                     supply,
                     inflation,
-                    inflation_taper,
                     SUM(validators.credits * validators.activated_stake) total_weighted_credits
                 FROM
                 epochs
@@ -176,7 +188,6 @@ async fn get_apy_calculators(
                 supply: row.get::<_, Decimal>("supply").try_into()?,
                 duration: row.get::<_, i32>("duration").try_into()?,
                 inflation: row.get("inflation"),
-                inflation_taper: row.get("inflation_taper"),
                 total_weighted_credits: row
                     .get::<_, Decimal>("total_weighted_credits")
                     .try_into()?,
@@ -535,7 +546,6 @@ pub async fn load_validators(
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
                 let (apr, apy) = c.estimate_yields(
                     row.get::<_, Decimal>("credits").try_into().unwrap(),
-                    row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                     row.get::<_, Option<i32>>("commission_effective")
                         .map(|n| n.try_into().unwrap())
                         .unwrap_or(100),
