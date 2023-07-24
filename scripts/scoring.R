@@ -126,7 +126,7 @@ if (nrow(msol_votes) > 0) {
   }
 }
 
-# Mark VemMNDE votes for each validator
+# Mark veMNDE votes for each validator
 validators$vemnde_votes <- 0
 if (nrow(vemnde_votes) > 0) {
   for (i in 1:nrow(vemnde_votes)) {
