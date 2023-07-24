@@ -118,8 +118,11 @@ validators$in_algo_stake_set[validators$eligible_stake_algo == 0] <- 0
 # Mark msol votes for each validator
 validators$msol_votes <- 0
 if (nrow(msol_votes) > 0) {
-  for(i in 1:nrow(msol_votes)) {
-    validators[validators$vote_account == msol_votes[i, "vote_account"], ]$msol_votes <- msol_votes[i, "msol_votes"]
+  for (i in 1:nrow(msol_votes)) {
+    matching_rows <- validators$vote_account == msol_votes[i, "vote_account"]
+    if (any(matching_rows)) {
+      validators[matching_rows, "msol_votes"] <- msol_votes[i, "msol_votes"]
+    }
   }
 }
 
