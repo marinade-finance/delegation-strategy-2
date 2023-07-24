@@ -130,7 +130,10 @@ if (nrow(msol_votes) > 0) {
 validators$vemnde_votes <- 0
 if (nrow(vemnde_votes) > 0) {
   for (i in 1:nrow(vemnde_votes)) {
-    validators[validators$vote_account == vemnde_votes[i, "vote_account"], ]$vemnde_votes <- vemnde_votes[i, "vemnde_votes"]
+    matching_rows <- validators$vote_account == vemnde_votes[i, "vote_account"]
+    if (any(matching_rows)) {
+      validators[matching_rows, "vemnde_votes"] <- vemnde_votes[i, "vemnde_votes"]
+    }
   }
 }
 
