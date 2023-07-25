@@ -35,11 +35,11 @@ pub async fn handler(_context: WrappedContext) -> Result<impl Reply, warp::Rejec
                 delegation_authorities: vec![
                     StakeDelegationAuthorityRecord {
                         delegation_authority: "4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk".into(),
-                        name: "Marinade".into(),
+                        name: "Marinade Liquid".into(),
                     },
                     StakeDelegationAuthorityRecord {
                         delegation_authority: "noMa7dN4cHQLV4ZonXrC29HTKFpxrpFbDLK5Gub8W8t".into(),
-                        name: "Marinade Decentralizer".into(),
+                        name: "Marinade Native".into(),
                     },
                     StakeDelegationAuthorityRecord {
                         delegation_authority: "mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5".into(),
