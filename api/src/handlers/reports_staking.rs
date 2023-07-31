@@ -1,7 +1,7 @@
 use crate::{
     cache::CachedSingleRunScores, context::WrappedContext, metrics, utils::response_error,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use serde::Serialize;
 use solana_program::native_token::LAMPORTS_PER_SOL;
 use store::utils::get_last_epoch;
@@ -59,7 +59,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
             .get(vote_account)
             .filter(|v| v.has_last_epoch_stats);
         let should_have = score_record.target_stake_algo
-            + score_record.target_stake_mnde
+            + score_record.target_stake_vemnde
             + score_record.target_stake_msol;
         match validator {
             Some(validator) => {
@@ -86,7 +86,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                 }
             }
             None => {
-                error!("Couldn't find info for {} in current epoch", vote_account);
+                warn!("Couldn't find info for {} in current epoch", vote_account);
                 continue;
             }
         }

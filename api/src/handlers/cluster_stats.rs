@@ -42,9 +42,10 @@ pub async fn handler(
         .get_cluster_stats(query_params.epochs.unwrap_or(DEFAULT_EPOCHS));
 
     Ok(match cluster_stats {
-        Some(cluster_stats) => {
-            warp::reply::with_status(json(&ResponseClusterStats { cluster_stats }), StatusCode::OK)
-        }
+        Some(cluster_stats) => warp::reply::with_status(
+            json(&ResponseClusterStats { cluster_stats }),
+            StatusCode::OK,
+        ),
         _ => {
             error!("No cluster stats found");
             response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())

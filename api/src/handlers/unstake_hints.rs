@@ -38,9 +38,10 @@ pub async fn handler(
     .await;
 
     Ok(match unstake_hints {
-        Ok(unstake_hints) => {
-            warp::reply::with_status(json(&ResponseUnstakeHints { unstake_hints }), StatusCode::OK)
-        }
+        Ok(unstake_hints) => warp::reply::with_status(
+            json(&ResponseUnstakeHints { unstake_hints }),
+            StatusCode::OK,
+        ),
         Err(err) => {
             error!("Failed to load unstake hints: {}", err);
             response_error_500("Failed to load unstake hints!".into())

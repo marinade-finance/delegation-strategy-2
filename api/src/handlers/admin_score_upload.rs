@@ -126,7 +126,10 @@ pub async fn handler(
     .await;
 
     Ok(match result {
-        Ok(_) => warp::reply::with_status(json(&ResponseAdminScoreUpload { rows_processed }), StatusCode::OK),
+        Ok(_) => warp::reply::with_status(
+            json(&ResponseAdminScoreUpload { rows_processed }),
+            StatusCode::OK,
+        ),
         Err(err) => {
             log::error!("Failed to store the scoring: {}", err);
             response_error_500("Failed to store the scoring!".into())

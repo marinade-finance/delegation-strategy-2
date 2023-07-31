@@ -7,17 +7,10 @@ use crate::whois_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
-use solana_sdk::pubkey::Pubkey;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 pub struct ValidatorsOptions {
-    #[structopt(long = "gauge-meister", help = "Gauge meister of the vote gauges.")]
-    gauge_meister: Option<Pubkey>,
-
-    #[structopt(long = "escrow-relocker", help = "Escrow relocker program address.")]
-    escrow_relocker: Option<Pubkey>,
-
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
@@ -73,7 +66,6 @@ pub struct ValidatorSnapshot {
     pub info_url: Option<String>,
     pub info_details: Option<String>,
     pub info_keybase: Option<String>,
-    pub mnde_votes: Option<u64>,
     pub data_center: Option<ValidatorDataCenter>,
     pub activated_stake: u64,
     pub marinade_stake: u64,
@@ -132,13 +124,6 @@ pub fn collect_validators_info(
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
 
     let validators_info = get_validators_info(&client)?;
-    let mnde_votes = if let (Some(escrow_relocker), Some(gauge_meister)) =
-        (options.escrow_relocker, options.gauge_meister)
-    {
-        Some(get_mnde_votes(&client, escrow_relocker, gauge_meister)?)
-    } else {
-        None
-    };
     let node_ips = get_cluster_nodes_ips(&client)?;
 
     let data_centers = match options.whois {
@@ -173,9 +158,6 @@ pub fn collect_validators_info(
             vote_account: vote_pubkey.clone(),
             identity: identity.clone(),
             node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
-            mnde_votes: mnde_votes
-                .clone()
-                .map_or(None, |v| Some(*v.get(&vote_pubkey).unwrap_or(&0))),
             data_center: data_centers
                 .get(&identity)
                 .map_or(None, |(_ip, data_center)| {
