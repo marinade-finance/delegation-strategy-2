@@ -21,6 +21,4 @@ fi
   --url "$RPC_URL" \
   validators \
     --whois "https://whois.marinade.finance" \
-    --whois-bearer-token "$WHOIS_BEARER_TOKEN" \
-    --escrow-relocker "tovt1VkTE2T4caWoeFP6a2xSFoew5mNpd7FWidyyMuk" \
-    --gauge-meister "mvgmBamY7hDWxLNGLshMoZn8nt2P8tKnKhaBeXMVajZ"
+    --whois-bearer-token "$WHOIS_BEARER_TOKEN"
