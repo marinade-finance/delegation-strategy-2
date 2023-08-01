@@ -160,16 +160,16 @@ pub async fn store_validators(
                         (8, "DOUBLE PRECISION".into()),          // dc_coordinates_lon
                         (13, "INTEGER".into()),                  // dc_asn
                         (15, "INTEGER".into()),                  // commission_advertised
-                        (18, "NUMERIC".into()),                  // activated_stake
-                        (19, "NUMERIC".into()),                  // marinade_stake
-                        (20, "NUMERIC".into()),                  // decentralizer_stake
-                        (21, "BOOL".into()),                     // superminority
-                        (22, "NUMERIC".into()),                  // stake_to_become_superminority
-                        (23, "NUMERIC".into()),                  // credits
-                        (24, "NUMERIC".into()),                  // leader_slots
-                        (25, "NUMERIC".into()),                  // blocks_produced
-                        (26, "DOUBLE PRECISION".into()),         // skip_rate
-                        (27, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                        (17, "NUMERIC".into()),                  // activated_stake
+                        (18, "NUMERIC".into()),                  // marinade_stake
+                        (19, "NUMERIC".into()),                  // decentralizer_stake
+                        (20, "BOOL".into()),                     // superminority
+                        (21, "NUMERIC".into()),                  // stake_to_become_superminority
+                        (22, "NUMERIC".into()),                  // credits
+                        (23, "NUMERIC".into()),                  // leader_slots
+                        (24, "NUMERIC".into()),                  // blocks_produced
+                        (25, "DOUBLE PRECISION".into()),         // skip_rate
+                        (26, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
