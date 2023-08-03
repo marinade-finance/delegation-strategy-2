@@ -52,12 +52,15 @@ pub fn get_data_centers(
     let mut data_centers = HashMap::new();
 
     for (node, ip) in node_ips.iter() {
+        if ip.eq("127.0.0.1") {
+            continue;
+        }
         match whois_client.get_ip_info(ip) {
             Ok(info) => {
                 data_centers.insert(node.clone(), (ip.clone(), info));
             }
             Err(err) => error!(
-                "Error fetching info about IP {} of node {}: {}",
+                "Couldn't fetch info about IP {} of node {}: {}",
                 ip, node, err
             ),
         };
