@@ -1,4 +1,4 @@
-use log::{debug, error, info};
+use log::{debug, warn, info};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -59,7 +59,7 @@ pub fn get_data_centers(
             Ok(info) => {
                 data_centers.insert(node.clone(), (ip.clone(), info));
             }
-            Err(err) => error!(
+            Err(err) => warn!(
                 "Couldn't fetch info about IP {} of node {}: {}",
                 ip, node, err
             ),
