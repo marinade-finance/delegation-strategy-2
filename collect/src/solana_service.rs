@@ -1,6 +1,6 @@
 use crate::validators::*;
 use bincode::deserialize;
-use log::{error, info};
+use log::{info, warn};
 use serde_json::{Map, Value};
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
 use solana_config_program::{get_config_data, ConfigKeys};
@@ -223,7 +223,7 @@ pub fn get_validators_info(
             Ok((validator_pubkey, validator_info)) => {
                 validator_info_map.insert(validator_pubkey.to_string(), validator_info);
             }
-            Err(err) => error!("Error parsing validator info {}", err),
+            Err(err) => warn!("Couldn't parse validator info {}", err),
         }
     }
 
