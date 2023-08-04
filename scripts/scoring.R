@@ -138,7 +138,7 @@ if (nrow(vemnde_votes) > 0) {
 }
 
 # Convert from lamports
-validators$vemnde_votes <- validators$vemnde_votes / 1e9
+validators$vemnde_votes <- validators$vemnde_votes
 
 # Apply msol staking eligibility criteria
 validators$eligible_stake_msol <- 1 - validators$blacklisted
