@@ -4,6 +4,8 @@ set -exu
 
 file_epoch_info_response="./epoch-info.txt"
 file_response_tvl="./tvl.txt"
+file_response_vemnde_votes="./vemnde-votes.json"
+file_parsed_vemnde_votes="./vemnde-votes.csv"
 file_response_msol_votes="./msol-votes.json"
 file_parsed_msol_votes="./msol-votes.csv"
 file_validators="./validators.csv"
@@ -19,6 +21,10 @@ curl -sfLS http://api.marinade.finance/tlv > "$file_response_tvl"
 TOTAL_STAKE=$(<"$file_response_tvl" jq 'fromjson? | .total_virtual_staked_sol' -R)
 
 echo "Total Stake: $TOTAL_STAKE"
+
+curl -sfLS https://snapshots-api.marinade.finance/v1/votes/vemnde/latest > "$file_response_vemnde_votes"
+echo "vote_account,vemnde_votes" > "$file_parsed_vemnde_votes"
+jq '.records | group_by(.validatorVoteAccount) | map(.[0].validatorVoteAccount + "," + (map(.amount | tonumber? // 0) | add | tostring)) | join("\n")' -r "$file_response_vemnde_votes" >> "$file_parsed_vemnde_votes"
 
 curl -sfLS https://snapshots-api.marinade.finance/v1/votes/msol/latest > "$file_response_msol_votes"
 echo "vote_account,msol_votes" > "$file_parsed_msol_votes"
@@ -45,9 +51,9 @@ COMPONENT_WEIGHTS=10,1,2
 ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION=10
 ELIGIBILITY_ALGO_STAKE_MIN_STAKE=1000
 
-ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION=10
-ELIGIBILITY_MNDE_STAKE_MIN_STAKE=100
-ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER=0.9
+ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION=10
+ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE=100
+ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER=0.9
 
 ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION=10
 ELIGIBILITY_MSOL_STAKE_MIN_STAKE=100
@@ -55,9 +61,9 @@ ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER=0.8
 
 ELIGIBILITY_MIN_VERSION=1.14.18
 
-MNDE_VALIDATOR_CAP=0.1
+VEMNDE_VALIDATOR_CAP=0.1
 
-STAKE_CONTROL_MNDE=0.2
+STAKE_CONTROL_VEMNDE=0.2
 STAKE_CONTROL_MSOL=0.2
 EOF
 

@@ -1,5 +1,3 @@
-use anchor_lang::prelude::*;
-use log::info;
 use solana_account_decoder::*;
 use solana_client::{
     rpc_client::RpcClient,
@@ -104,60 +102,5 @@ fn get_stake_accounts(
     Ok(accounts
         .iter()
         .map(|(pubkey, account)| (pubkey.clone(), bincode::deserialize(&account.data).unwrap()))
-        .collect())
-}
-
-#[derive(Debug, Default, borsh::BorshDeserialize, borsh::BorshSchema)]
-pub struct Gauge {
-    pub gaugemeister: Pubkey,
-    pub total_weight: u64,
-    pub vote_count: u64,
-    pub is_disabled: bool,
-    // snapshots make reading more flexible and make time of reading predicted (no delays because of inet/cpu)
-    pub snapshot_time: i64,
-    pub snapshot_slot: u64,
-    pub snapshot_total_weight: u64,
-    pub info: Vec<u8>,
-}
-
-impl Gauge {
-    pub const LEN: usize = 200;
-}
-
-pub fn get_mnde_votes(
-    rpc_client: &RpcClient,
-    escrow_relocker: Pubkey,
-    gauge_meister: Pubkey,
-) -> anyhow::Result<HashMap<String, u64>> {
-    info!("Getting MNDE votes");
-    let accounts = rpc_client.get_program_accounts_with_config(
-        &escrow_relocker,
-        RpcProgramAccountsConfig {
-            filters: Some(vec![RpcFilterType::Memcmp(Memcmp {
-                offset: 8,
-                bytes: MemcmpEncodedBytes::Binary(gauge_meister.to_string()),
-                encoding: None,
-            })]),
-            account_config: RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                commitment: Some(rpc_client.commitment()),
-                min_context_slot: None,
-                data_slice: None,
-            },
-            with_context: None,
-        },
-    )?;
-
-    let gauges: Vec<Gauge> = accounts
-        .iter()
-        .flat_map(|(_, account)| Gauge::deserialize(&mut &account.data[8..]))
-        .collect();
-
-    Ok(gauges
-        .iter()
-        .flat_map(|gauge| match Pubkey::try_from_slice(&gauge.info) {
-            Ok(vote_address) => Some((vote_address.to_string(), gauge.total_weight)),
-            _ => None,
-        })
         .collect())
 }

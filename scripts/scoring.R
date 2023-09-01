@@ -15,6 +15,7 @@ file_params <- args[3]
 file_blacklist <- args[4]
 file_validators <- args[5]
 file_msol_votes <- args[6]
+file_vemnde_votes <- args[7]
 
 t(data.frame(
   file_out_scores,
@@ -22,9 +23,11 @@ t(data.frame(
   file_params,
   file_blacklist,
   file_validators,
-  file_msol_votes
+  file_msol_votes,
+  file_vemnde_votes
 ))
 
+vemnde_votes <- read.csv(file_vemnde_votes)
 msol_votes <- read.csv(file_msol_votes)
 validators <- read.csv(file_validators)
 blacklist <- read.csv(file_blacklist)
@@ -41,9 +44,9 @@ WEIGHT_DC_CONCENTRATION <- as.numeric(Sys.getenv("WEIGHT_DC_CONCENTRATION"))
 ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MAX_COMMISSION"))
 ELIGIBILITY_ALGO_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_ALGO_STAKE_MIN_STAKE"))
 
-ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION"))
-ELIGIBILITY_MNDE_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_STAKE_MIN_STAKE"))
-ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER"))
+ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION"))
+ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE"))
+ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER"))
 
 ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION <- as.numeric(Sys.getenv("ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION"))
 ELIGIBILITY_MSOL_STAKE_MIN_STAKE <- as.numeric(Sys.getenv("ELIGIBILITY_MSOL_STAKE_MIN_STAKE"))
@@ -51,11 +54,11 @@ ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER <- as.numeric(Sys.getenv("ELIGIBILIT
 
 ELIGIBILITY_MIN_VERSION <- Sys.getenv("ELIGIBILITY_MIN_VERSION")
 
-MNDE_VALIDATOR_CAP <- as.numeric(Sys.getenv("MNDE_VALIDATOR_CAP"))
+VEMNDE_VALIDATOR_CAP <- as.numeric(Sys.getenv("VEMNDE_VALIDATOR_CAP"))
 
-STAKE_CONTROL_MNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_MNDE"))
+STAKE_CONTROL_VEMNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_VEMNDE"))
 STAKE_CONTROL_MSOL <- as.numeric(Sys.getenv("STAKE_CONTROL_MSOL"))
-STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_MNDE - STAKE_CONTROL_MSOL
+STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_VEMNDE - STAKE_CONTROL_MSOL
 
 # Perform min-max normalization of algo staking formula's components
 validators$normalized_dc_concentration <- normalize(1 - validators$avg_dc_concentration)
@@ -126,6 +129,20 @@ if (nrow(msol_votes) > 0) {
   }
 }
 
+# Mark veMNDE votes for each validator
+validators$vemnde_votes <- 0
+if (nrow(vemnde_votes) > 0) {
+  for (i in 1:nrow(vemnde_votes)) {
+    matching_rows <- validators$vote_account == vemnde_votes[i, "vote_account"]
+    if (any(matching_rows)) {
+      validators[matching_rows, "vemnde_votes"] <- vemnde_votes[i, "vemnde_votes"]
+    }
+  }
+}
+
+# Convert from lamports
+validators$vemnde_votes <- validators$vemnde_votes
+
 # Apply msol staking eligibility criteria
 validators$eligible_stake_msol <- 1 - validators$blacklisted
 validators$eligible_stake_msol[validators$max_commission > ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION] <- 0
@@ -154,78 +171,79 @@ if (msol_valid_votes_total > 0) {
   validators$msol_power <- msol_valid_votes / msol_valid_votes_total
 }
 
-# Apply mnde staking eligibility criteria
-validators$eligible_stake_mnde <- 1 - validators$blacklisted
-validators$eligible_stake_mnde[validators$max_commission > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION] <- 0
-validators$eligible_stake_mnde[validators$minimum_stake < ELIGIBILITY_MNDE_STAKE_MIN_STAKE] <- 0
-validators$eligible_stake_mnde[validators$score < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
-validators$eligible_stake_mnde[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
+# Apply VeMNDE staking eligibility criteria
+validators$eligible_stake_vemnde <- 1 - validators$blacklisted
+validators$eligible_stake_vemnde[validators$max_commission > ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION] <- 0
+validators$eligible_stake_vemnde[validators$minimum_stake < ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE] <- 0
+validators$eligible_stake_vemnde[validators$score < min_score_in_algo_set * ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
+validators$eligible_stake_vemnde[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
 
 for (i in 1:nrow(validators)) {
-  if (validators[i, "max_commission"] > ELIGIBILITY_MNDE_STAKE_MAX_COMMISSION) {
-    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_MAX_COMMISSION_OVER_10"))
+  if (validators[i, "max_commission"] > ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_VEMNDE_STAKE_MAX_COMMISSION_OVER_10"))
   }
-  if (validators[i, "minimum_stake"] < ELIGIBILITY_MNDE_STAKE_MIN_STAKE) {
-    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_MIN_STAKE_BELOW_100"))
+  if (validators[i, "minimum_stake"] < ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_VEMNDE_STAKE_MIN_STAKE_BELOW_100"))
   }
-  if (validators[i, "score"] < min_score_in_algo_set * ELIGIBILITY_MNDE_SCORE_THRESHOLD_MULTIPLIER) {
-    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MNDE_STAKE_SCORE_TOO_LOW"))
+  if (validators[i, "score"] < min_score_in_algo_set * ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER) {
+    validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_VEMNDE_STAKE_SCORE_TOO_LOW"))
   }
 }
 
 # Apply eligibility on votes to get effective votes
-mnde_valid_votes <- round(validators$mnde_votes * validators$eligible_stake_mnde / 1e9)
+vemnde_valid_votes <- round(validators$vemnde_votes * validators$eligible_stake_vemnde)
+vemnde_valid_votes_total <- sum(vemnde_valid_votes)
 
-# Apply cap on the share of mnde votes
-mnde_power_cap <- round(sum(mnde_valid_votes) * MNDE_VALIDATOR_CAP)
-validators$mnde_power <- pmin(mnde_valid_votes, mnde_power_cap)
+# Apply cap on the share of vemnde votes
+vemnde_power_cap <- round(sum(vemnde_valid_votes) * VEMNDE_VALIDATOR_CAP)
+validators$vemnde_power <- pmin(vemnde_valid_votes, vemnde_power_cap)
 
 # Find out how much votes got truncated
-mnde_overflow <- sum(mnde_valid_votes) - sum(validators$mnde_power)
+vemnde_overflow <- sum(vemnde_valid_votes) - sum(validators$vemnde_power)
 
-# Sort validators by MNDE power
-validators <- validators[order(validators$mnde_power, decreasing = T),]
+# Sort validators by veMNDE power
+validators <- validators[order(validators$vemnde_power, decreasing = T),]
 
 # Distribute the overflow from the capping
-for (v in 1:length(validators$mnde_power)) {
-  validators_index <- seq(1, along.with = validators$mnde_power)
+for (v in 1:length(validators$vemnde_power)) {
+  validators_index <- seq(1, along.with = validators$vemnde_power)
   # Ignore weights of already processed validators as they 1) already received their share from the overflow; 2) were overflowing
-  moving_weights <- (validators_index > v - 1) * validators$mnde_power
-  # Break the loop if no one else should receive stake from the mnde voting
+  moving_weights <- (validators_index > v - 1) * validators$vemnde_power
+  # Break the loop if no one else should receive stake from the vemnde voting
   if (sum(moving_weights) == 0) {
     break
   }
   # How much should the power increase from the overflow
-  mnde_power_increase <- round(mnde_overflow * moving_weights[v] / sum(moving_weights))
-  # Limit the increase of mnde power if cap should be applied
-  mnde_power_increase_capped <- min(mnde_power_increase, mnde_power_cap - moving_weights[v])
-  # Increase mnde power for this validator
-  validators$mnde_power <- validators$mnde_power + (validators_index == v) * mnde_power_increase_capped
+  vemnde_power_increase <- round(vemnde_overflow * moving_weights[v] / sum(moving_weights))
+  # Limit the increase of vemnde power if cap should be applied
+  vemnde_power_increase_capped <- min(vemnde_power_increase, vemnde_power_cap - moving_weights[v])
+  # Increase vemnde power for this validator
+  validators$vemnde_power <- validators$vemnde_power + (validators_index == v) * vemnde_power_increase_capped
   # Reduce the overflow by what was given to this validator
-  mnde_overflow <- mnde_overflow - mnde_power_increase_capped
+  vemnde_overflow <- vemnde_overflow - vemnde_power_increase_capped
 }
 
-# Scale mnde power to a percentage
-if (sum(validators$mnde_power) > 0) {
-  total_mnde_power <- sum(validators$mnde_power, mnde_overflow)
-  validators$mnde_power <- validators$mnde_power / total_mnde_power
-  mnde_overflow_power <- mnde_overflow / total_mnde_power
+# Scale vemnde power to a percentage
+if (sum(validators$vemnde_power) > 0) {
+  total_vemnde_power <- sum(validators$vemnde_power, vemnde_overflow)
+  validators$vemnde_power <- validators$vemnde_power / total_vemnde_power
+  vemnde_overflow_power <- vemnde_overflow / total_vemnde_power
 } else {
-  mnde_overflow_power <- 1
+  vemnde_overflow_power <- 1
 }
 
-STAKE_CONTROL_MNDE_SOL <- TOTAL_STAKE * STAKE_CONTROL_MNDE * (1 - mnde_overflow_power)
-STAKE_CONTROL_MNDE_OVERFLOW_SOL <- mnde_overflow_power * TOTAL_STAKE * STAKE_CONTROL_MNDE
+STAKE_CONTROL_VEMNDE_SOL <- TOTAL_STAKE * STAKE_CONTROL_VEMNDE * (1 - vemnde_overflow_power)
+STAKE_CONTROL_VEMNDE_OVERFLOW_SOL <- vemnde_overflow_power * TOTAL_STAKE * STAKE_CONTROL_VEMNDE
 STAKE_CONTROL_MSOL_SOL <- if (msol_valid_votes_total > 0) { TOTAL_STAKE * STAKE_CONTROL_MSOL } else { 0 }
 STAKE_CONTROL_MSOL_UNUSED_SOL <- if (msol_valid_votes_total > 0) { 0 } else { TOTAL_STAKE * STAKE_CONTROL_MSOL }
-STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_MNDE_OVERFLOW_SOL + STAKE_CONTROL_MSOL_UNUSED_SOL
+STAKE_CONTROL_ALGO_SOL <- TOTAL_STAKE * STAKE_CONTROL_ALGO + STAKE_CONTROL_VEMNDE_OVERFLOW_SOL + STAKE_CONTROL_MSOL_UNUSED_SOL
 
-validators$target_stake_mnde <- round(validators$mnde_power * STAKE_CONTROL_MNDE_SOL)
+validators$target_stake_vemnde <- round(validators$vemnde_power * STAKE_CONTROL_VEMNDE_SOL)
 validators$target_stake_msol <- round(validators$msol_power * STAKE_CONTROL_MSOL_SOL)
 validators$target_stake_algo <- round(validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL)
-validators$target_stake <- validators$target_stake_mnde + validators$target_stake_algo + validators$target_stake_msol
+validators$target_stake <- validators$target_stake_vemnde + validators$target_stake_algo + validators$target_stake_msol
 
-perf_target_stake_mnde <- sum(validators$avg_adjusted_credits * validators$target_stake_mnde) / sum(validators$target_stake_mnde)
+perf_target_stake_vemnde <- sum(validators$avg_adjusted_credits * validators$target_stake_vemnde) / sum(validators$target_stake_vemnde)
 perf_target_stake_algo <- sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)
 perf_target_stake_msol <- sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)
 
@@ -233,10 +251,10 @@ print(t(data.frame(
   TOTAL_STAKE,
   STAKE_CONTROL_MSOL_SOL,
   STAKE_CONTROL_MSOL_UNUSED_SOL,
-  STAKE_CONTROL_MNDE_SOL,
-  STAKE_CONTROL_MNDE_OVERFLOW_SOL,
+  STAKE_CONTROL_VEMNDE_SOL,
+  STAKE_CONTROL_VEMNDE_OVERFLOW_SOL,
   STAKE_CONTROL_ALGO_SOL,
-  perf_target_stake_mnde,
+  perf_target_stake_vemnde,
   perf_target_stake_algo,
   perf_target_stake_msol
 )))

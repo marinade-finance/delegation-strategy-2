@@ -184,16 +184,17 @@ pub async fn load_all_scores(
             SELECT vote_account,
                 score,
                 rank,
-                mnde_votes,
+                vemnde_votes,
+                msol_votes,
                 ui_hints,
                 component_scores,
                 component_ranks,
                 component_values,
                 eligible_stake_algo,
-                eligible_stake_mnde,
+                eligible_stake_vemnde,
                 eligible_stake_msol,
                 target_stake_algo,
-                target_stake_mnde,
+                target_stake_vemnde,
                 target_stake_msol,
                 scores.scoring_run_id,
                 scoring_runs.created_at as created_at
@@ -216,20 +217,21 @@ pub async fn load_all_scores(
                 vote_account: row.get("vote_account"),
                 score: row.get("score"),
                 rank: row.get("rank"),
-                mnde_votes: row.get::<_, Decimal>("mnde_votes").try_into().unwrap(),
+                vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
+                msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
                 ui_hints: row.get("ui_hints"),
                 component_scores: row.get("component_scores"),
                 component_ranks: row.get("component_ranks"),
                 component_values: row.get("component_values"),
                 eligible_stake_algo: row.get("eligible_stake_algo"),
-                eligible_stake_mnde: row.get("eligible_stake_mnde"),
+                eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
                 eligible_stake_msol: row.get("eligible_stake_msol"),
                 target_stake_algo: row
                     .get::<_, Decimal>("target_stake_algo")
                     .try_into()
                     .unwrap(),
-                target_stake_mnde: row
-                    .get::<_, Decimal>("target_stake_mnde")
+                target_stake_vemnde: row
+                    .get::<_, Decimal>("target_stake_vemnde")
                     .try_into()
                     .unwrap(),
                 target_stake_msol: row
