@@ -246,7 +246,7 @@ curl -sfLS localhost:8000/static/config | jq
         "name": "Marinade"
       },
       {
-        "delegation_authority": "noMa7dN4cHQLV4ZonXrC29HTKFpxrpFbDLK5Gub8W8t",
+        "delegation_authority": "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq",
         "name": "Marinade's Decentralizer"
       }
     ]
