@@ -1,5 +1,6 @@
 use crate::dto::{
-    BlacklistRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord, ValidatorScoreRecord,
+    BlacklistRecord, GlobalUnstakeHintRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord,
+    ValidatorScoreRecord,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -109,12 +110,10 @@ pub async fn load_unstake_hints(
     psql_client: &Client,
     blacklist_path: &String,
     epoch: u64,
-) -> anyhow::Result<Vec<UnstakeHintRecord>> {
+) -> anyhow::Result<HashMap<String, HashSet<UnstakeHint>>> {
     log::info!("Loading unstake hints in epoch: {}", epoch);
     let mut hints: HashMap<_, HashSet<_>> = Default::default();
 
-    let marinade_staked_validators =
-        voters_with_marinade_stake_in_epoch(psql_client, epoch).await?;
     let commissions_in_this_epoch = voter_max_commission_in_epoch(psql_client, epoch).await?;
     let commissions_in_previous_epoch = if epoch > 0 {
         voter_max_commission_in_epoch(psql_client, epoch - 1).await?
@@ -159,6 +158,21 @@ pub async fn load_unstake_hints(
         }
     }
 
+    Ok(hints)
+}
+
+pub async fn load_marinade_unstake_hint_records(
+    psql_client: &Client,
+    blacklist_path: &String,
+    epoch: u64,
+) -> anyhow::Result<Vec<UnstakeHintRecord>> {
+    log::info!("Loading Marinade unstake hint records in epoch: {}", epoch);
+
+    let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
+
+    let marinade_staked_validators =
+        voters_with_marinade_stake_in_epoch(psql_client, epoch).await?;
+
     Ok(marinade_staked_validators
         .into_iter()
         .filter_map(
@@ -166,11 +180,29 @@ pub async fn load_unstake_hints(
                 Some(hints) => Some(UnstakeHintRecord {
                     vote_account,
                     marinade_stake,
-                    hints,
+                    hints: hints.into_iter().collect(),
                 }),
                 _ => None,
             },
         )
+        .collect())
+}
+
+pub async fn load_global_unstake_hint_records(
+    psql_client: &Client,
+    blacklist_path: &String,
+    epoch: u64,
+) -> anyhow::Result<Vec<GlobalUnstakeHintRecord>> {
+    log::info!("Loading globsal unstake hint records in epoch: {}", epoch);
+
+    let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
+
+    Ok(hints
+        .into_iter()
+        .map(|(vote_account, hints)| GlobalUnstakeHintRecord {
+            vote_account,
+            hints: hints.into_iter().collect(),
+        })
         .collect())
 }
 
