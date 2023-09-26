@@ -112,11 +112,13 @@ impl Cache {
 pub async fn warm_validators_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading validators from Redis");
     let warmup_timer = Instant::now();
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let validators_json: String = conn.get("validators").await?;
+    let tagged_key = format!("validators_{}", redis_tag);
+    let validators_json: String = conn.get(tagged_key).await?;
     let validators: HashMap<String, ValidatorRecord> =
         serde_json::from_str(&validators_json).unwrap();
 
@@ -141,11 +143,13 @@ pub async fn warm_validators_cache(
 pub async fn warm_commissions_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading commissions from Redis");
     let warmup_timer = Instant::now();
+    let tagged_key = format!("commissions_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let commissions_json: String = conn.get("commissions").await?;
+    let commissions_json: String = conn.get(tagged_key).await?;
     let commissions: HashMap<String, Vec<CommissionRecord>> =
         serde_json::from_str(&commissions_json).unwrap();
 
@@ -166,12 +170,13 @@ pub async fn warm_commissions_cache(
 pub async fn warm_versions_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading versions from Redis");
     let warmup_timer = Instant::now();
-
+    let tagged_key = format!("versions_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let versions_json: String = conn.get("versions").await?;
+    let versions_json: String = conn.get(tagged_key).await?;
     let versions: HashMap<String, Vec<VersionRecord>> =
         serde_json::from_str(&versions_json).unwrap();
 
@@ -187,12 +192,13 @@ pub async fn warm_versions_cache(
 pub async fn warm_uptimes_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading uptimes from Redis");
     let warmup_timer = Instant::now();
-
+    let tagged_key = format!("uptimes_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let uptimes_json: String = conn.get("uptimes").await?;
+    let uptimes_json: String = conn.get(tagged_key).await?;
     let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json).unwrap();
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
@@ -207,12 +213,13 @@ pub async fn warm_uptimes_cache(
 pub async fn warm_cluster_stats_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading cluster_stats from Redis");
     let warmup_timer = Instant::now();
-
+    let tagged_key = format!("cluster_stats_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let cluster_stats_json: String = conn.get("cluster_stats").await?;
+    let cluster_stats_json: String = conn.get(tagged_key).await?;
     let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json).unwrap();
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
@@ -226,15 +233,17 @@ pub async fn warm_cluster_stats_cache(
 pub async fn warm_scores_cache(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
+    redis_tag: String,
 ) -> anyhow::Result<()> {
     info!("Loading scores from Redis");
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let scores_json: String = conn.get("scores").await?;
+    let mut tagged_key = format!("scores_{}", redis_tag);
+    let scores_json: String = conn.get(tagged_key).await?;
     let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json).unwrap();
-
-    let multi_run_scores_json: String = conn.get("scores_all").await?;
+    tagged_key = format!("scores_all_{}", redis_tag);
+    let multi_run_scores_json: String = conn.get(tagged_key).await?;
     let multi_run_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>> =
         serde_json::from_str(&multi_run_scores_json).unwrap();
 
@@ -280,12 +289,20 @@ pub async fn warm_scores_cache(
     Ok(())
 }
 
-pub fn spawn_cache_warmer(context: WrappedContext, redis_client: Arc<RwLock<redis::Client>>) {
+pub fn spawn_cache_warmer(
+    context: WrappedContext,
+    redis_client: Arc<RwLock<redis::Client>>,
+    redis_tag: String,
+) {
     tokio::spawn(async move {
         let mut last_timestamp = String::new();
         loop {
-            let redis_check =
-                redis_cache::check_redis_timestamp(&redis_client, &last_timestamp).await;
+            let redis_check = redis_cache::check_redis_timestamp(
+                &redis_client,
+                &last_timestamp,
+                redis_tag.clone(),
+            )
+            .await;
             if let Err(_) = redis_check {
                 warn!(
                     "Redis is not warmed up. Trying again in {} seconds.",
@@ -299,30 +316,32 @@ pub fn spawn_cache_warmer(context: WrappedContext, redis_client: Arc<RwLock<redi
                 warn!("Redis timestamp mismatch. Cache must be updated.");
                 info!("Warming up the cache");
 
-                if let Err(err) = warm_scores_cache(&context, &redis_client).await {
+                if let Err(err) = warm_scores_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the scores: {}", err);
                 }
 
-                if let Err(err) = warm_versions_cache(&context, &redis_client).await {
+                if let Err(err) = warm_versions_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the versions: {}", err);
                 }
 
-                if let Err(err) = warm_commissions_cache(&context, &redis_client).await {
+                if let Err(err) = warm_commissions_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the commissions: {}", err);
                 }
 
-                if let Err(err) = warm_uptimes_cache(&context, &redis_client).await {
+                if let Err(err) = warm_uptimes_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the uptimes: {}", err);
                 }
 
-                if let Err(err) = warm_cluster_stats_cache(&context, &redis_client).await {
+                if let Err(err) = warm_cluster_stats_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the cluster stats: {}", err);
                 }
 
-                if let Err(err) = warm_validators_cache(&context, &redis_client).await {
+                if let Err(err) = warm_validators_cache(&context, &redis_client, redis_tag.clone()).await {
                     error!("Failed to update the validators: {}", err);
                 }
-                if let Ok(timestamp) = redis_cache::get_redis_timestamp(&redis_client).await {
+                if let Ok(timestamp) =
+                    redis_cache::get_redis_timestamp(&redis_client, redis_tag.clone()).await
+                {
                     last_timestamp = timestamp;
                 }
             } else {

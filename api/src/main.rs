@@ -31,6 +31,9 @@ pub struct Params {
     #[structopt(long = "redis-url")]
     redis_url: String,
 
+    #[structopt(long = "redis-tag")]
+    redis_tag: String,
+
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
@@ -68,8 +71,17 @@ async fn main() -> anyhow::Result<()> {
         params.glossary_path,
         params.blacklist_path,
     )?));
-    redis_cache::spawn_redis_warmer(context.clone(), redis_client.clone(), redis_locker);
-    cache::spawn_cache_warmer(context.clone(), redis_client.clone());
+    redis_cache::spawn_redis_warmer(
+        context.clone(),
+        redis_client.clone(),
+        redis_locker,
+        params.redis_tag.clone(),
+    );
+    cache::spawn_cache_warmer(
+        context.clone(),
+        redis_client.clone(),
+        params.redis_tag.clone(),
+    );
 
     let cors = warp::cors()
         .allow_any_origin()
