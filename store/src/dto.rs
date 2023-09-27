@@ -4,7 +4,7 @@ use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
@@ -338,7 +338,7 @@ pub struct ScoringRunRecord {
     pub ui_id: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, Clone, Hash, Eq, PartialEq, utoipa::ToSchema)]
 pub enum UnstakeHint {
     HighCommission,
     HighCommissionInPreviousEpoch,
@@ -350,7 +350,13 @@ pub enum UnstakeHint {
 pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,
-    pub hints: HashSet<UnstakeHint>,
+    pub hints: Vec<UnstakeHint>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct GlobalUnstakeHintRecord {
+    pub vote_account: String,
+    pub hints: Vec<UnstakeHint>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
