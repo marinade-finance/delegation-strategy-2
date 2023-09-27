@@ -193,7 +193,7 @@ pub async fn load_global_unstake_hint_records(
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<GlobalUnstakeHintRecord>> {
-    log::info!("Loading globsal unstake hint records in epoch: {}", epoch);
+    log::info!("Loading global unstake hint records in epoch: {}", epoch);
 
     let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
 
