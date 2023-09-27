@@ -4,7 +4,7 @@ use collect::validators_mev::ValidatorMEVSnapshot;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct ValidatorMEVInfo {
     pub vote_account: String,
