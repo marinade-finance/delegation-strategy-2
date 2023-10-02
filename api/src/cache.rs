@@ -151,7 +151,7 @@ pub async fn warm_commissions_cache(
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let commissions_json: String = conn.get(tagged_key).await?;
     let commissions: HashMap<String, Vec<CommissionRecord>> =
-        serde_json::from_str(&commissions_json).unwrap();
+        serde_json::from_str(&commissions_json)?;
 
     context
         .write()
@@ -176,9 +176,8 @@ pub async fn warm_versions_cache(
     let warmup_timer = Instant::now();
     let tagged_key = format!("versions_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let versions_json: String = conn.get(tagged_key).await?;
-    let versions: HashMap<String, Vec<VersionRecord>> =
-        serde_json::from_str(&versions_json).unwrap();
+    let versions_json: String = conn.get("versions").await?;
+    let versions: HashMap<String, Vec<VersionRecord>> = serde_json::from_str(&versions_json).?;
 
     context.write().await.cache.versions.clone_from(&versions);
     info!(
@@ -199,7 +198,7 @@ pub async fn warm_uptimes_cache(
     let tagged_key = format!("uptimes_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let uptimes_json: String = conn.get(tagged_key).await?;
-    let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json).unwrap();
+    let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json)?;
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
     info!(
@@ -220,7 +219,7 @@ pub async fn warm_cluster_stats_cache(
     let tagged_key = format!("cluster_stats_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let cluster_stats_json: String = conn.get(tagged_key).await?;
-    let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json).unwrap();
+    let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json)?;
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(
@@ -241,11 +240,11 @@ pub async fn warm_scores_cache(
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let mut tagged_key = format!("scores_{}", redis_tag);
     let scores_json: String = conn.get(tagged_key).await?;
-    let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json).unwrap();
+    let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json)?;
     tagged_key = format!("scores_all_{}", redis_tag);
     let multi_run_scores_json: String = conn.get(tagged_key).await?;
     let multi_run_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>> =
-        serde_json::from_str(&multi_run_scores_json).unwrap();
+        serde_json::from_str(&multi_run_scores_json)?;
 
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;

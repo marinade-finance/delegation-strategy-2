@@ -3,6 +3,7 @@ pub mod cluster_stats;
 pub mod commissions;
 pub mod config;
 pub mod docs;
+pub mod global_unstake_hints;
 pub mod glossary;
 pub mod list_validators;
 pub mod reports_commission_changes;
