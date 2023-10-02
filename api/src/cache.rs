@@ -117,7 +117,7 @@ pub async fn warm_validators_cache(
     info!("Loading validators from Redis");
     let warmup_timer = Instant::now();
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let tagged_key = format!("validators_{}", redis_tag);
+    let tagged_key = format!("{}_validators", redis_tag);
     let validators_json: String = conn.get(tagged_key).await?;
     let validators: HashMap<String, ValidatorRecord> =
         serde_json::from_str(&validators_json).unwrap();
@@ -147,7 +147,7 @@ pub async fn warm_commissions_cache(
 ) -> anyhow::Result<()> {
     info!("Loading commissions from Redis");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("commissions_{}", redis_tag);
+    let tagged_key = format!("{}_commissions", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let commissions_json: String = conn.get(tagged_key).await?;
     let commissions: HashMap<String, Vec<CommissionRecord>> =
@@ -174,7 +174,7 @@ pub async fn warm_versions_cache(
 ) -> anyhow::Result<()> {
     info!("Loading versions from Redis");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("versions_{}", redis_tag);
+    let tagged_key = format!("{}_versions", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let versions_json: String = conn.get(tagged_key).await?;
     let versions: HashMap<String, Vec<VersionRecord>> = serde_json::from_str(&versions_json)?;
@@ -195,7 +195,7 @@ pub async fn warm_uptimes_cache(
 ) -> anyhow::Result<()> {
     info!("Loading uptimes from Redis");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("uptimes_{}", redis_tag);
+    let tagged_key = format!("{}_uptimes", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let uptimes_json: String = conn.get(tagged_key).await?;
     let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json)?;
@@ -216,7 +216,7 @@ pub async fn warm_cluster_stats_cache(
 ) -> anyhow::Result<()> {
     info!("Loading cluster_stats from Redis");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("cluster_stats_{}", redis_tag);
+    let tagged_key = format!("{}_cluster_stats", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let cluster_stats_json: String = conn.get(tagged_key).await?;
     let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json)?;
@@ -238,10 +238,10 @@ pub async fn warm_scores_cache(
     let warmup_timer = Instant::now();
 
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let mut tagged_key = format!("scores_{}", redis_tag);
+    let mut tagged_key = format!("{}_scores", redis_tag);
     let scores_json: String = conn.get(tagged_key).await?;
     let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json)?;
-    tagged_key = format!("scores_all_{}", redis_tag);
+    tagged_key = format!("{}_scores_all", redis_tag);
     let multi_run_scores_json: String = conn.get(tagged_key).await?;
     let multi_run_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>> =
         serde_json::from_str(&multi_run_scores_json)?;
