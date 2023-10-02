@@ -28,7 +28,7 @@ pub async fn warm_validators(
     .await?;
     let validators_json = serde_json::to_string(&validators).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
-    let tagged_key = format!("validators_{}", redis_tag);
+    let tagged_key = format!("{}_validators", redis_tag);
     conn.set(tagged_key, &validators_json).await?;
     info!(
         "Loaded {} validators to Redis in {} ms",
@@ -49,7 +49,7 @@ pub async fn warm_commissions(
         store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let commissions_json = serde_json::to_string(&commissions).unwrap();
     let mut conn = get_redis_connection(redis_client).await.unwrap();
-    let tagged_key = format!("commissions_{}", redis_tag);
+    let tagged_key = format!("{}_commissions", redis_tag);
     conn.set(tagged_key, &commissions_json).await?;
     info!(
         "Loaded {} commissions to Redis in {} ms",
@@ -70,7 +70,7 @@ pub async fn warm_versions(
         store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let versions_json = serde_json::to_string(&versions).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
-    let tagged_key = format!("versions_{}", redis_tag);
+    let tagged_key = format!("{}_versions", redis_tag);
     conn.set(tagged_key, &versions_json).await?;
     info!(
         "Loaded {} versions to Redis in {} ms",
@@ -91,7 +91,7 @@ pub async fn warm_uptimes(
         store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let uptimes_json = serde_json::to_string(&uptimes).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
-    let tagged_key = format!("uptimes_{}", redis_tag);
+    let tagged_key = format!("{}_uptimes", redis_tag);
     conn.set(tagged_key, &uptimes_json).await?;
     info!(
         "Loaded {} uptimes to Redis in {} ms",
@@ -112,7 +112,7 @@ pub async fn warm_cluster_stats(
         store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
     let cluster_stats_json = serde_json::to_string(&cluster_stats).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
-    let tagged_key = format!("cluster_stats_{}", redis_tag);
+    let tagged_key = format!("{}_cluster_stats", redis_tag);
     conn.set(tagged_key, &cluster_stats_json).await?;
     info!(
         "Loaded cluster stats to Redis in {} ms",
@@ -146,14 +146,14 @@ pub async fn warm_scores(
     let all_scores_json = serde_json::to_string(&all_scores).unwrap();
     let all_scores_len: usize = all_scores.values().map(|v| v.len()).sum();
     let mut conn = get_redis_connection(redis_client).await?;
-    let mut tagged_key = format!("scores_{}", redis_tag);
+    let mut tagged_key = format!("{}_scores", redis_tag);
     conn.set(tagged_key, &scores_json).await?;
     info!(
         "Loaded {} single run scores to Redis in {} ms",
         scores_len,
         warmup_timer.elapsed().as_millis()
     );
-    tagged_key = format!("scores_all_{}", redis_tag);
+    tagged_key = format!("{}_scores_all", redis_tag);
     conn.set(tagged_key, &all_scores_json).await?;
     info!(
         "Loaded {} multiple run scores to Redis in {} ms",
@@ -192,7 +192,7 @@ async fn update_redis_timestamp(redis_client: &Arc<RwLock<redis::Client>>, redis
         .set::<_, _, String>(tagged_timestamp, now.clone())
         .await
     {
-        Ok(_) => info!("Changed Redis last update timestamp: {}", now.clone()),
+        Ok(_) => info!("Changed Redis last update timestamp: {} {}", now.clone(), redis_tag.clone()),
         Err(_) => info!("Failed to update Redis last timestamp"),
     }
 }
