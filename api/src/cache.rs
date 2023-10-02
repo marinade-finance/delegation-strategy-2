@@ -176,8 +176,8 @@ pub async fn warm_versions_cache(
     let warmup_timer = Instant::now();
     let tagged_key = format!("versions_{}", redis_tag);
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let versions_json: String = conn.get("versions").await?;
-    let versions: HashMap<String, Vec<VersionRecord>> = serde_json::from_str(&versions_json).?;
+    let versions_json: String = conn.get(tagged_key).await?;
+    let versions: HashMap<String, Vec<VersionRecord>> = serde_json::from_str(&versions_json)?;
 
     context.write().await.cache.versions.clone_from(&versions);
     info!(
