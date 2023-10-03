@@ -1,7 +1,7 @@
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, glossary, list_validators,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
-    unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
+    list_validators, reports_commission_changes, reports_scoring, reports_scoring_html,
+    reports_staking, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
     validator_scores, validators_flat, versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
@@ -23,6 +23,7 @@ use utoipa::OpenApi;
         schemas(config::ConfigStakes),
         schemas(config::ResponseConfig),
         schemas(config::StakeDelegationAuthorityRecord),
+        schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
         schemas(list_validators::ResponseValidators),
         schemas(reports_commission_changes::CommissionChange),
         schemas(reports_commission_changes::ResponseCommissionChanges),
@@ -33,7 +34,9 @@ use utoipa::OpenApi;
         schemas(store::dto::ClusterStats),
         schemas(store::dto::CommissionRecord),
         schemas(store::dto::DCConcentrationStats),
+        schemas(store::dto::GlobalUnstakeHintRecord),
         schemas(store::dto::UnstakeHintRecord),
+        schemas(store::dto::UnstakeHint),
         schemas(store::dto::UptimeRecord),
         schemas(store::dto::ValidatorEpochStats),
         schemas(store::dto::ValidatorRecord),
@@ -63,6 +66,7 @@ use utoipa::OpenApi;
         reports_scoring::handler,
         reports_staking::handler,
         unstake_hints::handler,
+        global_unstake_hints::handler,
         uptimes::handler,
         validator_score_breakdown::handler,
         validator_score_breakdowns::handler,

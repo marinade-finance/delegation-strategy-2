@@ -1,8 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, glossary, list_validators,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
-    unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
+    list_validators, reports_commission_changes, reports_scoring, reports_scoring_html,
+    reports_staking, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
     validator_scores, validators_flat, versions, workflow_metrics_upload,
 };
 use env_logger::Env;
@@ -30,6 +30,9 @@ pub struct Params {
 
     #[structopt(long = "redis-url")]
     redis_url: String,
+
+    #[structopt(long = "redis-tag")]
+    redis_tag: String,
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
@@ -68,8 +71,17 @@ async fn main() -> anyhow::Result<()> {
         params.glossary_path,
         params.blacklist_path,
     )?));
-    redis_cache::spawn_redis_warmer(context.clone(), redis_client.clone(), redis_locker);
-    cache::spawn_cache_warmer(context.clone(), redis_client.clone());
+    redis_cache::spawn_redis_warmer(
+        context.clone(),
+        redis_client.clone(),
+        redis_locker,
+        params.redis_tag.clone(),
+    );
+    cache::spawn_cache_warmer(
+        context.clone(),
+        redis_client.clone(),
+        params.redis_tag.clone(),
+    );
 
     let cors = warp::cors()
         .allow_any_origin()
@@ -199,6 +211,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(unstake_hints::handler);
 
+    let route_global_unstake_hints = warp::path!("global-unstake-hints")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<global_unstake_hints::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(global_unstake_hints::handler);
+
     let route_admin_upload_score = warp::path!("admin" / "scores")
         .and(warp::path::end())
         .and(warp::post())
@@ -233,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_reports_scoring_html)
         .or(route_reports_staking)
         .or(route_unstake_hints)
+        .or(route_global_unstake_hints)
         .or(route_reports_commission_changes)
         .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
