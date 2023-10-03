@@ -13,6 +13,8 @@ use store::{
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
+const MIN_REQUIRED_EPOCHS_IN_THE_PAST: u64 = 9;
+const MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE: u64 = 4;
 const DEFAULT_EPOCHS: usize = 15;
 const DEFAULT_LIMIT: usize = 100;
 const DEFAULT_ORDER_FIELD: OrderField = OrderField::Stake;
@@ -135,6 +137,29 @@ pub fn filter_validators(
     mut validators: HashMap<String, ValidatorRecord>,
     config: &GetValidatorsConfig,
 ) -> Vec<ValidatorRecord> {
+    let last_epoch = validators.values()
+        .flat_map(|validator| &validator.epoch_stats)
+        .filter_map(|epoch_stat| Some(epoch_stat.epoch))
+        .max()
+        .unwrap_or(0);
+
+    let min_required_epoch = last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_IN_THE_PAST);
+    let last_epochs_with_credits_or_stake_start = last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE);
+
+    validators.retain(|_, validator| {
+        // Check that validator has stats for the last 10 epochs
+        if !(min_required_epoch..=last_epoch).all(|epoch| {
+            validator.epoch_stats.iter().any(|epoch_stat| epoch_stat.epoch == epoch)
+        }) {
+            return false;
+        }
+        // Check that validator has credits or has active stake in the last 5 epochs
+        (last_epochs_with_credits_or_stake_start..=last_epoch).all(|epoch| {
+            validator.epoch_stats.iter().find(|&epoch_stat| epoch_stat.epoch == epoch)
+                .map_or(false, |epoch_stat| epoch_stat.activated_stake > 0 || epoch_stat.credits > 0)
+        })
+    });
+
     if let Some(vote_accounts) = &config.query_vote_accounts {
         validators.retain(|key, _| vote_accounts.contains(key));
     }
