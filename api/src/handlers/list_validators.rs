@@ -7,7 +7,6 @@ use chrono::{DateTime, Utc};
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use solana_program::native_token::LAMPORTS_PER_SOL;
 use store::{
     dto::{ValidatorRecord, ValidatorsAggregated},
     utils::to_fixed_for_sort,
@@ -136,10 +135,6 @@ pub fn filter_validators(
     mut validators: HashMap<String, ValidatorRecord>,
     config: &GetValidatorsConfig,
 ) -> Vec<ValidatorRecord> {
-    validators.retain(|_, v| {
-        v.epoch_stats.iter().take(2).any(|s| s.credits != 0 && s.activated_stake > LAMPORTS_PER_SOL)
-    });
-
     if let Some(vote_accounts) = &config.query_vote_accounts {
         validators.retain(|key, _| vote_accounts.contains(key));
     }
