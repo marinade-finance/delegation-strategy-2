@@ -239,8 +239,7 @@ pub struct RuggerRecord {
 pub struct RugInfo {
     pub epoch: u64,
     pub after: u64,
-    pub before: u64,
-    pub created_at: DateTime<Utc>,
+    pub before: u64
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

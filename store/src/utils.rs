@@ -731,8 +731,7 @@ pub async fn load_validators(
                     .map(|(index, &epoch)| RugInfo {
                         epoch,
                         after: rugger_info.observed_commissions[index],
-                        before: rugger_info.min_commissions[index],
-                        created_at: Utc::now(),
+                        before: rugger_info.min_commissions[index]
                     })
                     .collect()
             }
