@@ -179,6 +179,9 @@ pub struct ValidatorRecord {
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
     pub commission_aggregated: Option<i32>,
+    pub rugged_commission_occurances: u64,
+    pub rugged_commission: bool,
+    pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
@@ -220,6 +223,23 @@ pub struct CommissionRecord {
     pub epoch_end_at: DateTime<Utc>,
     pub epoch_slot: u64,
     pub commission: u8,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct RuggerRecord {
+    pub epochs: Vec<u64>,
+    pub occurances: u64,
+    pub observed_commissions: Vec<u64>,
+    pub min_commissions: Vec<u64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct RugInfo {
+    pub epoch: u64,
+    pub after: u64,
+    pub before: u64,
     pub created_at: DateTime<Utc>,
 }
 
