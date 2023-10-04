@@ -335,7 +335,7 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
     let mut records: HashMap<String, RuggerRecord> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
-        let occurances: u64 = row.get::<_, i64>("events_count").try_into()?;
+        let occurrences: u64 = row.get::<_, i64>("events_count").try_into()?;
         let epochs: Vec<u64> = row
             .get::<_, Vec<Decimal>>("epochs")
             .into_iter()
@@ -356,7 +356,7 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
             vote_account,
             RuggerRecord {
                 epochs,
-                occurances,
+                occurrences,
                 observed_commissions,
                 min_commissions,
                 created_at: Utc::now(),
@@ -717,13 +717,13 @@ pub async fn load_validators(
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
-                    rugged_commission_occurances: 0,
+                    rugged_commission_occurrences: 0,
                 });
 
             let rug_info = ruggers.get(&vote_account);
             if let Some(rugger_info) = rug_info {
                 record.rugged_commission = true;
-                record.rugged_commission_occurances = rugger_info.occurances;
+                record.rugged_commission_occurrences = rugger_info.occurrences;
                 record.rugged_commission_info = rugger_info
                     .epochs
                     .iter()
