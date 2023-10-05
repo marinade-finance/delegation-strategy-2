@@ -68,6 +68,7 @@ pub struct ValidatorSnapshot {
     pub info_keybase: Option<String>,
     pub data_center: Option<ValidatorDataCenter>,
     pub activated_stake: u64,
+    pub foundation_stake: u64,
     pub marinade_stake: u64,
     pub decentralizer_stake: u64,
     pub superminority: bool,
@@ -121,6 +122,7 @@ pub fn collect_validators_info(
 
     let minimum_superminority_stake = get_minimum_superminority_stake(&vote_accounts);
     let marinade_stake = get_marinade_stakes(&client)?;
+    let foundation_stake = get_foundation_stakes(&client)?;
     let decentralizer_stake = get_decentralizer_stakes(&client)?;
 
     let validators_info = get_validators_info(&client)?;
@@ -171,6 +173,7 @@ pub fn collect_validators_info(
 
             activated_stake: vote_account.activated_stake,
             marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
+            foundation_stake: *foundation_stake.get(&vote_pubkey).unwrap_or(&0),
             decentralizer_stake: *decentralizer_stake.get(&vote_pubkey).unwrap_or(&0),
 
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
