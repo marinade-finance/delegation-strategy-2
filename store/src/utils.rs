@@ -1,8 +1,8 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo,
+    RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats,
+    ValidatorRecord, ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning,
+    ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -141,7 +141,7 @@ struct InflationApyCalculator {
 impl InflationApyCalculator {
     fn estimate_yields(&self, credits: u64, commission: u8) -> (f64, f64) {
         if self.total_weighted_credits == 0 || self.duration == 0 {
-            return (0.0, 0.0)
+            return (0.0, 0.0);
         }
 
         let commission = commission.clamp(0, 100) as f64 / 100.0;
@@ -280,6 +280,94 @@ pub async fn load_versions(
         })
     }
 
+    Ok(records)
+}
+/*
+We are checking if:
+- Current commission is greater than previous minimum and it's above 10 OR
+- Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
+- Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10 OR
+ */
+pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
+    let rows = psql_client
+        .query(
+            "
+            WITH commission_changes AS (
+                SELECT 
+                    vote_account, 
+                    epoch,
+                    commission_effective,
+                    commission_min_observed,
+                    LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
+                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                FROM 
+                    validators
+            ),
+            filtered_commissions AS (
+                SELECT 
+                    vote_account, 
+                    epoch, 
+                    commission_effective, 
+                    commission_min_observed
+                FROM 
+                    commission_changes
+                WHERE 
+                    (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
+                    OR
+                    (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
+                    OR
+                    (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
+            )
+            SELECT 
+                vote_account, 
+                COUNT(*) AS events_count, 
+                ARRAY_AGG(epoch) AS epochs,
+                ARRAY_AGG(commission_effective) AS commission_observed_values,
+                ARRAY_AGG(commission_min_observed) AS commission_min_observed_values
+            FROM 
+                filtered_commissions
+            GROUP BY 
+                vote_account
+            HAVING 
+                COUNT(*) > 1
+            ORDER BY 
+                events_count DESC;
+            ",
+            &[],
+        )
+        .await?;
+
+    let mut records: HashMap<String, RuggerRecord> = Default::default();
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        let occurrences: u64 = row.get::<_, i64>("events_count").try_into()?;
+        let epochs: Vec<u64> = row
+            .get::<_, Vec<Decimal>>("epochs")
+            .into_iter()
+            .map(|val| val.to_u64().unwrap_or_default())
+            .collect();
+        let observed_commissions: Vec<u64> = row
+            .get::<_, Vec<i32>>("commission_observed_values")
+            .into_iter()
+            .map(|val| val as u64)
+            .collect();
+        let min_commissions: Vec<u64> = row
+            .get::<_, Vec<i32>>("commission_min_observed_values")
+            .into_iter()
+            .map(|val| val as u64)
+            .collect();
+
+        records.insert(
+            vote_account,
+            RuggerRecord {
+                epochs,
+                occurrences,
+                observed_commissions,
+                min_commissions,
+                created_at: Utc::now(),
+            },
+        );
+    }
     Ok(records)
 }
 
@@ -455,6 +543,7 @@ pub async fn load_validators(
         Some(last_epoch) => last_epoch,
         _ => return Ok(Default::default()),
     };
+    let ruggers = load_ruggers(psql_client).await?;
     let apy_calculators = get_apy_calculators(psql_client).await?;
     let concentrations = load_dc_concentration_stats(psql_client, 1)
         .await?
@@ -631,7 +720,26 @@ pub async fn load_validators(
                     avg_uptime_pct: None,
                     avg_apy: None,
                     has_last_epoch_stats: false,
+                    rugged_commission: false,
+                    rugged_commission_info: Vec::new(),
+                    rugged_commission_occurrences: 0,
                 });
+
+            let rug_info = ruggers.get(&vote_account);
+            if let Some(rugger_info) = rug_info {
+                record.rugged_commission = true;
+                record.rugged_commission_occurrences = rugger_info.occurrences;
+                record.rugged_commission_info = rugger_info
+                    .epochs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &epoch)| RugInfo {
+                        epoch,
+                        after: rugger_info.observed_commissions[index],
+                        before: rugger_info.min_commissions[index]
+                    })
+                    .collect()
+            }
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }

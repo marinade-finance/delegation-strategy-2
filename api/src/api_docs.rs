@@ -43,6 +43,8 @@ use utoipa::OpenApi;
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),
         schemas(store::dto::ValidatorWarning),
+        schemas(store::dto::RuggerRecord),
+        schemas(store::dto::RugInfo),
         schemas(store::dto::VersionRecord),
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
