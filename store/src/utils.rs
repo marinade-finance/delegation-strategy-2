@@ -282,7 +282,12 @@ pub async fn load_versions(
 
     Ok(records)
 }
-
+/*
+We are checking if:
+- Current commission is greater than previous minimum and it's above 10 OR
+- Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
+- Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10 OR
+ */
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -309,9 +314,9 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 WHERE 
                     (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
                     OR
-                    (prev_commission < commission_effective AND commission_effective - prev_commission > 10 AND commission_effective > 10 AND next_commission > commission_effective)
+                    (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
                     OR
-                    (prev_commission > 10 AND commission_effective < prev_commission AND commission_effective < next_commission)
+                    (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
             )
             SELECT 
                 vote_account, 
