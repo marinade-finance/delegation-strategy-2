@@ -2,8 +2,10 @@ use crate::validators::*;
 use bincode::deserialize;
 use log::{info, warn};
 use serde_json::{Map, Value};
-use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
+use solana_account_decoder::UiAccountEncoding;
+use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus, rpc_filter::{RpcFilterType, Memcmp, MemcmpEncodedBytes}, rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig}};
 use solana_config_program::{get_config_data, ConfigKeys};
+use solana_program::stake;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
@@ -12,6 +14,7 @@ use solana_sdk::{
     sysvar,
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_vote_program::vote_state::VoteState;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -43,6 +46,24 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
     }
 
     Ok(credits)
+}
+
+pub fn get_self_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+    info!("Getting self stakes");
+    let vote_accounts = rpc_client.get_vote_accounts()?;
+    let mut self_stakes: HashMap<String, u64> = HashMap::new();
+
+    for vote_account in vote_accounts
+        .current
+        .iter()
+        .chain(vote_accounts.delinquent.iter())
+    {
+        let vote_pubkey = Pubkey::from_str(&vote_account.vote_pubkey)?;
+        let withdraw_authority = get_withdraw_authority(rpc_client, &vote_pubkey)?;
+        let self_stake_amount = get_self_stake_accounts_amount(rpc_client, &withdraw_authority)?;
+        self_stakes.insert(vote_pubkey.to_string(), self_stake_amount);
+    }
+    Ok(self_stakes)
 }
 
 pub fn get_cluster_nodes_versions(
@@ -295,6 +316,38 @@ pub fn get_apy(
     }
 
     Ok(apy)
+}
+
+pub fn get_withdraw_authority(rpc_client: &RpcClient, vote_account: &Pubkey) -> anyhow::Result<Pubkey> {
+    let account = rpc_client.get_account(&vote_account)?;
+    let vote_state = VoteState::deserialize(&account.data)?;
+    Ok(vote_state.authorized_withdrawer)
+}
+
+pub fn get_self_stake_accounts_amount(
+    rpc_client: &RpcClient,
+    withdrawer_authority: &Pubkey,
+) -> anyhow::Result<u64> {
+    let filters = vec![RpcFilterType::Memcmp(Memcmp {
+        offset: 4 + 8 + 32, // enum StakeState + rent_exempt_reserve: u64 + delegation_authority: Pubkey
+        bytes: MemcmpEncodedBytes::Base58(withdrawer_authority.to_string()),
+        encoding: None,
+    })];
+
+    let accounts = rpc_client.get_program_accounts_with_config(
+        &stake::program::ID,
+        RpcProgramAccountsConfig {
+            filters: Some(filters),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                commitment: Some(rpc_client.commitment()),
+                data_slice: None,
+                min_context_slot: None,
+            },
+            with_context: None,
+        },
+    )?;
+    Ok(accounts.iter().map(|(_, account)| account.lamports).sum())
 }
 
 pub fn get_commission_from_inflation_rewards(

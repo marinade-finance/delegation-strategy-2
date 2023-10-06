@@ -79,6 +79,7 @@ pub async fn store_validators(
             marinade_stake = u.marinade_stake,
             foundation_stake = u.foundation_stake,
             decentralizer_stake = u.decentralizer_stake,
+            self_stake = u.self_stake,
             superminority = u.superminority,
             stake_to_become_superminority = u.stake_to_become_superminority,
             credits = u.credits,
@@ -110,6 +111,7 @@ pub async fn store_validators(
                 marinade_stake,
                 foundation_stake,
                 decentralizer_stake,
+                self_stake,
                 superminority,
                 stake_to_become_superminority,
                 credits,
@@ -147,6 +149,7 @@ pub async fn store_validators(
                     &v.marinade_stake,
                     &v.foundation_stake,
                     &v.decentralizer_stake,
+                    &v.self_stake,
                     &v.superminority,
                     &v.stake_to_become_superminority,
                     &v.credits,
@@ -167,13 +170,14 @@ pub async fn store_validators(
                         (18, "NUMERIC".into()),                  // marinade_stake
                         (19, "NUMERIC".into()),                  // foundation_stake
                         (20, "NUMERIC".into()),                  // decentralizer_stake
-                        (21, "BOOL".into()),                     // superminority
-                        (22, "NUMERIC".into()),                  // stake_to_become_superminority
-                        (23, "NUMERIC".into()),                  // credits
-                        (24, "NUMERIC".into()),                  // leader_slots
-                        (25, "NUMERIC".into()),                  // blocks_produced
-                        (26, "DOUBLE PRECISION".into()),         // skip_rate
-                        (27, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                        (21, "NUMERIC".into()),                  // selft_stake
+                        (22, "BOOL".into()),                     // superminority
+                        (23, "NUMERIC".into()),                  // stake_to_become_superminority
+                        (24, "NUMERIC".into()),                  // credits
+                        (25, "NUMERIC".into()),                  // leader_slots
+                        (26, "NUMERIC".into()),                  // blocks_produced
+                        (27, "DOUBLE PRECISION".into()),         // skip_rate
+                        (28, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -220,6 +224,7 @@ pub async fn store_validators(
         marinade_stake,
         foundation_stake,
         decentralizer_stake,
+        self_stake,
         superminority,
         stake_to_become_superminority,
         credits,
@@ -263,6 +268,7 @@ pub async fn store_validators(
                 &v.marinade_stake,
                 &v.foundation_stake,
                 &v.decentralizer_stake,
+                &v.self_stake,
                 &v.superminority,
                 &v.stake_to_become_superminority,
                 &v.credits,
