@@ -3,7 +3,12 @@ use bincode::deserialize;
 use log::{info, warn};
 use serde_json::{Map, Value};
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus, rpc_filter::{RpcFilterType, Memcmp, MemcmpEncodedBytes}, rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig}};
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
+    rpc_response::RpcVoteAccountStatus,
+};
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::stake;
 use solana_sdk::{
@@ -318,7 +323,10 @@ pub fn get_apy(
     Ok(apy)
 }
 
-pub fn get_withdraw_authority(rpc_client: &RpcClient, vote_account: &Pubkey) -> anyhow::Result<Pubkey> {
+pub fn get_withdraw_authority(
+    rpc_client: &RpcClient,
+    vote_account: &Pubkey,
+) -> anyhow::Result<Pubkey> {
     let account = rpc_client.get_account(&vote_account)?;
     let vote_state = VoteState::deserialize(&account.data)?;
     Ok(vote_state.authorized_withdrawer)

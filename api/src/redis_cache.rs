@@ -192,7 +192,11 @@ async fn update_redis_timestamp(redis_client: &Arc<RwLock<redis::Client>>, redis
         .set::<_, _, String>(tagged_timestamp, now.clone())
         .await
     {
-        Ok(_) => info!("Changed Redis last update timestamp: {} {}", now.clone(), redis_tag.clone()),
+        Ok(_) => info!(
+            "Changed Redis last update timestamp: {} {}",
+            now.clone(),
+            redis_tag.clone()
+        ),
         Err(_) => info!("Failed to update Redis last timestamp"),
     }
 }

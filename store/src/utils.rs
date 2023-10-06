@@ -705,7 +705,10 @@ pub async fn load_validators(
                     version: row.get("version"),
                     activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                    foundation_stake: row.get::<_, Decimal>("foundation_stake").try_into().unwrap(),
+                    foundation_stake: row
+                        .get::<_, Decimal>("foundation_stake")
+                        .try_into()
+                        .unwrap(),
                     self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
                     decentralizer_stake: row
                         .get::<_, Decimal>("decentralizer_stake")
@@ -740,7 +743,7 @@ pub async fn load_validators(
                     .map(|(index, &epoch)| RugInfo {
                         epoch,
                         after: rugger_info.observed_commissions[index],
-                        before: rugger_info.min_commissions[index]
+                        before: rugger_info.min_commissions[index],
                     })
                     .collect()
             }
@@ -769,7 +772,10 @@ pub async fn load_validators(
                 version: row.get("version"),
                 activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                foundation_stake: row.get::<_, Decimal>("foundation_stake").try_into().unwrap(),
+                foundation_stake: row
+                    .get::<_, Decimal>("foundation_stake")
+                    .try_into()
+                    .unwrap(),
                 self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
                 decentralizer_stake: row
                     .get::<_, Decimal>("decentralizer_stake")
