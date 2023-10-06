@@ -305,7 +305,6 @@ dependencies = [
  "solana-config-program",
  "solana-program",
  "solana-sdk",
- "solana-vote-program",
  "store",
  "structopt",
  "tokio",
@@ -858,7 +857,6 @@ dependencies = [
  "solana-config-program",
  "solana-program",
  "solana-sdk",
- "solana-vote-program",
  "structopt",
 ]
 
@@ -4229,7 +4227,6 @@ dependencies = [
  "solana-config-program",
  "solana-program",
  "solana-sdk",
- "solana-vote-program",
  "structopt",
  "tokio",
  "tokio-postgres",
