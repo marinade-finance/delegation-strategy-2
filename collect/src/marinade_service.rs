@@ -19,6 +19,20 @@ pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<Str
     )?)
 }
 
+pub fn get_foundation_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+    let mut foundation_authority = "mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5".try_into()?;
+
+    if rpc_client.url().contains("testnet") {
+        foundation_authority = "mvines9iiHiQTysrwkJjGf2gb9Ex9jXJX8ns3qwf2kN".try_into()?;
+    }
+
+    Ok(get_stakes_groupped_by_validator(
+        rpc_client,
+        &foundation_authority,
+        None,
+    )?)
+}
+
 pub fn get_decentralizer_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from config
     let decentralizer_authority = "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;

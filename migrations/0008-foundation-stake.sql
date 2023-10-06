@@ -1,0 +1,1 @@
+ALTER TABLE validators ADD COLUMN foundation_stake NUMERIC NOT NULL DEFAULT 0;
