@@ -78,7 +78,7 @@ pub async fn store_validators(
             activated_stake = u.activated_stake,
             marinade_stake = u.marinade_stake,
             foundation_stake = u.foundation_stake,
-            decentralizer_stake = u.decentralizer_stake,
+            marinade_native_stake = u.marinade_native_stake,
             self_stake = u.self_stake,
             superminority = u.superminority,
             stake_to_become_superminority = u.stake_to_become_superminority,
@@ -110,7 +110,7 @@ pub async fn store_validators(
                 activated_stake,
                 marinade_stake,
                 foundation_stake,
-                decentralizer_stake,
+                marinade_native_stake,
                 self_stake,
                 superminority,
                 stake_to_become_superminority,
@@ -148,7 +148,7 @@ pub async fn store_validators(
                     &v.activated_stake,
                     &v.marinade_stake,
                     &v.foundation_stake,
-                    &v.decentralizer_stake,
+                    &v.marinade_native_stake,
                     &v.self_stake,
                     &v.superminority,
                     &v.stake_to_become_superminority,
@@ -169,7 +169,7 @@ pub async fn store_validators(
                         (17, "NUMERIC".into()),                  // activated_stake
                         (18, "NUMERIC".into()),                  // marinade_stake
                         (19, "NUMERIC".into()),                  // foundation_stake
-                        (20, "NUMERIC".into()),                  // decentralizer_stake
+                        (20, "NUMERIC".into()),                  // marinade_native_stake
                         (21, "NUMERIC".into()),                  // selft_stake
                         (22, "BOOL".into()),                     // superminority
                         (23, "NUMERIC".into()),                  // stake_to_become_superminority
@@ -223,7 +223,7 @@ pub async fn store_validators(
         activated_stake,
         marinade_stake,
         foundation_stake,
-        decentralizer_stake,
+        marinade_native_stake,
         self_stake,
         superminority,
         stake_to_become_superminority,
@@ -267,7 +267,7 @@ pub async fn store_validators(
                 &v.activated_stake,
                 &v.marinade_stake,
                 &v.foundation_stake,
-                &v.decentralizer_stake,
+                &v.marinade_native_stake,
                 &v.self_stake,
                 &v.superminority,
                 &v.stake_to_become_superminority,

@@ -47,7 +47,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "marinade_stake": "0",
       "foundation_stake": "0",
       "self_stake": "0",
-      "decentralizer_stake": "0",
+      "marinade_native_stake": "0",
       "superminority": true,
       "credits": 156411,
       "marinade_score": 0,
@@ -64,7 +64,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "marinade_stake": 0,
           "foundation_stake": 0,
           "self_stake": 0,
-          "decentralizer_stake": 0,
+          "marinade_native_stake": 0,
           "superminority": true,
           "stake_to_become_superminority": 0,
           "credits": 156411,
@@ -251,7 +251,7 @@ curl -sfLS localhost:8000/static/config | jq
       },
       {
         "delegation_authority": "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq",
-        "name": "Marinade's Decentralizer"
+        "name": "Marinade's Native Stake"
       }
     ]
   }

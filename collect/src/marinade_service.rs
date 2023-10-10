@@ -33,12 +33,13 @@ pub fn get_foundation_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<S
     )?)
 }
 
-pub fn get_decentralizer_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_marinade_native_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from config
-    let decentralizer_authority = "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;
+    let marinade_native_stake_authority =
+        "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;
     Ok(get_stakes_groupped_by_validator(
         rpc_client,
-        &decentralizer_authority,
+        &marinade_native_stake_authority,
         None,
     )?)
 }
