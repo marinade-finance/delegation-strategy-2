@@ -315,27 +315,39 @@ pub fn spawn_cache_warmer(
                 warn!("Redis timestamp mismatch. Cache must be updated.");
                 info!("Warming up the cache");
 
-                if let Err(err) = warm_scores_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_scores_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the scores: {}", err);
                 }
 
-                if let Err(err) = warm_versions_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_versions_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the versions: {}", err);
                 }
 
-                if let Err(err) = warm_commissions_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_commissions_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the commissions: {}", err);
                 }
 
-                if let Err(err) = warm_uptimes_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_uptimes_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the uptimes: {}", err);
                 }
 
-                if let Err(err) = warm_cluster_stats_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_cluster_stats_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the cluster stats: {}", err);
                 }
 
-                if let Err(err) = warm_validators_cache(&context, &redis_client, redis_tag.clone()).await {
+                if let Err(err) =
+                    warm_validators_cache(&context, &redis_client, redis_tag.clone()).await
+                {
                     error!("Failed to update the validators: {}", err);
                 }
                 if let Ok(timestamp) =

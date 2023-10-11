@@ -54,7 +54,8 @@ pub struct Validator {
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
-    pub decentralizer_stake: Decimal,
+    pub marinade_native_stake: Decimal,
+    pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
     pub credits: Decimal,
@@ -108,7 +109,8 @@ impl Validator {
             activated_stake: v.activated_stake.into(),
             marinade_stake: v.marinade_stake.into(),
             foundation_stake: v.foundation_stake.into(),
-            decentralizer_stake: v.decentralizer_stake.into(),
+            marinade_native_stake: v.marinade_native_stake.into(),
+            self_stake: v.self_stake.into(),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
             credits: v.performance.credits.into(),
@@ -137,7 +139,8 @@ pub struct ValidatorEpochStats {
     pub activated_stake: u64,
     pub marinade_stake: u64,
     pub foundation_stake: u64,
-    pub decentralizer_stake: u64,
+    pub marinade_native_stake: u64,
+    pub self_stake: u64,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub credits: u64,
@@ -189,7 +192,8 @@ pub struct ValidatorRecord {
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
-    pub decentralizer_stake: Decimal,
+    pub marinade_native_stake: Decimal,
+    pub self_stake: Decimal,
     pub superminority: bool,
     pub credits: u64,
     pub score: Option<f64>,
@@ -243,7 +247,7 @@ pub struct RuggerRecord {
 pub struct RugInfo {
     pub epoch: u64,
     pub after: u64,
-    pub before: u64
+    pub before: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

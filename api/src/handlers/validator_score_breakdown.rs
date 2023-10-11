@@ -34,12 +34,12 @@ pub struct ScoreBreakdown {
     pub components: Vec<String>,
     pub eligible_stake_algo: bool,
     pub eligible_stake_vemnde: bool,
-    #[deprecated  = "Use `eligible_stake_vemnde` instead"]
+    #[deprecated = "Use `eligible_stake_vemnde` instead"]
     pub eligible_stake_mnde: bool,
     pub eligible_stake_msol: bool,
     pub target_stake_algo: u64,
     pub target_stake_vemnde: u64,
-    #[deprecated  = "Use `target_stake_vemnde` instead"]
+    #[deprecated = "Use `target_stake_vemnde` instead"]
     pub target_stake_mnde: u64,
     pub target_stake_msol: u64,
     pub scoring_run_id: i64,

@@ -588,7 +588,8 @@ pub async fn load_validators(
                 activated_stake,
                 marinade_stake,
                 foundation_stake,
-                decentralizer_stake,
+                marinade_native_stake,
+                self_stake,
                 superminority,
                 stake_to_become_superminority,
                 credits,
@@ -704,9 +705,13 @@ pub async fn load_validators(
                     version: row.get("version"),
                     activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                    foundation_stake: row.get::<_, Decimal>("foundation_stake").try_into().unwrap(),
-                    decentralizer_stake: row
-                        .get::<_, Decimal>("decentralizer_stake")
+                    foundation_stake: row
+                        .get::<_, Decimal>("foundation_stake")
+                        .try_into()
+                        .unwrap(),
+                    self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
+                    marinade_native_stake: row
+                        .get::<_, Decimal>("marinade_native_stake")
                         .try_into()
                         .unwrap(),
                     superminority: row.get("superminority"),
@@ -738,7 +743,7 @@ pub async fn load_validators(
                     .map(|(index, &epoch)| RugInfo {
                         epoch,
                         after: rugger_info.observed_commissions[index],
-                        before: rugger_info.min_commissions[index]
+                        before: rugger_info.min_commissions[index],
                     })
                     .collect()
             }
@@ -767,9 +772,13 @@ pub async fn load_validators(
                 version: row.get("version"),
                 activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                foundation_stake: row.get::<_, Decimal>("foundation_stake").try_into().unwrap(),
-                decentralizer_stake: row
-                    .get::<_, Decimal>("decentralizer_stake")
+                foundation_stake: row
+                    .get::<_, Decimal>("foundation_stake")
+                    .try_into()
+                    .unwrap(),
+                self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
+                marinade_native_stake: row
+                    .get::<_, Decimal>("marinade_native_stake")
                     .try_into()
                     .unwrap(),
                 superminority: row.get("superminority"),

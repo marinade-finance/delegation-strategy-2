@@ -1,9 +1,16 @@
 use crate::validators::*;
 use bincode::deserialize;
-use log::{info, warn};
+use log::{error, info, warn};
 use serde_json::{Map, Value};
-use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
+use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_filter::{Memcmp, RpcFilterType},
+    rpc_response::RpcVoteAccountStatus, client_error::ClientError,
+};
 use solana_config_program::{get_config_data, ConfigKeys};
+use solana_program::stake;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
@@ -12,10 +19,16 @@ use solana_sdk::{
     sysvar,
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_vote_program::vote_state::VoteState;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
+    time::Duration, thread::sleep,
 };
+
+const RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS: u64 = 200;
+const PUBKEY_BYTES: usize = 32;
+const WITHDRAW_AUTHORITY_OFFSET: usize = 4 + 8 + 32;
 
 pub fn solana_client(url: String, commitment: String) -> RpcClient {
     RpcClient::new_with_commitment(url, CommitmentConfig::from_str(&commitment).unwrap())
@@ -297,6 +310,19 @@ pub fn get_apy(
     Ok(apy)
 }
 
+pub fn get_withdraw_authorities(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, String>> {
+    let mut withdraw_authorities: HashMap<String, String> = HashMap::default();
+    let vote_program_id = solana_vote_program::id();
+    let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
+
+    for (account_pubkey, account) in vote_accounts {
+        if let Some(vote_state) = VoteState::from(&account) {
+            withdraw_authorities.insert(vote_state.authorized_withdrawer.to_string(), account_pubkey.to_string());
+        }
+    }
+    Ok(withdraw_authorities)
+}
+
 pub fn get_commission_from_inflation_rewards(
     rpc_client: &RpcClient,
     vote_accounts: &RpcVoteAccountStatus,
@@ -325,4 +351,87 @@ pub fn get_commission_from_inflation_rewards(
     }
 
     Ok(result)
+}
+
+pub fn get_self_stake(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+    let withdraw_authorities = get_withdraw_authorities(&rpc_client)?;
+    let self_stake = fetch_self_stake(
+        rpc_client,
+        Some((WITHDRAW_AUTHORITY_OFFSET, PUBKEY_BYTES)),
+        withdraw_authorities
+    )?;
+    return Ok(self_stake);
+}
+
+fn fetch_stake_accounts_on_page(
+    rpc_client: &RpcClient,
+    data_slice: Option<UiDataSliceConfig>,
+    page: u8,
+) -> Result<Vec<(Pubkey, Account)>, ClientError> {
+    let mut filters: Vec<RpcFilterType> = vec![RpcFilterType::DataSize(200)];
+    filters.push(RpcFilterType::Memcmp(Memcmp::new_raw_bytes(WITHDRAW_AUTHORITY_OFFSET, vec![page])));
+
+    rpc_client
+        .get_program_accounts_with_config(
+            &stake::program::ID,
+            RpcProgramAccountsConfig {
+                filters: Some(filters),
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    commitment: Some(rpc_client.commitment()),
+                    data_slice,
+                    min_context_slot: None,
+                },
+                with_context: None,
+            },
+        )
+}
+
+fn process_accounts_for_self_stake(
+    accounts: Vec<(Pubkey, Account)>,
+    self_stake: &mut HashMap<String, u64>,
+    withdraw_authorities: &HashMap<String, String>,
+) -> u64 {
+    let mut self_stake_assigned = 0; 
+    for (_pubkey, account) in accounts.into_iter() {
+        let pubkey_bytes = account.data
+            .try_into()
+            .map_err(|v: Vec<u8>| anyhow::anyhow!("Expected a Vec of length {} but it was {}", PUBKEY_BYTES, v.len()));
+
+        if let Ok(pubkey_bytes) = pubkey_bytes {
+            let pubkey = Pubkey::new_from_array(pubkey_bytes).to_string();
+            if let Some(vote_account) = withdraw_authorities.get(&pubkey) {
+                self_stake_assigned += 1;
+                self_stake
+                    .entry(vote_account.to_string())
+                    .and_modify(|existing_value| *existing_value += account.lamports)
+                    .or_insert(account.lamports);
+            }
+        }
+    }
+    return self_stake_assigned;
+}
+
+pub fn fetch_self_stake(
+    rpc_client: &RpcClient,
+    slice: Option<(usize, usize)>,
+    withdraw_authorities: HashMap<String, String>,
+) -> anyhow::Result<HashMap<String, u64>> {
+    let mut self_stake: HashMap<String, u64> = HashMap::default();
+    let data_slice = slice.map(|(offset, length)| UiDataSliceConfig { offset, length });
+    for page in 0..u8::MAX {
+        match fetch_stake_accounts_on_page(rpc_client, data_slice.clone(), page) {
+            Ok(accounts) => {
+                let processed = process_accounts_for_self_stake(accounts, &mut self_stake, &withdraw_authorities);
+                info!("Processed {} self stakes on page {}", processed, page);
+            }
+            Err(err) => {
+                error!("Failed to fetch stake accounts on page {}: {}", page, err);
+            }
+        }
+
+        sleep(Duration::from_millis(RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS));
+    }
+
+    Ok(self_stake)
 }
