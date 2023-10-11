@@ -23,7 +23,7 @@ pub fn get_foundation_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<S
     let mut foundation_authority = "mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5".try_into()?;
 
     if rpc_client.url().contains("testnet") {
-        foundation_authority = "mvines9iiHiQTysrwkJjGf2gb9Ex9jXJX8ns3qwf2kN".try_into()?;
+        foundation_authority = "spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6".try_into()?;
     }
 
     Ok(get_stakes_groupped_by_validator(
