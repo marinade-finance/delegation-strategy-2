@@ -6,7 +6,7 @@ use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_client::{
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
+    rpc_filter::{Memcmp, RpcFilterType},
     rpc_response::RpcVoteAccountStatus, client_error::ClientError,
 };
 use solana_config_program::{get_config_data, ConfigKeys};
@@ -369,12 +369,7 @@ fn fetch_stake_accounts_on_page(
     page: u8,
 ) -> Result<Vec<(Pubkey, Account)>, ClientError> {
     let mut filters: Vec<RpcFilterType> = vec![RpcFilterType::DataSize(200)];
-    let filter = Memcmp {
-        offset: WITHDRAW_AUTHORITY_OFFSET,
-        bytes: MemcmpEncodedBytes::Bytes(vec![page]),
-        encoding: None,
-    };
-    filters.push(RpcFilterType::Memcmp(filter));
+    filters.push(RpcFilterType::Memcmp(Memcmp::new_raw_bytes(WITHDRAW_AUTHORITY_OFFSET, vec![page])));
 
     rpc_client
         .get_program_accounts_with_config(
