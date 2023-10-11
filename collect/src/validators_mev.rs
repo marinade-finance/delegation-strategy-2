@@ -55,7 +55,7 @@ pub fn validators_mev(
     let validators_tip_distribution_accounts =
         client.get_program_accounts_with_config(&jito_program, config)?;
     for validator_tip_distribution_account in validators_tip_distribution_accounts {
-        let fetched_tip_distribution_account = TipDistributionAccount::try_deserialize(
+        let fetched_tip_distribution_account: TipDistributionAccount = AccountDeserialize::try_deserialize(
             &mut validator_tip_distribution_account.1.data.as_slice(),
         )?;
         if fetched_tip_distribution_account.epoch_created_at != epoch - 1 {
