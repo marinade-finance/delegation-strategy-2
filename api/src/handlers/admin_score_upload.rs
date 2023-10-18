@@ -2,7 +2,7 @@ use crate::metrics;
 use crate::utils::response_error;
 use crate::{context::WrappedContext, utils::response_error_500};
 use bytes::BufMut;
-use futures::TryStreamExt;
+use futures::{TryStreamExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use utoipa::IntoParams;
 use warp::{
@@ -54,10 +54,13 @@ pub async fn handler(
         ));
     }
 
-    let parts: Vec<Part> = form.try_collect().await.map_err(|err| {
-        log::error!("Upload error: {}", err);
-        warp::reject::reject()
-    })?;
+    let mut parts = form.into_stream();
+    let mut scores_csv_part = None;
+    while let Ok(part) = parts.next().await.unwrap() {
+        if part.name().eq(SCORES_CSV_PART_NAME) {
+            scores_csv_part = Some(part);
+        }
+    }
 
     let components: Vec<&str> = query_params.components.split(",").collect();
     let component_weights: Vec<f64> = query_params
@@ -65,13 +68,6 @@ pub async fn handler(
         .split(",")
         .map(|weight| weight.parse::<f64>().unwrap())
         .collect();
-
-    let scores_csv_part = parts.into_iter().find_map(|part| {
-        if !part.name().eq(SCORES_CSV_PART_NAME) {
-            return None;
-        }
-        return Some(part);
-    });
 
     let scores_csv_part = match scores_csv_part {
         Some(part) => part,
