@@ -1219,7 +1219,7 @@ pub async fn load_validators_aggregated_flat(
                 "with
                 cluster_stake as (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate as (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
+                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, concat(dc_aso, '/', dc_city) as dcc from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, concat(dc_aso, '/', dc_city), cluster_stake.stake),
                 agg_versions as (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account)
                 select
                     validators.vote_account,
@@ -1235,7 +1235,7 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') as last_version
                 from
                     validators
-                    left join dc on dc.dc_aso = validators.dc_aso and dc.epoch = validators.epoch
+                    left join dc on dc.dcc = concat(validators.dc_aso, '/', validators.dc_city) and dc.epoch = validators.epoch
                     left join cluster_skip_rate on cluster_skip_rate.epoch = validators.epoch
                     left join agg_versions on validators.vote_account = agg_versions.vote_account
                 where
