@@ -84,7 +84,7 @@ fn md_latest(ui_id: &String) -> String {
         mkdir -p \"scoring-{}\"\n\
         cd \"scoring-{}\"\n\
         wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
-            --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nparams.env\nblacklist.csv'\n\
+            --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nvemnde-votes.csv\nparams.env\nblacklist.csv'\n\
         ```\n\
         Install dependencies for R (assumes you have R installed already):\n\
         ```bash\n\
