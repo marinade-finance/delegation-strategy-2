@@ -1,10 +1,11 @@
 use collect::common::*;
 use collect::validators::*;
-use collect::validators_mev::collect_validators_mev_info;
+use collect::validators_mev::{collect_validators_mev_info, ValidatorsMEVOptions};
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceOptions,
 };
 use env_logger::Env;
+use log::info;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -20,7 +21,7 @@ struct Params {
 enum CollectCommand {
     Validators(ValidatorsOptions),
     ValidatorsPerformance(ValidatorsPerformanceOptions),
-    ValidatorsMEV,
+    ValidatorsMEV(ValidatorsMEVOptions),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -28,11 +29,20 @@ fn main() -> anyhow::Result<()> {
 
     let params = Params::from_args();
 
-    Ok(match params.command {
+    let result = match params.command {
         CollectCommand::Validators(options) => collect_validators_info(params.common, options),
         CollectCommand::ValidatorsPerformance(options) => {
             collect_validators_performance_info(params.common, options)
         }
-        CollectCommand::ValidatorsMEV => collect_validators_mev_info(params.common),
-    }?)
+        CollectCommand::ValidatorsMEV(options) => {
+            collect_validators_mev_info(params.common, options)
+        }
+    };
+
+    match result {
+        Ok(_) => info!("Processing finished successfully."),
+        Err(err) => anyhow::bail!("Processing finished with an error: {}", err),
+    }
+
+    Ok(())
 }
