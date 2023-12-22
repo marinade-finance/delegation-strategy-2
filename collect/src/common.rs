@@ -11,12 +11,12 @@ pub struct CommonParams {
 }
 
 pub fn retry_blocking<F, T, E, ErrorCallback>(
-    mut make_call: F,
+    make_call: F,
     backoff_strategy: impl Iterator<Item = Duration>,
     on_error: ErrorCallback
 ) -> Result<T, E>
 where
-    F: FnMut() -> Result<T, E>,
+    F: Fn() -> Result<T, E>,
     E: std::fmt::Debug,
     ErrorCallback: Fn(E, usize, Duration) -> ()
 {
