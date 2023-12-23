@@ -1,7 +1,7 @@
 use crate::common::*;
 use crate::solana_service::solana_client;
 use anchor_lang::AccountDeserialize;
-use log::info;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_account_decoder::UiAccountEncoding;
@@ -12,7 +12,18 @@ use solana_client::{
 };
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
+use structopt::StructOpt;
 use tip_distribution::state::TipDistributionAccount;
+
+#[derive(Debug, StructOpt)]
+pub struct ValidatorsMEVOptions {
+    #[structopt(
+        long = "rpc-attempts",
+        help = "How many times to retry the operation.",
+        default_value = "10"
+    )]
+    rpc_attempts: usize,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValidatorMEVSnapshot {
@@ -36,28 +47,44 @@ pub struct Snapshot {
 pub fn validators_mev(
     client: &RpcClient,
     epoch: Epoch,
+    rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, ValidatorMEVSnapshot>> {
     let mut validators: HashMap<String, ValidatorMEVSnapshot> = Default::default();
 
     let jito_program = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7".try_into()?;
-    let config = RpcProgramAccountsConfig {
-        filters: Some(vec![RpcFilterType::DataSize(
-            TipDistributionAccount::SIZE.try_into().unwrap(),
-        )]),
-        account_config: RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            data_slice: None,
-            commitment: None,
-            min_context_slot: None,
+    let validators_tip_distribution_accounts = retry_blocking(
+        || {
+            client.get_program_accounts_with_config(
+                &jito_program,
+                RpcProgramAccountsConfig {
+                    filters: Some(vec![RpcFilterType::DataSize(
+                        TipDistributionAccount::SIZE.try_into().unwrap(),
+                    )]),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        data_slice: None,
+                        commitment: None,
+                        min_context_slot: None,
+                    },
+                    with_context: None,
+                },
+            )
         },
-        with_context: None,
-    };
-    let validators_tip_distribution_accounts =
-        client.get_program_accounts_with_config(&jito_program, config)?;
+        QuadraticBackoffStrategy::new(rpc_attempts),
+        |err, attempt, backoff| {
+            warn!(
+                "Attempt {} has failed: {}, retrying in {:?} seconds",
+                attempt,
+                err.to_string(),
+                backoff.as_secs()
+            )
+        },
+    )?;
     for validator_tip_distribution_account in validators_tip_distribution_accounts {
-        let fetched_tip_distribution_account: TipDistributionAccount = AccountDeserialize::try_deserialize(
-            &mut validator_tip_distribution_account.1.data.as_slice(),
-        )?;
+        let fetched_tip_distribution_account: TipDistributionAccount =
+            AccountDeserialize::try_deserialize(
+                &mut validator_tip_distribution_account.1.data.as_slice(),
+            )?;
         if fetched_tip_distribution_account.epoch_created_at != epoch - 1 {
             continue;
         }
@@ -84,7 +111,10 @@ pub fn validators_mev(
     Ok(validators)
 }
 
-pub fn collect_validators_mev_info(common_params: CommonParams) -> anyhow::Result<()> {
+pub fn collect_validators_mev_info(
+    common_params: CommonParams,
+    options: ValidatorsMEVOptions,
+) -> anyhow::Result<()> {
     info!("Collecting snaphost of validators MEV");
     let client = solana_client(common_params.rpc_url, common_params.commitment);
 
@@ -94,7 +124,7 @@ pub fn collect_validators_mev_info(common_params: CommonParams) -> anyhow::Resul
     info!("Current epoch: {:?}", current_epoch_info);
     info!("Looking at epoch: {}", epoch - 1);
 
-    let validators = validators_mev(&client, epoch)?;
+    let validators = validators_mev(&client, epoch, options.rpc_attempts)?;
 
     serde_yaml::to_writer(
         std::io::stdout(),
