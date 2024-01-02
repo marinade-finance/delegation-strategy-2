@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
             "Sec-Fetch-Mode",
             "Referer",
             "Content-Type",
+            "Content-Encoding",
             "Origin",
             "Access-Control-Request-Method",
             "Access-Control-Request-Headers",
