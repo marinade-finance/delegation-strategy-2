@@ -6,6 +6,7 @@ use crate::validators_performance::{validators_performance, ValidatorPerformance
 use crate::whois_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
+use solana_client::nonblocking::rpc_client;
 use solana_sdk::clock::Epoch;
 use structopt::StructOpt;
 
@@ -120,11 +121,11 @@ pub fn collect_validators_info(
         "Delinquent activated stake: {}",
         total_activated_delinquent_stake
     );
-
+    let stake_history = get_stake_history(&client)?;
     let minimum_superminority_stake = get_minimum_superminority_stake(&vote_accounts);
-    let marinade_stake = get_marinade_stakes(&client)?;
-    let foundation_stake = get_foundation_stakes(&client)?;
-    let marinade_native_stake = get_marinade_native_stakes(&client)?;
+    let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
+    let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
+    let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
     let self_stake = get_self_stake(&client)?;
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
