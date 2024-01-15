@@ -4,11 +4,19 @@ use solana_client::{
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
 };
-use solana_program::{clock::*, pubkey::Pubkey};
+use solana_program::{
+    clock::*,
+    pubkey::Pubkey,
+    stake_history::{StakeHistory, StakeHistoryEntry},
+};
 use solana_sdk::stake;
 use std::collections::*;
 
-pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_marinade_stakes(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from state
     let delegation_authority = "4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk".try_into()?;
     let withdrawer_authority = "9eG63CdHjsfhHmobHgLtESGC8GabbmRcaSpHAZrtmhco".try_into()?;
@@ -16,10 +24,16 @@ pub fn get_marinade_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<Str
         rpc_client,
         &delegation_authority,
         Some(&withdrawer_authority),
+        epoch,
+        stake_history,
     )?)
 }
 
-pub fn get_foundation_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_foundation_stakes(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
     let mut foundation_authority = "mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5".try_into()?;
 
     if rpc_client.url().contains("testnet") {
@@ -30,10 +44,16 @@ pub fn get_foundation_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<S
         rpc_client,
         &foundation_authority,
         None,
+        epoch,
+        stake_history,
     )?)
 }
 
-pub fn get_marinade_native_stakes(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_marinade_native_stakes(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from config
     let marinade_native_stake_authority =
         "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;
@@ -41,6 +61,8 @@ pub fn get_marinade_native_stakes(rpc_client: &RpcClient) -> anyhow::Result<Hash
         rpc_client,
         &marinade_native_stake_authority,
         None,
+        epoch,
+        stake_history,
     )?)
 }
 
@@ -48,17 +70,26 @@ fn get_stakes_groupped_by_validator(
     rpc_client: &RpcClient,
     delegation_authority: &Pubkey,
     withdrawer_authority: Option<&Pubkey>,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let stakes = get_stake_accounts(rpc_client, &delegation_authority, withdrawer_authority)?;
 
     let stakes: Vec<_> = stakes
         .iter()
         .filter_map(|(_, stake_account)| {
-            stake_account.delegation().and_then(|delegation| {
-                if delegation.activation_epoch == Epoch::MAX {
+            stake_account.stake().and_then(|stake| {
+                let StakeHistoryEntry {
+                    effective,
+                    activating,
+                    deactivating,
+                } = stake
+                    .delegation
+                    .stake_activating_and_deactivating(epoch, Some(stake_history));
+                if effective == 0 {
                     None
                 } else {
-                    Some((delegation.voter_pubkey.to_string(), delegation.stake))
+                    Some((stake.delegation.voter_pubkey.to_string(), effective))
                 }
             })
         })
