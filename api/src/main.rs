@@ -2,8 +2,9 @@ use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
     list_validators, reports_commission_changes, reports_scoring, reports_scoring_html,
-    reports_staking, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_flat, versions, workflow_metrics_upload,
+    reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_flat, versions,
+    workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -204,6 +205,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_staking::handler);
 
+    let route_rewards = warp::path!("rewards")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<rewards::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(rewards::handler);
+
     let route_unstake_hints = warp::path!("unstake-hints")
         .and(warp::path::end())
         .and(warp::get())
@@ -251,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_reports_scoring)
         .or(route_reports_scoring_html)
         .or(route_reports_staking)
+        .or(route_rewards)
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
         .or(route_reports_commission_changes)
