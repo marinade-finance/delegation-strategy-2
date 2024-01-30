@@ -56,8 +56,20 @@ ELIGIBILITY_MIN_VERSION <- Sys.getenv("ELIGIBILITY_MIN_VERSION")
 
 VEMNDE_VALIDATOR_CAP <- as.numeric(Sys.getenv("VEMNDE_VALIDATOR_CAP"))
 
-STAKE_CONTROL_VEMNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_VEMNDE"))
-STAKE_CONTROL_MSOL <- as.numeric(Sys.getenv("STAKE_CONTROL_MSOL"))
+TOTAL_VEMNDE_VOTES <- sum(vemnde_votes$vemnde_votes, na.rm = TRUE)
+TOTAL_MSOL_VOTES <- sum(msol_votes$msol_votes, na.rm = TRUE)
+
+DEL_STRAT_VEMNDE <- subset(vemnde_votes, vote_account == Sys.getenv("DEL_STRAT_PUBKEY"))$vemnde_votes
+if (length(DEL_STRAT_VEMNDE) == 0) DEL_STRAT_VEMNDE <- 0
+
+DEL_STRAT_MSOL <- subset(msol_votes, vote_account == Sys.getenv("DEL_STRAT_PUBKEY"))$msol_votes
+if (length(DEL_STRAT_MSOL) == 0) DEL_STRAT_MSOL <- 0
+
+DEL_STRAT_VEMNDE_STAKE_CONTROL <- ifelse(TOTAL_VEMNDE_VOTES > 0, DEL_STRAT_VEMNDE / TOTAL_VEMNDE_VOTES, 0)
+DEL_STRAT_MSOL_STAKE_CONTROL <- ifelse(TOTAL_MSOL_VOTES > 0, DEL_STRAT_MSOL / TOTAL_MSOL_VOTES, 0)
+
+STAKE_CONTROL_VEMNDE <- as.numeric(Sys.getenv("STAKE_CONTROL_VEMNDE")) * (1 - DEL_STRAT_VEMNDE_STAKE_CONTROL)
+STAKE_CONTROL_MSOL <- as.numeric(Sys.getenv("STAKE_CONTROL_MSOL")) * (1 - DEL_STRAT_MSOL_STAKE_CONTROL)
 STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_VEMNDE - STAKE_CONTROL_MSOL
 
 # Perform min-max normalization of algo staking formula's components
