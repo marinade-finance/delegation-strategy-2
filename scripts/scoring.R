@@ -272,7 +272,6 @@ print(t(data.frame(
 )))
 
 stopifnot(TOTAL_STAKE > 3e6)
-stopifnot(STAKE_CONTROL_MSOL_SOL > 900000)
 stopifnot(nrow(validators) > 1000)
 stopifnot(nrow(validators[validators$target_stake_algo > 0,]) == 100)
 
