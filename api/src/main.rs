@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(validator_score_breakdown::handler);
 
-    let route_validator_score_breakdowns = warp::path!("validators" / String / "score-breakdowns")
+    let route_validator_score_breakdowns = warp::path!("validators" / "score-breakdowns")
         .and(warp::path::end())
         .and(warp::get())
         .and(warp::query::<validator_score_breakdowns::QueryParams>())

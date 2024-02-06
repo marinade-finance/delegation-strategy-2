@@ -23,13 +23,14 @@ pub struct ResponseScoreBreakdowns {
 #[derive(Deserialize, Serialize, Debug, IntoParams)]
 pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
+    query_vote_account: Option<String>,
 }
 
 #[utoipa::path(
     get,
     tag = "Scoring",
     operation_id = "Show score breakdowns for a validator for a certain period of time",
-    path = "/validators/<vote_account>/score-breakdowns",
+    path = "/validators/score-breakdowns",
     params(QueryParams),
     responses(
         (status = 200, body = ResponseScoreBreakdowns)
@@ -37,7 +38,6 @@ pub struct QueryParams {
 )]
 
 pub async fn handler(
-    vote_account: String,
     query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, Infallible> {
@@ -53,9 +53,11 @@ pub async fn handler(
             let runs_min_elig_scores =
                 compute_runs_min_elig_scores(&scoring_runs, &validator_scores);
 
-            let filtered_validator_scores =
-                filter_scores_by_vote_account(vote_account, validator_scores)
-                    .values()
+            if let Some(from_date) = query_params.query_vote_account {
+                validator_scores = filter_scores_by_vote_account(from_date, validator_scores);
+            }
+
+            let filtered_validator_scores = validator_scores.values()
                     .flat_map(|v| v.clone())
                     .collect();
             let score_breakdowns = compute_score_breakdowns(
