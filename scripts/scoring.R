@@ -16,6 +16,7 @@ file_blacklist <- args[4]
 file_validators <- args[5]
 file_msol_votes <- args[6]
 file_vemnde_votes <- args[7]
+file_validator_bonds <- args[8]
 
 t(data.frame(
   file_out_scores,
@@ -24,13 +25,15 @@ t(data.frame(
   file_blacklist,
   file_validators,
   file_msol_votes,
-  file_vemnde_votes
+  file_vemnde_votes,
+  file_validator_bonds
 ))
 
 vemnde_votes <- read.csv(file_vemnde_votes)
 msol_votes <- read.csv(file_msol_votes)
 validators <- read.csv(file_validators)
 blacklist <- read.csv(file_blacklist)
+bonds <- read.csv(file_validator_bonds)
 load_dot_env(file = file_params)
 
 TOTAL_STAKE=as.numeric(Sys.getenv("TOTAL_STAKE"))
@@ -105,6 +108,11 @@ validators$eligible_stake_algo[validators$max_commission > ELIGIBILITY_ALGO_STAK
 validators$eligible_stake_algo[validators$minimum_stake < ELIGIBILITY_ALGO_STAKE_MIN_STAKE] <- 0
 validators$eligible_stake_algo[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0
 
+# Find validators without bond
+validators_without_bond <- !(validators$vote_account %in% bonds$vote_account)
+
+# Apply algo bond eligibility
+validators$eligible_stake_algo[validators_without_bond] <- 0
 validators$eligible_stake_msol <- validators$eligible_stake_algo
 
 for (i in 1:nrow(validators)) {
@@ -162,6 +170,9 @@ validators$eligible_stake_msol[validators$minimum_stake < ELIGIBILITY_MSOL_STAKE
 validators$eligible_stake_msol[validators$score < min_score_in_algo_set * ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER] <- 0
 validators$eligible_stake_msol[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
 
+# Apply msol bond eligibility
+validators$eligible_stake_msol[validators_without_bond] <- 0
+
 for (i in 1:nrow(validators)) {
   if (validators[i, "max_commission"] > ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION) {
     validators[i, "ui_hints"][[1]] <- list(c(validators[i, "ui_hints"][[1]], "NOT_ELIGIBLE_MSOL_STAKE_MAX_COMMISSION_OVER_10"))
@@ -189,6 +200,9 @@ validators$eligible_stake_vemnde[validators$max_commission > ELIGIBILITY_VEMNDE_
 validators$eligible_stake_vemnde[validators$minimum_stake < ELIGIBILITY_VEMNDE_STAKE_MIN_STAKE] <- 0
 validators$eligible_stake_vemnde[validators$score < min_score_in_algo_set * ELIGIBILITY_VEMNDE_SCORE_THRESHOLD_MULTIPLIER] <- 0
 validators$eligible_stake_vemnde[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
+
+# Apply veMNDE bond eligibility
+validators$eligible_stake_vemnde[validators_without_bond] <- 0
 
 for (i in 1:nrow(validators)) {
   if (validators[i, "max_commission"] > ELIGIBILITY_VEMNDE_STAKE_MAX_COMMISSION) {
