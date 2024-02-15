@@ -111,6 +111,17 @@ validators$eligible_stake_algo[parse_version(validators$version) < ELIGIBILITY_M
 # Find validators without bond
 validators_without_bond <- !(validators$vote_account %in% bonds$vote_account)
 
+# Check if ui_hints is a list
+if (!is.list(validators$ui_hints)) {
+  validators$ui_hints <- as.list(validators$ui_hints)
+}
+
+# Set ui_hints for validators without a bond
+validators$ui_hints[validators_without_bond] <- lapply(validators$ui_hints[validators_without_bond], function(hints) {
+  if (is.null(hints)) hints <- character()
+  c(hints, "NOT_ELIGIBLE_NO_BOND")
+})
+
 # Apply algo bond eligibility
 validators$eligible_stake_algo[validators_without_bond] <- 0
 validators$eligible_stake_msol <- validators$eligible_stake_algo
@@ -169,9 +180,6 @@ validators$eligible_stake_msol[validators$max_commission > ELIGIBILITY_MSOL_STAK
 validators$eligible_stake_msol[validators$minimum_stake < ELIGIBILITY_MSOL_STAKE_MIN_STAKE] <- 0
 validators$eligible_stake_msol[validators$score < min_score_in_algo_set * ELIGIBILITY_MSOL_SCORE_THRESHOLD_MULTIPLIER] <- 0
 validators$eligible_stake_msol[parse_version(validators$version) < ELIGIBILITY_MIN_VERSION] <- 0 # UI hint provided earlier
-
-# Apply msol bond eligibility
-validators$eligible_stake_msol[validators_without_bond] <- 0
 
 for (i in 1:nrow(validators)) {
   if (validators[i, "max_commission"] > ELIGIBILITY_MSOL_STAKE_MAX_COMMISSION) {
