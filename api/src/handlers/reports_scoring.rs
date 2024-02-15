@@ -22,7 +22,7 @@ pub struct ResponseReportScoring {
 fn md_pre_msol_votes(ui_id: &String) -> String {
     format!(
         "# Report {}\n\
-        - [HTML report](https://validators-api-dev.marinade.finance/reports/scoring/{})\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
         - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
@@ -49,7 +49,7 @@ fn md_pre_msol_votes(ui_id: &String) -> String {
 fn md_pre_vemnde_votes(ui_id: &String) -> String {
     format!(
         "# Report {}\n\
-        - [HTML report](https://validators-api-dev.marinade.finance/reports/scoring/{})\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
         - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
@@ -73,10 +73,10 @@ fn md_pre_vemnde_votes(ui_id: &String) -> String {
     ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
 }
 
-fn md_latest(ui_id: &String) -> String {
+fn md_pre_psr(ui_id: &String) -> String {
     format!(
         "# Report {}\n\
-        - [HTML report](https://validators-api-dev.marinade.finance/reports/scoring/{})\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
         - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
@@ -100,6 +100,34 @@ fn md_latest(ui_id: &String) -> String {
     ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
 }
 
+fn md_latest(ui_id: &String) -> String {
+    format!(
+        "# Report {}\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
+        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
+        ## Reproduce the results\n\
+        Get the source data:\n\
+        ```bash\n\
+        mkdir -p \"scoring-{}\"\n\
+        cd \"scoring-{}\"\n\
+        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
+            --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nvemnde-votes.csv\nparams.env\nblacklist.csv\nvalidator-bonds.csv'\n\
+        ```\n\
+        Install dependencies for R (assumes you have R installed already):\n\
+        ```bash\n\
+        bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-install.bash)\"\n\
+        ```\n\
+        Generate scores:\n\
+        ```bash\n\
+        wget https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring.R\n\
+        export SCORING_WORKING_DIRECTORY=.\n\
+        export SCORING_R=./scoring.R\n\
+        bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
+        ```\n\
+    ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
+}
+
+
 fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
     Report {
         created_at: scoring_run.created_at,
@@ -107,6 +135,8 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
             md_pre_msol_votes(&scoring_run.ui_id)
         } else if scoring_run.epoch < 481 {
             md_pre_vemnde_votes(&scoring_run.ui_id)
+        } else if scoring_run.epoch < 575 {
+            md_pre_psr(&scoring_run.ui_id)
         } else {
             md_latest(&scoring_run.ui_id)
         },
