@@ -229,7 +229,7 @@ vemnde_valid_votes <- round(validators$vemnde_votes * validators$eligible_stake_
 vemnde_valid_votes_total <- sum(vemnde_valid_votes)
 
 # Apply cap on the share of vemnde votes
-vemnde_power_cap <- round(sum(vemnde_valid_votes) * VEMNDE_VALIDATOR_CAP)
+vemnde_power_cap <- round((sum(vemnde_valid_votes) + DEL_STRAT_VEMNDE) * VEMNDE_VALIDATOR_CAP)
 validators$vemnde_power <- pmin(vemnde_valid_votes, vemnde_power_cap)
 
 # Find out how much votes got truncated
