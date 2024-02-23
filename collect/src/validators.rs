@@ -126,7 +126,7 @@ pub fn collect_validators_info(
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
-    let self_stake = get_self_stake(&client)?;
+    let self_stake = get_self_stake(&client, epoch, &stake_history)?;
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
 
