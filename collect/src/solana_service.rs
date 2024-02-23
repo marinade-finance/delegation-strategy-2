@@ -473,7 +473,7 @@ pub fn fetch_self_stake(
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let mut self_stake: HashMap<String, u64> = HashMap::default();
-    for page in 0..u8::MAX {
+    for page in 0..=u8::MAX {
         match fetch_stake_accounts_on_page(rpc_client, page) {
             Ok(accounts) => {
                 let processed = process_accounts_for_self_stake(
