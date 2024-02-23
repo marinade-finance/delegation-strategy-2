@@ -13,7 +13,7 @@ use solana_client::{
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
     stake::{self, state::StakeState},
-    stake_history::StakeHistory,
+    stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
 use solana_sdk::{
@@ -322,7 +322,9 @@ pub fn get_apy(
     Ok(apy)
 }
 
-pub fn get_withdraw_authorities(rpc_client: &RpcClient) -> anyhow::Result<HashSet<(String, String)>> {
+pub fn get_withdraw_authorities(
+    rpc_client: &RpcClient,
+) -> anyhow::Result<HashSet<(String, String)>> {
     let mut withdraw_authorities: HashSet<(String, String)> = HashSet::default();
     let vote_program_id = solana_vote_program::id();
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
@@ -379,9 +381,13 @@ pub fn get_commission_from_inflation_rewards(
     Ok(result)
 }
 
-pub fn get_self_stake(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_self_stake(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(&rpc_client)?;
-    let self_stake = fetch_self_stake(rpc_client, withdraw_authorities)?;
+    let self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
     return Ok(self_stake);
 }
 
@@ -414,15 +420,28 @@ fn process_accounts_for_self_stake(
     accounts: Vec<(Pubkey, Account)>,
     self_stake: &mut HashMap<String, u64>,
     withdraw_authorities: &HashSet<(String, String)>,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
 ) -> u64 {
     let mut self_stake_assigned = 0;
 
     for (_pubkey, account) in accounts.iter() {
         if let Ok(stake_account) = bincode::deserialize(&account.data) {
             if let Some((withdrawer_key, vote_key)) = get_withdrawer_and_vote_keys(&stake_account) {
-                if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone())) {
+                let StakeHistoryEntry {
+                    effective,
+                    activating: _,
+                    deactivating: _,
+                } = stake_account
+                    .stake()
+                    .unwrap()
+                    .delegation
+                    .stake_activating_and_deactivating(epoch, Some(stake_history));
+                if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
+                    && effective != 0
+                {
                     self_stake_assigned += 1;
-                    update_self_stake(self_stake, &vote_key, account.lamports);
+                    update_self_stake(self_stake, &vote_key, effective);
                 }
             }
         }
@@ -434,7 +453,10 @@ fn process_accounts_for_self_stake(
 fn get_withdrawer_and_vote_keys(stake_account: &StakeState) -> Option<(String, String)> {
     stake_account.delegation().and_then(|vote_account| {
         stake_account.authorized().map(|withdrawer| {
-            (withdrawer.withdrawer.to_string(), vote_account.voter_pubkey.to_string())
+            (
+                withdrawer.withdrawer.to_string(),
+                vote_account.voter_pubkey.to_string(),
+            )
         })
     })
 }
@@ -447,6 +469,8 @@ fn update_self_stake(self_stake: &mut HashMap<String, u64>, vote_key: &str, lamp
 pub fn fetch_self_stake(
     rpc_client: &RpcClient,
     withdraw_authorities: HashSet<(String, String)>,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let mut self_stake: HashMap<String, u64> = HashMap::default();
     for page in 0..u8::MAX {
@@ -456,6 +480,8 @@ pub fn fetch_self_stake(
                     accounts,
                     &mut self_stake,
                     &withdraw_authorities,
+                    epoch,
+                    stake_history,
                 );
                 info!("Processed {} self stakes on page {}", processed, page);
             }
