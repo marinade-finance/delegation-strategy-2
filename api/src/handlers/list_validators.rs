@@ -165,7 +165,7 @@ pub fn filter_validators(
                 .iter()
                 .find(|&epoch_stat| epoch_stat.epoch == epoch)
                 .map_or(false, |epoch_stat| {
-                    epoch_stat.activated_stake > 0 || epoch_stat.credits > 0
+                    epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
                 })
         })
     });
