@@ -83,9 +83,11 @@ fn get_stakes_groupped_by_validator(
                     effective,
                     activating,
                     deactivating,
-                } = stake
-                    .delegation
-                    .stake_activating_and_deactivating(epoch, Some(stake_history));
+                } = stake.delegation.stake_activating_and_deactivating(
+                    epoch,
+                    Some(stake_history),
+                    None,
+                );
                 if effective == 0 {
                     None
                 } else {
@@ -117,18 +119,16 @@ fn get_stake_accounts(
         delegation_authority
     );
 
-    let mut filters = vec![RpcFilterType::Memcmp(Memcmp {
-        offset: 4 + 8, // enum StakeState + rent_exempt_reserve: u64
-        bytes: MemcmpEncodedBytes::Base58(delegation_authority.to_string()),
-        encoding: None,
-    })];
+    let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
+        4 + 8,
+        MemcmpEncodedBytes::Base58(delegation_authority.to_string()),
+    ))];
 
     if let Some(withdrawer_authority) = withdrawer_authority {
-        filters.push(RpcFilterType::Memcmp(Memcmp {
-            offset: 4 + 8 + 32, // enum StakeState + rent_exempt_reserve: u64 + delegation_authority: Pubkey
-            bytes: MemcmpEncodedBytes::Base58(withdrawer_authority.to_string()),
-            encoding: None,
-        }));
+        filters.push(RpcFilterType::Memcmp(Memcmp::new(
+            4 + 8 + 32,
+            MemcmpEncodedBytes::Base58(withdrawer_authority.to_string()),
+        )));
     }
 
     let accounts = rpc_client.get_program_accounts_with_config(

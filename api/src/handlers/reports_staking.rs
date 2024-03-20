@@ -2,7 +2,6 @@ use crate::{
     cache::CachedSingleRunScores, context::WrappedContext, metrics, utils::response_error,
 };
 use log::{error, info, warn};
-use num::ToPrimitive;
 use serde::Serialize;
 use solana_program::native_token::LAMPORTS_PER_SOL;
 use store::utils::get_last_epoch;
@@ -74,7 +73,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                         identity: validator.identity.clone(),
                         vote_account: validator.vote_account.clone(),
                         score: score_record.score,
-                        current_stake: current_epoch_stats.marinade_stake.to_u64().unwrap(),
+                        current_stake: current_epoch_stats.marinade_stake.try_into().unwrap(),
                         next_stake: should_have * LAMPORTS_PER_SOL,
                     }),
                     None => {
