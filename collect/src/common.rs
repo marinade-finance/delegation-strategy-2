@@ -3,7 +3,7 @@ use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
-    #[structopt(short = "u", long = "url")]
+    #[structopt(short = "u", long = "url", env = "RPC_URL")]
     pub rpc_url: String,
 
     #[structopt(short = "c", long = "commitment", default_value = "finalized")]

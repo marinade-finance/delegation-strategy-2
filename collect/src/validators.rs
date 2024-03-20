@@ -6,7 +6,6 @@ use crate::validators_performance::{validators_performance, ValidatorPerformance
 use crate::whois_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
-use solana_client::nonblocking::rpc_client;
 use solana_sdk::clock::Epoch;
 use structopt::StructOpt;
 

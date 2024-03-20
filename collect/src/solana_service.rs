@@ -333,7 +333,7 @@ pub fn get_withdraw_authorities(
     let current_block_time = rpc_client.get_block_time(current_slot)?;
 
     for (account_pubkey, account) in vote_accounts {
-        if let Some(vote_state) = VoteState::from(&account) {
+        if let Ok(vote_state) = VoteState::deserialize(&account.data) {
             if vote_state.last_timestamp.timestamp + BLOCK_TIME_OFFSET < current_block_time {
                 warn!(
                     "Discarding inactive vote_account {:?} for withdrawer authority {:?}",
@@ -436,7 +436,7 @@ fn process_accounts_for_self_stake(
                     .stake()
                     .unwrap()
                     .delegation
-                    .stake_activating_and_deactivating(epoch, Some(stake_history));
+                    .stake_activating_and_deactivating(epoch, Some(stake_history), None);
                 if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
                     && effective != 0
                 {

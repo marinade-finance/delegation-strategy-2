@@ -13,7 +13,7 @@ use solana_client::{
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use structopt::StructOpt;
-use tip_distribution::state::TipDistributionAccount;
+use jito_tip_distribution::state::TipDistributionAccount;
 
 #[derive(Debug, StructOpt)]
 pub struct ValidatorsMEVOptions {
