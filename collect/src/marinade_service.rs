@@ -120,13 +120,13 @@ fn get_stake_accounts(
     );
 
     let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
-        4 + 8,
+        4 + 8, // enum StakeState + rent_exempt_reserve: u64
         MemcmpEncodedBytes::Base58(delegation_authority.to_string()),
     ))];
 
     if let Some(withdrawer_authority) = withdrawer_authority {
         filters.push(RpcFilterType::Memcmp(Memcmp::new(
-            4 + 8 + 32,
+            4 + 8 + 32, // enum StakeState + rent_exempt_reserve: u64 + delegation_authority: Pubkey
             MemcmpEncodedBytes::Base58(withdrawer_authority.to_string()),
         )));
     }
