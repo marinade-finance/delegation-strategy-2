@@ -355,6 +355,25 @@ pub struct ValidatorScoreRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ValidatorScoreV2Record {
+    pub vote_account: String,
+    pub score: f64,
+    pub rank: i32,
+    pub vemnde_votes: f64,
+    pub msol_votes: f64,
+    pub ui_hints: Vec<String>,
+    pub component_scores: Vec<f64>,
+    pub eligible_stake_algo: bool,
+    pub eligible_stake_vemnde: bool,
+    pub eligible_stake_msol: bool,
+    pub target_stake_algo: f64,
+    pub target_stake_vemnde: f64,
+    pub target_stake_msol: f64,
+    pub scoring_run_id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ScoringRunRecord {
     pub scoring_run_id: Decimal,

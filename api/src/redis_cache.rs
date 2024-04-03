@@ -4,6 +4,7 @@ use chrono::Utc;
 use log::{error, info, warn};
 use redis::{AsyncCommands, RedisError};
 use rslock::LockManager;
+use store::scoring;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -17,11 +18,13 @@ pub async fn warm_validators(
     context: &WrappedContext,
     redis_client: &Arc<RwLock<redis::Client>>,
     redis_tag: String,
+    scoring_url: String,
 ) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
+        scoring_url,
         DEFAULT_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
     )
@@ -213,6 +216,7 @@ pub fn spawn_redis_warmer(
     redis_client: Arc<RwLock<redis::Client>>,
     redis_locker: LockManager,
     redis_tag: String,
+    scoring_url: String
 ) {
     tokio::spawn(async move {
         loop {
@@ -246,7 +250,7 @@ pub fn spawn_redis_warmer(
                     error!("Failed to update the commissions in Redis: {}", err);
                 }
 
-                if let Err(err) = warm_validators(&context, &redis_client, redis_tag.clone()).await
+                if let Err(err) = warm_validators(&context, &redis_client, redis_tag.clone(), scoring_url.clone()).await
                 {
                     error!("Failed to update the validators in Redis: {}", err);
                 }
