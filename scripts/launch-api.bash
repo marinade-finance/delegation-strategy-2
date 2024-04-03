@@ -18,4 +18,5 @@ fi
   --redis-tag "$REDIS_TAG" \
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
-  --blacklist-path "$BLACKLIST_CSV"
+  --blacklist-path "$BLACKLIST_CSV" \
+  --scoring-url "$SCORING_URL"
