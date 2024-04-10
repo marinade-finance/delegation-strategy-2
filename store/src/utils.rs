@@ -1,8 +1,5 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo,
-    RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats,
-    ValidatorRecord, ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning,
-    ValidatorsAggregated, VersionRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -536,6 +533,7 @@ pub fn update_validators_ranks<T>(
 
 pub async fn load_validators(
     psql_client: &Client,
+    scoring_url: String,
     display_epochs: u64,
     computing_epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
@@ -815,7 +813,7 @@ pub async fn load_validators(
     let mut epochs_range = first_epoch..=last_epoch;
 
     log::info!("Updating with scores...");
-    update_validators_with_scores(psql_client, &mut records, epochs_range.clone()).await?;
+    update_validators_with_scores(scoring_url, &mut records, epochs_range.clone()).await?;
 
     first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
     epochs_range = first_epoch..=last_epoch;
@@ -844,7 +842,7 @@ pub async fn load_validators(
 }
 
 pub async fn update_validators_with_scores(
-    psql_client: &Client,
+    scoring_url: String,
     validators: &mut HashMap<String, ValidatorRecord>,
     epochs_range: RangeInclusive<u64>,
 ) -> anyhow::Result<()> {
@@ -852,7 +850,7 @@ pub async fn update_validators_with_scores(
         "Updating validator score with epochs range: {:?}",
         epochs_range
     );
-    let scores_per_epoch = load_scores_in_epochs(psql_client, epochs_range).await?;
+    let scores_per_epoch = load_scores_in_epochs(&scoring_url, epochs_range).await?;
 
     let latest_epoch_with_score = match scores_per_epoch.keys().max() {
         Some(epoch) => epoch,
@@ -875,39 +873,26 @@ pub async fn update_validators_with_scores(
 }
 
 pub async fn load_scores_in_epochs(
-    psql_client: &Client,
-    epochs: std::ops::RangeInclusive<u64>,
+    scoring_url: &String,
+    epochs: std::ops::RangeInclusive<u64>
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
-    log::info!("Loading scores for epochs: {:?}", epochs);
-    let rows = psql_client
-        .query(
-            "
-            WITH last_runs_in_epoch AS (SELECT epoch, MAX(scoring_run_id) as id FROM scoring_runs WHERE epoch = ANY($1) GROUP BY epoch)
-            SELECT
-                epoch,
-                vote_account,
-                score
-            FROM last_runs_in_epoch
-                INNER JOIN scores ON last_runs_in_epoch.id = scores.scoring_run_id
-            ",
-            &[&epochs.clone().map(|epoch| epoch as i32).collect::<Vec<_>>()],
-        )
-        .await?;
-
     let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
+    log::info!("Loading scores for epochs: {:?}", epochs);
 
-    for row in rows {
-        let epoch = row.get::<_, i32>("epoch") as u64;
-        let epoch_scores = result.entry(epoch).or_insert(Default::default());
-        epoch_scores.insert(row.get("vote_account"), row.get("score"));
-    }
-
-    let mut last_valid_scores: Option<HashMap<String, f64>> = None;
     for epoch in epochs {
-        if let Some(last_valid_scores) = last_valid_scores {
-            result.entry(epoch).or_insert(last_valid_scores);
+        let url = format!("{}/api/v1/scores/breakdowns?epoch={}", scoring_url, epoch);
+        let response = reqwest::get(&url).await?;
+
+        if response.status().is_success() {
+            let scores: Vec<ValidatorScoreV2Record> = response.json().await?;
+
+            for score in scores {
+                let epoch_scores = result.entry(epoch).or_insert_with(HashMap::new);
+                epoch_scores.insert(score.vote_account, score.score);
+            }
+        } else {
+            log::error!("Failed to load scores for epoch {}: {}", epoch, response.status());
         }
-        last_valid_scores = result.get(&epoch).cloned();
     }
 
     Ok(result)

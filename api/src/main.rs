@@ -35,6 +35,9 @@ pub struct Params {
     #[structopt(long = "redis-tag")]
     redis_tag: String,
 
+    #[structopt(long = "scoring-url")]
+    scoring_url: String,
+
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
@@ -77,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         redis_client.clone(),
         redis_locker,
         params.redis_tag.clone(),
+        params.scoring_url.clone()
     );
     cache::spawn_cache_warmer(
         context.clone(),
