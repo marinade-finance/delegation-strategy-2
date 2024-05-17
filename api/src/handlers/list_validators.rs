@@ -40,6 +40,7 @@ pub struct QueryParams {
     query_score: Option<bool>,
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
+    query_sfdp: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -73,6 +74,7 @@ pub struct GetValidatorsConfig {
     pub query_score: Option<bool>,
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
+    pub query_sfdp: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
@@ -170,6 +172,10 @@ pub fn filter_validators(
         })
     });
 
+    if let Some(sfdp_only) = &config.query_sfdp {
+        validators.retain(|key, validator| validator.foundation_stake.gt(&Decimal::ZERO))
+    }
+
     if let Some(vote_accounts) = &config.query_vote_accounts {
         validators.retain(|key, _| vote_accounts.contains(key));
     }
@@ -243,6 +249,7 @@ pub async fn handler(
         query_score: query_params.query_score,
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
+        query_sfdp: query_params.query_sfdp,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
