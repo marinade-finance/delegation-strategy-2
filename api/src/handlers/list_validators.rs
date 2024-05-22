@@ -101,7 +101,7 @@ pub async fn get_validators(
         .filter_map(|epoch_stat| Some(epoch_stat.epoch))
         .max()
         .unwrap_or(0);
-    let min_epoch = (max_epoch + 1).saturating_sub(config.epochs);
+    let min_epoch = (max_epoch + 1).saturating_sub(config.epochs as u64);
 
     Ok(validators
         .into_iter()
