@@ -95,6 +95,13 @@ pub async fn get_validators(
             OrderDirection::DESC => field_extractor(&b).cmp(&field_extractor(&a)),
         },
     );
+    let max_epoch = validators
+        .iter()
+        .flat_map(|validator| &validator.epoch_stats)
+        .filter_map(|epoch_stat| Some(epoch_stat.epoch))
+        .max()
+        .unwrap_or(0);
+    let min_epoch = (max_epoch + 1).saturating_sub(config.epochs as u64);
 
     Ok(validators
         .into_iter()
@@ -108,7 +115,7 @@ pub async fn get_validators(
                     .filter(|es| es.epoch_start_at.is_some())
                     .filter(|es| es.epoch_start_at.unwrap() > from_date)
                     .collect(),
-                None => v.epoch_stats.into_iter().take(config.epochs).collect(),
+                None => v.epoch_stats.into_iter().filter(|es| es.epoch >= min_epoch).collect(),
             };
 
             v
