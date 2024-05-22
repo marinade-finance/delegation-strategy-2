@@ -1083,7 +1083,7 @@ pub async fn load_dc_concentration_stats(
 
         stats.push(DCConcentrationStats {
             epoch,
-            total_activated_stake: Default::default(),
+            total_activated_stake: total_active_stake,
             dc_concentration_by_aso: map_stake_to_concentration(
                 &dc_stake_by_aso,
                 total_active_stake,
