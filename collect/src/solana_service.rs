@@ -329,19 +329,8 @@ pub fn get_withdraw_authorities(
     let vote_program_id = solana_vote_program::id();
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
 
-    let current_slot = rpc_client.get_slot()?;
-    let current_block_time = rpc_client.get_block_time(current_slot)?;
-
     for (account_pubkey, account) in vote_accounts {
         if let Ok(vote_state) = VoteState::deserialize(&account.data) {
-            if vote_state.last_timestamp.timestamp + BLOCK_TIME_OFFSET < current_block_time {
-                warn!(
-                    "Discarding inactive vote_account {:?} for withdrawer authority {:?}",
-                    account_pubkey.to_string(),
-                    vote_state.authorized_withdrawer.to_string()
-                );
-                continue;
-            }
             withdraw_authorities.insert((
                 vote_state.authorized_withdrawer.to_string(),
                 account_pubkey.to_string(),
@@ -424,7 +413,6 @@ fn process_accounts_for_self_stake(
     stake_history: &StakeHistory,
 ) -> u64 {
     let mut self_stake_assigned = 0;
-
     for (_pubkey, account) in accounts.iter() {
         if let Ok(stake_account) = bincode::deserialize(&account.data) {
             if let Some((withdrawer_key, vote_key)) = get_withdrawer_and_vote_keys(&stake_account) {
