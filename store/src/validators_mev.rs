@@ -1,3 +1,4 @@
+use crate::dto::{MevRecord, ValidatorMEVInfo};
 use crate::utils::*;
 use chrono::{DateTime, Utc};
 use collect::validators_mev::Snapshot;
@@ -5,7 +6,6 @@ use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
-use store::dto::ValidatorMEVInfo;
 use structopt::StructOpt;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
@@ -160,4 +160,47 @@ pub async fn store_mev(
     }
 
     Ok(())
+}
+
+pub async fn get_last_mev_info(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<MevRecord>> {
+    let rows = psql_client
+        .query(
+            "
+            WITH cluster AS (
+                SELECT MAX(epoch) as last_epoch 
+                FROM cluster_info
+            ),
+            filtered_mev AS (
+                SELECT
+                    vote_account, 
+                    mev_commission,
+                    epoch,
+                    ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) as rn
+                FROM mev
+                CROSS JOIN cluster
+                WHERE epoch > cluster.last_epoch - $1::NUMERIC
+            )
+            SELECT
+                vote_account,
+                mev_commission,
+                epoch
+            FROM filtered_mev
+            WHERE rn = 1;",
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+
+    let mut mev_info: Vec<MevRecord> = vec![];
+    for row in rows {
+        mev_info.push(MevRecord {
+            epoch: row.get::<_, i32>("epoch").try_into()?,
+            mev_commission_bps: row.get::<_, i32>("mev_commission").try_into()?,
+            vote_account: row.get("vote_account"),
+        })
+    }
+
+    Ok(mev_info)
 }

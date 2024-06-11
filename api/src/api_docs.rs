@@ -1,9 +1,5 @@
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
-    list_validators, reports_commission_changes, reports_scoring, reports_scoring_html,
-    reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
-    validator_score_breakdowns, validator_scores, validators_flat, versions,
-    workflow_metrics_upload,
+    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary, list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat, versions, workflow_metrics_upload
 };
 use utoipa::OpenApi;
 
@@ -48,6 +44,7 @@ use utoipa::OpenApi;
         schemas(store::dto::RuggerRecord),
         schemas(store::dto::RugInfo),
         schemas(store::dto::VersionRecord),
+        schemas(store::dto::MevRecord),
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
         schemas(validator_score_breakdown::ResponseScoreBreakdown),
@@ -56,6 +53,7 @@ use utoipa::OpenApi;
         schemas(validator_scores::ResponseScores),
         schemas(versions::ResponseVersions),
         schemas(workflow_metrics_upload::ResponseAdminWorkflowMetrics),
+        schemas(mev::ResponseMev)
     ),
     paths(
         admin_score_upload::handler,
@@ -79,6 +77,7 @@ use utoipa::OpenApi;
         validators_flat::handler,
         versions::handler,
         workflow_metrics_upload::handler,
+        mev::handler
     )
 )]
 pub struct ApiDoc;
