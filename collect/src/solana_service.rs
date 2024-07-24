@@ -40,6 +40,14 @@ pub fn solana_client(url: String, commitment: String) -> RpcClient {
     RpcClient::new_with_commitment(url, CommitmentConfig::from_str(&commitment).unwrap())
 }
 
+pub fn solana_client_with_timeout(url: String, timeout: Duration, commitment: String) -> RpcClient {
+    RpcClient::new_with_timeout_and_commitment(
+        url,
+        timeout,
+        CommitmentConfig::from_str(&commitment).unwrap(),
+    )
+}
+
 pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory> {
     Ok(bincode::deserialize(
         &rpc_client.get_account_data(&stake_history::ID)?,
