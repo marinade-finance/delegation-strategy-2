@@ -1,6 +1,6 @@
-use crate::common::*;
-use crate::solana_service::solana_client;
+use crate::{common::*, solana_service::solana_client_with_timeout};
 use anchor_lang::AccountDeserialize;
+use jito_tip_distribution::state::TipDistributionAccount;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -8,12 +8,12 @@ use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::RpcFilterType,
+    rpc_filter::{Memcmp, RpcFilterType},
 };
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
+use std::time::Duration;
 use structopt::StructOpt;
-use jito_tip_distribution::state::TipDistributionAccount;
 
 #[derive(Debug, StructOpt)]
 pub struct ValidatorsMEVOptions {
@@ -23,6 +23,19 @@ pub struct ValidatorsMEVOptions {
         default_value = "10"
     )]
     rpc_attempts: usize,
+
+    #[structopt(
+        long = "rpc-timeout",
+        help = "How long to wait for RPC response (seconds).",
+        default_value = "300"
+    )]
+    rpc_timeout: u64,
+
+    #[structopt(
+        long = "current-epoch-override",
+        help = "Act as if current epoch was set to this value.",
+    )]
+    current_epoch_override: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -57,9 +70,13 @@ pub fn validators_mev(
             client.get_program_accounts_with_config(
                 &jito_program,
                 RpcProgramAccountsConfig {
-                    filters: Some(vec![RpcFilterType::DataSize(
-                        TipDistributionAccount::SIZE.try_into().unwrap(),
-                    )]),
+                    filters: Some(vec![
+                        RpcFilterType::DataSize(TipDistributionAccount::SIZE.try_into().unwrap()),
+                        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                            0x89,
+                            (epoch - 1).to_le_bytes().to_vec(),
+                        )),
+                    ]),
                     account_config: RpcAccountInfoConfig {
                         encoding: Some(UiAccountEncoding::Base64),
                         data_slice: None,
@@ -115,12 +132,14 @@ pub fn collect_validators_mev_info(
     common_params: CommonParams,
     options: ValidatorsMEVOptions,
 ) -> anyhow::Result<()> {
-    info!("Collecting snaphost of validators MEV");
-    let client = solana_client(common_params.rpc_url, common_params.commitment);
+    info!("Collecting snapshot of validators MEV");
+    let timeout = Duration::from_secs(options.rpc_timeout);
+    let client =
+        solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    let epoch = current_epoch_info.epoch;
+    let epoch = options.current_epoch_override.unwrap_or(current_epoch_info.epoch);
     info!("Current epoch: {:?}", current_epoch_info);
     info!("Looking at epoch: {}", epoch - 1);
 
