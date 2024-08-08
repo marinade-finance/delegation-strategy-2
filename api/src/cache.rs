@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
+    BondsResponse, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, VersionRecord
 };
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};
@@ -119,8 +118,26 @@ pub async fn warm_validators_cache(
     let mut conn = redis_cache::get_redis_connection(redis_client).await?;
     let tagged_key = format!("{}_validators", redis_tag);
     let validators_json: String = conn.get(tagged_key).await?;
-    let validators: HashMap<String, ValidatorRecord> =
+    let mut validators: HashMap<String, ValidatorRecord> =
         serde_json::from_str(&validators_json).unwrap();
+
+    if let Ok(response) = reqwest::get(&context.read().await.bonds_url).await {
+        if response.status().is_success() {
+            if let Ok(bonds) = response.json::<BondsResponse>().await {
+                for bond in bonds.bonds {
+                    if let Some(validator) = validators.iter_mut().find(|(_, v)| v.vote_account == bond.vote_account) {
+                        validator.1.self_stake += bond.effective_amount;
+                    }
+                }
+            } else {
+                error!("Failed to parse bonds response JSON");
+            }
+        } else {
+            error!("Failed to fetch bonds. Status: {}", response.status());
+        }
+    } else if let Err(e) = reqwest::get(&context.read().await.bonds_url).await {
+        error!("Error fetching bonds: {}", e);
+    }
 
     context
         .write()

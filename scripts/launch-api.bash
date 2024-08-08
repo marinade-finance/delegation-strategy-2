@@ -19,4 +19,5 @@ fi
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
   --blacklist-path "$BLACKLIST_CSV" \
-  --scoring-url "$SCORING_URL"
+  --scoring-url "$SCORING_URL" \
+  --bonds-url "$BONDS_URL"
