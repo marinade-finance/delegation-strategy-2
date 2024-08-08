@@ -34,6 +34,9 @@ pub struct Params {
     #[structopt(long = "scoring-url")]
     scoring_url: String,
 
+    #[structopt(long = "bonds-url")]
+    bonds_url: String,
+
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
@@ -70,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         psql_client,
         params.glossary_path,
         params.blacklist_path,
+        params.bonds_url
     )?));
     redis_cache::spawn_redis_warmer(
         context.clone(),

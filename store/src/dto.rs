@@ -198,9 +198,7 @@ pub struct ValidatorRecord {
     pub credits: u64,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
-
     pub epoch_stats: Vec<ValidatorEpochStats>,
-
     pub epochs_count: u64,
     pub has_last_epoch_stats: bool,
     pub avg_uptime_pct: Option<f64>,
@@ -404,6 +402,26 @@ pub struct UnstakeHintRecord {
     pub vote_account: String,
     pub marinade_stake: f64,
     pub hints: Vec<UnstakeHint>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BondsResponse {
+    pub bonds: Vec<ValidatorBondRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ValidatorBondRecord {
+    pub pubkey: String,
+    pub vote_account: String,
+    pub authority: String,
+    pub cpmpe: Decimal,
+    pub max_stake_wanted: Decimal,
+    pub updated_at: DateTime<Utc>,
+    pub epoch: u64,
+    pub funded_amount: Decimal,
+    pub effective_amount: Decimal,
+    pub remaining_witdraw_request_amount: Decimal,
+    pub remainining_settlement_claim_amount: Decimal,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
