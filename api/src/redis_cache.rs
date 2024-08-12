@@ -34,7 +34,7 @@ pub async fn warm_validators(
 
     for bond in bonds {
         if let Some(validator) = validators.get_mut(&bond.vote_account) {
-            validator.self_stake += bond.effective_amount;
+            validator.self_stake += bond.funded_amount;
         }
     }
 
