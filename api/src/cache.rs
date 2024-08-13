@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
+    BondsResponse, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord, ValidatorScoreRecord, ValidatorsAggregated, VersionRecord
 };
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};

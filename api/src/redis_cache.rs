@@ -22,13 +22,22 @@ pub async fn warm_validators(
 ) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
-    let validators = store::utils::load_validators(
+
+    let bonds = store::utils::fetch_bonds(&context.read().await.bonds_url).await?;
+    let mut validators = store::utils::load_validators(
         &context.read().await.psql_client,
         scoring_url,
         DEFAULT_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
     )
     .await?;
+
+    for bond in bonds {
+        if let Some(validator) = validators.get_mut(&bond.vote_account) {
+            validator.self_stake += bond.funded_amount;
+        }
+    }
+
     let validators_json = serde_json::to_string(&validators).unwrap();
     let mut conn = get_redis_connection(redis_client).await?;
     let tagged_key = format!("{}_validators", redis_tag);
