@@ -1,6 +1,8 @@
+use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
 use log::{error, info, warn};
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{Map, Value};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -382,10 +384,25 @@ pub fn get_self_stake(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
+    bonds_url: &String,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let withdraw_authorities = get_withdraw_authorities(&rpc_client)?;
-    let self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
-    return Ok(self_stake);
+    let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
+    let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
+    let bonds = fetch_bonds(bonds_url)?;
+    assert!(!bonds.is_empty(), "Failed to fetch bonds data");
+    assert!(
+        !bonds.iter().all(|b| b.funded_amount == Decimal::ZERO),
+        "All bonds have zero funded amounts, expected at least one non-zero amount"
+    );
+
+    for bond in bonds {
+        let funded_amount_u64 = bond
+            .funded_amount
+            .to_u64()
+            .ok_or_else(|| anyhow::anyhow!("Failed to convert Bond Decimal value to u64"))?;
+        *self_stake.entry(bond.vote_account).or_insert(0) += funded_amount_u64;
+    }
+    Ok(self_stake)
 }
 
 fn fetch_stake_accounts_on_page(

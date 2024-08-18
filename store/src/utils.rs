@@ -1,5 +1,5 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorBondRecord, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -7,7 +7,6 @@ use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
 };
-use crate::dto::BondsResponse;
 use tokio_postgres::{types::ToSql, Client};
 
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
@@ -1377,18 +1376,4 @@ pub async fn store_scoring(
     }
 
     Ok(())
-}
-
-pub async fn fetch_bonds(bonds_url: &str) -> anyhow::Result<Vec<ValidatorBondRecord>> {
-    let response = reqwest::get(bonds_url).await?;
-
-    if response.status().is_success() {
-        if let Ok(bonds_response) = response.json::<BondsResponse>().await {
-            Ok(bonds_response.bonds)
-        } else {
-            Err(anyhow::anyhow!("Failed to parse bonds response JSON"))
-        }
-    } else {
-        Err(anyhow::anyhow!("Failed to fetch bonds. Status: {}", response.status()))
-    }
 }

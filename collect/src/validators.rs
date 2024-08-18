@@ -4,7 +4,10 @@ use crate::solana_service::solana_client;
 use crate::solana_service::*;
 use crate::validators_performance::{validators_performance, ValidatorPerformance};
 use crate::whois_service::*;
+use chrono::DateTime;
+use chrono::Utc;
 use log::info;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
 use structopt::StructOpt;
@@ -30,6 +33,26 @@ pub struct ValidatorInfo {
     pub url: Option<String>,
     pub details: Option<String>,
     pub keybase: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ValidatorBond {
+    pub pubkey: String,
+    pub vote_account: String,
+    pub authority: String,
+    pub cpmpe: Decimal,
+    pub max_stake_wanted: Decimal,
+    pub updated_at: DateTime<Utc>,
+    pub epoch: u64,
+    pub funded_amount: Decimal,
+    pub effective_amount: Decimal,
+    pub remaining_witdraw_request_amount: Decimal,
+    pub remainining_settlement_claim_amount: Decimal,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BondsResponse {
+    pub bonds: Vec<ValidatorBond>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -125,9 +148,18 @@ pub fn collect_validators_info(
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
-    let self_stake = get_self_stake(&client, epoch, &stake_history)?;
+    let self_stake = get_self_stake(&client, epoch, &stake_history, &common_params.bonds_url)?;
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
+
+    assert!(
+        !self_stake.values().all(|&v| v == 0),
+        "All self stakes are zero, expected at least one non-zero stake"
+    );
+    assert!(
+        !foundation_stake.values().all(|&v| v == 0),
+        "All foundation stakes are zero, expected at least one non-zero stake"
+    );
 
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
@@ -162,10 +194,10 @@ pub fn collect_validators_info(
             identity: identity.clone(),
             node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
             data_center: data_centers
-                .get(&identity)
-                .map_or(None, |(_ip, data_center)| {
-                    Some(ValidatorDataCenter::new(data_center.clone()))
-                }),
+            .get(&identity)
+            .map_or(None, |(_ip, data_center)| {
+                Some(ValidatorDataCenter::new(data_center.clone()))
+            }),
 
             info_url: url,
             info_name: name,

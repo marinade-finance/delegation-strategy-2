@@ -1,6 +1,10 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary, list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat, versions, workflow_metrics_upload
+    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
+    list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html,
+    reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_flat, versions,
+    workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -33,9 +37,6 @@ pub struct Params {
 
     #[structopt(long = "scoring-url")]
     scoring_url: String,
-
-    #[structopt(long = "bonds-url")]
-    bonds_url: String,
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
@@ -73,21 +74,19 @@ async fn main() -> anyhow::Result<()> {
         psql_client,
         params.glossary_path,
         params.blacklist_path,
-        params.bonds_url
     )?));
     redis_cache::spawn_redis_warmer(
         context.clone(),
         redis_client.clone(),
         redis_locker,
         params.redis_tag.clone(),
-        params.scoring_url.clone()
+        params.scoring_url.clone(),
     );
     cache::spawn_cache_warmer(
         context.clone(),
         redis_client.clone(),
         params.redis_tag.clone(),
     );
-
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec![

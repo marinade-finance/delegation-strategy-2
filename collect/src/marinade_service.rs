@@ -1,3 +1,5 @@
+use crate::validators::BondsResponse;
+use crate::validators::ValidatorBond;
 use solana_account_decoder::*;
 use solana_client::{
     rpc_client::RpcClient,
@@ -149,4 +151,21 @@ fn get_stake_accounts(
         .iter()
         .map(|(pubkey, account)| (pubkey.clone(), bincode::deserialize(&account.data).unwrap()))
         .collect())
+}
+
+pub fn fetch_bonds(bonds_url: &str) -> anyhow::Result<Vec<ValidatorBond>> {
+    let response = reqwest::blocking::get(bonds_url)?;
+
+    if response.status().is_success() {
+        if let Ok(bonds_response) = response.json::<BondsResponse>() {
+            Ok(bonds_response.bonds)
+        } else {
+            Err(anyhow::anyhow!("Failed to parse bonds response JSON"))
+        }
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to fetch bonds. Status: {}",
+            response.status()
+        ))
+    }
 }

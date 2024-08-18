@@ -8,12 +8,15 @@ pub struct CommonParams {
 
     #[structopt(short = "c", long = "commitment", default_value = "finalized")]
     pub commitment: String,
+
+    #[structopt(long = "bonds-url")]
+    pub bonds_url: String,
 }
 
 pub fn retry_blocking<F, T, E, ErrorCallback>(
     make_call: F,
     backoff_strategy: impl Iterator<Item = Duration>,
-    on_error: ErrorCallback
+    on_error: ErrorCallback,
 ) -> Result<T, E>
 where
     F: Fn() -> Result<T, E>,
@@ -37,7 +40,6 @@ pub struct QuadraticBackoffStrategy;
 impl QuadraticBackoffStrategy {
     pub fn new(max_attempts: usize) -> impl Iterator<Item = Duration> {
         (1..=max_attempts)
-            .into_iter()
             .map(|attempt| Duration::from_secs((attempt as u64).pow(2)))
     }
 }

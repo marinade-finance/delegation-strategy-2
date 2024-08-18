@@ -1170,6 +1170,7 @@ dependencies = [
  "jito-tip-distribution",
  "log",
  "reqwest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "serde_yaml",
