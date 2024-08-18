@@ -23,6 +23,9 @@ pub struct ValidatorsOptions {
     )]
     whois_bearer_token: Option<String>,
 
+    #[structopt(long = "bonds-url")]
+    pub bonds_url: String,
+
     #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
 }
@@ -148,7 +151,7 @@ pub fn collect_validators_info(
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
-    let self_stake = get_self_stake(&client, epoch, &stake_history, &common_params.bonds_url)?;
+    let self_stake = get_self_stake(&client, epoch, &stake_history, &options.bonds_url)?;
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
 

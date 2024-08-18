@@ -8,9 +8,6 @@ pub struct CommonParams {
 
     #[structopt(short = "c", long = "commitment", default_value = "finalized")]
     pub commitment: String,
-
-    #[structopt(long = "bonds-url")]
-    pub bonds_url: String,
 }
 
 pub fn retry_blocking<F, T, E, ErrorCallback>(
