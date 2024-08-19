@@ -387,9 +387,10 @@ pub fn get_self_stake(
     epoch: Epoch,
     stake_history: &StakeHistory,
     bonds_url: &String,
+    rpc_attemtps: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
-    let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
+    let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history, rpc_attemtps)?;
 
     assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
 
@@ -413,6 +414,7 @@ pub fn get_self_stake(
 fn fetch_stake_accounts_on_page(
     rpc_client: &RpcClient,
     page: u8,
+    rpc_attemtps: usize,
 ) -> Result<Vec<(Pubkey, Account)>, ClientError> {
     let mut filters: Vec<RpcFilterType> = vec![RpcFilterType::DataSize(200)];
     filters.push(RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
@@ -436,7 +438,7 @@ fn fetch_stake_accounts_on_page(
                 },
             )
         },
-        QuadraticBackoffStrategy::new(5),
+        QuadraticBackoffStrategy::new(rpc_attemtps),
         |err, attempt, backoff| {
             warn!(
                 "Attempt {} has failed: {}, retrying in {:?} seconds",
@@ -503,17 +505,18 @@ pub fn fetch_self_stake(
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
+    rpc_attemtps: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let mut self_stake: HashMap<String, u64> = HashMap::default();
     for page in 0..=u8::MAX {
-        match fetch_stake_accounts_on_page(rpc_client, page) {
+        match fetch_stake_accounts_on_page(rpc_client, page, rpc_attemtps) {
             Ok(accounts) => {
                 let processed = process_accounts_for_self_stake(
                     accounts,
                     &mut self_stake,
                     &withdraw_authorities,
                     epoch,
-                    stake_history,
+                    stake_history
                 );
                 info!("Processed {} self stakes on page {}", processed, page);
             }
