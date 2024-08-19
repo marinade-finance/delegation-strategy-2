@@ -162,6 +162,15 @@ pub fn collect_validators_info(
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
 
+    info!(
+        "Self stake: {}",
+        self_stake.values().sum::<u64>()
+    );
+    info!(
+        "Foundation stake: {}",
+        foundation_stake.values().sum::<u64>()
+    );
+
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
             WhoisClient::new(whois, options.whois_bearer_token),
