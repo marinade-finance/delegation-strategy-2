@@ -127,7 +127,6 @@ fn md_latest(ui_id: &String) -> String {
     ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
 }
 
-
 fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
     Report {
         created_at: scoring_run.created_at,

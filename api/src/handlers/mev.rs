@@ -11,8 +11,7 @@ pub struct ResponseMev {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub struct QueryParams {
-}
+pub struct QueryParams {}
 const DEFAULT_EPOCHS: u64 = 10;
 
 #[utoipa::path(
@@ -43,9 +42,7 @@ pub async fn handler(
         };
 
     Ok(warp::reply::with_status(
-        json(&ResponseMev {
-            validators,
-        }),
+        json(&ResponseMev { validators }),
         StatusCode::OK,
     ))
 }

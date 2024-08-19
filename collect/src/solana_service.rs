@@ -1,6 +1,8 @@
+use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
 use log::{error, info, warn};
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{Map, Value};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
@@ -10,6 +12,8 @@ use solana_client::{
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_response::RpcVoteAccountStatus,
 };
+use crate::common::QuadraticBackoffStrategy;
+use crate::common::retry_blocking;
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
     stake::{self, state::StakeState},
@@ -382,15 +386,35 @@ pub fn get_self_stake(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
+    bonds_url: &String,
+    rpc_attemtps: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let withdraw_authorities = get_withdraw_authorities(&rpc_client)?;
-    let self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
-    return Ok(self_stake);
+    let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
+    let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history, rpc_attemtps)?;
+
+    assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
+
+    let bonds = fetch_bonds(bonds_url)?;
+    assert!(!bonds.is_empty(), "Failed to fetch bonds data");
+    assert!(
+        !bonds.iter().all(|b| b.funded_amount == Decimal::ZERO),
+        "All bonds have zero funded amounts, expected at least one non-zero amount"
+    );
+
+    for bond in bonds {
+        let funded_amount_u64 = bond
+            .funded_amount
+            .to_u64()
+            .ok_or_else(|| anyhow::anyhow!("Failed to convert Bond Decimal value to u64"))?;
+        *self_stake.entry(bond.vote_account).or_insert(0) += funded_amount_u64;
+    }
+    Ok(self_stake)
 }
 
 fn fetch_stake_accounts_on_page(
     rpc_client: &RpcClient,
     page: u8,
+    rpc_attemtps: usize,
 ) -> Result<Vec<(Pubkey, Account)>, ClientError> {
     let mut filters: Vec<RpcFilterType> = vec![RpcFilterType::DataSize(200)];
     filters.push(RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
@@ -398,19 +422,33 @@ fn fetch_stake_accounts_on_page(
         vec![page],
     )));
 
-    rpc_client.get_program_accounts_with_config(
-        &stake::program::ID,
-        RpcProgramAccountsConfig {
-            filters: Some(filters),
-            account_config: RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                commitment: Some(rpc_client.commitment()),
-                data_slice: None,
-                min_context_slot: None,
-            },
-            with_context: None,
+    let self_stakes = retry_blocking(
+        || {
+            rpc_client.get_program_accounts_with_config(
+                &stake::program::ID,
+                RpcProgramAccountsConfig {
+                    filters: Some(filters.clone()),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        commitment: Some(rpc_client.commitment()),
+                        data_slice: None,
+                        min_context_slot: None,
+                    },
+                    with_context: None,
+                },
+            )
         },
-    )
+        QuadraticBackoffStrategy::new(rpc_attemtps),
+        |err, attempt, backoff| {
+            warn!(
+                "Attempt {} has failed: {}, retrying in {:?} seconds",
+                attempt,
+                err.to_string(),
+                backoff.as_secs()
+            )
+        },
+    )?;
+    Ok(self_stakes)
 }
 
 fn process_accounts_for_self_stake(
@@ -467,22 +505,23 @@ pub fn fetch_self_stake(
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
+    rpc_attemtps: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let mut self_stake: HashMap<String, u64> = HashMap::default();
     for page in 0..=u8::MAX {
-        match fetch_stake_accounts_on_page(rpc_client, page) {
+        match fetch_stake_accounts_on_page(rpc_client, page, rpc_attemtps) {
             Ok(accounts) => {
                 let processed = process_accounts_for_self_stake(
                     accounts,
                     &mut self_stake,
                     &withdraw_authorities,
                     epoch,
-                    stake_history,
+                    stake_history
                 );
                 info!("Processed {} self stakes on page {}", processed, page);
             }
             Err(err) => {
-                error!("Failed to fetch stake accounts on page {}: {}", page, err);
+                panic!("Failed to fetch stake accounts on page {}: {}", page, err);
             }
         }
 

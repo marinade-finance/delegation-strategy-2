@@ -1,3 +1,5 @@
+use crate::validators::BondsResponse;
+use crate::validators::ValidatorBond;
 use solana_account_decoder::*;
 use solana_client::{
     rpc_client::RpcClient,
@@ -40,13 +42,19 @@ pub fn get_foundation_stakes(
         foundation_authority = "spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6".try_into()?;
     }
 
-    Ok(get_stakes_groupped_by_validator(
+    let foundation_stakes = get_stakes_groupped_by_validator(
         rpc_client,
         &foundation_authority,
         None,
         epoch,
         stake_history,
-    )?)
+    )?;
+
+    assert!(
+        !foundation_stakes.is_empty(),
+        "Failed to fetch foundation stake data"
+    );
+    Ok(foundation_stakes)
 }
 
 pub fn get_marinade_native_stakes(
@@ -149,4 +157,21 @@ fn get_stake_accounts(
         .iter()
         .map(|(pubkey, account)| (pubkey.clone(), bincode::deserialize(&account.data).unwrap()))
         .collect())
+}
+
+pub fn fetch_bonds(bonds_url: &str) -> anyhow::Result<Vec<ValidatorBond>> {
+    let response = reqwest::blocking::get(bonds_url)?;
+
+    if response.status().is_success() {
+        if let Ok(bonds_response) = response.json::<BondsResponse>() {
+            Ok(bonds_response.bonds)
+        } else {
+            Err(anyhow::anyhow!("Failed to parse bonds response JSON"))
+        }
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to fetch bonds. Status: {}",
+            response.status()
+        ))
+    }
 }

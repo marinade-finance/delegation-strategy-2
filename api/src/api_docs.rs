@@ -1,5 +1,9 @@
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary, list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat, versions, workflow_metrics_upload
+    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
+    list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html,
+    reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_flat, versions,
+    workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 

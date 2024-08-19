@@ -21,4 +21,5 @@ fi
   --url "$RPC_URL" \
   validators \
     --whois "https://whois.marinade.finance" \
-    --whois-bearer-token "$WHOIS_BEARER_TOKEN"
+    --whois-bearer-token "$WHOIS_BEARER_TOKEN" \
+    --bonds-url "$BONDS_URL"

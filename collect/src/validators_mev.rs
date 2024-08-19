@@ -33,7 +33,7 @@ pub struct ValidatorsMEVOptions {
 
     #[structopt(
         long = "current-epoch-override",
-        help = "Act as if current epoch was set to this value.",
+        help = "Act as if current epoch was set to this value."
     )]
     current_epoch_override: Option<u64>,
 }
@@ -139,7 +139,9 @@ pub fn collect_validators_mev_info(
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    let epoch = options.current_epoch_override.unwrap_or(current_epoch_info.epoch);
+    let epoch = options
+        .current_epoch_override
+        .unwrap_or(current_epoch_info.epoch);
     info!("Current epoch: {:?}", current_epoch_info);
     info!("Looking at epoch: {}", epoch - 1);
 
