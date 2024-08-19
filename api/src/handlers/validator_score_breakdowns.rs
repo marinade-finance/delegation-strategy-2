@@ -57,9 +57,8 @@ pub async fn handler(
                 validator_scores = filter_scores_by_vote_account(from_date, validator_scores);
             }
 
-            let filtered_validator_scores = validator_scores.values()
-                    .flat_map(|v| v.clone())
-                    .collect();
+            let filtered_validator_scores =
+                validator_scores.values().flat_map(|v| v.clone()).collect();
             let score_breakdowns = compute_score_breakdowns(
                 &scoring_runs,
                 &filtered_validator_scores,

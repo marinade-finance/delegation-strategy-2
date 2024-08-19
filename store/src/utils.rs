@@ -1,5 +1,8 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo,
+    RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats,
+    ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow,
+    ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -874,7 +877,7 @@ pub async fn update_validators_with_scores(
 
 pub async fn load_scores_in_epochs(
     scoring_url: &String,
-    epochs: std::ops::RangeInclusive<u64>
+    epochs: std::ops::RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
     let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
     log::info!("Loading scores for epochs: {:?}", epochs);
@@ -891,7 +894,11 @@ pub async fn load_scores_in_epochs(
                 epoch_scores.insert(score.vote_account, score.score);
             }
         } else {
-            log::error!("Failed to load scores for epoch {}: {}", epoch, response.status());
+            log::error!(
+                "Failed to load scores for epoch {}: {}",
+                epoch,
+                response.status()
+            );
         }
     }
 

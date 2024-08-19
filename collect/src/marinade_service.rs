@@ -42,13 +42,19 @@ pub fn get_foundation_stakes(
         foundation_authority = "spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6".try_into()?;
     }
 
-    Ok(get_stakes_groupped_by_validator(
+    let foundation_stakes = get_stakes_groupped_by_validator(
         rpc_client,
         &foundation_authority,
         None,
         epoch,
         stake_history,
-    )?)
+    )?;
+
+    assert!(
+        !foundation_stakes.is_empty(),
+        "Failed to fetch foundation stake data"
+    );
+    Ok(foundation_stakes)
 }
 
 pub fn get_marinade_native_stakes(

@@ -12,6 +12,8 @@ use solana_client::{
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_response::RpcVoteAccountStatus,
 };
+use crate::common::QuadraticBackoffStrategy;
+use crate::common::retry_blocking;
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
     stake::{self, state::StakeState},
@@ -388,6 +390,9 @@ pub fn get_self_stake(
 ) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
     let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history)?;
+
+    assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
+
     let bonds = fetch_bonds(bonds_url)?;
     assert!(!bonds.is_empty(), "Failed to fetch bonds data");
     assert!(
@@ -415,19 +420,33 @@ fn fetch_stake_accounts_on_page(
         vec![page],
     )));
 
-    rpc_client.get_program_accounts_with_config(
-        &stake::program::ID,
-        RpcProgramAccountsConfig {
-            filters: Some(filters),
-            account_config: RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                commitment: Some(rpc_client.commitment()),
-                data_slice: None,
-                min_context_slot: None,
-            },
-            with_context: None,
+    let self_stakes = retry_blocking(
+        || {
+            rpc_client.get_program_accounts_with_config(
+                &stake::program::ID,
+                RpcProgramAccountsConfig {
+                    filters: Some(filters.clone()),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        commitment: Some(rpc_client.commitment()),
+                        data_slice: None,
+                        min_context_slot: None,
+                    },
+                    with_context: None,
+                },
+            )
         },
-    )
+        QuadraticBackoffStrategy::new(5),
+        |err, attempt, backoff| {
+            warn!(
+                "Attempt {} has failed: {}, retrying in {:?} seconds",
+                attempt,
+                err.to_string(),
+                backoff.as_secs()
+            )
+        },
+    )?;
+    Ok(self_stakes)
 }
 
 fn process_accounts_for_self_stake(
@@ -499,7 +518,7 @@ pub fn fetch_self_stake(
                 info!("Processed {} self stakes on page {}", processed, page);
             }
             Err(err) => {
-                error!("Failed to fetch stake accounts on page {}: {}", page, err);
+                panic!("Failed to fetch stake accounts on page {}: {}", page, err);
             }
         }
 

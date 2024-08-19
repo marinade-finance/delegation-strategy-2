@@ -155,15 +155,6 @@ pub fn collect_validators_info(
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
 
-    assert!(
-        !self_stake.values().all(|&v| v == 0),
-        "All self stakes are zero, expected at least one non-zero stake"
-    );
-    assert!(
-        !foundation_stake.values().all(|&v| v == 0),
-        "All foundation stakes are zero, expected at least one non-zero stake"
-    );
-
     let data_centers = match options.whois {
         Some(whois) => get_data_centers(
             WhoisClient::new(whois, options.whois_bearer_token),
@@ -197,10 +188,10 @@ pub fn collect_validators_info(
             identity: identity.clone(),
             node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
             data_center: data_centers
-            .get(&identity)
-            .map_or(None, |(_ip, data_center)| {
-                Some(ValidatorDataCenter::new(data_center.clone()))
-            }),
+                .get(&identity)
+                .map_or(None, |(_ip, data_center)| {
+                    Some(ValidatorDataCenter::new(data_center.clone()))
+                }),
 
             info_url: url,
             info_name: name,

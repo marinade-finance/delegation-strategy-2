@@ -115,7 +115,11 @@ pub async fn get_validators(
                     .filter(|es| es.epoch_start_at.is_some())
                     .filter(|es| es.epoch_start_at.unwrap() > from_date)
                     .collect(),
-                None => v.epoch_stats.into_iter().filter(|es| es.epoch >= min_epoch).collect(),
+                None => v
+                    .epoch_stats
+                    .into_iter()
+                    .filter(|es| es.epoch >= min_epoch)
+                    .collect(),
             };
 
             v
