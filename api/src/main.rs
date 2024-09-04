@@ -13,6 +13,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use tokio_postgres::NoTls;
 use warp::{Filter, Rejection};
 
@@ -53,8 +55,12 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     info!("Launching API");
 
+    let mut builder = SslConnector::builder(SslMethod::tls())?;
+    let connector = MakeTlsConnector::new(builder.build());
+
     let params = Params::from_args();
-    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, NoTls).await?;
+
+    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             error!("PSQL Connection error: {}", err);
