@@ -6,8 +6,6 @@ use crate::dto::{
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
-use tokio::join;
-use tokio::sync::Semaphore;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
@@ -15,6 +13,8 @@ use std::{
     ops::RangeInclusive,
     time::Duration,
 };
+use tokio::join;
+use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client};
 
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
@@ -894,7 +894,7 @@ pub async fn load_scores_in_epochs(
 
     let handle = tokio::spawn(async move {
         let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
-        while let Some((epoch, epoch_scores))  = rx.recv().await {
+        while let Some((epoch, epoch_scores)) = rx.recv().await {
             result.insert(epoch, epoch_scores);
         }
         result
@@ -934,7 +934,7 @@ pub async fn load_scores_in_epochs(
 
     drop(tx);
 
-    let (result, ) = join!(handle);
+    let (result,) = join!(handle);
     Ok(result?)
 }
 
