@@ -8,7 +8,6 @@ use crate::handlers::{
 };
 use env_logger::Env;
 use log::{error, info};
-use rslock::LockManager;
 use std::convert::Infallible;
 use std::sync::Arc;
 use structopt::StructOpt;
@@ -21,19 +20,12 @@ pub mod cache;
 pub mod context;
 pub mod handlers;
 pub mod metrics;
-pub mod redis_cache;
 pub mod utils;
 
 #[derive(Debug, StructOpt)]
 pub struct Params {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
-
-    #[structopt(long = "redis-url")]
-    redis_url: String,
-
-    #[structopt(long = "redis-tag")]
-    redis_tag: String,
 
     #[structopt(long = "scoring-url")]
     scoring_url: String,
@@ -62,31 +54,13 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let redis_client = redis::Client::open(params.redis_url.clone())?;
-    let redis_locker = LockManager::new(vec![params.redis_url.clone()]);
-
-    if let Err(err) = redis_client.get_async_connection().await {
-        error!("Redis Connection error: {}", err);
-        std::process::exit(1);
-    }
-    let redis_client = Arc::new(RwLock::new(redis_client));
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
         params.blacklist_path,
+        params.scoring_url,
     )?));
-    redis_cache::spawn_redis_warmer(
-        context.clone(),
-        redis_client.clone(),
-        redis_locker,
-        params.redis_tag.clone(),
-        params.scoring_url.clone(),
-    );
-    cache::spawn_cache_warmer(
-        context.clone(),
-        redis_client.clone(),
-        params.redis_tag.clone(),
-    );
+    cache::spawn_cache_warmer(context.clone());
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec![

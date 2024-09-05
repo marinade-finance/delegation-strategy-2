@@ -14,8 +14,6 @@ then
 fi
 
 "$BIN_DIR/api" \
-  --redis-url "$REDIS_URL" \
-  --redis-tag "$REDIS_TAG" \
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
   --blacklist-path "$BLACKLIST_CSV" \

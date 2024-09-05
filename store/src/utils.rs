@@ -6,9 +6,14 @@ use crate::dto::{
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
+use tokio::join;
+use tokio::sync::Semaphore;
+use std::sync::Arc;
+use std::time::Instant;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
+    time::Duration,
 };
 use tokio_postgres::{types::ToSql, Client};
 
@@ -17,6 +22,7 @@ const IDEAL_SLOT_DURATION_MS: u64 = 400;
 const SLOTS_IN_EPOCH: u64 = 432000;
 const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
 const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
+const SCORING_SCRAPER_WORKERS: usize = 10;
 
 pub struct InsertQueryCombiner<'a> {
     pub insertions: u64,
@@ -558,7 +564,7 @@ pub async fn load_validators(
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, starting_epoch, start_at FROM (SELECT vote_account, MIN(validators.epoch) as starting_epoch FROM validators WHERE credits > 0 GROUP BY vote_account) AS s JOIN epochs ON s.starting_epoch = epochs.epoch)
+                epochs_dates AS (SELECT vote_account, first_epoch as starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -658,13 +664,13 @@ pub async fn load_validators(
                 .unwrap_or("Unknown".into());
 
             let dcc_full_city = concentrations
-                .clone()
+                .as_ref()
                 .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
             let dcc_asn = concentrations
-                .clone()
+                .as_ref()
                 .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
             let dcc_aso = concentrations
-                .clone()
+                .as_ref()
                 .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
 
             let record = records
@@ -719,7 +725,7 @@ pub async fn load_validators(
                     credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
                     score: None,
 
-                    epoch_stats: Default::default(),
+                    epoch_stats: Vec::with_capacity(display_epochs as usize),
 
                     warnings: Default::default(),
 
@@ -748,16 +754,18 @@ pub async fn load_validators(
                     })
                     .collect()
             }
+            debug_duration_5 += now.elapsed();
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }
             if let None = epoch_start_at {
                 epoch_start_at = Some(Utc::now());
             }
+            let now = Instant::now();
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
-                epoch_start_at: epoch_start_at,
-                epoch_end_at: epoch_end_at,
+                epoch_start_at,
+                epoch_end_at,
                 commission_max_observed: row
                     .get::<_, Option<i32>>("commission_max_observed")
                     .map(|n| n.try_into().unwrap()),
@@ -882,27 +890,52 @@ pub async fn load_scores_in_epochs(
     let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
     log::info!("Loading scores for epochs: {:?}", epochs);
 
-    for epoch in epochs {
-        let url = format!("{}/api/v1/scores/breakdowns?epoch={}", scoring_url, epoch);
-        let response = reqwest::get(&url).await?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, HashMap<String, f64>)>();
 
-        if response.status().is_success() {
-            let scores: Vec<ValidatorScoreV2Record> = response.json().await?;
-
-            for score in scores {
-                let epoch_scores = result.entry(epoch).or_insert_with(HashMap::new);
-                epoch_scores.insert(score.vote_account, score.score);
-            }
-        } else {
-            log::error!(
-                "Failed to load scores for epoch {}: {}",
-                epoch,
-                response.status()
-            );
+    let handle = tokio::spawn(async move {
+        let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
+        while let Some((epoch, epoch_scores))  = rx.recv().await {
+            result.insert(epoch, epoch_scores);
         }
+        result
+    });
+
+    let permits = Arc::new(Semaphore::new(SCORING_SCRAPER_WORKERS));
+    for epoch in epochs {
+        let url = format!("{scoring_url}/api/v1/scores/breakdowns?epoch={epoch}");
+        let tx = tx.clone();
+        let permit = permits.clone().acquire_owned().await?;
+        tokio::spawn(async move {
+            log::info!("Fetching scores from {url}...");
+            match reqwest::get(&url).await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(scores) = resp.json::<Vec<ValidatorScoreV2Record>>().await {
+                        let mut epoch_scores: HashMap<String, f64> = Default::default();
+                        for score in scores {
+                            epoch_scores.insert(score.vote_account.clone(), score.score);
+                        }
+                        tx.send((epoch, epoch_scores)).unwrap();
+                    }
+                }
+                Ok(resp) => {
+                    log::error!(
+                        "Failed to load scores for epoch {}: {}",
+                        epoch,
+                        resp.status()
+                    );
+                }
+                Err(e) => {
+                    log::error!("Error fetching scores for epoch {}: {}", epoch, e);
+                }
+            }
+            drop(permit);
+        });
     }
 
-    Ok(result)
+    drop(tx);
+
+    let (result, ) = join!(handle);
+    Ok(result?)
 }
 
 pub async fn load_last_scoring_run(
