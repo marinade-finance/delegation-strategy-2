@@ -754,14 +754,12 @@ pub async fn load_validators(
                     })
                     .collect()
             }
-            debug_duration_5 += now.elapsed();
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }
             if let None = epoch_start_at {
                 epoch_start_at = Some(Utc::now());
             }
-            let now = Instant::now();
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
                 epoch_start_at,
