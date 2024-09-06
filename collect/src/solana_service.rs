@@ -1,3 +1,5 @@
+use crate::common::retry_blocking;
+use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
@@ -12,8 +14,6 @@ use solana_client::{
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_response::RpcVoteAccountStatus,
 };
-use crate::common::QuadraticBackoffStrategy;
-use crate::common::retry_blocking;
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
     stake::{self, state::StakeState},
@@ -390,7 +390,13 @@ pub fn get_self_stake(
     rpc_attemtps: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
-    let mut self_stake = fetch_self_stake(rpc_client, withdraw_authorities, epoch, stake_history, rpc_attemtps)?;
+    let mut self_stake = fetch_self_stake(
+        rpc_client,
+        withdraw_authorities,
+        epoch,
+        stake_history,
+        rpc_attemtps,
+    )?;
 
     assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
 
@@ -516,7 +522,7 @@ pub fn fetch_self_stake(
                     &mut self_stake,
                     &withdraw_authorities,
                     epoch,
-                    stake_history
+                    stake_history,
                 );
                 info!("Processed {} self stakes on page {}", processed, page);
             }

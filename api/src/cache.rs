@@ -1,22 +1,17 @@
 use crate::context::WrappedContext;
-use crate::redis_cache;
-use log::{error, info, warn};
-use redis::AsyncCommands;
+use log::{error, info};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
     ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
 };
-use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, Instant};
 
 pub(crate) const DEFAULT_EPOCHS: u64 = 80;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
-const CACHE_WARMUP_TIME_S: u64 = 2 * 60;
-const CACHE_WARMUP_RETRY_TIME_S: u64 = 120;
+const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
@@ -109,18 +104,16 @@ impl Cache {
     }
 }
 
-pub async fn warm_validators_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading validators from Redis");
+pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading validators from DB");
     let warmup_timer = Instant::now();
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let tagged_key = format!("{}_validators", redis_tag);
-    let validators_json: String = conn.get(tagged_key).await?;
-    let validators: HashMap<String, ValidatorRecord> =
-        serde_json::from_str(&validators_json).unwrap();
+    let validators = store::utils::load_validators(
+        &context.read().await.psql_client,
+        context.read().await.scoring_url.clone(),
+        DEFAULT_EPOCHS,
+        DEFAULT_COMPUTING_EPOCHS,
+    )
+    .await?;
 
     context
         .write()
@@ -140,18 +133,11 @@ pub async fn warm_validators_cache(
 
     Ok(())
 }
-pub async fn warm_commissions_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading commissions from Redis");
+pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading commissions from DB");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("{}_commissions", redis_tag);
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let commissions_json: String = conn.get(tagged_key).await?;
-    let commissions: HashMap<String, Vec<CommissionRecord>> =
-        serde_json::from_str(&commissions_json)?;
+    let commissions =
+        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
 
     context
         .write()
@@ -167,17 +153,11 @@ pub async fn warm_commissions_cache(
 
     Ok(())
 }
-pub async fn warm_versions_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading versions from Redis");
+pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading versions from DB");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("{}_versions", redis_tag);
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let versions_json: String = conn.get(tagged_key).await?;
-    let versions: HashMap<String, Vec<VersionRecord>> = serde_json::from_str(&versions_json)?;
+    let versions =
+        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
 
     context.write().await.cache.versions.clone_from(&versions);
     info!(
@@ -188,17 +168,11 @@ pub async fn warm_versions_cache(
 
     Ok(())
 }
-pub async fn warm_uptimes_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading uptimes from Redis");
+pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading uptimes from DB");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("{}_uptimes", redis_tag);
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let uptimes_json: String = conn.get(tagged_key).await?;
-    let uptimes: HashMap<String, Vec<UptimeRecord>> = serde_json::from_str(&uptimes_json)?;
+    let uptimes =
+        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
     info!(
@@ -209,17 +183,11 @@ pub async fn warm_uptimes_cache(
 
     Ok(())
 }
-pub async fn warm_cluster_stats_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading cluster_stats from Redis");
+pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading cluster_stats from DB");
     let warmup_timer = Instant::now();
-    let tagged_key = format!("{}_cluster_stats", redis_tag);
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let cluster_stats_json: String = conn.get(tagged_key).await?;
-    let cluster_stats: ClusterStats = serde_json::from_str(&cluster_stats_json)?;
+    let cluster_stats =
+        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(
@@ -229,22 +197,24 @@ pub async fn warm_cluster_stats_cache(
 
     Ok(())
 }
-pub async fn warm_scores_cache(
-    context: &WrappedContext,
-    redis_client: &Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) -> anyhow::Result<()> {
-    info!("Loading scores from Redis");
+pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading scores from DB");
     let warmup_timer = Instant::now();
 
-    let mut conn = redis_cache::get_redis_connection(redis_client).await?;
-    let mut tagged_key = format!("{}_scores", redis_tag);
-    let scores_json: String = conn.get(tagged_key).await?;
-    let scores: HashMap<String, ValidatorScoreRecord> = serde_json::from_str(&scores_json)?;
-    tagged_key = format!("{}_scores_all", redis_tag);
-    let multi_run_scores_json: String = conn.get(tagged_key).await?;
-    let multi_run_scores: HashMap<Decimal, Vec<ValidatorScoreRecord>> =
-        serde_json::from_str(&multi_run_scores_json)?;
+    let last_scoring_run =
+        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+    let scores = match &last_scoring_run {
+        Some(scoring_run) => {
+            store::utils::load_scores(
+                &context.read().await.psql_client,
+                scoring_run.scoring_run_id,
+            )
+            .await?
+        }
+        None => Default::default(),
+    };
+    let multi_run_scores =
+        store::scoring::load_all_scores(&context.read().await.psql_client).await?;
 
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
@@ -288,75 +258,33 @@ pub async fn warm_scores_cache(
     Ok(())
 }
 
-pub fn spawn_cache_warmer(
-    context: WrappedContext,
-    redis_client: Arc<RwLock<redis::Client>>,
-    redis_tag: String,
-) {
+pub fn spawn_cache_warmer(context: WrappedContext) {
     tokio::spawn(async move {
-        let mut last_timestamp = String::new();
         loop {
-            let redis_check = redis_cache::check_redis_timestamp(
-                &redis_client,
-                &last_timestamp,
-                redis_tag.clone(),
-            )
-            .await;
-            if let Err(_) = redis_check {
-                warn!(
-                    "Redis is not warmed up. Trying again in {} seconds.",
-                    CACHE_WARMUP_RETRY_TIME_S
-                );
-                sleep(Duration::from_secs(CACHE_WARMUP_RETRY_TIME_S)).await;
-                continue;
+            info!("Warming up the cache");
+
+            if let Err(err) = warm_scores_cache(&context).await {
+                error!("Failed to update the scores: {}", err);
             }
 
-            if !redis_check.ok().unwrap() {
-                warn!("Redis timestamp mismatch. Cache must be updated.");
-                info!("Warming up the cache");
+            if let Err(err) = warm_versions_cache(&context).await {
+                error!("Failed to update the versions: {}", err);
+            }
 
-                if let Err(err) =
-                    warm_scores_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the scores: {}", err);
-                }
+            if let Err(err) = warm_commissions_cache(&context).await {
+                error!("Failed to update the commissions: {}", err);
+            }
 
-                if let Err(err) =
-                    warm_versions_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the versions: {}", err);
-                }
+            if let Err(err) = warm_uptimes_cache(&context).await {
+                error!("Failed to update the uptimes: {}", err);
+            }
 
-                if let Err(err) =
-                    warm_commissions_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the commissions: {}", err);
-                }
+            if let Err(err) = warm_cluster_stats_cache(&context).await {
+                error!("Failed to update the cluster stats: {}", err);
+            }
 
-                if let Err(err) =
-                    warm_uptimes_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the uptimes: {}", err);
-                }
-
-                if let Err(err) =
-                    warm_cluster_stats_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the cluster stats: {}", err);
-                }
-
-                if let Err(err) =
-                    warm_validators_cache(&context, &redis_client, redis_tag.clone()).await
-                {
-                    error!("Failed to update the validators: {}", err);
-                }
-                if let Ok(timestamp) =
-                    redis_cache::get_redis_timestamp(&redis_client, redis_tag.clone()).await
-                {
-                    last_timestamp = timestamp;
-                }
-            } else {
-                info!("Redis timestamp matched. No actions required");
+            if let Err(err) = warm_validators_cache(&context).await {
+                error!("Failed to update the validators: {}", err);
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
