@@ -20,3 +20,4 @@ pub mod validator_scores;
 pub mod validators_flat;
 pub mod versions;
 pub mod workflow_metrics_upload;
+pub mod epochs;

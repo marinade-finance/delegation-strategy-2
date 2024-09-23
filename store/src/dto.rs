@@ -416,6 +416,13 @@ pub struct BlacklistRecord {
     pub code: String,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct EpochInfo {
+    pub epoch: u64,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+}
+
 fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,

@@ -3,7 +3,7 @@ use crate::handlers::{
     list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html,
     reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
     validator_score_breakdowns, validator_scores, validators_flat, versions,
-    workflow_metrics_upload,
+    workflow_metrics_upload, epochs
 };
 use utoipa::OpenApi;
 
@@ -42,6 +42,8 @@ use utoipa::OpenApi;
         schemas(store::dto::UptimeRecord),
         schemas(store::dto::ValidatorEpochStats),
         schemas(store::dto::ValidatorRecord),
+        schemas(store::dto::EpochInfo),
+        schemas(epochs::ResponseEpochs),
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),
         schemas(store::dto::ValidatorWarning),
@@ -81,7 +83,8 @@ use utoipa::OpenApi;
         validators_flat::handler,
         versions::handler,
         workflow_metrics_upload::handler,
-        mev::handler
+        mev::handler,
+        epochs::handler
     )
 )]
 pub struct ApiDoc;
