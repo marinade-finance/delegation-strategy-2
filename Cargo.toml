@@ -3,5 +3,6 @@
 members = [
     "api",
     "collect",
-    "store"
+    "store",
+    "check",
 ]
