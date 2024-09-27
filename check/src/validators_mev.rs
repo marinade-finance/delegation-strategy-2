@@ -16,6 +16,7 @@ pub async fn check_mev(psql_client: &Client, rpc_client: &RpcClient) -> anyhow::
         )
         .await?;
 
+    // rust error code is 101, Err code is 1
     assert!(rows.len() <= 1);
 
     match rows.iter().next() {
@@ -31,15 +32,17 @@ pub async fn check_mev(psql_client: &Client, rpc_client: &RpcClient) -> anyhow::
                 "DB stores last MEV epoch: {sql_epoch}, slot: {sql_slot}, on-chain epoch: {current_epoch}, slot: {current_slot}"
             );
 
-            // If the current epoch is bigger than the lastly stored MEV epoch, we need to proceed
-            if current_epoch > sql_epoch {
+            // The lastly stored MEV epoch saved in DB is delayed by 1 epoch compared to the current epoch,
+            if current_epoch - Decimal::from(1) > sql_epoch {
                 info!(
-                    "Current epoch {current_epoch} is bigger than the last observed MEV epoch {sql_epoch} in DB. Proceed with MEV data collection."
+                    "The previous epoch ({}) has surpassed the last recorded MEV epoch ({}). Initiating data collection for MEV analysis.",
+                    current_epoch - Decimal::from(1),
+                    sql_epoch
                 );
                 return Ok(());
             }
 
-            Err(anyhow::anyhow!("The current epoch {current_epoch} has already been processed for MEV data collection."))
+            Err(anyhow::anyhow!("MEV data collection for the epoch prior to {current_epoch} has already been processed."))
         }
         None => {
             info!("No MEV data found in DB. Proceed with MEV data collection.");
