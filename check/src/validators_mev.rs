@@ -21,7 +21,10 @@ pub async fn check_mev(psql_client: &Client, rpc_client: &RpcClient) -> anyhow::
 
     match rows.iter().next() {
         Some(row) => {
-            let sql_epoch: Decimal = row.get("epoch");
+            // PostgreSQL type 'INTEGER'
+            let sql_epoch: i32 = row.get("epoch");
+            let sql_epoch: Decimal = Decimal::from(sql_epoch);
+            // PostgreSQL type 'NUMERIC'
             let sql_slot: Decimal = row.get("epoch_slot");
 
             let epoch_data = rpc_client.get_epoch_info()?;
