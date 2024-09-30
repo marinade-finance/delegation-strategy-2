@@ -1,15 +1,9 @@
 #!/bin/bash
 
 set -e
-set -x
-
-pwd
-ls -alrth
 
 SCRIPT_DIR=$(dirname "$0")
 BIN_DIR="${BIN_DIR:-"$SCRIPT_DIR/../target/debug"}"
-
-ls -alrth "$BIN_DIR"
 
 if [[ -z $RPC_URL ]]
 then
