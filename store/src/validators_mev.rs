@@ -33,7 +33,7 @@ pub async fn store_mev(
         .iter()
         .map(|v| (v.0.clone(), ValidatorMEVInfo::new_from_snapshot(v.1)))
         .collect();
-    let snapshot_epoch: i32 = (snapshot.epoch - 1) as i32;
+    let snapshot_epoch: i32 = snapshot.epoch as i32;
     let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let mut updated_identities: HashSet<_> = Default::default();
 

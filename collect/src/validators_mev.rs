@@ -115,7 +115,7 @@ pub fn validators_mev(
                         .validator_vote_account
                         .to_string(),
                     mev_commission: fetched_tip_distribution_account.validator_commission_bps,
-                    epoch,
+                    epoch: epoch - 1,
                     total_epoch_rewards: merkle_root.max_total_claim,
                     claimed_epoch_rewards: merkle_root.total_funds_claimed,
                     total_epoch_claimants: merkle_root.max_num_nodes,
@@ -150,7 +150,7 @@ pub fn collect_validators_mev_info(
     serde_yaml::to_writer(
         std::io::stdout(),
         &Snapshot {
-            epoch,
+            epoch: epoch - 1,
             epoch_slot: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             validators,
