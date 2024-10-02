@@ -6,9 +6,11 @@ use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use structopt::StructOpt;
+use tokio::sync::Mutex;
 use tokio_postgres::types::ToSql;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, GenericClient, Transaction};
 
 #[derive(Debug, StructOpt)]
 pub struct StoreMevOptions {
@@ -18,15 +20,12 @@ pub struct StoreMevOptions {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
-pub async fn store_mev(
-    options: StoreMevOptions,
-    mut psql_client: &mut Client,
-) -> anyhow::Result<()> {
+pub async fn store_mev(options: StoreMevOptions, psql_client: &mut Client) -> anyhow::Result<()> {
     info!("Storing MEV snapshot...");
 
     let snapshot_file = std::fs::File::open(options.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
 
     let validators_mev: HashMap<_, _> = snapshot
         .validators
@@ -38,7 +37,10 @@ pub async fn store_mev(
 
     info!("Loaded the snapshot");
 
-    for chunk in psql_client
+    let mut transaction = psql_client.transaction().await?;
+
+    let mut updates: u64 = 0;
+    for chunk in transaction
         .query(
             "
         SELECT vote_account
@@ -76,6 +78,7 @@ pub async fn store_mev(
             .to_string(),
             "mev.vote_account = u.vote_account AND mev.epoch = u.epoch".to_string(),
         );
+
         for row in chunk {
             let vote_account: &str = row.get("vote_account");
 
@@ -108,12 +111,12 @@ pub async fn store_mev(
                 updated_identities.insert(vote_account.to_string());
             }
         }
-        query.execute(&mut psql_client).await?;
-        info!(
-            "Updated previously existing MEV records: {}",
-            updated_identities.len()
-        );
+        if let Some((statement, params)) = query.get_statement_data() {
+            updates += transaction.execute(statement, params).await?;
+            info!("Updated previously existing MEV records: {}", updates);
+        }
     }
+
     let validators_mev: Vec<_> = validators_mev
         .into_iter()
         .filter(|(vote_account, _)| !updated_identities.contains(vote_account))
@@ -155,10 +158,14 @@ pub async fn store_mev(
             ];
             query.add(&mut params);
         }
-        insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
-        info!("Stored {} new MEV records", insertions);
+        if let Some((statement, params)) = query.get_statement_data() {
+            insertions += transaction.execute(statement, params).await?;
+            info!("Stored {} new MEV records", insertions);
+        }
     }
 
+    transaction.commit().await?;
+    info!("Stored MEV snapshot. Updates: {updates}, insertions: {insertions}");
     Ok(())
 }
 
@@ -170,12 +177,12 @@ pub async fn get_last_mev_info(
         .query(
             "
             WITH cluster AS (
-                SELECT MAX(epoch) as last_epoch 
+                SELECT MAX(epoch) as last_epoch
                 FROM cluster_info
             ),
             filtered_mev AS (
                 SELECT
-                    vote_account, 
+                    vote_account,
                     mev_commission,
                     epoch,
                     ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) as rn
