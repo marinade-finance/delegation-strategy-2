@@ -126,6 +126,8 @@ pub fn validators_mev(
         }
     }
 
+    info!("Loaded {} validators for epoch {}", validators.len(), epoch);
+
     Ok(validators)
 }
 

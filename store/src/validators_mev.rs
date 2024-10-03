@@ -46,6 +46,7 @@ pub async fn store_mev(
         snapshot_loaded_at_slot_index
     );
 
+    let mut updates: u64 = 0;
     for chunk in psql_client
         .query(
             "
@@ -116,10 +117,11 @@ pub async fn store_mev(
                 updated_identities.insert(vote_account.to_string());
             }
         }
-        query.execute(&mut psql_client).await?;
+        updates += query.execute(&mut psql_client).await?.unwrap_or(0);
         info!(
-            "Updated previously existing MEV records: {}",
-            updated_identities.len()
+            "Trying to update {} previously existing MEV records. SQL updated records: {}",
+            updated_identities.len(),
+            updates
         );
     }
     let validators_mev: Vec<_> = validators_mev
@@ -163,8 +165,13 @@ pub async fn store_mev(
             query.add(&mut params);
         }
         insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
-        info!("Stored {} new MEV records", insertions);
+        info!("Inserted new new MEV records {}", insertions);
     }
+
+    info!(
+        "Stored MEV snapshot: {} updated, {} inserted",
+        updates, insertions
+    );
 
     Ok(())
 }
