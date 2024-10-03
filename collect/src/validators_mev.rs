@@ -74,7 +74,7 @@ pub fn validators_mev(
                         RpcFilterType::DataSize(TipDistributionAccount::SIZE.try_into().unwrap()),
                         RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
                             0x89,
-                            (epoch - 1).to_le_bytes().to_vec(),
+                            epoch.to_le_bytes().to_vec(),
                         )),
                     ]),
                     account_config: RpcAccountInfoConfig {
@@ -102,7 +102,7 @@ pub fn validators_mev(
             AccountDeserialize::try_deserialize(
                 &mut validator_tip_distribution_account.1.data.as_slice(),
             )?;
-        if fetched_tip_distribution_account.epoch_created_at != epoch - 1 {
+        if fetched_tip_distribution_account.epoch_created_at != epoch {
             continue;
         }
         if let Some(merkle_root) = fetched_tip_distribution_account.merkle_root {
@@ -145,12 +145,12 @@ pub fn collect_validators_mev_info(
     info!("Current epoch: {:?}", current_epoch_info);
     info!("Looking at epoch: {}", epoch - 1);
 
-    let validators = validators_mev(&client, epoch, options.rpc_attempts)?;
+    let validators = validators_mev(&client, epoch - 1, options.rpc_attempts)?;
 
     serde_yaml::to_writer(
         std::io::stdout(),
         &Snapshot {
-            epoch,
+            epoch: epoch - 1,
             epoch_slot: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             validators,
