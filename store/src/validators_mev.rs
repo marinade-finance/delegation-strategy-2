@@ -27,7 +27,7 @@ pub async fn store_mev(
     let snapshot_file = std::fs::File::open(options.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
-    let snapshot_loaded_at_slot_index = snapshot.loaded_at_slot_index as i32;
+    let snapshot_loaded_at_slot_index = Decimal::from(snapshot.loaded_at_slot_index);
     let snapshot_epoch = snapshot.epoch as i32;
 
     let validators_mev: HashMap<_, _> = snapshot
@@ -109,7 +109,7 @@ pub async fn store_mev(
                         (3, "NUMERIC".into()),                  // claimed_epoch_rewards
                         (4, "INTEGER".into()),                  // total_epoch_claimants
                         (5, "INTEGER".into()),                  // epoch_active_claimants
-                        (6, "NUMERIC".into()),                  // snapshot_epoch_slot
+                        (6, "NUMERIC".into()),                  // snapshot_loaded_at_slot_index
                         (7, "INTEGER".into()),                  // epoch
                         (8, "TIMESTAMP WITH TIME ZONE".into()), // snapshot_created_at
                     ]),
