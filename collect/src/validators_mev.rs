@@ -10,6 +10,8 @@ use solana_client::{
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
 };
+use solana_program::pubkey::Pubkey;
+use solana_sdk::account::Account;
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -43,10 +45,10 @@ pub struct ValidatorMEVSnapshot {
     pub vote_account: String,
     pub mev_commission: u16,
     pub epoch: u64,
-    pub total_epoch_rewards: u64,
-    pub claimed_epoch_rewards: u64,
-    pub total_epoch_claimants: u64,
-    pub epoch_active_claimants: u64,
+    pub total_epoch_rewards: Option<u64>,
+    pub claimed_epoch_rewards: Option<u64>,
+    pub total_epoch_claimants: Option<u64>,
+    pub epoch_active_claimants: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,23 +60,23 @@ pub struct Snapshot {
     pub validators: HashMap<String, ValidatorMEVSnapshot>,
 }
 
-pub fn validators_mev(
+fn fetch_program_accounts_with_retry(
     client: &RpcClient,
-    epoch: Epoch,
+    program_id: &str,
+    byte_pos: usize,
+    epoch: u64,
     rpc_attempts: usize,
-) -> anyhow::Result<HashMap<String, ValidatorMEVSnapshot>> {
-    let mut validators: HashMap<String, ValidatorMEVSnapshot> = Default::default();
-
-    let jito_program = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7".try_into()?;
-    let validators_tip_distribution_accounts = retry_blocking(
+) -> anyhow::Result<Vec<(Pubkey, Account)>> {
+    let program_key = program_id.try_into()?;
+    retry_blocking(
         || {
             client.get_program_accounts_with_config(
-                &jito_program,
+                &program_key,
                 RpcProgramAccountsConfig {
                     filters: Some(vec![
                         RpcFilterType::DataSize(TipDistributionAccount::SIZE.try_into().unwrap()),
                         RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                            0x89,
+                            byte_pos,
                             epoch.to_le_bytes().to_vec(),
                         )),
                     ]),
@@ -97,8 +99,54 @@ pub fn validators_mev(
                 backoff.as_secs()
             )
         },
+    )
+    .map_err(|e| {
+        anyhow::Error::new(e).context(format!(
+            "Failed to fetch program accounts for program_id: {} at index {}",
+            program_id, byte_pos
+        ))
+    })
+}
+
+pub fn validators_mev(
+    client: &RpcClient,
+    epoch: Epoch,
+    rpc_attempts: usize,
+) -> anyhow::Result<HashMap<String, ValidatorMEVSnapshot>> {
+    let mut validators: HashMap<String, ValidatorMEVSnapshot> = Default::default();
+
+    let jito_program = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7".try_into()?;
+    // accounts created by validator during the epoch
+    let tip_distribution_accounts_before_update = fetch_program_accounts_with_retry(
+        &client,
+        jito_program,
+        0x49, // byte 73
+        epoch,
+        rpc_attempts,
     )?;
-    for validator_tip_distribution_account in validators_tip_distribution_accounts {
+    info!(
+        "RPC loaded {} validators tip distribution accounts in state of before updated by JITO for epoch {}",
+        tip_distribution_accounts_before_update.len(),
+        epoch,
+    );
+    // account with data uploaded by jito at the start of the next epoch
+    let distribution_accounts_updated = fetch_program_accounts_with_retry(
+        &client,
+        jito_program,
+        0x89, // byte 137
+        epoch,
+        rpc_attempts,
+    )?;
+    info!(
+        "RPC loaded {} validators tip distribution accounts in state of already updated by JITO for epoch {}",
+        distribution_accounts_updated.len(),
+        epoch,
+    );
+
+    for validator_tip_distribution_account in tip_distribution_accounts_before_update
+        .into_iter()
+        .chain(distribution_accounts_updated.into_iter())
+    {
         let fetched_tip_distribution_account: TipDistributionAccount =
             AccountDeserialize::try_deserialize(
                 &mut validator_tip_distribution_account.1.data.as_slice(),
@@ -106,24 +154,24 @@ pub fn validators_mev(
         if fetched_tip_distribution_account.epoch_created_at != epoch {
             continue;
         }
-        if let Some(merkle_root) = fetched_tip_distribution_account.merkle_root {
-            validators.insert(
-                fetched_tip_distribution_account
+        let merkle_root = fetched_tip_distribution_account.merkle_root;
+
+        validators.insert(
+            fetched_tip_distribution_account
+                .validator_vote_account
+                .to_string(),
+            ValidatorMEVSnapshot {
+                vote_account: fetched_tip_distribution_account
                     .validator_vote_account
                     .to_string(),
-                ValidatorMEVSnapshot {
-                    vote_account: fetched_tip_distribution_account
-                        .validator_vote_account
-                        .to_string(),
-                    mev_commission: fetched_tip_distribution_account.validator_commission_bps,
-                    epoch,
-                    total_epoch_rewards: merkle_root.max_total_claim,
-                    claimed_epoch_rewards: merkle_root.total_funds_claimed,
-                    total_epoch_claimants: merkle_root.max_num_nodes,
-                    epoch_active_claimants: merkle_root.num_nodes_claimed,
-                },
-            );
-        }
+                mev_commission: fetched_tip_distribution_account.validator_commission_bps,
+                epoch,
+                total_epoch_rewards: merkle_root.as_ref().map(|mr| mr.max_total_claim),
+                claimed_epoch_rewards: merkle_root.as_ref().map(|mr| mr.total_funds_claimed),
+                total_epoch_claimants: merkle_root.as_ref().map(|mr| mr.max_num_nodes),
+                epoch_active_claimants: merkle_root.as_ref().map(|mr| mr.num_nodes_claimed),
+            },
+        );
     }
 
     info!("Loaded {} validators for epoch {}", validators.len(), epoch);

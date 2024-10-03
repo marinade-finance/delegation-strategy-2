@@ -10,10 +10,10 @@ pub struct ValidatorMEVInfo {
     pub vote_account: String,
     pub mev_commission: i32,
     pub epoch: i32,
-    pub total_epoch_rewards: Decimal,
-    pub claimed_epoch_rewards: Decimal,
-    pub total_epoch_claimants: i32,
-    pub epoch_active_claimants: i32,
+    pub total_epoch_rewards: Option<Decimal>,
+    pub claimed_epoch_rewards: Option<Decimal>,
+    pub total_epoch_claimants: Option<i32>,
+    pub epoch_active_claimants: Option<i32>,
 }
 
 impl ValidatorMEVInfo {
@@ -22,10 +22,10 @@ impl ValidatorMEVInfo {
             vote_account: v.vote_account.clone(),
             mev_commission: (v.mev_commission as i32),
             epoch: (v.epoch as i32),
-            total_epoch_rewards: v.total_epoch_rewards.into(),
-            claimed_epoch_rewards: v.claimed_epoch_rewards.into(),
-            total_epoch_claimants: (v.total_epoch_claimants as i32),
-            epoch_active_claimants: (v.epoch_active_claimants as i32),
+            total_epoch_rewards: v.total_epoch_rewards.map(|v| v.into()),
+            claimed_epoch_rewards: v.claimed_epoch_rewards.map(|v| v.into()),
+            total_epoch_claimants: v.total_epoch_claimants.map(|v| v as i32),
+            epoch_active_claimants: v.epoch_active_claimants.map(|v| v as i32),
         }
     }
 }
