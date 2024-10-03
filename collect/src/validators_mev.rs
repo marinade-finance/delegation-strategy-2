@@ -52,7 +52,8 @@ pub struct ValidatorMEVSnapshot {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub epoch: Epoch,
-    pub epoch_slot: u64,
+    pub loaded_at_epoch: Epoch,
+    pub loaded_at_slot_index: u64,
     pub created_at: String,
     pub validators: HashMap<String, ValidatorMEVSnapshot>,
 }
@@ -143,15 +144,17 @@ pub fn collect_validators_mev_info(
         .current_epoch_override
         .unwrap_or(current_epoch_info.epoch);
     info!("Current epoch: {:?}", current_epoch_info);
-    info!("Looking at epoch: {}", epoch - 1);
+    let looking_at_epoch = epoch - 1;
+    info!("Looking at epoch: {}", looking_at_epoch);
 
-    let validators = validators_mev(&client, epoch - 1, options.rpc_attempts)?;
+    let validators = validators_mev(&client, looking_at_epoch, options.rpc_attempts)?;
 
     serde_yaml::to_writer(
         std::io::stdout(),
         &Snapshot {
-            epoch: epoch - 1,
-            epoch_slot: current_epoch_info.slot_index,
+            epoch: looking_at_epoch,
+            loaded_at_epoch: epoch,
+            loaded_at_slot_index: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             validators,
         },

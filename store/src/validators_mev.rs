@@ -26,17 +26,25 @@ pub async fn store_mev(
 
     let snapshot_file = std::fs::File::open(options.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
+    let snapshot_loaded_at_slot_index = snapshot.loaded_at_slot_index as i32;
+    let snapshot_epoch = snapshot.epoch as i32;
 
     let validators_mev: HashMap<_, _> = snapshot
         .validators
         .iter()
         .map(|v| (v.0.clone(), ValidatorMEVInfo::new_from_snapshot(v.1)))
         .collect();
-    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let mut updated_identities: HashSet<_> = Default::default();
 
-    info!("Loaded the snapshot");
+    info!(
+        "Loaded the snapshot {} records for epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
+        validators_mev.len(),
+        snapshot_epoch,
+        snapshot_created_at,
+        snapshot.loaded_at_epoch,
+        snapshot_loaded_at_slot_index
+    );
 
     for chunk in psql_client
         .query(
@@ -45,7 +53,7 @@ pub async fn store_mev(
         FROM mev
         WHERE epoch = $1
     ",
-            &[&(snapshot.epoch as i32)],
+            &[&(snapshot_epoch)],
         )
         .await?
         .chunks(DEFAULT_CHUNK_SIZE)
@@ -87,7 +95,7 @@ pub async fn store_mev(
                     &v.claimed_epoch_rewards,
                     &v.total_epoch_claimants,
                     &v.epoch_active_claimants,
-                    &snapshot_epoch_slot,
+                    &snapshot_loaded_at_slot_index,
                     &v.epoch,
                     &snapshot_created_at,
                 ];
@@ -137,7 +145,6 @@ pub async fn store_mev(
             .to_string(),
         );
 
-        let epoch = snapshot.epoch as i32;
         for (vote_account, v) in chunk {
             if updated_identities.contains(vote_account) {
                 continue;
@@ -149,8 +156,8 @@ pub async fn store_mev(
                 &v.claimed_epoch_rewards,
                 &v.total_epoch_claimants,
                 &v.epoch_active_claimants,
-                &snapshot_epoch_slot,
-                &epoch,
+                &snapshot_loaded_at_slot_index,
+                &snapshot_epoch,
                 &snapshot_created_at,
             ];
             query.add(&mut params);
@@ -170,12 +177,12 @@ pub async fn get_last_mev_info(
         .query(
             "
             WITH cluster AS (
-                SELECT MAX(epoch) as last_epoch 
+                SELECT MAX(epoch) as last_epoch
                 FROM cluster_info
             ),
             filtered_mev AS (
                 SELECT
-                    vote_account, 
+                    vote_account,
                     mev_commission,
                     epoch,
                     ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) as rn
