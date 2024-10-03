@@ -33,7 +33,6 @@ pub async fn store_mev(
         .iter()
         .map(|v| (v.0.clone(), ValidatorMEVInfo::new_from_snapshot(v.1)))
         .collect();
-    let snapshot_epoch: i32 = snapshot.epoch as i32;
     let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let mut updated_identities: HashSet<_> = Default::default();
 
@@ -46,7 +45,7 @@ pub async fn store_mev(
         FROM mev
         WHERE epoch = $1
     ",
-            &[&snapshot_epoch],
+            &[&(snapshot.epoch as i32)],
         )
         .await?
         .chunks(DEFAULT_CHUNK_SIZE)
@@ -138,6 +137,7 @@ pub async fn store_mev(
             .to_string(),
         );
 
+        let epoch = snapshot.epoch as i32;
         for (vote_account, v) in chunk {
             if updated_identities.contains(vote_account) {
                 continue;
@@ -150,7 +150,7 @@ pub async fn store_mev(
                 &v.total_epoch_claimants,
                 &v.epoch_active_claimants,
                 &snapshot_epoch_slot,
-                &snapshot_epoch,
+                &epoch,
                 &snapshot_created_at,
             ];
             query.add(&mut params);
