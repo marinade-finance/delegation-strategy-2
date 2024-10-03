@@ -1,4 +1,4 @@
-use crate::validators_mev::check_mev;
+use crate::validators_mev::{check_mev, ValidatorsMevOptions};
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use structopt::StructOpt;
@@ -27,7 +27,7 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum StoreCommand {
-    ValidatorsMev,
+    ValidatorsMev(ValidatorsMevOptions),
 }
 
 pub mod validators_mev;
@@ -49,6 +49,6 @@ async fn main() -> anyhow::Result<()> {
     let rpc_client = solana_client(params.common.rpc_url, params.common.commitment);
 
     Ok(match params.command {
-        StoreCommand::ValidatorsMev => check_mev(&psql_client, &rpc_client).await,
+        StoreCommand::ValidatorsMev(options) => check_mev(options, &psql_client, &rpc_client).await,
     }?)
 }
