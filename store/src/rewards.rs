@@ -2,8 +2,20 @@ use rust_decimal::Decimal;
 use tokio_postgres::Client;
 
 pub async fn get_mev_rewards(psql_client: &Client, epochs: u64) -> anyhow::Result<Vec<(u64, f64)>> {
+    // total_epoch_rewards may be NULL as data on commission is loaded at start of epoch
+    // when JITO has not run own snapshot processing that updates data about rewards
+    // query ignores whole epoch if there is at least one NULL value
     let rows = psql_client
-        .query("SELECT SUM(total_epoch_rewards) / 1e9 AS amount, epoch FROM mev GROUP BY epoch ORDER BY epoch DESC LIMIT $1", &[&i64::try_from(epochs)?])
+        .query(
+            r#"
+             SELECT SUM(total_epoch_rewards) / 1e9 AS amount, epoch
+             FROM mev
+             GROUP BY epoch
+             HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) = 0
+             ORDER BY epoch
+             DESC LIMIT $1"#,
+            &[&i64::try_from(epochs)?],
+        )
         .await?;
 
     Ok(rows
