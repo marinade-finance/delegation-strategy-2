@@ -105,6 +105,7 @@ pub struct ValidatorSnapshot {
     pub self_stake: u64,
     pub marinade_stake: u64,
     pub marinade_native_stake: u64,
+    pub institutional_stake: u64,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
@@ -157,6 +158,7 @@ pub fn collect_validators_info(
     let minimum_superminority_stake = get_minimum_superminority_stake(&vote_accounts);
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
+    let institutional_stake = get_institutional_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
     let self_stake = get_self_stake(
         &client,
@@ -222,7 +224,7 @@ pub fn collect_validators_info(
             foundation_stake: *foundation_stake.get(&vote_pubkey).unwrap_or(&0),
             self_stake: *self_stake.get(&vote_pubkey).unwrap_or(&0),
             marinade_native_stake: *marinade_native_stake.get(&vote_pubkey).unwrap_or(&0),
-
+            institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),
