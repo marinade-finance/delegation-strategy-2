@@ -46,10 +46,6 @@ pub fn get_institutional_stakes(
         stake_history,
     )?;
 
-    assert!(
-        !institutional_stakes.is_empty(),
-        "Failed to fetch institutional stake data"
-    );
     Ok(institutional_stakes)
 }
 
