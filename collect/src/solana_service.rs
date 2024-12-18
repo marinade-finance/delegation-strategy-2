@@ -229,7 +229,7 @@ fn parse_validator_info(
         anyhow::bail!("{} is not a validator info account", pubkey);
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
-    if !key_list.keys.is_empty() {
+    if !key_list.keys.is_empty() && key_list.keys.contains(&(validator_info::id(), false)) {
         let (validator_pubkey, _) = key_list.keys[1];
         let validator_info_string: String = deserialize(get_config_data(&account.data)?)?;
         let validator_info: Map<_, _> = serde_json::from_str(&validator_info_string)?;
@@ -256,14 +256,7 @@ pub fn get_validators_info(
     if validator_info.is_empty() {
         println!("No validator info accounts found");
     }
-    for (validator_info_pubkey, validator_info_account) in
-        validator_info.iter().filter(|(_, validator_info_account)| {
-            match deserialize::<ConfigKeys>(&validator_info_account.data) {
-                Ok(key_list) => key_list.keys.contains(&(validator_info::id(), false)),
-                Err(_) => false,
-            }
-        })
-    {
+    for (validator_info_pubkey, validator_info_account) in validator_info.iter() {
         match parse_validator_info(validator_info_pubkey, validator_info_account) {
             Ok((validator_pubkey, validator_info)) => {
                 validator_info_map.insert(validator_pubkey.to_string(), validator_info);
