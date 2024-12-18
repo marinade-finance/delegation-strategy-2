@@ -6,6 +6,7 @@ use bincode::deserialize;
 use log::{error, info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{Map, Value};
+use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::ClientError,
@@ -255,7 +256,14 @@ pub fn get_validators_info(
     if validator_info.is_empty() {
         println!("No validator info accounts found");
     }
-    for (validator_info_pubkey, validator_info_account) in validator_info.iter() {
+    for (validator_info_pubkey, validator_info_account) in
+        validator_info.iter().filter(|(_, validator_info_account)| {
+            match deserialize::<ConfigKeys>(&validator_info_account.data) {
+                Ok(key_list) => key_list.keys.contains(&(validator_info::id(), false)),
+                Err(_) => false,
+            }
+        })
+    {
         match parse_validator_info(validator_info_pubkey, validator_info_account) {
             Ok((validator_pubkey, validator_info)) => {
                 validator_info_map.insert(validator_pubkey.to_string(), validator_info);
