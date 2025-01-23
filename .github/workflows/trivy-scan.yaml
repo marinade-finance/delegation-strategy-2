@@ -6,31 +6,43 @@ jobs:
     name: Scan
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout project
-      uses: actions/checkout@v4
+      - name: Checkout project
+        uses: actions/checkout@v4
 
-    - name: Run Trivy scanner
-      uses: aquasecurity/trivy-action@master
-      env:
-        TRIVY_SKIP_DB_UPDATE: true
-        TRIVY_SKIP_JAVA_DB_UPDATE: true
-      with:
-        scan-type: fs
-        format: table
-        scan-ref: .
-        hide-progress: false
-        output: trivy.txt
-        severity: CRITICAL
-        ignore-unfixed: true
-        exit-code: 1
+      - name: Run Trivy scanner - generate update
+        uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_SKIP_DB_UPDATE: true
+          TRIVY_SKIP_JAVA_DB_UPDATE: true
+        with:
+          scan-type: fs
+          format: table
+          scan-ref: .
+          hide-progress: false
+          output: trivy.txt
 
-    - name: Publish Trivy Output to Summary
-      run: |
-        if [[ -s trivy.txt ]]; then
-          {
-            echo "### Security Output"
-            echo '```terraform'
-            cat trivy.txt
-            echo '```'
-          } >> $GITHUB_STEP_SUMMARY
-        fi
+      - name: Publish Trivy Output to Summary
+        run: |
+          if [[ -s trivy.txt ]]; then
+            {
+              echo "### Security Output"
+              echo '```terraform'
+              cat trivy.txt
+              echo '```'
+            } >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Run Trivy scanner - Fail build on Criticial Vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_SKIP_DB_UPDATE: true
+          TRIVY_SKIP_JAVA_DB_UPDATE: true
+        with:
+          scan-type: fs
+          format: table
+          scan-ref: .
+          hide-progress: false
+          output: trivy.txt
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
