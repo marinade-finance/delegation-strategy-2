@@ -1,0 +1,49 @@
+name: Cargo lint and test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  # Not needed in CI, should make things a bit faster
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  # Remove unnecessary WASM build artifacts
+  WASM_BUILD_CLEAN_TARGET: 1
+  # Stripping symbols and optimizing for binary size
+  RUSTFLAGS: -C strip=symbols -C opt-level=s
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: 🛀🏼 Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v3
+        with:
+          remove-android: 'true'
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Install rust compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install libudev-dev
+
+      - name: 🦿 Install Rust tookchain
+        uses: dtolnay/rust-toolchain@1.73.0
+        with:
+          components: rustfmt, clippy
+
+      - name: 🫙 Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.4
+ 
+      - run: cargo test --release -- --nocapture

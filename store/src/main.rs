@@ -3,8 +3,9 @@ use cluster_info::{store_cluster_info, StoreClusterInfoOptions};
 use commissions::{store_commissions, StoreCommissionsOptions};
 use env_logger::Env;
 use ls_open_epochs::{list_open_epochs, LsOpenEpochsOptions};
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use structopt::StructOpt;
-use tokio_postgres::NoTls;
 use uptime::{store_uptime, StoreUptimeOptions};
 use validators::{store_validators, StoreValidatorsOptions};
 use validators_mev::{store_mev, StoreMevOptions};
@@ -14,6 +15,9 @@ use versions::{store_versions, StoreVersionsOptions};
 pub struct CommonParams {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
+
+    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    pub postgres_ssl_root_cert: String,
 }
 
 #[derive(Debug, StructOpt)]
@@ -53,8 +57,12 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let params = Params::from_args();
-    let (mut psql_client, psql_conn) =
-        tokio_postgres::connect(&params.common.postgres_url, NoTls).await?;
+
+    let mut builder = SslConnector::builder(SslMethod::tls())?;
+    builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
+    let connector = MakeTlsConnector::new(builder.build());
+
+    let (mut psql_client, psql_conn) = tokio_postgres::connect(&params.common.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {}", err);
