@@ -8,11 +8,12 @@ use crate::handlers::{
 };
 use env_logger::Env;
 use log::{error, info};
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use std::convert::Infallible;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
-use tokio_postgres::NoTls;
 use warp::{Filter, Rejection};
 
 pub mod api_docs;
@@ -26,6 +27,9 @@ pub mod utils;
 pub struct Params {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
+
+    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    pub postgres_ssl_root_cert: String,
 
     #[structopt(long = "scoring-url")]
     scoring_url: String,
@@ -46,7 +50,12 @@ async fn main() -> anyhow::Result<()> {
     info!("Launching API");
 
     let params = Params::from_args();
-    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, NoTls).await?;
+
+    let mut builder = SslConnector::builder(SslMethod::tls())?;
+    builder.set_ca_file(&params.postgres_ssl_root_cert)?;
+    let connector = MakeTlsConnector::new(builder.build());
+
+    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             error!("PSQL Connection error: {}", err);
