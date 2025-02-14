@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 rust_decimal = { version = "1.26", features = ["db-postgres"] }
 anyhow = "1.0.40"
-borsh = "1.3"
+borsh = "1.5"
 csv = "1.1"
 log = "0.4.14"
 bytes = "1.0"
