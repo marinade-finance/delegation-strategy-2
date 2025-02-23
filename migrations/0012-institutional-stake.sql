@@ -1,0 +1,1 @@
+ALTER TABLE validators ADD COLUMN institutional_stake NUMERIC NOT NULL DEFAULT 0;
