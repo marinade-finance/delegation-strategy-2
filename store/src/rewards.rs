@@ -11,7 +11,7 @@ pub async fn get_mev_rewards(psql_client: &Client, epochs: u64) -> anyhow::Resul
              SELECT SUM(total_epoch_rewards) / 1e9 AS amount, epoch
              FROM mev
              GROUP BY epoch
-             HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) = 0
+             HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < 10
              ORDER BY epoch
              DESC LIMIT $1"#,
             &[&i64::try_from(epochs)?],
