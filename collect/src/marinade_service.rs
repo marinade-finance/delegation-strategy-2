@@ -31,6 +31,24 @@ pub fn get_marinade_stakes(
     )?)
 }
 
+pub fn get_institutional_stakes(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
+    let mut institutional_authority = "STNi1NHDUi6Hvibvonawgze8fM83PFLeJhuGMEXyGps".try_into()?;
+
+    let institutional_stakes = get_stakes_groupped_by_validator(
+        rpc_client,
+        &institutional_authority,
+        None,
+        epoch,
+        stake_history,
+    )?;
+
+    Ok(institutional_stakes)
+}
+
 pub fn get_foundation_stakes(
     rpc_client: &RpcClient,
     epoch: Epoch,
