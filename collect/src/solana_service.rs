@@ -94,7 +94,6 @@ pub fn get_cluster_nodes_versions(
         .filter_map(|node| {
             node.version.clone().and_then(|version| {
                 let version = version
-                    .clone()
                     .split_once(char::is_whitespace)
                     .and_then(|(version, extra)| {
                         warn!(
