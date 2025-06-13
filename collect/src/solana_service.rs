@@ -103,7 +103,7 @@ pub fn get_cluster_nodes_versions(
                         Some(version.to_string())
                     })
                     .unwrap_or(version);
-                Some((node.pubkey.clone(), version.to_string()))
+                Some((node.pubkey.clone(), version))
             })
         })
         .collect())
