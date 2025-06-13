@@ -91,9 +91,21 @@ pub fn get_cluster_nodes_versions(
 
     Ok(cluster_nodes
         .iter()
-        .filter_map(|node| match &node.version {
-            Some(version) => Some((node.pubkey.clone(), version.clone())),
-            _ => None,
+        .filter_map(|node| {
+            node.version.clone().and_then(|version| {
+                let version = version
+                    .clone()
+                    .split_once(char::is_whitespace)
+                    .and_then(|(version, extra)| {
+                        warn!(
+                            "Node {} has version: {version} with extra info: {extra}",
+                            node.pubkey
+                        );
+                        Some(version.to_string())
+                    })
+                    .unwrap_or(version);
+                Some((node.pubkey.clone(), version.to_string()))
+            })
         })
         .collect())
 }
