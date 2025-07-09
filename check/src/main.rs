@@ -1,4 +1,4 @@
-use crate::validators_mev::{check_mev, ValidatorsMevOptions};
+use crate::validators_jito::{check_jito, ValidatorsJitoCheckOptions};
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use structopt::StructOpt;
@@ -27,10 +27,11 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum StoreCommand {
-    ValidatorsMev(ValidatorsMevOptions),
+    JitoMev(ValidatorsJitoCheckOptions),
+    JitoPriority(ValidatorsJitoCheckOptions),
 }
 
-pub mod validators_mev;
+pub mod validators_jito;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -49,6 +50,23 @@ async fn main() -> anyhow::Result<()> {
     let rpc_client = solana_client(params.common.rpc_url, params.common.commitment);
 
     Ok(match params.command {
-        StoreCommand::ValidatorsMev(options) => check_mev(options, &psql_client, &rpc_client).await,
+        StoreCommand::JitoMev(options) => {
+            check_jito(
+                options,
+                &psql_client,
+                &rpc_client,
+                collect::validators_jito::JitoAccountType::MevTipDistribution.db_table_name(),
+            )
+            .await
+        }
+        StoreCommand::JitoPriority(options) => {
+            check_jito(
+                options,
+                &psql_client,
+                &rpc_client,
+                collect::validators_jito::JitoAccountType::PriorityFeeDistribution.db_table_name(),
+            )
+            .await
+        }
     }?)
 }

@@ -22,7 +22,7 @@ pub fn get_marinade_stakes(
     // @todo take from state
     let delegation_authority = "4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk".try_into()?;
     let withdrawer_authority = "9eG63CdHjsfhHmobHgLtESGC8GabbmRcaSpHAZrtmhco".try_into()?;
-    Ok(get_stakes_groupped_by_validator(
+    Ok(get_stakes_grouped_by_validator(
         rpc_client,
         &delegation_authority,
         Some(&withdrawer_authority),
@@ -36,9 +36,9 @@ pub fn get_institutional_stakes(
     epoch: Epoch,
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let mut institutional_authority = "STNi1NHDUi6Hvibvonawgze8fM83PFLeJhuGMEXyGps".try_into()?;
+    let institutional_authority = "STNi1NHDUi6Hvibvonawgze8fM83PFLeJhuGMEXyGps".try_into()?;
 
-    let institutional_stakes = get_stakes_groupped_by_validator(
+    let institutional_stakes = get_stakes_grouped_by_validator(
         rpc_client,
         &institutional_authority,
         None,
@@ -60,7 +60,7 @@ pub fn get_foundation_stakes(
         foundation_authority = "spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6".try_into()?;
     }
 
-    let foundation_stakes = get_stakes_groupped_by_validator(
+    let foundation_stakes = get_stakes_grouped_by_validator(
         rpc_client,
         &foundation_authority,
         None,
@@ -83,7 +83,7 @@ pub fn get_marinade_native_stakes(
     // @todo take from config
     let marinade_native_stake_authority =
         "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;
-    Ok(get_stakes_groupped_by_validator(
+    Ok(get_stakes_grouped_by_validator(
         rpc_client,
         &marinade_native_stake_authority,
         None,
@@ -92,7 +92,7 @@ pub fn get_marinade_native_stakes(
     )?)
 }
 
-fn get_stakes_groupped_by_validator(
+fn get_stakes_grouped_by_validator(
     rpc_client: &RpcClient,
     delegation_authority: &Pubkey,
     withdrawer_authority: Option<&Pubkey>,
@@ -105,15 +105,9 @@ fn get_stakes_groupped_by_validator(
         .iter()
         .filter_map(|(_, stake_account)| {
             stake_account.stake().and_then(|stake| {
-                let StakeHistoryEntry {
-                    effective,
-                    activating,
-                    deactivating,
-                } = stake.delegation.stake_activating_and_deactivating(
-                    epoch,
-                    Some(stake_history),
-                    None,
-                );
+                let StakeHistoryEntry { effective, .. } = stake
+                    .delegation
+                    .stake_activating_and_deactivating(epoch, Some(stake_history), None);
                 if effective == 0 {
                     None
                 } else {

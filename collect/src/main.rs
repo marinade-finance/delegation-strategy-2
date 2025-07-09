@@ -1,6 +1,6 @@
 use collect::common::*;
 use collect::validators::*;
-use collect::validators_mev::{collect_validators_mev_info, ValidatorsMEVOptions};
+use collect::validators_jito::{collect_jito_info, JitoAccountType, JitoParams};
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceOptions,
 };
@@ -21,7 +21,8 @@ struct Params {
 enum CollectCommand {
     Validators(ValidatorsOptions),
     ValidatorsPerformance(ValidatorsPerformanceOptions),
-    ValidatorsMEV(ValidatorsMEVOptions),
+    JitoMev(JitoParams),
+    JitoPriority(JitoParams),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,9 +35,16 @@ fn main() -> anyhow::Result<()> {
         CollectCommand::ValidatorsPerformance(options) => {
             collect_validators_performance_info(params.common, options)
         }
-        CollectCommand::ValidatorsMEV(options) => {
-            collect_validators_mev_info(params.common, options)
-        }
+        CollectCommand::JitoMev(jito_params) => collect_jito_info(
+            params.common,
+            jito_params,
+            JitoAccountType::MevTipDistribution,
+        ),
+        CollectCommand::JitoPriority(jito_params) => collect_jito_info(
+            params.common,
+            jito_params,
+            JitoAccountType::PriorityFeeDistribution,
+        ),
     };
 
     match result {

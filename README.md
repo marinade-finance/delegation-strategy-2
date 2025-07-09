@@ -36,7 +36,7 @@ Inside the cloned repository run:
 
 ### Env
 Create a `.env` file after cloning the repository
-```env
+```envc
 POSTGRES_URL=postgresql://...
 RPC_URL=https://api.mainnet-beta.solana.com
 WHOIS_BEARER_TOKEN=...

@@ -3,7 +3,7 @@ use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
-use log::{error, info, warn};
+use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{Map, Value};
 use solana_account_decoder::validator_info;
@@ -39,7 +39,6 @@ use std::{
 
 const RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS: u64 = 200;
 const WITHDRAW_AUTHORITY_OFFSET: usize = 4 + 8 + 32;
-const BLOCK_TIME_OFFSET: i64 = 60 * 30; // 30 minutes in seconds
 
 pub fn solana_client(url: String, commitment: String) -> RpcClient {
     RpcClient::new_with_commitment(url, CommitmentConfig::from_str(&commitment).unwrap())
@@ -291,7 +290,6 @@ pub fn get_apy(
     credits: &HashMap<String, u64>,
 ) -> anyhow::Result<HashMap<String, f64>> {
     info!("Calculating APY");
-    let supply = rpc_client.supply()?.value.total;
     let inflation = rpc_client.get_inflation_rate()?.total;
     let inflation_taper = rpc_client.get_inflation_governor()?.taper;
 

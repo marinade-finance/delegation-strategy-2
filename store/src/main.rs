@@ -1,5 +1,6 @@
 use close_epoch::{close_epoch, CloseEpochOptions};
 use cluster_info::{store_cluster_info, StoreClusterInfoOptions};
+use collect::validators_jito::JitoAccountType;
 use commissions::{store_commissions, StoreCommissionsOptions};
 use env_logger::Env;
 use ls_open_epochs::{list_open_epochs, LsOpenEpochsOptions};
@@ -8,7 +9,7 @@ use postgres_openssl::MakeTlsConnector;
 use structopt::StructOpt;
 use uptime::{store_uptime, StoreUptimeOptions};
 use validators::{store_validators, StoreValidatorsOptions};
-use validators_mev::{store_mev, StoreMevOptions};
+use validators_jito::{store_jito, StoreJitoOptions};
 use versions::{store_versions, StoreVersionsOptions};
 
 #[derive(Debug, StructOpt)]
@@ -36,7 +37,8 @@ enum StoreCommand {
     Versions(StoreVersionsOptions),
     ClusterInfo(StoreClusterInfoOptions),
     Validators(StoreValidatorsOptions),
-    ValidatorsMev(StoreMevOptions),
+    JitoMev(StoreJitoOptions),
+    JitoPriority(StoreJitoOptions),
     CloseEpoch(CloseEpochOptions),
     LsOpenEpochs(LsOpenEpochsOptions),
 }
@@ -49,7 +51,7 @@ pub mod ls_open_epochs;
 pub mod uptime;
 pub mod utils;
 pub mod validators;
-pub mod validators_mev;
+pub mod validators_jito;
 pub mod versions;
 
 #[tokio::main]
@@ -62,7 +64,8 @@ async fn main() -> anyhow::Result<()> {
     builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
     let connector = MakeTlsConnector::new(builder.build());
 
-    let (mut psql_client, psql_conn) = tokio_postgres::connect(&params.common.postgres_url, connector).await?;
+    let (mut psql_client, psql_conn) =
+        tokio_postgres::connect(&params.common.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {}", err);
@@ -76,7 +79,22 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::Versions(options) => store_versions(options, &mut psql_client).await,
         StoreCommand::ClusterInfo(options) => store_cluster_info(options, &mut psql_client).await,
         StoreCommand::Validators(options) => store_validators(options, &mut psql_client).await,
-        StoreCommand::ValidatorsMev(options) => store_mev(options, &mut psql_client).await,
+        StoreCommand::JitoMev(options) => {
+            store_jito(
+                options,
+                &mut psql_client,
+                JitoAccountType::MevTipDistribution,
+            )
+            .await
+        }
+        StoreCommand::JitoPriority(options) => {
+            store_jito(
+                options,
+                &mut psql_client,
+                JitoAccountType::PriorityFeeDistribution,
+            )
+            .await
+        }
         StoreCommand::CloseEpoch(options) => close_epoch(options, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_options) => list_open_epochs(&psql_client).await,
     }?)

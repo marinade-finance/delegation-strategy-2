@@ -5,12 +5,7 @@ use bytes::BufMut;
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use utoipa::IntoParams;
-use warp::{
-    http::StatusCode,
-    multipart::{FormData, Part},
-    reply::json,
-    Reply,
-};
+use warp::{http::StatusCode, multipart::FormData, reply::json, Reply};
 
 const SCORES_CSV_PART_NAME: &str = "scores_csv";
 
