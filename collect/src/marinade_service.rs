@@ -11,7 +11,7 @@ use solana_program::{
     pubkey::Pubkey,
     stake_history::{StakeHistory, StakeHistoryEntry},
 };
-use solana_sdk::stake;
+use solana_sdk::{pubkey, stake};
 use std::collections::*;
 
 pub fn get_marinade_stakes(
@@ -20,8 +20,8 @@ pub fn get_marinade_stakes(
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
     // @todo take from state
-    let delegation_authority = "4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk".try_into()?;
-    let withdrawer_authority = "9eG63CdHjsfhHmobHgLtESGC8GabbmRcaSpHAZrtmhco".try_into()?;
+    let delegation_authority = pubkey!("4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk");
+    let withdrawer_authority = pubkey!("9eG63CdHjsfhHmobHgLtESGC8GabbmRcaSpHAZrtmhco");
     Ok(get_stakes_grouped_by_validator(
         rpc_client,
         &delegation_authority,
@@ -36,7 +36,7 @@ pub fn get_institutional_stakes(
     epoch: Epoch,
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let institutional_authority = "STNi1NHDUi6Hvibvonawgze8fM83PFLeJhuGMEXyGps".try_into()?;
+    let institutional_authority = pubkey!("STNi1NHDUi6Hvibvonawgze8fM83PFLeJhuGMEXyGps");
 
     let institutional_stakes = get_stakes_grouped_by_validator(
         rpc_client,
@@ -54,10 +54,10 @@ pub fn get_foundation_stakes(
     epoch: Epoch,
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let mut foundation_authority = "mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5".try_into()?;
+    let mut foundation_authority = pubkey!("mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5");
 
     if rpc_client.url().contains("testnet") {
-        foundation_authority = "spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6".try_into()?;
+        foundation_authority = pubkey!("spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6");
     }
 
     let foundation_stakes = get_stakes_grouped_by_validator(

@@ -8,7 +8,7 @@ CREATE TABLE jito_priority_fee (
   total_epoch_claimants INTEGER,
   epoch_active_claimants INTEGER,
   epoch_slot NUMERIC NOT NULL,
-  epoch INTEGER NOT NULL,
+  epoch NUMERIC NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)

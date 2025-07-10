@@ -85,7 +85,7 @@ pub async fn store_jito(
 async fn get_existing_vote_accounts(
     psql_client: &Client,
     db_table: &str,
-    snapshot_epoch: i32,
+    snapshot_epoch: Decimal,
 ) -> anyhow::Result<Vec<tokio_postgres::Row>> {
     let select_query = format!("SELECT vote_account FROM {db_table} WHERE epoch = $1");
     psql_client
@@ -113,7 +113,7 @@ async fn store_mev(
         validators_mev.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
+        get_existing_vote_accounts(&psql_client, db_table, Decimal::from(snapshot_epoch)).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -168,7 +168,7 @@ async fn store_mev(
                         (4, "INTEGER".into()),                  // total_epoch_claimants
                         (5, "INTEGER".into()),                  // epoch_active_claimants
                         (6, "NUMERIC".into()),                  // snapshot_loaded_at_slot_index
-                        (7, "INTEGER".into()),                  // epoch
+                        (7, "DECIMAL".into()),                  // epoch
                         (8, "TIMESTAMP WITH TIME ZONE".into()), // snapshot_created_at
                     ]),
                 );
@@ -248,7 +248,7 @@ async fn store_priority_fee(
         validators_priority_fee.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
+        get_existing_vote_accounts(&psql_client, db_table, Decimal::from(snapshot_epoch)).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -387,13 +387,13 @@ where
 {
     let query = format!(
         "WITH cluster AS (
-            SELECT MAX(epoch) as last_epoch
+            SELECT MAX(epoch) AS last_epoch
             FROM cluster_info
         ),
         filtered_data AS (
             SELECT
                 {select_fields},
-                ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) AS rn
             FROM {db_table}
             CROSS JOIN cluster
             WHERE epoch > cluster.last_epoch - $1::NUMERIC
@@ -424,7 +424,7 @@ pub async fn get_last_mev_info(
         "vote_account, mev_commission, epoch",
         |row| {
             Ok(JitoMevRecord {
-                epoch: row.get::<_, i32>("epoch").try_into()?,
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
                 mev_commission_bps: row.get::<_, i32>("mev_commission").try_into()?,
                 vote_account: row.get("vote_account"),
             })
@@ -446,7 +446,7 @@ pub async fn get_last_priority_fee_info(
         "vote_account, validator_commission, total_lamports_transferred, epoch",
         |row| {
             Ok(JitoPriorityFeeRecord {
-                epoch: row.get::<_, i32>("epoch").try_into()?,
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
                 validator_commission_bps: row.get::<_, i32>("validator_commission").try_into()?,
                 vote_account: row.get("vote_account"),
                 total_lamports_transferred: row

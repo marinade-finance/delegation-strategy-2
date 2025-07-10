@@ -26,10 +26,10 @@ pub async fn check_jito(
 ) -> anyhow::Result<()> {
     info!("Checking epoch data about epoch in DB table {db_table}");
 
-    let rows = psql_client
-        .query(
+    let row_optional = psql_client
+        .query_opt(
             format!(
-                "SELECT epoch, MAX(epoch_slot) as epoch_slot
+                "SELECT epoch, MAX(epoch_slot) AS epoch_slot
                     FROM {db_table}
                     WHERE epoch = (SELECT MAX(epoch) FROM {db_table})
                     GROUP BY epoch;"
@@ -39,10 +39,7 @@ pub async fn check_jito(
         )
         .await?;
 
-    // rust error code is 101, Err code is 1
-    assert!(rows.len() <= 1);
-
-    match rows.iter().next() {
+    match row_optional {
         Some(row) => {
             // PostgreSQL type 'INTEGER'
             // the value saved within the `epoch` is the epoch of data record was created

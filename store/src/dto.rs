@@ -251,14 +251,14 @@ pub struct UptimeRecord {
 pub struct JitoMevRecord {
     pub vote_account: String,
     pub mev_commission_bps: i32,
-    pub epoch: i32,
+    pub epoch: Decimal,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct JitoPriorityFeeRecord {
     pub vote_account: String,
     pub validator_commission_bps: i32,
-    pub epoch: i32,
+    pub epoch: Decimal,
     pub total_lamports_transferred: u64,
 }
 
