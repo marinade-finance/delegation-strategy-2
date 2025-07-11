@@ -1,7 +1,7 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
-    jito_mev, jito_priority_fee, list_validators, reports_commission_changes, reports_scoring,
+    jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
     reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat,
     versions, workflow_metrics_upload,
@@ -205,12 +205,12 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(jito_mev::handler);
 
-    let route_jito_priority_fee = warp::path!("jito-priority-fee")
+    let route_jito_priority_fee = warp::path!("jito")
         .and(warp::path::end())
         .and(warp::get())
-        .and(warp::query::<jito_priority_fee::QueryParams>())
+        .and(warp::query::<jito::QueryParams>())
         .and(with_context(context.clone()))
-        .and_then(jito_priority_fee::handler);
+        .and_then(jito::handler);
 
     let route_unstake_hints = warp::path!("unstake-hints")
         .and(warp::path::end())

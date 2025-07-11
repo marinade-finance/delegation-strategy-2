@@ -235,12 +235,9 @@ pub async fn load_uptimes(
         let uptimes = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_start")
-            .try_into()?;
-        let epoch_end_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_end")
-            .try_into()?;
+        let epoch_start_at: Option<DateTime<Utc>> =
+            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
         uptimes.push(UptimeRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
@@ -408,12 +405,9 @@ pub async fn load_commissions(
         let commissions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_start")
-            .try_into()?;
-        let epoch_end_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_end")
-            .try_into()?;
+        let epoch_start_at: Option<DateTime<Utc>> =
+            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
         commissions.push(CommissionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
@@ -620,18 +614,12 @@ pub async fn load_validators(
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
-            let starting_epoch_date: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("starting_epoch_date")
-                .try_into()
-                .unwrap();
-            let mut epoch_start_at: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("epoch_start")
-                .try_into()
-                .unwrap();
-            let epoch_end_at: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("epoch_end")
-                .try_into()
-                .unwrap();
+            let starting_epoch_date: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
+            let mut epoch_start_at: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+            let epoch_end_at: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("epoch_end");
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
             let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
 

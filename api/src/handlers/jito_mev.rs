@@ -16,11 +16,11 @@ const DEFAULT_EPOCHS: u64 = 10;
 
 #[utoipa::path(
     get,
-    tag = "Last Jito MEV Info",
+    tag = "Last Jito MEV Info (DEPRECATED)",
     operation_id = "List last Jito MEV Info",
     path = "/mev",
     responses(
-        (status = 200, body = ResponseJitoMev)
+        (status = 200, body = ResponseJitoMev, description = "DEPRECATED: use /jito endpoint instead")
     )
 )]
 pub async fn handler(
@@ -29,20 +29,19 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching Jito MEV Info");
 
-    let validators =
-        match get_last_mev_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await {
-            Ok(r) => r,
-            Err(err) => {
-                error!("Failed to fetch Jito MEV info: {}", err);
-                return Ok(response_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch Jito MEV records!".into(),
-                ));
-            }
-        };
+    let response = match get_last_mev_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await
+    {
+        Ok(validators) => {
+            warp::reply::with_status(json(&ResponseJitoMev { validators }), StatusCode::OK)
+        }
+        Err(err) => {
+            error!("Failed to fetch Jito MEV info: {}", err);
+            response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch Jito MEV records!".into(),
+            )
+        }
+    };
 
-    Ok(warp::reply::with_status(
-        json(&ResponseJitoMev { validators }),
-        StatusCode::OK,
-    ))
+    Ok(warp::reply::with_header(response, "Deprecation", "true"))
 }

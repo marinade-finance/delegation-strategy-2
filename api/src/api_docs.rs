@@ -1,6 +1,6 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
-    jito_mev, jito_priority_fee, list_validators, reports_commission_changes, reports_scoring,
+    jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
     reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat,
     versions, workflow_metrics_upload,
@@ -58,7 +58,7 @@ use utoipa::OpenApi;
         schemas(versions::ResponseVersions),
         schemas(workflow_metrics_upload::ResponseAdminWorkflowMetrics),
         schemas(jito_mev::ResponseJitoMev),
-        schemas(jito_priority_fee::ResponseJitoPriorityFee)
+        schemas(jito::ResponseJito)
     ),
     paths(
         admin_score_upload::handler,
@@ -83,7 +83,7 @@ use utoipa::OpenApi;
         versions::handler,
         workflow_metrics_upload::handler,
         jito_mev::handler,
-        jito_priority_fee::handler
+        jito::handler
     )
 )]
 pub struct ApiDoc;

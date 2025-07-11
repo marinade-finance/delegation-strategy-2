@@ -11,7 +11,7 @@ use std::collections::HashMap;
 pub struct ValidatorJitoMEVInfo {
     pub vote_account: String,
     pub mev_commission: i32,
-    pub epoch: i32,
+    pub epoch: Decimal,
     pub total_epoch_rewards: Option<Decimal>,
     pub claimed_epoch_rewards: Option<Decimal>,
     pub total_epoch_claimants: Option<i32>,
@@ -22,10 +22,10 @@ impl ValidatorJitoMEVInfo {
     pub fn from_snapshot(v: &MevTipDistributionValidatorSnapshot) -> Self {
         Self {
             vote_account: v.vote_account.clone(),
-            mev_commission: (v.mev_commission as i32),
-            epoch: (v.epoch as i32),
-            total_epoch_rewards: v.total_epoch_rewards.map(|v| v.into()),
-            claimed_epoch_rewards: v.claimed_epoch_rewards.map(|v| v.into()),
+            mev_commission: v.mev_commission as i32,
+            epoch: v.epoch.into(),
+            total_epoch_rewards: v.total_epoch_rewards.map(Into::into),
+            claimed_epoch_rewards: v.claimed_epoch_rewards.map(Into::into),
             total_epoch_claimants: v.total_epoch_claimants.map(|v| v as i32),
             epoch_active_claimants: v.epoch_active_claimants.map(|v| v as i32),
         }
@@ -47,11 +47,11 @@ impl ValidatorJitoPriorityFeeInfo {
     pub fn from_snapshot(v: &PriorityFeeDistributionValidatorSnapshot) -> Self {
         Self {
             vote_account: v.vote_account.clone(),
-            validator_commission: (v.validator_commission as i32),
+            validator_commission: v.validator_commission as i32,
             total_lamports_transferred: v.total_lamports_transferred.into(),
             epoch: v.epoch.into(),
-            total_epoch_rewards: v.total_epoch_rewards.map(|v| v.into()),
-            claimed_epoch_rewards: v.claimed_epoch_rewards.map(|v| v.into()),
+            total_epoch_rewards: v.total_epoch_rewards.map(Into::into),
+            claimed_epoch_rewards: v.claimed_epoch_rewards.map(Into::into),
             total_epoch_claimants: v.total_epoch_claimants.map(|v| v as i32),
             epoch_active_claimants: v.epoch_active_claimants.map(|v| v as i32),
         }
@@ -257,9 +257,18 @@ pub struct JitoMevRecord {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct JitoPriorityFeeRecord {
     pub vote_account: String,
-    pub validator_commission_bps: i32,
     pub epoch: Decimal,
+    pub validator_commission_bps: i32,
     pub total_lamports_transferred: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct JitoRecord {
+    pub vote_account: String,
+    pub epoch: Decimal,
+    pub mev_commission_bps: Option<i32>,
+    pub validator_commission_bps: Option<i32>,
+    pub total_lamports_transferred: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

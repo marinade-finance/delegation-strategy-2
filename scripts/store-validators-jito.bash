@@ -5,7 +5,12 @@ set -e
 SCRIPT_DIR=$(dirname "$0")
 BIN_DIR="${BIN_DIR:-"$SCRIPT_DIR/../target/debug"}"
 
-[[ "$1" == "mev" ]] && SUBCOMMAND="jito-mev" || [[ "$1" == "priority-fee" ]] && SUBCOMMAND="jito-priority" || { echo "Usage: $0 <mev|priority-fee>" >&2; exit 1; }
+case "$1" in
+    mev) SUBCOMMAND="jito-mev" ;;
+    priority-fee) SUBCOMMAND="jito-priority" ;;
+    *) echo "Usage: $0 <mev|priority-fee>" >&2; exit 1 ;;
+esac
+shift
 
 if [[ -z $POSTGRES_URL ]]
 then

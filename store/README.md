@@ -18,11 +18,11 @@ cargo run --bin store -- \
 For example:
 
 ```bash
-cargo run --bin store -- \
-  --postgres-ssl-root-cert /tmp/postgres-root-cert.pem --postgres-url $POSTGRES_URL \
+export PG_SSLROOTCERT='/tmp/postgres-root-cert.pem'
+
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
   cluster-info --snapshot-file /tmp/snapshot-performance.yaml
 
-cargo run --bin store -- \
-  --postgres-ssl-root-cert /tmp/postgres-root-cert.pem --postgres-url $POSTGRES_URL \
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-priority --snapshot-file /tmp/jito-priority.yaml
 ```

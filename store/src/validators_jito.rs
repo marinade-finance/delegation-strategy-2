@@ -1,5 +1,6 @@
 use crate::dto::{
-    JitoMevRecord, JitoPriorityFeeRecord, ValidatorJitoMEVInfo, ValidatorJitoPriorityFeeInfo,
+    JitoMevRecord, JitoPriorityFeeRecord, JitoRecord, ValidatorJitoMEVInfo,
+    ValidatorJitoPriorityFeeInfo,
 };
 use crate::utils::*;
 use chrono::{DateTime, Utc};
@@ -27,11 +28,14 @@ pub async fn store_jito(
 ) -> anyhow::Result<()> {
     info!("Storing JITO account {} snapshot...", account_type);
 
-    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
-    let snapshot: JitoSnapshot = serde_yaml::from_reader(snapshot_file)?;
+    let path = options.snapshot_path;
+    let snapshot_file = std::fs::File::open(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to open snapshot file '{path}': {e}"))?;
+    let snapshot: JitoSnapshot = serde_yaml::from_reader(snapshot_file)
+        .map_err(|e| anyhow::anyhow!("Failed to parse snapshot file '{path}': {e}",))?;
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
     let snapshot_loaded_at_slot_index = Decimal::from(snapshot.loaded_at_slot_index);
-    let snapshot_epoch = snapshot.epoch as i32;
+    let snapshot_epoch = Decimal::from(snapshot.epoch);
 
     info!(
         "Loaded the snapshot for epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
@@ -101,7 +105,7 @@ async fn get_existing_vote_accounts(
 
 async fn store_mev(
     mut psql_client: &mut Client,
-    snapshot_epoch: i32,
+    snapshot_epoch: Decimal,
     snapshot_created_at: DateTime<Utc>,
     snapshot_loaded_at_slot_index: Decimal,
     db_table: &str,
@@ -113,7 +117,7 @@ async fn store_mev(
         validators_mev.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, Decimal::from(snapshot_epoch)).await?;
+        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -236,7 +240,7 @@ async fn store_mev(
 
 async fn store_priority_fee(
     mut psql_client: &mut Client,
-    snapshot_epoch: i32,
+    snapshot_epoch: Decimal,
     snapshot_created_at: DateTime<Utc>,
     snapshot_loaded_at_slot_index: Decimal,
     db_table: &str,
@@ -248,7 +252,7 @@ async fn store_priority_fee(
         validators_priority_fee.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, Decimal::from(snapshot_epoch)).await?;
+        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -433,7 +437,7 @@ pub async fn get_last_mev_info(
     .await
 }
 
-pub async fn get_last_priority_fee_info(
+async fn get_last_priority_fee_info(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<JitoPriorityFeeRecord>> {
@@ -456,4 +460,61 @@ pub async fn get_last_priority_fee_info(
         },
     )
     .await
+}
+
+pub async fn get_last_jito_info(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<JitoRecord>> {
+    let mev_records = get_last_mev_info(psql_client, epochs).await?;
+    let priority_fee_records = get_last_priority_fee_info(psql_client, epochs).await?;
+
+    // Combine the two records into a single JitoRecord (combine by vote_account and epoch)
+    let mut mev_map: HashMap<(String, Decimal), JitoMevRecord> = HashMap::new();
+    for record in mev_records {
+        let key = (record.vote_account.clone(), record.epoch);
+        mev_map.insert(key, record);
+    }
+    let mut priority_fee_map: HashMap<(String, Decimal), JitoPriorityFeeRecord> = HashMap::new();
+    for record in priority_fee_records {
+        let key = (record.vote_account.clone(), record.epoch);
+        priority_fee_map.insert(key, record);
+    }
+    let mut all_keys: HashSet<(String, Decimal)> = HashSet::new();
+    all_keys.extend(mev_map.keys().cloned());
+    all_keys.extend(priority_fee_map.keys().cloned());
+
+    let mut result = Vec::new();
+
+    for (vote_account, epoch) in all_keys {
+        let mev_commission_bps = mev_map
+            .get(&(vote_account.clone(), epoch))
+            .map(|r| r.mev_commission_bps);
+
+        let (validator_commission_bps, total_lamports_transferred) = priority_fee_map
+            .get(&(vote_account.clone(), epoch))
+            .map(|r| {
+                (
+                    Some(r.validator_commission_bps),
+                    Some(r.total_lamports_transferred),
+                )
+            })
+            .unwrap_or((None, None));
+
+        result.push(JitoRecord {
+            vote_account,
+            epoch,
+            mev_commission_bps,
+            validator_commission_bps,
+            total_lamports_transferred,
+        });
+    }
+
+    result.sort_by(|a, b| {
+        a.epoch
+            .cmp(&b.epoch)
+            .then_with(|| a.vote_account.cmp(&b.vote_account))
+    });
+
+    Ok(result)
 }

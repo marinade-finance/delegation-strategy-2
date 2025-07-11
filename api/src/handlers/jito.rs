@@ -2,13 +2,13 @@ use crate::context::WrappedContext;
 use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use store::dto::JitoPriorityFeeRecord;
-use store::validators_jito::get_last_priority_fee_info;
+use store::dto::JitoRecord;
+use store::validators_jito::get_last_jito_info;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
-pub struct ResponseJitoPriorityFee {
-    validators: Vec<JitoPriorityFeeRecord>,
+pub struct ResponseJito {
+    validators: Vec<JitoRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -17,11 +17,11 @@ const DEFAULT_EPOCHS: u64 = 10;
 
 #[utoipa::path(
     get,
-    tag = "Last Jito Priority Fee Info",
-    operation_id = "List last Jito Priority Fee Info",
-    path = "/jito-priority-fee",
+    tag = "Last Jito Rewards Info",
+    operation_id = "List last Jito Rewards Info",
+    path = "/jito",
     responses(
-        (status = 200, body = ResponseJitoPriorityFee)
+        (status = 200, body = ResponseJito)
     )
 )]
 pub async fn handler(
@@ -31,19 +31,19 @@ pub async fn handler(
     info!("Fetching Jito Priority Fee Info");
 
     let validators =
-        match get_last_priority_fee_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await {
+        match get_last_jito_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await {
             Ok(r) => r,
             Err(err) => {
-                error!("Failed to fetch Jito Priority Fee info: {}", err);
+                error!("Failed to fetch Jito info: {}", err);
                 return Ok(response_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch Jito Priority Fee records!".into(),
+                    "Failed to fetch Jito records!".into(),
                 ));
             }
         };
 
     Ok(warp::reply::with_status(
-        json(&ResponseJitoPriorityFee { validators }),
+        json(&ResponseJito { validators }),
         StatusCode::OK,
     ))
 }
