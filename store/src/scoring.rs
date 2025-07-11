@@ -73,7 +73,7 @@ async fn voters_with_marinade_stake_in_epoch(
         .query(
             "SELECT
                     vote_account,
-                    (marinade_stake / 1e9)::double precision as marinade_stake
+                    (marinade_stake / 1e9)::double precision AS marinade_stake
                 FROM validators
                 WHERE marinade_stake > 0 AND epoch = $1",
             &[&Decimal::from(epoch)],
@@ -91,12 +91,12 @@ async fn voters_credits_performance_in_epoch(
     log::info!("Loading list of poor voters: {}", epoch);
     Ok(psql_client
         .query(
-            "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) as stake_weighted_avg_credits FROM validators WHERE epoch = $1)
+            "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) AS stake_weighted_avg_credits FROM validators WHERE epoch = $1)
             SELECT
                 vote_account,
                 credits,
-                coalesce(credits / stake_weighted_avg_credits, 0)::double precision as credits_performance
-            FROM validators left join stats on 1 = 1
+                coalesce(credits / stake_weighted_avg_credits, 0)::double precision AS credits_performance
+            FROM validators LEFT JOIN stats ON 1 = 1
             WHERE epoch = $1",
             &[&Decimal::from(epoch)],
         )
@@ -229,7 +229,7 @@ pub async fn load_all_scores(
                 target_stake_vemnde,
                 target_stake_msol,
                 scores.scoring_run_id,
-                scoring_runs.created_at as created_at
+                scoring_runs.created_at AS created_at
             FROM scores
             LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
             ORDER BY rank",

@@ -7,11 +7,9 @@ use crate::dto::{
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use std::sync::Arc;
-use std::time::Instant;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
-    time::Duration,
 };
 use tokio::join;
 use tokio::sync::Semaphore;
@@ -174,7 +172,7 @@ async fn get_apy_calculators(
         .query(
             "SELECT
                     epochs.epoch,
-                    (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER as duration,
+                    (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER AS duration,
                     supply,
                     inflation,
                     SUM(validators.credits * validators.activated_stake) total_weighted_credits
@@ -212,13 +210,13 @@ pub async fn load_uptimes(
         .query(
             "
             WITH cluster AS (
-                SELECT MAX(epoch) as last_epoch 
+                SELECT MAX(epoch) AS last_epoch
                 FROM cluster_info
             )
             SELECT
-                vote_account, 
-                status, 
-                uptimes.epoch, 
+                vote_account,
+                status,
+                uptimes.epoch,
                 epochs.start_at AS epoch_start,
                 epochs.end_at AS epoch_end,
                 uptimes.start_at,
@@ -237,14 +235,9 @@ pub async fn load_uptimes(
         let uptimes = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_start")
-            .try_into()
-            .unwrap();
-        let epoch_end_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_end")
-            .try_into()
-            .unwrap();
+        let epoch_start_at: Option<DateTime<Utc>> =
+            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
         uptimes.push(UptimeRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
@@ -265,7 +258,7 @@ pub async fn load_versions(
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
                 vote_account, version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
@@ -290,7 +283,7 @@ pub async fn load_versions(
 }
 /*
 We are checking if:
-- Current commission is greater than previous minimum and it's above 10 OR
+- Current commission is greater than previous minimum, and it's above 10 OR
 - Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
 - Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10 OR
  */
@@ -299,44 +292,44 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
         .query(
             "
             WITH commission_changes AS (
-                SELECT 
-                    vote_account, 
+                SELECT
+                    vote_account,
                     epoch,
                     commission_effective,
                     commission_min_observed,
                     LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
                     LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
-                FROM 
+                FROM
                     validators
             ),
             filtered_commissions AS (
-                SELECT 
-                    vote_account, 
-                    epoch, 
-                    commission_effective, 
+                SELECT
+                    vote_account,
+                    epoch,
+                    commission_effective,
                     commission_min_observed
-                FROM 
+                FROM
                     commission_changes
-                WHERE 
+                WHERE
                     (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
                     OR
                     (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
                     OR
                     (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
             )
-            SELECT 
-                vote_account, 
-                COUNT(*) AS events_count, 
+            SELECT
+                vote_account,
+                COUNT(*) AS events_count,
                 ARRAY_AGG(epoch) AS epochs,
                 ARRAY_AGG(commission_effective) AS commission_observed_values,
                 ARRAY_AGG(commission_min_observed) AS commission_min_observed_values
-            FROM 
+            FROM
                 filtered_commissions
-            GROUP BY 
+            GROUP BY
                 vote_account
-            HAVING 
+            HAVING
                 COUNT(*) > 1
-            ORDER BY 
+            ORDER BY
                 events_count DESC;
             ",
             &[],
@@ -384,10 +377,10 @@ pub async fn load_commissions(
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info)
+            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, commission, commissions.epoch, epochs.start_at as epoch_start,
-				epochs.end_at as epoch_end,
+                vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
+				epochs.end_at AS epoch_end,
 				epoch_slot, created_at
             FROM commissions
             LEFT JOIN epochs ON commissions.epoch = epochs.epoch
@@ -395,8 +388,8 @@ pub async fn load_commissions(
             WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
             UNION
             SELECT
-                vote_account, commission_effective, validators.epoch, epochs.start_at as epoch_start,
-				epochs.end_at as epoch_end, 432000, updated_at
+                vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
+				epochs.end_at AS epoch_end, 432000, updated_at
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
             CROSS JOIN cluster
@@ -412,14 +405,9 @@ pub async fn load_commissions(
         let commissions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_start")
-            .try_into()
-            .unwrap();
-        let epoch_end_at: Option<DateTime<Utc>> = row
-            .get::<_, Option<DateTime<Utc>>>("epoch_end")
-            .try_into()
-            .unwrap();
+        let epoch_start_at: Option<DateTime<Utc>> =
+            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
         commissions.push(CommissionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
@@ -563,8 +551,8 @@ pub async fn load_validators(
             "
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
-                cluster AS (SELECT MAX(epoch) as last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch as starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
+                cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
+                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -626,18 +614,12 @@ pub async fn load_validators(
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
-            let starting_epoch_date: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("starting_epoch_date")
-                .try_into()
-                .unwrap();
-            let mut epoch_start_at: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("epoch_start")
-                .try_into()
-                .unwrap();
-            let epoch_end_at: Option<DateTime<Utc>> = row
-                .get::<_, Option<DateTime<Utc>>>("epoch_end")
-                .try_into()
-                .unwrap();
+            let starting_epoch_date: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
+            let mut epoch_start_at: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+            let epoch_end_at: Option<DateTime<Utc>> =
+                row.get::<_, Option<DateTime<Utc>>>("epoch_end");
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
             let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
 
@@ -894,7 +876,6 @@ pub async fn load_scores_in_epochs(
     scoring_url: &String,
     epochs: std::ops::RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
-    let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
     log::info!("Loading scores for epochs: {:?}", epochs);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, HashMap<String, f64>)>();
@@ -1007,7 +988,7 @@ pub async fn load_scores(
                 target_stake_vemnde,
                 target_stake_msol,
                 scores.scoring_run_id,
-                scoring_runs.created_at as created_at
+                scoring_runs.created_at AS created_at
             FROM scores
             LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
             WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
@@ -1064,10 +1045,17 @@ pub async fn load_scores(
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client
-        .query_opt("SELECT MAX(epoch) as last_epoch FROM validators", &[])
+        .query_opt(
+            "SELECT COALESCE(MAX(epoch), 0) AS last_epoch FROM validators",
+            &[],
+        )
         .await?;
 
-    Ok(row.map(|row| row.get::<_, Decimal>("last_epoch").try_into().unwrap()))
+    Ok(row.map(|row| {
+        row.get::<_, Decimal>("last_epoch")
+            .try_into()
+            .unwrap_or_default()
+    }))
 }
 
 pub async fn load_dc_concentration_stats(
@@ -1249,32 +1237,32 @@ pub async fn load_validators_aggregated_flat(
     let rows = psql_client
             .query(
                 "with
-                cluster_stake as (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate as (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc as (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators left join cluster_stake on validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions as (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account)
+                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
+                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
+                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account)
                 select
                     validators.vote_account,
-                    min(activated_stake / 1e9)::double precision as minimum_stake,
-                    avg(activated_stake / 1e9)::double precision as avg_stake,
-                    coalesce(avg(dc_concentration), 0)::double precision as avg_dc_concentration,
-                    coalesce(avg(skip_rate), 1)::double precision as avg_skip_rate,
-                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision as avg_grace_skip_rate,		
-                    max(coalesce(commission_effective, commission_advertised, 100)) as max_commission,
-                    (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision as avg_adjusted_credits,
+                    min(activated_stake / 1e9)::double precision AS minimum_stake,
+                    avg(activated_stake / 1e9)::double precision AS avg_stake,
+                    coalesce(avg(dc_concentration), 0)::double precision AS avg_dc_concentration,
+                    coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
+                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
+                    max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
+                    (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
-                    coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) as marinade_stake,
-                    coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') as last_version
-                from
+                    coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
+                    coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version
+                FROM
                     validators
-                    left join dc on dc.dc_aso = validators.dc_aso and dc.epoch = validators.epoch
-                    left join cluster_skip_rate on cluster_skip_rate.epoch = validators.epoch
-                    left join agg_versions on validators.vote_account = agg_versions.vote_account
-                where
-                validators.epoch between $1 and $2
-                group by validators.vote_account
-                having count(*) = $3 and count(*) filter (where credits > 0) >= 7
-                order by avg_adjusted_credits desc;
+                    LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
+                    LEFT JOIN cluster_skip_rate ON cluster_skip_rate.epoch = validators.epoch
+                    LEFT JOIN agg_versions ON validators.vote_account = agg_versions.vote_account
+                WHERE
+                validators.epoch BETWEEN $1 AND $2
+                GROUP BY validators.vote_account
+                HAVING COUNT(*) = $3 AND COUNT(*) FILTER (WHERE credits > 0) >= 7
+                ORDER BY avg_adjusted_credits DESC;
             ",
                 &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
             )

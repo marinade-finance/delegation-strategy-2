@@ -7,7 +7,7 @@ FROM (SELECT identity, vote_account
 FROM validators
 GROUP BY identity
 LIMIT 1 )) AS validator
-WHERE versions.identity=validator.identity
+WHERE versions.identity=validator.identity;
 ALTER TABLE versions ALTER COLUMN identity DROP NOT NULL;
 
 ALTER TABLE uptimes
@@ -19,7 +19,7 @@ FROM (SELECT identity, vote_account
 FROM validators
 GROUP BY identity
 LIMIT 1 )) AS validator
-WHERE uptimes.identity=validator.identity
+WHERE uptimes.identity=validator.identity;
 ALTER TABLE uptimes ALTER COLUMN identity DROP NOT NULL;
 
 ALTER TABLE commissions
@@ -31,10 +31,10 @@ FROM (SELECT identity, vote_account
 FROM validators
 GROUP BY identity
 LIMIT 1 )) AS validator
-WHERE commissions.identity=validator.identity
+WHERE commissions.identity=validator.identity;
 ALTER TABLE commissions ALTER COLUMN identity DROP NOT NULL;
 
-ALTER TABLE validators 
+ALTER TABLE validators
 DROP CONSTRAINT validators_pkey;
 ALTER TABLE validators
 ADD PRIMARY KEY (vote_account, epoch);

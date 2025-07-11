@@ -183,8 +183,8 @@ pub fn filter_validators(
         })
     });
 
-    if let Some(sfdp_only) = &config.query_sfdp {
-        validators.retain(|key, validator| validator.foundation_stake.gt(&Decimal::ZERO))
+    if let Some(_) = &config.query_sfdp {
+        validators.retain(|_, validator| validator.foundation_stake.gt(&Decimal::ZERO))
     }
 
     if let Some(vote_accounts) = &config.query_vote_accounts {

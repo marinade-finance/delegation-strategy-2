@@ -1,10 +1,10 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
-    list_validators, mev, reports_commission_changes, reports_scoring, reports_scoring_html,
-    reports_staking, rewards, unstake_hints, uptimes, validator_score_breakdown,
-    validator_score_breakdowns, validator_scores, validators_flat, versions,
-    workflow_metrics_upload,
+    jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
+    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat,
+    versions, workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -198,12 +198,19 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(rewards::handler);
 
-    let route_mev = warp::path!("mev")
+    let route_jito_mev = warp::path!("mev")
         .and(warp::path::end())
         .and(warp::get())
-        .and(warp::query::<mev::QueryParams>())
+        .and(warp::query::<jito_mev::QueryParams>())
         .and(with_context(context.clone()))
-        .and_then(mev::handler);
+        .and_then(jito_mev::handler);
+
+    let route_jito_priority_fee = warp::path!("jito")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<jito::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(jito::handler);
 
     let route_unstake_hints = warp::path!("unstake-hints")
         .and(warp::path::end())
@@ -248,7 +255,8 @@ async fn main() -> anyhow::Result<()> {
         .or(route_versions)
         .or(route_commissions)
         .or(route_glossary)
-        .or(route_mev)
+        .or(route_jito_mev)
+        .or(route_jito_priority_fee)
         .or(route_config)
         .or(route_reports_scoring)
         .or(route_reports_scoring_html)

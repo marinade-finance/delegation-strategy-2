@@ -36,7 +36,7 @@ CREATE TABLE mev (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)
-)
+);
 
 CREATE TABLE versions (
   id BIGSERIAL NOT NULL,

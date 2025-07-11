@@ -28,8 +28,8 @@ pub async fn create_epoch_record(
             epoch_cluster_info AS (
                 SELECT
                     MAX(transaction_count) - MIN(transaction_count) transaction_count,
-                    MIN(created_at) as start_at,
-                    MAX(created_at) as end_at
+                    MIN(created_at) AS start_at,
+                    MAX(created_at) AS end_at
                 FROM cluster_info
                 WHERE epoch = $1
             ),
