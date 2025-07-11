@@ -6,6 +6,7 @@ use collect::validators_performance::{
 };
 use env_logger::Env;
 use log::info;
+use std::fmt::Display;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -25,11 +26,23 @@ enum CollectCommand {
     JitoPriority(JitoParams),
 }
 
+impl Display for CollectCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CollectCommand::Validators(_) => write!(f, "validators"),
+            CollectCommand::ValidatorsPerformance(_) => write!(f, "validators-performance"),
+            CollectCommand::JitoMev(_) => write!(f, "jito-mev"),
+            CollectCommand::JitoPriority(_) => write!(f, "jito-priority"),
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let params = Params::from_args();
 
+    let command_name = params.command.to_string();
     let result = match params.command {
         CollectCommand::Validators(options) => collect_validators_info(params.common, options),
         CollectCommand::ValidatorsPerformance(options) => {
@@ -48,8 +61,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     match result {
-        Ok(_) => info!("Processing finished successfully."),
-        Err(err) => anyhow::bail!("Processing finished with an error: {}", err),
+        Ok(_) => info!("Collect {command_name} finished successfully."),
+        Err(err) => anyhow::bail!("Collect {command_name} rocessing finished with an error: {err}"),
     }
 
     Ok(())

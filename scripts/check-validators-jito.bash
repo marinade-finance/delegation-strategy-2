@@ -5,22 +5,20 @@ set -e
 SCRIPT_DIR=$(dirname "$0")
 BIN_DIR="${BIN_DIR:-"$SCRIPT_DIR/../target/debug"}"
 
-case "$1" in
-    mev) SUBCOMMAND="jito-mev" ;;
-    priority-fee) SUBCOMMAND="jito-priority" ;;
-    *) echo "Usage: $0 <mev|priority-fee>" >&2; exit 1 ;;
-esac
-
-if [[ -z $RPC_URL ]]
-then
-  echo "Env variable RPC_URL is missing!" >&2
-  exit 1
+SUBCOMMAND="$1"
+if [[ "$SUBCOMMAND" != "jito-mev" && "$SUBCOMMAND" != "jito-priority" ]]; then
+  echo "Usage: $0 <jito-mev|jito-priority>" >&2
+  exit 21
 fi
 
-if [[ -z $POSTGRES_URL ]]
-then
+if [[ -z $RPC_URL ]]; then
+  echo "Env variable RPC_URL is missing!" >&2
+  exit 22
+fi
+
+if [[ -z $POSTGRES_URL ]]; then
   echo "Env variable POSTGRES_URL is missing!" >&2
-  exit 1
+  exit 23
 fi
 
 "$BIN_DIR/check" \
