@@ -49,6 +49,7 @@ use utoipa::OpenApi;
         schemas(store::dto::RugInfo),
         schemas(store::dto::VersionRecord),
         schemas(store::dto::JitoMevRecord),
+        schemas(store::dto::JitoRecord),
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
         schemas(validator_score_breakdown::ResponseScoreBreakdown),
