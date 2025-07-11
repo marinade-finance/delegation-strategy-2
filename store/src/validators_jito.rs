@@ -510,11 +510,5 @@ pub async fn get_last_jito_info(
         });
     }
 
-    result.sort_by(|a, b| {
-        a.epoch
-            .cmp(&b.epoch)
-            .then_with(|| a.vote_account.cmp(&b.vote_account))
-    });
-
     Ok(result)
 }
