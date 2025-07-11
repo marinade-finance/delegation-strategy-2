@@ -41,11 +41,10 @@ pub async fn check_jito(
 
     match row_optional {
         Some(row) => {
-            // PostgreSQL type 'INTEGER'
+            // PostgreSQL type 'NUMERIC'
             // the value saved within the `epoch` is the epoch of data record was created
             // it is the epoch prior to the epoch when the data collection was executed
-            let sql_epoch: i32 = row.get("epoch");
-            let sql_epoch: Decimal = Decimal::from(sql_epoch);
+            let sql_epoch: Decimal = row.get("epoch");
             // PostgreSQL type 'NUMERIC'
             // the value saved within the `epoch_slot` is the slot index when the data collection was executed (see collect/store)
             let sql_slot_index: Decimal = row.get("epoch_slot");
