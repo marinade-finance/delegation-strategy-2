@@ -2,7 +2,7 @@ use crate::context::WrappedContext;
 use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use store::rewards::{get_estimated_inflation_rewards, get_mev_rewards};
+use store::rewards::{get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: u64 = 20;
@@ -11,6 +11,7 @@ const DEFAULT_EPOCHS: u64 = 20;
 pub struct ResponseRewards {
     rewards_mev: Vec<(u64, f64)>,
     rewards_inflation_est: Vec<(u64, f64)>,
+    rewards_jito_priority: Vec<(u64, f64)>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -55,11 +56,23 @@ pub async fn handler(
             ));
         }
     };
+    let rewards_jito_priority =
+        match get_jito_priority_rewards(&context.read().await.psql_client, epochs).await {
+            Ok(r) => r,
+            Err(err) => {
+                error!("Failed to fetch Jito Priority rewards: {}", err);
+                return Ok(response_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch Jito Priority rewards!".into(),
+                ));
+            }
+        };
 
     Ok(warp::reply::with_status(
         json(&ResponseRewards {
             rewards_mev,
             rewards_inflation_est,
+            rewards_jito_priority,
         }),
         StatusCode::OK,
     ))
