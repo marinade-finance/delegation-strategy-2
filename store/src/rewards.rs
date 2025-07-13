@@ -8,7 +8,7 @@ async fn get_jito_rewards_by_table(
 ) -> anyhow::Result<Vec<(u64, f64)>> {
     let query = format!(
         r#"
-        SELECT SUM(total_epoch_rewards) / 1e9 AS amount, epoch
+        SELECT SUM(COALESCE(total_epoch_rewards, 0)) / 1e9 AS amount, epoch
         FROM {}
         GROUP BY epoch
         HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < 10
