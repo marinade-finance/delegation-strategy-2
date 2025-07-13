@@ -5,13 +5,14 @@ async fn get_jito_rewards_by_table(
     psql_client: &Client,
     table_name: &str,
     epochs: u64,
+    limit_null_count: u8,
 ) -> anyhow::Result<Vec<(u64, f64)>> {
     let query = format!(
         r#"
-        SELECT SUM(total_epoch_rewards) / 1e9 AS amount, epoch
+        SELECT SUM(COALESCE(total_epoch_rewards, 0)) / 1e9 AS amount, epoch
         FROM {}
         GROUP BY epoch
-        HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < 10
+        HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < {limit_null_count}
         ORDER BY epoch DESC LIMIT $1
         "#,
         table_name
@@ -36,14 +37,16 @@ async fn get_jito_rewards_by_table(
 }
 
 pub async fn get_mev_rewards(psql_client: &Client, epochs: u64) -> anyhow::Result<Vec<(u64, f64)>> {
-    get_jito_rewards_by_table(psql_client, "mev", epochs).await
+    // limit_null_count: expecting there are many rows, we want to have at least 10 filled, then considering data is well loaded
+    get_jito_rewards_by_table(psql_client, "mev", epochs, 10).await
 }
 
 pub async fn get_jito_priority_rewards(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<(u64, f64)>> {
-    get_jito_rewards_by_table(psql_client, "jito_priority_fee", epochs).await
+    // limit_null_count: expecting there are few rows, we want at least one filled to consider data is well loaded
+    get_jito_rewards_by_table(psql_client, "jito_priority_fee", epochs, 1).await
 }
 
 pub async fn get_estimated_inflation_rewards(
