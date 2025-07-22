@@ -466,8 +466,10 @@ pub async fn get_last_jito_info(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<JitoRecord>> {
-    let mev_records = get_last_mev_info(psql_client, epochs).await?;
-    let priority_fee_records = get_last_priority_fee_info(psql_client, epochs).await?;
+    let (mev_records, priority_fee_records) = tokio::try_join!(
+        get_last_mev_info(psql_client, epochs),
+        get_last_priority_fee_info(psql_client, epochs)
+    )?;
 
     // Combine the two records into a single JitoRecord (combine by vote_account and epoch)
     let mut mev_map: HashMap<(String, Decimal), JitoMevRecord> = HashMap::new();
@@ -509,12 +511,6 @@ pub async fn get_last_jito_info(
             total_lamports_transferred,
         });
     }
-
-    result.sort_by(|a, b| {
-        a.epoch
-            .cmp(&b.epoch)
-            .then_with(|| a.vote_account.cmp(&b.vote_account))
-    });
 
     Ok(result)
 }
