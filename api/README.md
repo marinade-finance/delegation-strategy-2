@@ -16,3 +16,7 @@ cargo run --bin api -- \
   --scoring-url https://scoring.marinade.finance --admin-auth-token ABCD \
   --blacklist-path ./blacklist.csv --glossary-path ./glossary.md
 ```
+
+```bash
+curl 'http://localhost:8080/validators'
+```
