@@ -18,5 +18,5 @@ cargo run --bin api -- \
 ```
 
 ```bash
-curl 'http://localhost:8080/validators'
+curl 'http://localhost:8000/validators'
 ```
