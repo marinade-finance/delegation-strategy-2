@@ -35,18 +35,25 @@ pub async fn handler(
     let epochs = query_params.epochs.unwrap_or(DEFAULT_EPOCHS);
     info!("Fetching rewards for past {:?}", epochs);
 
-    let rewards_inflation_est =
-        match get_estimated_inflation_rewards(&context.read().await.psql_client, epochs).await {
-            Ok(r) => r,
-            Err(err) => {
-                error!("Failed to fetch inflation rewards: {}", err);
-                return Ok(response_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch inflation rewards!".into(),
-                ));
-            }
-        };
-    let rewards_mev = match get_mev_rewards(&context.read().await.psql_client, epochs).await {
+    let context_guard = context.read().await;
+    let psql_client = &context_guard.psql_client;
+    let (inflation_result, mev_result, jito_result) = tokio::join!(
+        get_estimated_inflation_rewards(&psql_client, epochs),
+        get_mev_rewards(&psql_client, epochs),
+        get_jito_priority_rewards(&psql_client, epochs)
+    );
+
+    let rewards_inflation_est = match inflation_result {
+        Ok(r) => r,
+        Err(err) => {
+            error!("Failed to fetch inflation rewards: {}", err);
+            return Ok(response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch inflation rewards!".into(),
+            ));
+        }
+    };
+    let rewards_mev = match mev_result {
         Ok(r) => r,
         Err(err) => {
             error!("Failed to fetch MEV rewards: {}", err);
@@ -56,17 +63,16 @@ pub async fn handler(
             ));
         }
     };
-    let rewards_jito_priority =
-        match get_jito_priority_rewards(&context.read().await.psql_client, epochs).await {
-            Ok(r) => r,
-            Err(err) => {
-                error!("Failed to fetch Jito Priority rewards: {}", err);
-                return Ok(response_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch Jito Priority rewards!".into(),
-                ));
-            }
-        };
+    let rewards_jito_priority = match jito_result {
+        Ok(r) => r,
+        Err(err) => {
+            error!("Failed to fetch Jito Priority rewards: {}", err);
+            return Ok(response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch Jito Priority rewards!".into(),
+            ));
+        }
+    };
 
     Ok(warp::reply::with_status(
         json(&ResponseRewards {
