@@ -87,7 +87,8 @@ pub async fn store_validators(
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
-            updated_at = u.updated_at
+            updated_at = u.updated_at,
+            info_icon_url = u.info_icon_url
             "
             .to_string(),
             "u(
@@ -120,7 +121,8 @@ pub async fn store_validators(
                 leader_slots,
                 blocks_produced,
                 skip_rate,
-                updated_at
+                updated_at,
+                info_icon_url
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -160,6 +162,7 @@ pub async fn store_validators(
                     &v.blocks_produced,
                     &v.skip_rate,
                     &snapshot_created_at,
+                    &v.info_icon_url,
                 ];
                 query.add(
                     &mut params,
@@ -182,6 +185,7 @@ pub async fn store_validators(
                         (27, "NUMERIC".into()),                  // blocks_produced
                         (28, "DOUBLE PRECISION".into()),         // skip_rate
                         (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                        (30, "TEXT".into()),                     // icon_url
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -239,7 +243,8 @@ pub async fn store_validators(
         uptime_pct,
         uptime,
         downtime,
-        updated_at
+        updated_at,
+        info_icon_url
         "
             .to_string(),
         );
@@ -285,6 +290,7 @@ pub async fn store_validators(
                 &v.uptime,
                 &v.downtime,
                 &snapshot_created_at,
+                &v.info_icon_url,
             ];
             query.add(&mut params);
         }

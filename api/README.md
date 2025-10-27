@@ -20,3 +20,15 @@ cargo run --bin api -- \
 ```bash
 curl 'http://localhost:8000/validators'
 ```
+
+**NOTE:**
+  To display any data, it must already be stored in the PostgreSQL database
+  by the [store process](../store). All subcommand data needs to be stored first.
+  Additionally, if there isn’t enough historical data,
+  the [join SQL query in store](../store/src/utils.rs) will not filter
+  the results properly.
+  In that case, the [`list_validators`](./src/handlers/list_validators.rs)
+  function must be modified to return the data directly without filtering, i.e.:
+      ```rust
+      return Ok(validators.into_values().collect());
+      ```

@@ -23,7 +23,10 @@ pub struct ValidatorsOptions {
     )]
     whois_bearer_token: Option<String>,
 
-    #[structopt(long = "bonds-url")]
+    #[structopt(
+        long = "bonds-url",
+        default_value = "https://validator-bonds-api.marinade.finance/bonds/bidding"
+    )]
     pub bonds_url: String,
 
     #[structopt(
@@ -43,6 +46,7 @@ pub struct ValidatorInfo {
     pub url: Option<String>,
     pub details: Option<String>,
     pub keybase: Option<String>,
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -99,6 +103,7 @@ pub struct ValidatorSnapshot {
     pub info_url: Option<String>,
     pub info_details: Option<String>,
     pub info_keybase: Option<String>,
+    pub info_icon_url: Option<String>,
     pub data_center: Option<ValidatorDataCenter>,
     pub activated_stake: u64,
     pub foundation_stake: u64,
@@ -199,10 +204,11 @@ pub fn collect_validators_info(
             url,
             keybase,
             details,
-        } = match validators_info.get(&identity).cloned() {
-            Some(info) => info,
-            None => Default::default(),
-        };
+            icon_url,
+        } = validators_info
+            .get(&identity)
+            .cloned()
+            .unwrap_or_else(|| Default::default());
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -218,6 +224,7 @@ pub fn collect_validators_info(
             info_name: name,
             info_keybase: keybase,
             info_details: details,
+            info_icon_url: icon_url,
 
             activated_stake: vote_account.activated_stake,
             marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
