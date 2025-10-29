@@ -29,6 +29,6 @@ curl 'http://localhost:8000/validators'
   the results properly.
   In that case, the [`list_validators`](./src/handlers/list_validators.rs)
   function must be modified to return the data directly without filtering, i.e.:
-      ```rust
-      return Ok(validators.into_values().collect());
-      ```
+  ```rust
+  return Ok(validators.into_values().collect());
+  ```
