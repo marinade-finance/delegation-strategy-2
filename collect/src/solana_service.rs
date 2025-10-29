@@ -250,6 +250,7 @@ fn parse_validator_info(
                 url: extract_json_value(&validator_info, "website".to_string()),
                 details: extract_json_value(&validator_info, "details".to_string()),
                 keybase: extract_json_value(&validator_info, "keybaseUsername".to_string()),
+                icon_url: extract_json_value(&validator_info, "iconUrl".to_string()),
             },
         ))
     } else {

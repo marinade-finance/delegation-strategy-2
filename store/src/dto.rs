@@ -65,6 +65,7 @@ pub struct Validator {
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
+    pub info_icon_url: Option<String>,
     pub node_ip: Option<String>,
     pub dc_coordinates_lat: Option<f64>,
     pub dc_coordinates_lon: Option<f64>,
@@ -108,7 +109,7 @@ impl Validator {
             asn,
             aso,
         } = match v.data_center.clone() {
-            Some(dc) => dc.clone(),
+            Some(dc) => dc,
             _ => Default::default(),
         };
 
@@ -119,6 +120,7 @@ impl Validator {
             info_name: v.info_name.clone(),
             info_url: v.info_url.clone(),
             info_keybase: v.info_keybase.clone(),
+            info_icon_url: v.info_icon_url.clone(),
 
             node_ip: v.node_ip.clone(),
             dc_coordinates_lon: coordinates.map(|(_, lon)| lon),
@@ -198,6 +200,7 @@ pub struct ValidatorRecord {
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_keybase: Option<String>,
+    pub info_icon_url: Option<String>,
     pub node_ip: Option<String>,
     pub dc_coordinates_lat: Option<f64>,
     pub dc_coordinates_lon: Option<f64>,
