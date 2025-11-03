@@ -7,8 +7,8 @@ Storing YAML data files collected by [collect process](../collect) into PostgreS
 See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
 
 ```bash
-export RPC_URL=...
-export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
+export DB='delegation-strategy'
+export POSTGRES_URL="postgresql://${DB}:${DB}@localhost:5432/${DB}"
 
 cargo run --bin store -- \
   --postgres-ssl-root-cert /tmp/postgres-root-cert.pem --postgres-url $POSTGRES_URL
@@ -18,21 +18,36 @@ cargo run --bin store -- \
 Example:
 
 ```bash
-export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
+export DB='delegation-strategy'
+export POSTGRES_URL="postgresql://${DB}:${DB}@localhost:5432/${DB}"
 export PG_SSLROOTCERT='/tmp/postgres-root-cert.pem'
 
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  cluster-info --snapshot-file /tmp/snapshot-performance.yaml
+OUTPUT_DIR=/tmp/collect-output
+mkdir -p $OUTPUT_DIR
 
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  close-epoch --snapshot-file /tmp/snapshot-performance-last-epoch.yaml
+  validators --snapshot-file "$OUTPUT_DIR"/validators.yaml
+
+# store-cluster-info
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  cluster-info --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+# store-quick-changes
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  uptime --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  versions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  commissions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+# store-epoch-close (table: epochs)
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  close-epoch --snapshot-file "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
 
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  jito-priority --snapshot-file /tmp/jito-priority.yaml
-  
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  jito-mev --snapshot-file /tmp/jito-mev.yaml
+  validators-block-rewards --snapshot-file "$OUTPUT_DIR"/validators-block-rewards.yaml
+
 
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  validators --snapshot-file /tmp/validators.yaml
+  jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
 ```

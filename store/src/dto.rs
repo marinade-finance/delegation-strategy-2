@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
+use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
@@ -54,6 +55,26 @@ impl ValidatorJitoPriorityFeeInfo {
             claimed_epoch_rewards: v.claimed_epoch_rewards.map(Into::into),
             total_epoch_claimants: v.total_epoch_claimants.map(|v| v as i32),
             epoch_active_claimants: v.epoch_active_claimants.map(|v| v as i32),
+        }
+    }
+}
+
+pub struct ValidatorBlockReward {
+    pub identity_account: String,
+    pub vote_account: String,
+    pub authorized_voter: String,
+    pub amount: Decimal,
+    pub epoch: Decimal,
+}
+
+impl ValidatorBlockReward {
+    pub fn from_snapshot(reward: &ValidatorBlockRewards, epoch: u64) -> Self {
+        Self {
+            identity_account: reward.identity_account.clone(),
+            vote_account: reward.vote_account.clone(),
+            authorized_voter: reward.authorized_voter.clone(),
+            amount: Decimal::from(reward.amount),
+            epoch: Decimal::from(epoch),
         }
     }
 }

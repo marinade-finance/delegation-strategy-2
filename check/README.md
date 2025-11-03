@@ -15,4 +15,7 @@ cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-priority
 
 # verification jit `mev` table
 cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-mev
+
+# verification `validators_block_rewards`
+cargo run --bin check -- --postgres-url "$POSTGRES_URL" block-rewards
 ```
