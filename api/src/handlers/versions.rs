@@ -38,7 +38,7 @@ pub async fn handler(
 
     match validator {
         Some((vote_key, _validator)) => {
-            let versions = context.read().await.cache.get_versions(&vote_key);
+            let versions = context.read().await.cache.get_versions(vote_key);
 
             Ok(match versions {
                 Some(versions) => {

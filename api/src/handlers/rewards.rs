@@ -38,9 +38,9 @@ pub async fn handler(
     let context_guard = context.read().await;
     let psql_client = &context_guard.psql_client;
     let (inflation_result, mev_result, jito_result) = tokio::join!(
-        get_estimated_inflation_rewards(&psql_client, epochs),
-        get_mev_rewards(&psql_client, epochs),
-        get_jito_priority_rewards(&psql_client, epochs)
+        get_estimated_inflation_rewards(psql_client, epochs),
+        get_mev_rewards(psql_client, epochs),
+        get_jito_priority_rewards(psql_client, epochs)
     );
 
     let rewards_inflation_est = match inflation_result {

@@ -91,14 +91,14 @@ pub async fn get_validators(
 
     validators.sort_by(
         |a: &ValidatorRecord, b: &ValidatorRecord| match config.order_direction {
-            OrderDirection::ASC => field_extractor(&a).cmp(&field_extractor(&b)),
-            OrderDirection::DESC => field_extractor(&b).cmp(&field_extractor(&a)),
+            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
+            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
         },
     );
     let max_epoch = validators
         .iter()
         .flat_map(|validator| &validator.epoch_stats)
-        .filter_map(|epoch_stat| Some(epoch_stat.epoch))
+        .map(|epoch_stat| epoch_stat.epoch)
         .max()
         .unwrap_or(0);
     let min_epoch = (max_epoch + 1).saturating_sub(config.epochs as u64);
@@ -153,7 +153,7 @@ pub fn filter_validators(
     let last_epoch = validators
         .values()
         .flat_map(|validator| &validator.epoch_stats)
-        .filter_map(|epoch_stat| Some(epoch_stat.epoch))
+        .map(|epoch_stat| epoch_stat.epoch)
         .max()
         .unwrap_or(0);
 
@@ -177,13 +177,13 @@ pub fn filter_validators(
                 .epoch_stats
                 .iter()
                 .find(|&epoch_stat| epoch_stat.epoch == epoch)
-                .map_or(false, |epoch_stat| {
+                .is_some_and(|epoch_stat| {
                     epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
                 })
         })
     });
 
-    if let Some(_) = &config.query_sfdp {
+    if config.query_sfdp.is_some() {
         validators.retain(|_, validator| validator.foundation_stake.gt(&Decimal::ZERO))
     }
 
@@ -198,11 +198,11 @@ pub fn filter_validators(
     if let Some(query) = &config.query {
         let query = query.to_lowercase();
         validators.retain(|_, v| {
-            v.vote_account.to_lowercase().find(&query).is_some()
-                || v.identity.to_lowercase().find(&query).is_some()
-                || v.info_name.clone().map_or(false, |info_name| {
-                    info_name.to_lowercase().find(&query).is_some()
-                })
+            v.vote_account.to_lowercase().contains(&query)
+                || v.identity.to_lowercase().contains(&query)
+                || v.info_name
+                    .clone()
+                    .is_some_and(|info_name| info_name.to_lowercase().contains(&query))
         });
     }
 
@@ -222,7 +222,7 @@ pub fn filter_validators(
         validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
     }
 
-    validators.into_iter().map(|(_, v)| v).collect()
+    validators.into_values().collect()
 }
 
 #[utoipa::path(

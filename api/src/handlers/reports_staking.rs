@@ -121,17 +121,17 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
                     });
                 }
             }
-            return Ok(warp::reply::with_status(
+            Ok(warp::reply::with_status(
                 reply::json(&ResponseReportStaking { planned: stakes }),
                 StatusCode::OK,
-            ));
+            ))
         }
         Err(err) => {
             error!("Failed to fetch scores records: {}", err);
-            return Ok(response_error(
+            Ok(response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch records".into(),
-            ));
+            ))
         }
     }
 }

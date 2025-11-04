@@ -56,12 +56,12 @@ pub async fn handler(
 
     if let Some(prepare_scoring_duration) = query_params.prepare_scoring_duration {
         metrics::JOB_DURATION
-            .with_label_values(&[&"prepare_scoring"])
+            .with_label_values(&["prepare_scoring"])
             .set(prepare_scoring_duration);
     }
     if let Some(apply_scoring_duration) = query_params.apply_scoring_duration {
         metrics::JOB_DURATION
-            .with_label_values(&[&"apply_scoring"])
+            .with_label_values(&["apply_scoring"])
             .set(apply_scoring_duration);
     }
 

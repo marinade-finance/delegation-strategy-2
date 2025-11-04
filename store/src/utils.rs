@@ -50,11 +50,11 @@ impl<'a> InsertQueryCombiner<'a> {
         let mut query_end = "(".to_string();
         for i in 0..values.len() {
             if i > 0 {
-                query_end.push_str(",");
+                query_end.push(',');
             }
             query_end.push_str(&format!("${}", i + 1 + self.params.len()));
         }
-        query_end.push_str(")");
+        query_end.push(')');
 
         self.params.append(values);
         self.statement
@@ -103,14 +103,14 @@ impl<'a> UpdateQueryCombiner<'a> {
         let mut query_end = "(".to_string();
         for i in 0..values.len() {
             if i > 0 {
-                query_end.push_str(",");
+                query_end.push(',');
             }
             query_end.push_str(&format!("${}", i + 1 + self.params.len()));
             if let Some(t) = types.get(&i) {
                 query_end.push_str(&format!("::{}", t));
             };
         }
-        query_end.push_str(")");
+        query_end.push(')');
 
         self.params.append(values);
         self.statement
@@ -427,7 +427,7 @@ pub async fn update_with_warnings(
 ) -> anyhow::Result<()> {
     log::info!("Updating validator records with warnings");
 
-    for (_, validator) in validators {
+    for validator in validators.values_mut() {
         if validator.superminority {
             validator.warnings.push(ValidatorWarning::Superminority);
         }
@@ -452,8 +452,8 @@ pub async fn update_with_warnings(
     Ok(())
 }
 
-fn average(numbers: &Vec<f64>) -> Option<f64> {
-    if numbers.len() == 0 {
+fn average(numbers: &[f64]) -> Option<f64> {
+    if numbers.is_empty() {
         return None;
     }
     let sum = numbers.iter().filter(|n| !n.is_nan()).sum::<f64>();
@@ -472,7 +472,7 @@ pub fn update_validators_with_avgs(
                 .iter()
                 .filter(|stat| epochs_range.contains(&stat.epoch))
                 .flat_map(|epoch| epoch.apy)
-                .collect(),
+                .collect::<Vec<f64>>(),
         );
         record.avg_uptime_pct = average(
             &record
@@ -480,7 +480,7 @@ pub fn update_validators_with_avgs(
                 .iter()
                 .filter(|stat| epochs_range.contains(&stat.epoch))
                 .flat_map(|epoch| epoch.uptime_pct)
-                .collect(),
+                .collect::<Vec<f64>>(),
         );
     }
 }
@@ -497,7 +497,7 @@ pub fn update_validators_ranks<T>(
         for validator_epoch_stats in record.epoch_stats.iter() {
             stats_by_epoch
                 .entry(validator_epoch_stats.epoch)
-                .or_insert(Default::default())
+                .or_default()
                 .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
         }
     }
@@ -661,8 +661,8 @@ pub async fn load_validators(
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
                     identity: row.get("identity"),
-                    start_epoch: starting_epoch.clone(),
-                    start_date: starting_epoch_date.clone(),
+                    start_epoch: starting_epoch,
+                    start_date: starting_epoch_date,
                     vote_account: vote_account.clone(),
                     info_name: row.get("info_name"),
                     info_url: row.get("info_url"),
@@ -681,35 +681,18 @@ pub async fn load_validators(
                     dcc_full_city,
                     dcc_asn,
                     dcc_aso,
-                    commission_max_observed: row
-                        .get::<_, Option<i32>>("commission_max_observed")
-                        .map(|n| n.try_into().unwrap()),
-                    commission_min_observed: row
-                        .get::<_, Option<i32>>("commission_min_observed")
-                        .map(|n| n.try_into().unwrap()),
-                    commission_advertised: row
-                        .get::<_, Option<i32>>("commission_advertised")
-                        .map(|n| n.try_into().unwrap()),
-                    commission_effective: row
-                        .get::<_, Option<i32>>("commission_effective")
-                        .map(|n| n.try_into().unwrap()),
+                    commission_max_observed: row.get::<_, Option<i32>>("commission_max_observed"),
+                    commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
+                    commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
+                    commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
                     version: row.get("version"),
-                    activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
-                    marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                    foundation_stake: row
-                        .get::<_, Decimal>("foundation_stake")
-                        .try_into()
-                        .unwrap(),
-                    self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
-                    marinade_native_stake: row
-                        .get::<_, Decimal>("marinade_native_stake")
-                        .try_into()
-                        .unwrap(),
-                    institutional_stake: row
-                        .get::<_, Decimal>("institutional_stake")
-                        .try_into()
-                        .unwrap(),
+                    activated_stake: row.get::<_, Decimal>("activated_stake"),
+                    marinade_stake: row.get::<_, Decimal>("marinade_stake"),
+                    foundation_stake: row.get::<_, Decimal>("foundation_stake"),
+                    self_stake: row.get::<_, Decimal>("self_stake"),
+                    marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
+                    institutional_stake: row.get::<_, Decimal>("institutional_stake"),
                     superminority: row.get("superminority"),
                     credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
                     score: None,
@@ -746,7 +729,7 @@ pub async fn load_validators(
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }
-            if let None = epoch_start_at {
+            if epoch_start_at.is_none() {
                 epoch_start_at = Some(Utc::now());
             }
             record.epoch_stats.push(ValidatorEpochStats {
@@ -766,26 +749,15 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
                 version: row.get("version"),
-                activated_stake: row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
-                marinade_stake: row.get::<_, Decimal>("marinade_stake").try_into().unwrap(),
-                foundation_stake: row
-                    .get::<_, Decimal>("foundation_stake")
-                    .try_into()
-                    .unwrap(),
-                self_stake: row.get::<_, Decimal>("self_stake").try_into().unwrap(),
-                marinade_native_stake: row
-                    .get::<_, Decimal>("marinade_native_stake")
-                    .try_into()
-                    .unwrap(),
-                institutional_stake: row
-                    .get::<_, Decimal>("institutional_stake")
-                    .try_into()
-                    .unwrap(),
+                activated_stake: row.get::<_, Decimal>("activated_stake"),
+                marinade_stake: row.get::<_, Decimal>("marinade_stake"),
+                foundation_stake: row.get::<_, Decimal>("foundation_stake"),
+                self_stake: row.get::<_, Decimal>("self_stake"),
+                marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
+                institutional_stake: row.get::<_, Decimal>("institutional_stake"),
                 superminority: row.get("superminority"),
                 stake_to_become_superminority: row
-                    .get::<_, Decimal>("stake_to_become_superminority")
-                    .try_into()
-                    .unwrap(),
+                    .get::<_, Decimal>("stake_to_become_superminority"),
                 credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
@@ -876,7 +848,7 @@ pub async fn update_validators_with_scores(
 
 pub async fn load_scores_in_epochs(
     scoring_url: &String,
-    epochs: std::ops::RangeInclusive<u64>,
+    epochs: RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
     log::info!("Loading scores for epochs: {:?}", epochs);
 
@@ -1032,10 +1004,7 @@ pub async fn load_scores(
                         .try_into()
                         .unwrap(),
                     scoring_run_id: row.get("scoring_run_id"),
-                    created_at: row
-                        .get::<_, DateTime<Utc>>("created_at")
-                        .try_into()
-                        .unwrap(),
+                    created_at: row.get::<_, DateTime<Utc>>("created_at"),
                 });
         }
 
@@ -1205,13 +1174,11 @@ pub fn aggregate_validators(
             if let Some(score) = epoch_stats.score {
                 marinade_scores
                     .entry(epoch_stats.epoch)
-                    .or_insert(Default::default())
+                    .or_default()
                     .push(score);
             }
             if let Some(apy) = epoch_stats.apy {
-                apys.entry(epoch_stats.epoch)
-                    .or_insert(Default::default())
-                    .push(apy);
+                apys.entry(epoch_stats.epoch).or_default().push(apy);
             }
         }
     }
@@ -1306,12 +1273,12 @@ fn map_to_ordered_component_values(
 }
 
 pub async fn store_scoring(
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
     epoch: i32,
     ui_id: String,
     components: Vec<&str>,
     component_weights: Vec<f64>,
-    scores: Vec<crate::dto::ValidatorScoringCsvRow>,
+    scores: Vec<ValidatorScoringCsvRow>,
 ) -> anyhow::Result<()> {
     let scoring_run_result = psql_client
         .query_one(
@@ -1368,7 +1335,7 @@ pub async fn store_scoring(
         .map(|row| {
             (
                 row.vote_account.clone(),
-                if row.ui_hints.len() == 0 {
+                if row.ui_hints.is_empty() {
                     Default::default()
                 } else {
                     row.ui_hints.split(",").collect()
@@ -1409,7 +1376,7 @@ pub async fn store_scoring(
             ];
             query.add(&mut params);
         }
-        query.execute(&mut psql_client).await?;
+        query.execute(psql_client).await?;
     }
 
     Ok(())

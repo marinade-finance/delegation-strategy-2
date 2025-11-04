@@ -64,9 +64,9 @@ pub fn validators_performance(
         .iter()
         .map(|v| v.vote_pubkey.clone())
         .collect();
-    let production_by_validator = get_block_production_by_validator(&client, epoch)?;
-    let node_versions = get_cluster_nodes_versions(&client)?;
-    let credits = get_credits(&client, epoch)?;
+    let production_by_validator = get_block_production_by_validator(client, epoch)?;
+    let node_versions = get_cluster_nodes_versions(client)?;
+    let credits = get_credits(client, epoch)?;
 
     for vote_account in vote_accounts
         .current
@@ -107,7 +107,7 @@ pub fn validator_rewards(
     vote_accounts: &RpcVoteAccountStatus,
 ) -> anyhow::Result<HashMap<String, ValidatorRewards>> {
     let commission_from_rewards =
-        get_commission_from_inflation_rewards(&client, &vote_accounts, Some(epoch))?;
+        get_commission_from_inflation_rewards(client, vote_accounts, Some(epoch))?;
 
     Ok(vote_accounts
         .current

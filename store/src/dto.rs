@@ -108,10 +108,7 @@ impl Validator {
             city,
             asn,
             aso,
-        } = match v.data_center.clone() {
-            Some(dc) => dc,
-            _ => Default::default(),
-        };
+        } = v.data_center.clone().unwrap_or_default();
 
         Self {
             identity: v.identity.clone(),

@@ -23,7 +23,7 @@ const DEFAULT_CHUNK_SIZE: usize = 500;
 
 pub async fn store_jito(
     options: StoreJitoOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
     account_type: JitoAccountType,
 ) -> anyhow::Result<()> {
     info!("Storing JITO account {} snapshot...", account_type);
@@ -53,7 +53,7 @@ pub async fn store_jito(
                 .map(|v| (v.0.clone(), ValidatorJitoMEVInfo::from_snapshot(v.1)))
                 .collect();
             store_mev(
-                &mut psql_client,
+                psql_client,
                 snapshot_epoch,
                 snapshot_created_at,
                 snapshot_loaded_at_slot_index,
@@ -74,7 +74,7 @@ pub async fn store_jito(
                 })
                 .collect();
             store_priority_fee(
-                &mut psql_client,
+                psql_client,
                 snapshot_epoch,
                 snapshot_created_at,
                 snapshot_loaded_at_slot_index,
@@ -104,7 +104,7 @@ async fn get_existing_vote_accounts(
 }
 
 async fn store_mev(
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
     snapshot_epoch: Decimal,
     snapshot_created_at: DateTime<Utc>,
     snapshot_loaded_at_slot_index: Decimal,
@@ -117,7 +117,7 @@ async fn store_mev(
         validators_mev.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
+        get_existing_vote_accounts(psql_client, db_table, snapshot_epoch).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -179,7 +179,7 @@ async fn store_mev(
                 updated_identities.insert(vote_account.to_string());
             }
         }
-        updates += query.execute(&mut psql_client).await?.unwrap_or(0);
+        updates += query.execute(psql_client).await?.unwrap_or(0);
         info!(
             "Trying to update {} previously existing MEV records. SQL updated records: {}",
             updated_identities.len(),
@@ -226,7 +226,7 @@ async fn store_mev(
             ];
             query.add(&mut params);
         }
-        insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
+        insertions += query.execute(psql_client).await?.unwrap_or(0);
         info!("Inserted new new MEV records {}", insertions);
     }
 
@@ -239,7 +239,7 @@ async fn store_mev(
 }
 
 async fn store_priority_fee(
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
     snapshot_epoch: Decimal,
     snapshot_created_at: DateTime<Utc>,
     snapshot_loaded_at_slot_index: Decimal,
@@ -252,7 +252,7 @@ async fn store_priority_fee(
         validators_priority_fee.keys().len()
     );
     let existing_vote_accounts =
-        get_existing_vote_accounts(&psql_client, db_table, snapshot_epoch).await?;
+        get_existing_vote_accounts(psql_client, db_table, snapshot_epoch).await?;
     let mut updates: u64 = 0;
 
     for chunk in existing_vote_accounts.chunks(DEFAULT_CHUNK_SIZE) {
@@ -318,7 +318,7 @@ async fn store_priority_fee(
                 updated_identities.insert(vote_account.to_string());
             }
         }
-        updates += query.execute(&mut psql_client).await?.unwrap_or(0);
+        updates += query.execute(psql_client).await?.unwrap_or(0);
         info!(
             "Trying to update {} previously existing priority fee records. SQL updated records: {}",
             updated_identities.len(),
@@ -367,7 +367,7 @@ async fn store_priority_fee(
             ];
             query.add(&mut params);
         }
-        insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
+        insertions += query.execute(psql_client).await?.unwrap_or(0);
         info!("Inserted new new priority fee records {}", insertions);
     }
 
@@ -424,12 +424,12 @@ pub async fn get_last_mev_info(
     get_last_validator_info(
         psql_client,
         epochs,
-        JitoAccountType::MevTipDistribution.db_table_name().into(),
+        JitoAccountType::MevTipDistribution.db_table_name(),
         "vote_account, mev_commission, epoch",
         |row| {
             Ok(JitoMevRecord {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                mev_commission_bps: row.get::<_, i32>("mev_commission").try_into()?,
+                epoch: row.get::<_, Decimal>("epoch"),
+                mev_commission_bps: row.get::<_, i32>("mev_commission"),
                 vote_account: row.get("vote_account"),
             })
         },
@@ -444,14 +444,12 @@ async fn get_last_priority_fee_info(
     get_last_validator_info(
         psql_client,
         epochs,
-        JitoAccountType::PriorityFeeDistribution
-            .db_table_name()
-            .into(),
+        JitoAccountType::PriorityFeeDistribution.db_table_name(),
         "vote_account, validator_commission, total_lamports_transferred, epoch",
         |row| {
             Ok(JitoPriorityFeeRecord {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                validator_commission_bps: row.get::<_, i32>("validator_commission").try_into()?,
+                epoch: row.get::<_, Decimal>("epoch"),
+                validator_commission_bps: row.get::<_, i32>("validator_commission"),
                 vote_account: row.get("vote_account"),
                 total_lamports_transferred: row
                     .get::<_, Decimal>("total_lamports_transferred")

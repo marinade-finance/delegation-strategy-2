@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     let rpc_client = solana_client(params.common.rpc_url, params.common.commitment);
 
-    Ok(match params.command {
+    match params.command {
         StoreCommand::JitoMev(options) => {
             check_jito(
                 options,
@@ -68,5 +68,5 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-    }?)
+    }
 }

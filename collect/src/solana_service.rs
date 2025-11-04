@@ -91,18 +91,18 @@ pub fn get_cluster_nodes_versions(
     Ok(cluster_nodes
         .iter()
         .filter_map(|node| {
-            node.version.clone().and_then(|version| {
+            node.version.clone().map(|version| {
                 let version = version
                     .split_once(char::is_whitespace)
-                    .and_then(|(version, extra)| {
+                    .map(|(version, extra)| {
                         warn!(
                             "Node {} has version: {version} with extra info: {extra}",
                             node.pubkey
                         );
-                        Some(version.to_string())
+                        version.to_string()
                     })
                     .unwrap_or(version);
-                Some((node.pubkey.clone(), version))
+                (node.pubkey.clone(), version)
             })
         })
         .collect())
@@ -114,9 +114,10 @@ pub fn get_cluster_nodes_ips(rpc_client: &RpcClient) -> anyhow::Result<HashMap<S
 
     Ok(cluster_nodes
         .iter()
-        .filter_map(|node| match &node.gossip {
-            Some(gossip) => Some((node.pubkey.clone(), gossip.ip().to_string())),
-            _ => None,
+        .filter_map(|node| {
+            node.gossip
+                .as_ref()
+                .map(|gossip| (node.pubkey.clone(), gossip.ip().to_string()))
         })
         .collect())
 }
@@ -281,8 +282,7 @@ pub fn get_validators_info(
 
 fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> {
     json.get(&key)
-        .map(|value| serde_json::from_value(value.clone()).ok())
-        .flatten()
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 pub fn get_apy(
@@ -300,27 +300,28 @@ pub fn get_apy(
         .current
         .iter()
         .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.activated_stake.clone()))
+        .map(|v| (v.vote_pubkey.clone(), v.activated_stake))
         .collect();
 
     let commission: HashMap<_, _> = vote_accounts
         .current
         .iter()
         .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.commission.clone()))
+        .map(|v| (v.vote_pubkey.clone(), v.commission))
         .collect();
 
-    let total_activated_stake = activated_stake.iter().map(|(_, s)| s).sum::<u64>();
+    let total_activated_stake = activated_stake.values().sum::<u64>();
 
     let points: HashMap<_, _> = activated_stake
         .iter()
-        .filter_map(|(node, stake)| match credits.get(node) {
-            Some(credits) => Some((node.clone(), *credits as u128 * *stake as u128)),
-            _ => None,
+        .filter_map(|(node, stake)| {
+            credits
+                .get(node)
+                .map(|credits| (node.clone(), *credits as u128 * *stake as u128))
         })
         .collect();
 
-    let total_points = points.iter().map(|(_, p)| p).sum::<u128>();
+    let total_points = points.values().sum::<u128>();
 
     let mut total_rewards = 0.0;
     for epoch in 1..epochs_in_year + 1 {
@@ -397,8 +398,8 @@ pub fn get_self_stake(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
-    bonds_url: &String,
-    rpc_attemtps: usize,
+    bonds_url: &str,
+    rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
     let mut self_stake = fetch_self_stake(
@@ -406,7 +407,7 @@ pub fn get_self_stake(
         withdraw_authorities,
         epoch,
         stake_history,
-        rpc_attemtps,
+        rpc_attempts,
     )?;
 
     assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
@@ -431,8 +432,8 @@ pub fn get_self_stake(
 fn fetch_stake_accounts_on_page(
     rpc_client: &RpcClient,
     page: u8,
-    rpc_attemtps: usize,
-) -> Result<Vec<(Pubkey, Account)>, ClientError> {
+    rpc_attempts: usize,
+) -> Result<Vec<(Pubkey, Account)>, Box<ClientError>> {
     let mut filters: Vec<RpcFilterType> = vec![RpcFilterType::DataSize(200)];
     filters.push(RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
         WITHDRAW_AUTHORITY_OFFSET,
@@ -455,7 +456,7 @@ fn fetch_stake_accounts_on_page(
                 },
             )
         },
-        QuadraticBackoffStrategy::new(rpc_attemtps),
+        QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!(
                 "Attempt {} has failed: {}, retrying in {:?} seconds",

@@ -189,7 +189,7 @@ fn fetch_program_accounts_with_retry(
     epoch: u64,
     rpc_attempts: usize,
 ) -> anyhow::Result<Vec<(Pubkey, Account)>> {
-    let program_id = jito_account_type.program_id().try_into()?;
+    let program_id = jito_account_type.program_id();
     let account_size = jito_account_type.account_size();
     retry_blocking(
         || {
@@ -213,7 +213,7 @@ fn fetch_program_accounts_with_retry(
                 },
             )
         },
-        QuadraticBackoffStrategy::new(rpc_attempts),
+        QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!(
                 "Attempt {} has failed: {}, retrying in {:?} seconds",
@@ -239,7 +239,7 @@ pub fn jito_accounts(
 ) -> anyhow::Result<Vec<(Pubkey, Account)>> {
     // accounts created by validator during the epoch
     let tip_distribution_accounts_before_update = fetch_program_accounts_with_retry(
-        &client,
+        client,
         account_type,
         0x49, // byte 73
         epoch,
@@ -252,7 +252,7 @@ pub fn jito_accounts(
     );
     // account with data uploaded by jito at the start of the next epoch
     let distribution_accounts_updated = fetch_program_accounts_with_retry(
-        &client,
+        client,
         account_type,
         0x89, // byte 137
         epoch,
@@ -266,7 +266,7 @@ pub fn jito_accounts(
 
     let loaded_accounts: Vec<(Pubkey, Account)> = tip_distribution_accounts_before_update
         .into_iter()
-        .chain(distribution_accounts_updated.into_iter())
+        .chain(distribution_accounts_updated)
         .collect();
 
     info!(

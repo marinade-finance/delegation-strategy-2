@@ -43,7 +43,7 @@ pub async fn handler(
 
     match validator {
         Some((vote_key, _validator)) => {
-            let uptimes = context.read().await.cache.get_uptimes(&vote_key);
+            let uptimes = context.read().await.cache.get_uptimes(vote_key);
 
             Ok(match uptimes {
                 Some(mut uptimes) => {

@@ -175,16 +175,16 @@ pub async fn load_marinade_unstake_hint_records(
 
     Ok(marinade_staked_validators
         .into_iter()
-        .filter_map(
-            |(vote_account, marinade_stake)| match hints.get(&vote_account).cloned() {
-                Some(hints) => Some(UnstakeHintRecord {
+        .filter_map(|(vote_account, marinade_stake)| {
+            hints
+                .get(&vote_account)
+                .cloned()
+                .map(|hints| UnstakeHintRecord {
                     vote_account,
                     marinade_stake,
                     hints: hints.into_iter().collect(),
-                }),
-                _ => None,
-            },
-        )
+                })
+        })
         .collect())
 }
 
@@ -243,14 +243,14 @@ pub async fn load_all_scores(
         for row in rows {
             let scoring_run_id: i64 = row.get("scoring_run_id");
             let scores = records
-                .entry(scoring_run_id.try_into()?)
+                .entry(scoring_run_id.into())
                 .or_insert(Default::default());
             scores.push(ValidatorScoreRecord {
                 vote_account: row.get("vote_account"),
                 score: row.get("score"),
                 rank: row.get("rank"),
-                vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
-                msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
+                vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into()?,
+                msol_votes: row.get::<_, Decimal>("msol_votes").try_into()?,
                 ui_hints: row.get("ui_hints"),
                 component_scores: row.get("component_scores"),
                 component_ranks: row.get("component_ranks"),
@@ -258,23 +258,11 @@ pub async fn load_all_scores(
                 eligible_stake_algo: row.get("eligible_stake_algo"),
                 eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
                 eligible_stake_msol: row.get("eligible_stake_msol"),
-                target_stake_algo: row
-                    .get::<_, Decimal>("target_stake_algo")
-                    .try_into()
-                    .unwrap(),
-                target_stake_vemnde: row
-                    .get::<_, Decimal>("target_stake_vemnde")
-                    .try_into()
-                    .unwrap(),
-                target_stake_msol: row
-                    .get::<_, Decimal>("target_stake_msol")
-                    .try_into()
-                    .unwrap(),
+                target_stake_algo: row.get::<_, Decimal>("target_stake_algo").try_into()?,
+                target_stake_vemnde: row.get::<_, Decimal>("target_stake_vemnde").try_into()?,
+                target_stake_msol: row.get::<_, Decimal>("target_stake_msol").try_into()?,
                 scoring_run_id: row.get("scoring_run_id"),
-                created_at: row
-                    .get::<_, DateTime<Utc>>("created_at")
-                    .try_into()
-                    .unwrap(),
+                created_at: row.get::<_, DateTime<Utc>>("created_at"),
             })
         }
 

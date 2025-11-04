@@ -13,7 +13,6 @@
   "lint-staged": {
     "*.rs": [
       "cargo fmt --"
-    ],
-    "Cargo.toml": "cargo fmt --"
+    ]
   }
 }

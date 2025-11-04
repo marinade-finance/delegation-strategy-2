@@ -16,7 +16,7 @@ pub struct StoreVersionsOptions {
 
 pub async fn store_versions(
     options: StoreVersionsOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing versions...");
 
@@ -72,7 +72,7 @@ pub async fn store_versions(
             query.add(&mut params);
         }
     }
-    let insertions = query.execute(&mut psql_client).await?;
+    let insertions = query.execute(psql_client).await?;
 
     info!("Stored {} version changes", insertions.unwrap_or(0));
 
