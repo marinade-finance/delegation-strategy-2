@@ -4,6 +4,8 @@ Collecting on-chain data to YAML files.
 
 ## Development
 
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
+
 ```bash
 export RPC_URL=...
 
@@ -17,6 +19,5 @@ cargo run --bin collect -- validators-performance --with-rewards --epoch $EPOCH 
 cargo run --bin collect -- jito-priority | tee /tmp/jito-priority.yaml
 cargo run --bin collect -- -u $RPC_URL jito-mev | tee /tmp/jito-mev.yaml
 
-cargo run --bin collect -- -u $RPC_URL validators --epoch $EPOCH |
-  tee /tmp/validators.yaml
+cargo run --bin collect -- -u $RPC_URL validators --epoch $EPOCH | tee /tmp/validators.yaml
 ```

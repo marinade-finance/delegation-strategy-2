@@ -4,29 +4,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_decimal = { version = "1.26", features = ["db-postgres"] }
-anyhow = "1.0.40"
-borsh = "1.5"
-csv = "1.1"
-log = "0.4.14"
-bytes = "1.0"
-futures = { version = "0.3", default-features = false }
-env_logger = "0.9.0"
-structopt = "0.3.21"
-solana-program = "1.16"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.8"
-serde_json = "1.0"
-bincode = "1.3.3"
-reqwest = { version = "0.11.11", features=["stream"] }
-tokio-postgres = { version = "0.7.7", features = ["with-chrono-0_4"] }
-openssl = "0.10.70"
-postgres-openssl = "0.5.1"
+rust_decimal = { workspace = true }
+anyhow = { workspace = true }
+borsh = { workspace = true }
+csv = { workspace = true }
+log = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+env_logger = { workspace = true }
+structopt = { workspace = true }
+solana-program = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
+tokio-postgres = { workspace = true }
+openssl = { workspace = true }
+postgres-openssl = { workspace = true }
 store = { path = "../store" }
-chrono = "0.4"
-tokio = { version = "1", features = ["full"] }
-warp = "0.3"
-prometheus = "0.13.3"
-lazy_static = "1.4.0"
-regex = "1.7.2"
-utoipa = { version = "3.2.1", features = ["chrono", "decimal"] }
+chrono = { workspace = true }
+tokio = { workspace = true }
+warp = { workspace = true }
+prometheus = { workspace = true }
+lazy_static = { workspace = true }
+regex = { workspace = true }
+utoipa = { workspace = true }
