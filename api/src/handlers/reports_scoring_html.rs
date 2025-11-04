@@ -1,22 +1,8 @@
 use crate::context::WrappedContext;
-use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use log::{error, info};
 use regex::Regex;
-use serde::Serialize;
-use std::collections::HashMap;
 use warp::{http, http::StatusCode, hyper, Reply};
-
-#[derive(Serialize, Debug)]
-struct Report {
-    created_at: DateTime<Utc>,
-    md: String,
-}
-
-#[derive(Serialize, Debug)]
-struct Response {
-    reports: HashMap<i32, Vec<Report>>,
-}
 
 #[utoipa::path(
     get,
