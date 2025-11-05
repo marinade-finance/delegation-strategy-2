@@ -10,18 +10,18 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreCommissionsOptions {
+pub struct StoreCommissionsParams {
     #[structopt(long = "snapshot-file")]
     snapshot_path: String,
 }
 
 pub async fn store_commissions(
-    options: StoreCommissionsOptions,
+    params: StoreCommissionsParams,
     psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing commission...");
 
-    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let snapshot_epoch: Decimal = snapshot.epoch.into();

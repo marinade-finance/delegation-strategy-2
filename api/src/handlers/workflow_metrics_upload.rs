@@ -31,7 +31,7 @@ pub async fn handler(
     logged_in: bool,
     query_params: QueryParams,
 ) -> Result<impl Reply, warp::Rejection> {
-    log::info!("Uploading metrics {:?}", query_params);
+    log::info!("Uploading metrics {query_params:?}");
 
     if !logged_in {
         log::error!("Unauthorized access!");

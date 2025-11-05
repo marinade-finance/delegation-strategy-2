@@ -44,7 +44,7 @@ pub async fn handler(
             StatusCode::OK,
         ),
         Err(err) => {
-            error!("Failed to load unstake hints: {}", err);
+            error!("Failed to load unstake hints: {err}");
             response_error_500("Failed to load unstake hints!".into())
         }
     })

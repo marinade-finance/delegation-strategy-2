@@ -35,7 +35,7 @@ pub async fn handler(
             warp::reply::with_status(json(&ResponseJitoMev { validators }), StatusCode::OK)
         }
         Err(err) => {
-            error!("Failed to fetch Jito MEV info: {}", err);
+            error!("Failed to fetch Jito MEV info: {err}");
             response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch Jito MEV records!".into(),

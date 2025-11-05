@@ -4,10 +4,10 @@ use solana_client::rpc_client::RpcClient;
 use structopt::StructOpt;
 use tokio_postgres::Client;
 
-const MILLISECONDS_PER_SLOT: u64 = 400;
+pub const MILLISECONDS_PER_SLOT: u64 = 400; // 0.4 seconds per slot
 
 #[derive(Debug, StructOpt)]
-pub struct ValidatorsJitoCheckOptions {
+pub struct ValidatorsJitoCheckParams {
     #[structopt(
         long = "execution-interval",
         help = "What should be number of slots between executions",
@@ -19,7 +19,7 @@ pub struct ValidatorsJitoCheckOptions {
 /// Verification if we should proceed with saving more JITO accounts data to the database.
 /// Currently, we index two tables: `mev` and `jito_priority_fee`.
 pub async fn check_jito(
-    options: ValidatorsJitoCheckOptions,
+    params: ValidatorsJitoCheckParams,
     psql_client: &Client,
     rpc_client: &RpcClient,
     db_table: &str,
@@ -69,21 +69,21 @@ pub async fn check_jito(
 
             // If the stored slot index in SQL elapses the expected interval timing, we will proceed with the data collection.
             let slots_diff = current_slot_index.saturating_sub(sql_slot_index);
-            if slots_diff >= options.execution_interval_slots {
+            if slots_diff >= params.execution_interval_slots {
                 info!(
                     "With the current slot index {current_slot_index} of epoch {current_epoch}, the time elapsed since the execution interval is {} slots, compared to the saved slot index {sql_slot_index}",
-                    options.execution_interval_slots,
+                    params.execution_interval_slots,
                 );
                 return Ok(());
             }
 
-            if sql_slot_index + options.execution_interval_slots
+            if sql_slot_index + params.execution_interval_slots
                 < Decimal::from(epoch_data.slots_in_epoch)
             {
                 info!(
                     "To execute required to wait at epoch {current_epoch} for slot index {}, approximately {} seconds",
-                    sql_slot_index + options.execution_interval_slots,
-                    (sql_slot_index + options.execution_interval_slots - current_slot_index) * Decimal::from(MILLISECONDS_PER_SLOT) / Decimal::from(1000)
+                    sql_slot_index + params.execution_interval_slots,
+                    (sql_slot_index + params.execution_interval_slots - current_slot_index) * Decimal::from(MILLISECONDS_PER_SLOT) / Decimal::from(1000)
                 );
             }
 

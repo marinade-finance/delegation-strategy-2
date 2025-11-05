@@ -4,7 +4,7 @@ use structopt::StructOpt;
 use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
-pub struct LsOpenEpochsOptions {}
+pub struct LsOpenEpochsParams {}
 
 pub async fn list_open_epochs(psql_client: &Client) -> anyhow::Result<()> {
     info!("Finding open epochs...");
@@ -22,8 +22,8 @@ pub async fn list_open_epochs(psql_client: &Client) -> anyhow::Result<()> {
 
     for row in rows.iter() {
         let epoch: Decimal = row.get("epoch");
-        println!("{}", epoch);
-        info!("Open epoch: {}", epoch);
+        println!("{epoch}");
+        info!("Open epoch: {epoch}");
     }
 
     info!("Found open epochs: {}", rows.len());

@@ -15,16 +15,16 @@ use solana_client::{
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_response::RpcVoteAccountStatus,
 };
+use solana_commitment_config::CommitmentConfig;
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
-    stake::{self, state::StakeState},
+    stake::{self, state::StakeStateV2},
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
-    commitment_config::CommitmentConfig,
     slot_history::{self, SlotHistory},
     sysvar,
 };
@@ -211,10 +211,7 @@ fn get_confirmed_blocks(
     start_slot: Slot,
     end_slot: Slot,
 ) -> anyhow::Result<HashSet<Slot>> {
-    info!(
-        "loading slot history. slot range is [{},{}]",
-        start_slot, end_slot
-    );
+    info!("loading slot history. slot range is [{start_slot},{end_slot}]");
     let slot_history_account = rpc_client
         .get_account_with_commitment(&sysvar::slot_history::id(), CommitmentConfig::finalized())?
         .value
@@ -237,7 +234,7 @@ fn parse_validator_info(
     account: &Account,
 ) -> anyhow::Result<(Pubkey, ValidatorInfo)> {
     if account.owner != solana_config_program::id() {
-        anyhow::bail!("{} is not a validator info account", pubkey);
+        anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
     if !key_list.keys.is_empty() && key_list.keys.contains(&(validator_info::id(), false)) {
@@ -255,7 +252,7 @@ fn parse_validator_info(
             },
         ))
     } else {
-        anyhow::bail!("{} could not be parsed as a validator info account", pubkey);
+        anyhow::bail!("{pubkey} could not be parsed as a validator info account");
     }
 }
 pub fn get_validators_info(
@@ -273,7 +270,7 @@ pub fn get_validators_info(
             Ok((validator_pubkey, validator_info)) => {
                 validator_info_map.insert(validator_pubkey.to_string(), validator_info);
             }
-            Err(err) => warn!("Couldn't parse validator info {}", err),
+            Err(err) => warn!("Couldn't parse validator info {err}"),
         }
     }
 
@@ -453,6 +450,7 @@ fn fetch_stake_accounts_on_page(
                         min_context_slot: None,
                     },
                     with_context: None,
+                    sort_results: None,
                 },
             )
         },
@@ -461,7 +459,7 @@ fn fetch_stake_accounts_on_page(
             warn!(
                 "Attempt {} has failed: {}, retrying in {:?} seconds",
                 attempt,
-                err.to_string(),
+                err,
                 backoff.as_secs()
             )
         },
@@ -488,7 +486,7 @@ fn process_accounts_for_self_stake(
                     .stake()
                     .unwrap()
                     .delegation
-                    .stake_activating_and_deactivating(epoch, Some(stake_history), None);
+                    .stake_activating_and_deactivating(epoch, stake_history, None);
                 if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
                     && effective != 0
                 {
@@ -502,7 +500,7 @@ fn process_accounts_for_self_stake(
     self_stake_assigned
 }
 
-fn get_withdrawer_and_vote_keys(stake_account: &StakeState) -> Option<(String, String)> {
+fn get_withdrawer_and_vote_keys(stake_account: &StakeStateV2) -> Option<(String, String)> {
     stake_account.delegation().and_then(|vote_account| {
         stake_account.authorized().map(|withdrawer| {
             (
@@ -536,10 +534,10 @@ pub fn fetch_self_stake(
                     epoch,
                     stake_history,
                 );
-                info!("Processed {} self stakes on page {}", processed, page);
+                info!("Processed {processed} self stakes on page {page}");
             }
             Err(err) => {
-                panic!("Failed to fetch stake accounts on page {}: {}", page, err);
+                panic!("Failed to fetch stake accounts on page {page}: {err}");
             }
         }
 

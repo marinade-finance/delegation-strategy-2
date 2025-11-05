@@ -1,6 +1,7 @@
-use crate::validators_jito::{check_jito, ValidatorsJitoCheckOptions};
+use crate::validators_jito::{check_jito, ValidatorsJitoCheckParams};
 use collect::solana_service::solana_client;
 use env_logger::Env;
+use log::info;
 use structopt::StructOpt;
 use tokio_postgres::NoTls;
 
@@ -27,8 +28,8 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum StoreCommand {
-    JitoMev(ValidatorsJitoCheckOptions),
-    JitoPriority(ValidatorsJitoCheckOptions),
+    JitoMev(ValidatorsJitoCheckParams),
+    JitoPriority(ValidatorsJitoCheckParams),
 }
 
 pub mod validators_jito;
@@ -38,11 +39,12 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let params = Params::from_args();
+    info!("params {params:?}");
     let (psql_client, psql_conn) =
         tokio_postgres::connect(&params.common.postgres_url, NoTls).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
-            log::error!("Connection error: {}", err);
+            log::error!("Connection error: {err}");
             std::process::exit(1);
         }
     });
@@ -50,18 +52,18 @@ async fn main() -> anyhow::Result<()> {
     let rpc_client = solana_client(params.common.rpc_url, params.common.commitment);
 
     match params.command {
-        StoreCommand::JitoMev(options) => {
+        StoreCommand::JitoMev(mev_params) => {
             check_jito(
-                options,
+                mev_params,
                 &psql_client,
                 &rpc_client,
                 collect::validators_jito::JitoAccountType::MevTipDistribution.db_table_name(),
             )
             .await
         }
-        StoreCommand::JitoPriority(options) => {
+        StoreCommand::JitoPriority(jito_params) => {
             check_jito(
-                options,
+                jito_params,
                 &psql_client,
                 &rpc_client,
                 collect::validators_jito::JitoAccountType::PriorityFeeDistribution.db_table_name(),

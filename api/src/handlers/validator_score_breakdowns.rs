@@ -41,7 +41,7 @@ pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, Infallible> {
-    log::info!("Query validator score breakdown for {:?}", query_params);
+    log::info!("Query validator score breakdown for {query_params:?}");
     metrics::REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWNS.inc();
 
     match get_and_validate_scores(context).await {

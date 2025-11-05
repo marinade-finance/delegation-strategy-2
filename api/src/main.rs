@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
-            error!("PSQL Connection error: {}", err);
+            error!("PSQL Connection error: {err}");
             std::process::exit(1);
         }
     });

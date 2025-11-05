@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct ValidatorsPerformanceOptions {
+pub struct ValidatorsPerformanceParams {
     #[structopt(long = "with-rewards", help = "Whether to calculate APY and rewards.")]
     with_rewards: bool,
 
@@ -128,16 +128,16 @@ pub fn validator_rewards(
 
 pub fn collect_validators_performance_info(
     common_params: CommonParams,
-    options: ValidatorsPerformanceOptions,
+    performance_params: ValidatorsPerformanceParams,
 ) -> anyhow::Result<()> {
     info!("Collecting snaphost of validators' performance");
     let client = solana_client(common_params.rpc_url, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    let epoch = options.epoch.unwrap_or(current_epoch_info.epoch);
-    info!("Current epoch: {:?}", current_epoch_info);
-    info!("Looking at epoch: {}", epoch);
+    let epoch = performance_params.epoch.unwrap_or(current_epoch_info.epoch);
+    info!("Current epoch: {current_epoch_info:?}");
+    info!("Looking at epoch: {epoch}");
 
     let vote_accounts = client.get_vote_accounts()?;
     info!(
@@ -151,13 +151,13 @@ pub fn collect_validators_performance_info(
 
     let validators = validators_performance(&client, epoch, &vote_accounts)?;
 
-    let rewards = if options.with_rewards {
+    let rewards = if performance_params.with_rewards {
         Some(validator_rewards(&client, epoch, &vote_accounts)?)
     } else {
         None
     };
 
-    let cluster_inflation = if options.with_rewards {
+    let cluster_inflation = if performance_params.with_rewards {
         let sol_total_supply = client.supply()?.value.total;
         let inflation = client.get_inflation_rate()?.total;
         let inflation_taper = client.get_inflation_governor()?.taper;

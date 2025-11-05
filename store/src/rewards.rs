@@ -10,12 +10,11 @@ async fn get_jito_rewards_by_table(
     let query = format!(
         r#"
         SELECT SUM(COALESCE(total_epoch_rewards, 0)) / 1e9 AS amount, epoch
-        FROM {}
+        FROM {table_name}
         GROUP BY epoch
         HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < {limit_null_count}
         ORDER BY epoch DESC LIMIT $1
-        "#,
-        table_name
+        "#
     );
 
     // total_epoch_rewards may be NULL as data on commission is loaded at start of epoch
