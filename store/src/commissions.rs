@@ -17,7 +17,7 @@ pub struct StoreCommissionsOptions {
 
 pub async fn store_commissions(
     options: StoreCommissionsOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing commission...");
 
@@ -79,7 +79,7 @@ pub async fn store_commissions(
             query.add(&mut params);
         }
     }
-    let insertions = query.execute(&mut psql_client).await?;
+    let insertions = query.execute(psql_client).await?;
 
     info!("Stored {} commission changes", insertions.unwrap_or(0));
 

@@ -83,7 +83,7 @@ pub struct ValidatorDataCenter {
 impl ValidatorDataCenter {
     fn new(ip_info: IpInfo) -> ValidatorDataCenter {
         ValidatorDataCenter {
-            coordinates: ip_info.coordinates.map_or(None, |c| Some((c.lon, c.lat))),
+            coordinates: ip_info.coordinates.map(|c| (c.lon, c.lat)),
             continent: ip_info.continent,
             country_iso: ip_info.country_iso,
             country: ip_info.country,
@@ -208,7 +208,7 @@ pub fn collect_validators_info(
         } = validators_info
             .get(&identity)
             .cloned()
-            .unwrap_or_else(|| Default::default());
+            .unwrap_or_else(Default::default);
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -216,9 +216,7 @@ pub fn collect_validators_info(
             node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
             data_center: data_centers
                 .get(&identity)
-                .map_or(None, |(_ip, data_center)| {
-                    Some(ValidatorDataCenter::new(data_center.clone()))
-                }),
+                .map(|(_ip, data_center)| ValidatorDataCenter::new(data_center.clone())),
 
             info_url: url,
             info_name: name,

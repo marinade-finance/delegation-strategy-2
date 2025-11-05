@@ -20,7 +20,7 @@ const DEFAULT_CHUNK_SIZE: usize = 500;
 
 pub async fn store_validators(
     options: StoreValidatorsOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing validators snapshot...");
 
@@ -191,7 +191,7 @@ pub async fn store_validators(
                 updated_vote_accounts.insert(vote_account.to_string());
             }
         }
-        query.execute(&mut psql_client).await?;
+        query.execute(psql_client).await?;
         info!(
             "Updated previously existing validator records: {}",
             updated_vote_accounts.len()
@@ -294,7 +294,7 @@ pub async fn store_validators(
             ];
             query.add(&mut params);
         }
-        insertions += query.execute(&mut psql_client).await?.unwrap_or(0);
+        insertions += query.execute(psql_client).await?.unwrap_or(0);
         info!("Stored {} new validator records", insertions);
     }
 

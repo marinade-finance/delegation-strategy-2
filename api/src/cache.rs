@@ -84,8 +84,9 @@ impl Cache {
     }
 
     pub fn get_cluster_stats(&self, epochs: usize) -> CachedClusterStats {
-        match &self.cluster_stats {
-            Some(cluster_stats) => Some(ClusterStats {
+        self.cluster_stats
+            .as_ref()
+            .map(|cluster_stats| ClusterStats {
                 block_production_stats: cluster_stats
                     .block_production_stats
                     .iter()
@@ -98,9 +99,7 @@ impl Cache {
                     .take(epochs)
                     .cloned()
                     .collect(),
-            }),
-            _ => None,
-        }
+            })
     }
 }
 

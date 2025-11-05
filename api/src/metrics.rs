@@ -91,7 +91,7 @@ pub fn spawn_server() {
         let route_metrics = warp::path!("metrics")
             .and(warp::path::end())
             .and(warp::get())
-            .map(|| collect_metrics());
+            .map(collect_metrics);
         warp::serve(route_metrics).run(([0, 0, 0, 0], 9000)).await;
         error!("Metrics server is dead.");
         std::process::exit(1);

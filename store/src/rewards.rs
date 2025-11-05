@@ -62,7 +62,7 @@ pub async fn get_estimated_inflation_rewards(
         .map(|row| {
             (
                 row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get::<_, f64>("amount").try_into().unwrap(),
+                row.get::<_, f64>("amount"),
             )
         })
         .collect())

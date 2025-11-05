@@ -3,3 +3,7 @@ target
 *.yaml
 
 .idea
+
+# JS stage lint
+node_modules/
+pnpm-lock.yaml

@@ -1,0 +1,18 @@
+{
+  "name": "solana-transaction-builder",
+  "version": "0.0.1",
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.4"
+  },
+  "scripts": {
+    "check": "cargo fmt -- --check && cargo clippy",
+    "fix": "cargo fmt --all && cargo clippy --fix --allow-staged --allow-dirty",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.rs": [
+      "cargo fmt --"
+    ]
+  }
+}

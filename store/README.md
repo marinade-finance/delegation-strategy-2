@@ -4,7 +4,7 @@ Storing YAML data files collected by [collect process](../collect) into PostgreS
 
 ## Development
 
-For local development check to run the PostgreSQL database ad [DEVELOPMENT.md](../DEVELOPMENT.md).
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
 
 ```bash
 export RPC_URL=...
@@ -15,7 +15,7 @@ cargo run --bin store -- \
   <<SUBCOMMAND>> --snapshot-file <<FILE-PATH>>
 ```
 
-For example:
+Example:
 
 ```bash
 export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'

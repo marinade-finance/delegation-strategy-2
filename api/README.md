@@ -6,6 +6,8 @@ Exposing delegation strategy as `validators-api`.
 
 See how it is configured to be run from code in [ops-infra repository](https://github.com/marinade-finance/ops-infra/blob/master/argocd/delegation-strategy/overlays/prod/kustomization.yaml). 
 
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
+
 ```bash
 export RPC_URL=...
 export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'

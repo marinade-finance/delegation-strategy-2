@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    Ok(match params.command {
+    match params.command {
         StoreCommand::Uptime(options) => store_uptime(options, &mut psql_client).await,
         StoreCommand::Commissions(options) => store_commissions(options, &mut psql_client).await,
         StoreCommand::Versions(options) => store_versions(options, &mut psql_client).await,
@@ -97,5 +97,5 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(options) => close_epoch(options, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_options) => list_open_epochs(&psql_client).await,
-    }?)
+    }
 }

@@ -148,7 +148,7 @@ struct ValidatorUpdateRecord {
 
 pub async fn close_epoch(
     options: CloseEpochOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Finalizing validators snapshot...");
 
@@ -159,7 +159,7 @@ pub async fn close_epoch(
     let rewards = snapshot.rewards.unwrap();
 
     create_epoch_record(
-        &mut psql_client,
+        psql_client,
         snapshot.epoch,
         snapshot.cluster_inflation.unwrap(),
     )
@@ -177,7 +177,7 @@ pub async fn close_epoch(
             epoch: snapshot_epoch,
             commission_effective: rewards
                 .get(vote_account)
-                .map_or(None, |r| r.commission_effective.map(|c| c as i32)),
+                .and_then(|r| r.commission_effective.map(|c| c as i32)),
             credits: v.credits.into(),
             leader_slots: v.leader_slots.into(),
             blocks_produced: v.blocks_produced.into(),
@@ -236,15 +236,15 @@ pub async fn close_epoch(
             );
             updated_identities.insert(v.vote_account.clone());
         }
-        query.execute(&mut psql_client).await?;
+        query.execute(psql_client).await?;
         info!(
             "Updated previously existing validator records: {}",
             updated_identities.len()
         );
     }
 
-    update_uptimes(&mut psql_client, snapshot.epoch).await?;
-    update_observed_commission(&mut psql_client, snapshot.epoch).await?;
+    update_uptimes(psql_client, snapshot.epoch).await?;
+    update_observed_commission(psql_client, snapshot.epoch).await?;
 
     Ok(())
 }

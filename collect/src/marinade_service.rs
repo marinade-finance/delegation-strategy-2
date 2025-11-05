@@ -22,13 +22,13 @@ pub fn get_marinade_stakes(
     // @todo take from state
     let delegation_authority = pubkey!("4bZ6o3eUUNXhKuqjdCnCoPAoLgWiuLYixKaxoa8PpiKk");
     let withdrawer_authority = pubkey!("9eG63CdHjsfhHmobHgLtESGC8GabbmRcaSpHAZrtmhco");
-    Ok(get_stakes_grouped_by_validator(
+    get_stakes_grouped_by_validator(
         rpc_client,
         &delegation_authority,
         Some(&withdrawer_authority),
         epoch,
         stake_history,
-    )?)
+    )
 }
 
 pub fn get_institutional_stakes(
@@ -83,13 +83,13 @@ pub fn get_marinade_native_stakes(
     // @todo take from config
     let marinade_native_stake_authority =
         "stWirqFCf2Uts1JBL1Jsd3r6VBWhgnpdPxCTe1MFjrq".try_into()?;
-    Ok(get_stakes_grouped_by_validator(
+    get_stakes_grouped_by_validator(
         rpc_client,
         &marinade_native_stake_authority,
         None,
         epoch,
         stake_history,
-    )?)
+    )
 }
 
 fn get_stakes_grouped_by_validator(
@@ -99,7 +99,7 @@ fn get_stakes_grouped_by_validator(
     epoch: Epoch,
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let stakes = get_stake_accounts(rpc_client, &delegation_authority, withdrawer_authority)?;
+    let stakes = get_stake_accounts(rpc_client, delegation_authority, withdrawer_authority)?;
 
     let stakes: Vec<_> = stakes
         .iter()
@@ -167,7 +167,7 @@ fn get_stake_accounts(
 
     Ok(accounts
         .iter()
-        .map(|(pubkey, account)| (pubkey.clone(), bincode::deserialize(&account.data).unwrap()))
+        .map(|(pubkey, account)| (*pubkey, bincode::deserialize(&account.data).unwrap()))
         .collect())
 }
 

@@ -28,7 +28,7 @@ fn status_from_delinquency(delinquent: bool) -> &'static str {
 
 pub async fn store_uptime(
     options: StoreUptimeOptions,
-    mut psql_client: &mut Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing uptime...");
 
@@ -69,7 +69,7 @@ pub async fn store_uptime(
         let start_at: DateTime<Utc> = row.get("start_at");
         let end_at: DateTime<Utc> = row.get("end_at");
         let latest_end_extension_at = end_at
-            .checked_add_signed(status_max_delay_to_extend.clone())
+            .checked_add_signed(status_max_delay_to_extend)
             .unwrap();
 
         if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
@@ -77,9 +77,9 @@ pub async fn store_uptime(
             if latest_end_extension_at > snapshot_created_at {
                 if status == status_from_snapshot && epoch == snapshot_epoch {
                     validators_with_extended_status.insert(vote_account.to_string());
-                    records_extensions.insert(id, default_status_end_at.clone());
+                    records_extensions.insert(id, default_status_end_at);
                 } else {
-                    records_extensions.insert(id, snapshot_created_at.clone());
+                    records_extensions.insert(id, snapshot_created_at);
                 }
             }
         }
@@ -104,7 +104,7 @@ pub async fn store_uptime(
             HashMap::from_iter([(0, "BIGINT".into()), (1, "TIMESTAMP WITH TIME ZONE".into())]),
         );
     }
-    query.execute(&mut psql_client).await?;
+    query.execute(psql_client).await?;
     info!("Extended previous {} uptimes", records_extensions.len());
 
     let mut query = InsertQueryCombiner::new(
@@ -137,7 +137,7 @@ pub async fn store_uptime(
             }
         }
     }
-    let insertions = query.execute(&mut psql_client).await?;
+    let insertions = query.execute(psql_client).await?;
     info!("Stored {} changed uptimes", insertions.unwrap_or(0));
 
     Ok(())

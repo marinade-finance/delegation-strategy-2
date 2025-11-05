@@ -57,8 +57,10 @@ pub async fn handler(
                 validator_scores = filter_scores_by_vote_account(from_date, validator_scores);
             }
 
-            let filtered_validator_scores =
-                validator_scores.values().flat_map(|v| v.clone()).collect();
+            let filtered_validator_scores = validator_scores
+                .values()
+                .flat_map(|v| v.clone())
+                .collect::<Vec<ValidatorScoreRecord>>();
             let score_breakdowns = compute_score_breakdowns(
                 &scoring_runs,
                 &filtered_validator_scores,
@@ -166,8 +168,8 @@ fn compute_runs_min_elig_scores(
 }
 
 fn compute_score_breakdowns(
-    scoring_runs: &Vec<ScoringRunRecord>,
-    validator_scores: &Vec<ValidatorScoreRecord>,
+    scoring_runs: &[ScoringRunRecord],
+    validator_scores: &[ValidatorScoreRecord],
     runs_min_elig_scores: &HashMap<Decimal, Option<f64>>,
 ) -> Vec<ScoreBreakdown> {
     let mut score_breakdowns: Vec<ScoreBreakdown> = Vec::new();
