@@ -60,21 +60,21 @@ impl ValidatorJitoPriorityFeeInfo {
 }
 
 pub struct ValidatorBlockReward {
+    pub epoch: Decimal,
     pub identity_account: String,
     pub vote_account: String,
     pub authorized_voter: String,
     pub amount: Decimal,
-    pub epoch: Decimal,
 }
 
 impl ValidatorBlockReward {
     pub fn from_snapshot(reward: &ValidatorBlockRewards, epoch: u64) -> Self {
         Self {
+            epoch: epoch.into(),
             identity_account: reward.identity_account.clone(),
             vote_account: reward.vote_account.clone(),
             authorized_voter: reward.authorized_voter.clone(),
             amount: Decimal::from(reward.amount),
-            epoch: Decimal::from(epoch),
         }
     }
 }
@@ -270,16 +270,16 @@ pub struct UptimeRecord {
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct JitoMevRecord {
+    pub epoch: Decimal,
     pub vote_account: String,
     pub mev_commission_bps: i32,
-    pub epoch: Decimal,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct JitoPriorityFeeRecord {
-    pub vote_account: String,
     pub epoch: Decimal,
     pub priority_commission_bps: i32,
+    pub vote_account: String,
     pub total_lamports_transferred: u64,
 }
 
@@ -290,6 +290,15 @@ pub struct JitoRecord {
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
     pub priority_total_lamports_transferred: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ValidatorBlockRewardsRecord {
+    pub epoch: u64,
+    pub identity_account: String,
+    pub vote_account: String,
+    pub authorized_voter: String,
+    pub amount: Decimal,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

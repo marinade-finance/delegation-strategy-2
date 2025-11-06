@@ -1,4 +1,4 @@
-use crate::dto::ValidatorBlockReward;
+use crate::dto::{ValidatorBlockReward, ValidatorBlockRewardsRecord};
 use crate::utils::*;
 use chrono::{DateTime, Utc};
 use collect::validators_block_rewards::ValidatorsBlockRewardsSnapshot;
@@ -185,4 +185,81 @@ async fn get_existing_block_rewards(
                 "Failed to get existing block rewards from DB for epoch {snapshot_epoch}: {e} [{e:?}]"
             )
         })
+}
+
+pub async fn get_last_block_rewards(
+    psql_client: &Client,
+    epochs: u64,
+    table_name: &str,
+) -> anyhow::Result<Vec<ValidatorBlockRewardsRecord>> {
+    let query = format!(
+        "WITH cluster AS (
+            SELECT MAX(epoch) AS last_epoch
+            FROM cluster_info
+        ),
+        filtered_data AS (
+            SELECT
+                epoch,
+                identity_account,
+                vote_account,
+                authorized_voter,
+                amount,
+                ROW_NUMBER() OVER (PARTITION BY identity_account, vote_account ORDER BY epoch DESC) AS rn
+            FROM {table_name}
+            CROSS JOIN cluster
+            WHERE epoch > cluster.last_epoch - $1::NUMERIC
+        )
+        SELECT identity_account, vote_account, authorized_voter, amount, epoch
+        FROM filtered_data
+        WHERE rn = 1
+        ORDER BY epoch ASC;"
+    );
+
+    let rows = psql_client.query(&query, &[&Decimal::from(epochs)]).await?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(ValidatorBlockRewardsRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            identity_account: row.get("identity_account"),
+            vote_account: row.get("vote_account"),
+            authorized_voter: row.get("authorized_voter"),
+            amount: row.get("amount"),
+        });
+    }
+
+    Ok(results)
+}
+
+pub async fn get_block_rewards_by_epoch(
+    psql_client: &Client,
+    epoch: u64,
+    table_name: &str,
+) -> anyhow::Result<Vec<ValidatorBlockRewardsRecord>> {
+    let query = format!(
+        "SELECT epoch,identity_account, vote_account, authorized_voter, amount
+         FROM {table_name}
+         WHERE epoch = $1
+         ORDER BY vote_account ASC;"
+    );
+
+    let rows = psql_client
+        .query(&query, &[&Decimal::from(epoch)])
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to get block rewards for epoch {epoch}: {e} [{e:?}]")
+        })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(ValidatorBlockRewardsRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            identity_account: row.get("identity_account"),
+            vote_account: row.get("vote_account"),
+            authorized_voter: row.get("authorized_voter"),
+            amount: row.get("amount"),
+        });
+    }
+
+    Ok(results)
 }

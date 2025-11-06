@@ -3,8 +3,8 @@ use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
     jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
     reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
-    validator_score_breakdown, validator_score_breakdowns, validator_scores, validators_flat,
-    versions, workflow_metrics_upload,
+    validator_score_breakdown, validator_score_breakdowns, validator_scores,
+    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -126,6 +126,21 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<validators_flat::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(validators_flat::handler);
+
+    let route_validators_block_rewards_epoch =
+        warp::path!("validators" / "block-rewards" / "epoch")
+            .and(warp::path::end())
+            .and(warp::get())
+            .and(warp::query::<validators_block_rewards::QueryParamsEpoch>())
+            .and(with_context(context.clone()))
+            .and_then(validators_block_rewards::handler_epoch);
+
+    let route_validators_block_rewards_last = warp::path!("validators" / "block-rewards" / "last")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<validators_block_rewards::QueryParamsLast>())
+        .and(with_context(context.clone()))
+        .and_then(validators_block_rewards::handler_last);
 
     let route_cluster_stats = warp::path!("cluster-stats")
         .and(warp::path::end())
@@ -251,6 +266,8 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
         .or(route_validators_flat)
+        .or(route_validators_block_rewards_epoch)
+        .or(route_validators_block_rewards_last)
         .or(route_uptimes)
         .or(route_versions)
         .or(route_commissions)
