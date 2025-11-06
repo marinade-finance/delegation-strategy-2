@@ -34,7 +34,7 @@ impl ValidatorJitoMEVInfo {
 
 pub struct ValidatorJitoPriorityFeeInfo {
     pub vote_account: String,
-    pub validator_commission: i32,
+    pub priority_commission: i32,
     pub total_lamports_transferred: Decimal,
     pub epoch: Decimal,
     pub total_epoch_rewards: Option<Decimal>,
@@ -47,7 +47,7 @@ impl ValidatorJitoPriorityFeeInfo {
     pub fn from_snapshot(v: &PriorityFeeDistributionValidatorSnapshot) -> Self {
         Self {
             vote_account: v.vote_account.clone(),
-            validator_commission: v.validator_commission as i32,
+            priority_commission: v.priority_commission as i32,
             total_lamports_transferred: v.total_lamports_transferred.into(),
             epoch: v.epoch.into(),
             total_epoch_rewards: v.total_epoch_rewards.map(Into::into),
@@ -258,7 +258,7 @@ pub struct JitoMevRecord {
 pub struct JitoPriorityFeeRecord {
     pub vote_account: String,
     pub epoch: Decimal,
-    pub validator_commission_bps: i32,
+    pub priority_commission_bps: i32,
     pub total_lamports_transferred: u64,
 }
 
@@ -267,8 +267,8 @@ pub struct JitoRecord {
     pub vote_account: String,
     pub epoch: Decimal,
     pub mev_commission_bps: Option<i32>,
-    pub validator_commission_bps: Option<i32>,
-    pub total_lamports_transferred: Option<u64>,
+    pub priority_commission_bps: Option<i32>,
+    pub priority_total_lamports_transferred: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
