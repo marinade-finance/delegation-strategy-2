@@ -290,7 +290,7 @@ async fn store_priority_fee(
             if let Some(v) = validators_priority_fee.get(vote_account) {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                     &v.vote_account,
-                    &v.validator_commission,
+                    &v.priority_commission,
                     &v.total_lamports_transferred,
                     &v.total_epoch_rewards,
                     &v.claimed_epoch_rewards,
@@ -355,7 +355,7 @@ async fn store_priority_fee(
             }
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                 &v.vote_account,
-                &v.validator_commission,
+                &v.priority_commission,
                 &v.total_lamports_transferred,
                 &v.total_epoch_rewards,
                 &v.claimed_epoch_rewards,
@@ -449,7 +449,7 @@ async fn get_last_priority_fee_info(
         |row| {
             Ok(JitoPriorityFeeRecord {
                 epoch: row.get::<_, Decimal>("epoch"),
-                validator_commission_bps: row.get::<_, i32>("validator_commission"),
+                priority_commission_bps: row.get::<_, i32>("validator_commission"),
                 vote_account: row.get("vote_account"),
                 total_lamports_transferred: row
                     .get::<_, Decimal>("total_lamports_transferred")
@@ -491,11 +491,11 @@ pub async fn get_last_jito_info(
             .get(&(vote_account.clone(), epoch))
             .map(|r| r.mev_commission_bps);
 
-        let (validator_commission_bps, total_lamports_transferred) = priority_fee_map
+        let (priority_commission_bps, total_lamports_transferred) = priority_fee_map
             .get(&(vote_account.clone(), epoch))
             .map(|r| {
                 (
-                    Some(r.validator_commission_bps),
+                    Some(r.priority_commission_bps),
                     Some(r.total_lamports_transferred),
                 )
             })
@@ -505,8 +505,8 @@ pub async fn get_last_jito_info(
             vote_account,
             epoch,
             mev_commission_bps,
-            validator_commission_bps,
-            total_lamports_transferred,
+            priority_commission_bps,
+            priority_total_lamports_transferred: total_lamports_transferred,
         });
     }
 

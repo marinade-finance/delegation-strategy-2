@@ -102,7 +102,7 @@ pub struct MevTipDistributionValidatorSnapshot {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PriorityFeeDistributionValidatorSnapshot {
     pub vote_account: String,
-    pub validator_commission: u16, // in basis points
+    pub priority_commission: u16, // in basis points
     pub total_lamports_transferred: u64,
     pub merkle_root_upload_authority: String,
     pub epoch: u64,
@@ -339,7 +339,7 @@ fn deserialize_priority_fee_distribution(
                 vote_account: fetched_priority_fee_distribution_account
                     .validator_vote_account
                     .to_string(),
-                validator_commission: fetched_priority_fee_distribution_account
+                priority_commission: fetched_priority_fee_distribution_account
                     .validator_commission_bps,
                 total_lamports_transferred: fetched_priority_fee_distribution_account
                     .total_lamports_transferred,
