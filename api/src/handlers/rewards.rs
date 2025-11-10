@@ -33,7 +33,7 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     let epochs = query_params.epochs.unwrap_or(DEFAULT_EPOCHS);
-    info!("Fetching rewards for past {:?}", epochs);
+    info!("Fetching rewards for past {epochs:?}");
 
     let context_guard = context.read().await;
     let psql_client = &context_guard.psql_client;
@@ -46,7 +46,7 @@ pub async fn handler(
     let rewards_inflation_est = match inflation_result {
         Ok(r) => r,
         Err(err) => {
-            error!("Failed to fetch inflation rewards: {}", err);
+            error!("Failed to fetch inflation rewards: {err}");
             return Ok(response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch inflation rewards!".into(),
@@ -56,7 +56,7 @@ pub async fn handler(
     let rewards_mev = match mev_result {
         Ok(r) => r,
         Err(err) => {
-            error!("Failed to fetch MEV rewards: {}", err);
+            error!("Failed to fetch MEV rewards: {err}");
             return Ok(response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch MEV rewards!".into(),
@@ -66,7 +66,7 @@ pub async fn handler(
     let rewards_jito_priority = match jito_result {
         Ok(r) => r,
         Err(err) => {
-            error!("Failed to fetch Jito Priority rewards: {}", err);
+            error!("Failed to fetch Jito Priority rewards: {err}");
             return Ok(response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch Jito Priority rewards!".into(),

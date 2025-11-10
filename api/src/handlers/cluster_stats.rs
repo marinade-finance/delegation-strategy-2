@@ -33,7 +33,7 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_CLUSTER_STATS.inc();
 
-    log::info!("Query cluster stats {:?}", query_params);
+    log::info!("Query cluster stats {query_params:?}");
 
     let cluster_stats = context
         .read()

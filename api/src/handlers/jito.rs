@@ -34,7 +34,7 @@ pub async fn handler(
         match get_last_jito_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await {
             Ok(r) => r,
             Err(err) => {
-                error!("Failed to fetch Jito info: {}", err);
+                error!("Failed to fetch Jito info: {err}");
                 return Ok(response_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Failed to fetch Jito records!".into(),

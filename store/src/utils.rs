@@ -40,7 +40,7 @@ impl<'a> InsertQueryCombiner<'a> {
     pub fn new(table_name: String, columns: String) -> Self {
         Self {
             insertions: 0,
-            statement: format!("INSERT INTO {} ({}) VALUES", table_name, columns).to_string(),
+            statement: format!("INSERT INTO {table_name} ({columns}) VALUES").to_string(),
             params: vec![],
         }
     }
@@ -57,8 +57,7 @@ impl<'a> InsertQueryCombiner<'a> {
         query_end.push(')');
 
         self.params.append(values);
-        self.statement
-            .push_str(&format!("{}{}", separator, query_end));
+        self.statement.push_str(&format!("{separator}{query_end}"));
         self.insertions += 1;
     }
 
@@ -91,7 +90,7 @@ impl<'a> UpdateQueryCombiner<'a> {
     ) -> Self {
         Self {
             updates: 0,
-            statement: format!("UPDATE {} SET {} FROM (VALUES", table_name, updates).to_string(),
+            statement: format!("UPDATE {table_name} SET {updates} FROM (VALUES").to_string(),
             values_names,
             where_condition,
             params: vec![],
@@ -107,14 +106,13 @@ impl<'a> UpdateQueryCombiner<'a> {
             }
             query_end.push_str(&format!("${}", i + 1 + self.params.len()));
             if let Some(t) = types.get(&i) {
-                query_end.push_str(&format!("::{}", t));
+                query_end.push_str(&format!("::{t}"));
             };
         }
         query_end.push(')');
 
         self.params.append(values);
-        self.statement
-            .push_str(&format!("{}{}", separator, query_end));
+        self.statement.push_str(&format!("{separator}{query_end}"));
         self.updates += 1;
     }
 
@@ -820,10 +818,7 @@ pub async fn update_validators_with_scores(
     validators: &mut HashMap<String, ValidatorRecord>,
     epochs_range: RangeInclusive<u64>,
 ) -> anyhow::Result<()> {
-    log::info!(
-        "Updating validator score with epochs range: {:?}",
-        epochs_range
-    );
+    log::info!("Updating validator score with epochs range: {epochs_range:?}");
     let scores_per_epoch = load_scores_in_epochs(&scoring_url, epochs_range).await?;
 
     let latest_epoch_with_score = match scores_per_epoch.keys().max() {
@@ -850,7 +845,7 @@ pub async fn load_scores_in_epochs(
     scoring_url: &String,
     epochs: RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
-    log::info!("Loading scores for epochs: {:?}", epochs);
+    log::info!("Loading scores for epochs: {epochs:?}");
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, HashMap<String, f64>)>();
 
@@ -887,7 +882,7 @@ pub async fn load_scores_in_epochs(
                     );
                 }
                 Err(e) => {
-                    log::error!("Error fetching scores for epoch {}: {}", epoch, e);
+                    log::error!("Error fetching scores for epoch {epoch}: {e}");
                 }
             }
             drop(permit);
@@ -1290,7 +1285,7 @@ pub async fn store_scoring(
 
     let scoring_run_id: i64 = scoring_run_result.get("scoring_run_id");
 
-    log::info!("Stored scoring run: {}", scoring_run_id);
+    log::info!("Stored scoring run: {scoring_run_id}");
 
     let component_scores_by_vote_account: HashMap<_, _> = scores
         .iter()

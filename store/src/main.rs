@@ -1,16 +1,16 @@
-use close_epoch::{close_epoch, CloseEpochOptions};
-use cluster_info::{store_cluster_info, StoreClusterInfoOptions};
+use close_epoch::{close_epoch, CloseEpochParams};
+use cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use collect::validators_jito::JitoAccountType;
-use commissions::{store_commissions, StoreCommissionsOptions};
+use commissions::{store_commissions, StoreCommissionsParams};
 use env_logger::Env;
-use ls_open_epochs::{list_open_epochs, LsOpenEpochsOptions};
+use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use structopt::StructOpt;
-use uptime::{store_uptime, StoreUptimeOptions};
-use validators::{store_validators, StoreValidatorsOptions};
-use validators_jito::{store_jito, StoreJitoOptions};
-use versions::{store_versions, StoreVersionsOptions};
+use uptime::{store_uptime, StoreUptimeParams};
+use validators::{store_validators, StoreValidatorsParams};
+use validators_jito::{store_jito, StoreJitoParams};
+use versions::{store_versions, StoreVersionsParams};
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
@@ -32,15 +32,15 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum StoreCommand {
-    Uptime(StoreUptimeOptions),
-    Commissions(StoreCommissionsOptions),
-    Versions(StoreVersionsOptions),
-    ClusterInfo(StoreClusterInfoOptions),
-    Validators(StoreValidatorsOptions),
-    JitoMev(StoreJitoOptions),
-    JitoPriority(StoreJitoOptions),
-    CloseEpoch(CloseEpochOptions),
-    LsOpenEpochs(LsOpenEpochsOptions),
+    Uptime(StoreUptimeParams),
+    Commissions(StoreCommissionsParams),
+    Versions(StoreVersionsParams),
+    ClusterInfo(StoreClusterInfoParams),
+    Validators(StoreValidatorsParams),
+    JitoMev(StoreJitoParams),
+    JitoPriority(StoreJitoParams),
+    CloseEpoch(CloseEpochParams),
+    LsOpenEpochs(LsOpenEpochsParams),
 }
 
 pub mod close_epoch;
@@ -68,34 +68,42 @@ async fn main() -> anyhow::Result<()> {
         tokio_postgres::connect(&params.common.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
-            log::error!("Connection error: {}", err);
+            log::error!("Connection error: {err}");
             std::process::exit(1);
         }
     });
 
     match params.command {
-        StoreCommand::Uptime(options) => store_uptime(options, &mut psql_client).await,
-        StoreCommand::Commissions(options) => store_commissions(options, &mut psql_client).await,
-        StoreCommand::Versions(options) => store_versions(options, &mut psql_client).await,
-        StoreCommand::ClusterInfo(options) => store_cluster_info(options, &mut psql_client).await,
-        StoreCommand::Validators(options) => store_validators(options, &mut psql_client).await,
-        StoreCommand::JitoMev(options) => {
+        StoreCommand::Uptime(store_params) => store_uptime(store_params, &mut psql_client).await,
+        StoreCommand::Commissions(store_params) => {
+            store_commissions(store_params, &mut psql_client).await
+        }
+        StoreCommand::Versions(store_params) => {
+            store_versions(store_params, &mut psql_client).await
+        }
+        StoreCommand::ClusterInfo(store_params) => {
+            store_cluster_info(store_params, &mut psql_client).await
+        }
+        StoreCommand::Validators(store_params) => {
+            store_validators(store_params, &mut psql_client).await
+        }
+        StoreCommand::JitoMev(store_params) => {
             store_jito(
-                options,
+                store_params,
                 &mut psql_client,
                 JitoAccountType::MevTipDistribution,
             )
             .await
         }
-        StoreCommand::JitoPriority(options) => {
+        StoreCommand::JitoPriority(store_params) => {
             store_jito(
-                options,
+                store_params,
                 &mut psql_client,
                 JitoAccountType::PriorityFeeDistribution,
             )
             .await
         }
-        StoreCommand::CloseEpoch(options) => close_epoch(options, &mut psql_client).await,
-        StoreCommand::LsOpenEpochs(_options) => list_open_epochs(&psql_client).await,
+        StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
+        StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
     }
 }

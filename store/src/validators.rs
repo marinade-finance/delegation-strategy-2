@@ -11,7 +11,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreValidatorsOptions {
+pub struct StoreValidatorsParams {
     #[structopt(long = "snapshot-file")]
     snapshot_path: String,
 }
@@ -19,12 +19,12 @@ pub struct StoreValidatorsOptions {
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
 pub async fn store_validators(
-    options: StoreValidatorsOptions,
+    params: StoreValidatorsParams,
     psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing validators snapshot...");
 
-    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
 
@@ -295,7 +295,7 @@ pub async fn store_validators(
             query.add(&mut params);
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Stored {} new validator records", insertions);
+        info!("Stored {insertions} new validator records");
     }
 
     Ok(())

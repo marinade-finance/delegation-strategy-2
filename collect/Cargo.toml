@@ -17,6 +17,7 @@ solana-sdk = { workspace = true }
 solana-program = { workspace = true }
 solana-account-decoder = { workspace = true }
 solana-config-program = { workspace = true }
+solana-commitment-config = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
@@ -26,3 +27,5 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 jito-tip-distribution = { workspace = true }
 jito-priority-fee-distribution = { workspace = true }
+google-cloud-bigquery = { workspace = true }
+tokio = { workspace = true }

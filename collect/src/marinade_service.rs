@@ -107,7 +107,7 @@ fn get_stakes_grouped_by_validator(
             stake_account.stake().and_then(|stake| {
                 let StakeHistoryEntry { effective, .. } = stake
                     .delegation
-                    .stake_activating_and_deactivating(epoch, Some(stake_history), None);
+                    .stake_activating_and_deactivating(epoch, stake_history, None);
                 if effective == 0 {
                     None
                 } else {
@@ -133,11 +133,8 @@ fn get_stake_accounts(
     rpc_client: &RpcClient,
     delegation_authority: &Pubkey,
     withdrawer_authority: Option<&Pubkey>,
-) -> anyhow::Result<HashMap<Pubkey, stake::state::StakeState>> {
-    log::info!(
-        "Fetching stake accounts by delegation authority: {:?}",
-        delegation_authority
-    );
+) -> anyhow::Result<HashMap<Pubkey, stake::state::StakeStateV2>> {
+    log::info!("Fetching stake accounts by delegation authority: {delegation_authority:?}");
 
     let mut filters = vec![RpcFilterType::Memcmp(Memcmp::new(
         4 + 8, // enum StakeState + rent_exempt_reserve: u64
@@ -162,6 +159,7 @@ fn get_stake_accounts(
                 min_context_slot: None,
             },
             with_context: None,
+            sort_results: None,
         },
     )?;
 

@@ -14,7 +14,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreJitoOptions {
+pub struct StoreJitoParams {
     #[structopt(long = "snapshot-file")]
     snapshot_path: String,
 }
@@ -22,13 +22,13 @@ pub struct StoreJitoOptions {
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
 pub async fn store_jito(
-    options: StoreJitoOptions,
+    params: StoreJitoParams,
     psql_client: &mut Client,
     account_type: JitoAccountType,
 ) -> anyhow::Result<()> {
-    info!("Storing JITO account {} snapshot...", account_type);
+    info!("Storing JITO account {account_type} snapshot...");
 
-    let path = options.snapshot_path;
+    let path = params.snapshot_path;
     let snapshot_file = std::fs::File::open(&path)
         .map_err(|e| anyhow::anyhow!("Failed to open snapshot file '{path}': {e}"))?;
     let snapshot: JitoSnapshot = serde_yaml::from_reader(snapshot_file)
@@ -97,8 +97,7 @@ async fn get_existing_vote_accounts(
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "Failed to get existing vote accounts from DB table {db_table} for epoch {snapshot_epoch}: {e} [{:?}]",
-                e
+                "Failed to get existing vote accounts from DB table {db_table} for epoch {snapshot_epoch}: {e} [{e:?}]"
             )
         })
 }
@@ -227,13 +226,10 @@ async fn store_mev(
             query.add(&mut params);
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Inserted new new MEV records {}", insertions);
+        info!("Inserted new new MEV records {insertions}");
     }
 
-    info!(
-        "Stored MEV snapshot: {} updated, {} inserted",
-        updates, insertions
-    );
+    info!("Stored MEV snapshot: {updates} updated, {insertions} inserted");
 
     Ok(())
 }
@@ -368,13 +364,10 @@ async fn store_priority_fee(
             query.add(&mut params);
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Inserted new new priority fee records {}", insertions);
+        info!("Inserted new new priority fee records {insertions}");
     }
 
-    info!(
-        "Stored priority fee snapshot: {} updated, {} inserted",
-        updates, insertions
-    );
+    info!("Stored priority fee snapshot: {updates} updated, {insertions} inserted");
 
     Ok(())
 }

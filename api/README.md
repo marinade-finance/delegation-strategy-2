@@ -21,6 +21,9 @@ cargo run --bin api -- \
 
 ```bash
 curl 'http://localhost:8000/validators'
+
+EPOCH=$(( $(solana -um epoch) - 1 ))
+curl "http://localhost:8000/unstake-hints?epoch=$EPOCH"
 ```
 
 **NOTE:**

@@ -263,27 +263,27 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
             info!("Warming up the cache");
 
             if let Err(err) = warm_scores_cache(&context).await {
-                error!("Failed to update the scores: {}", err);
+                error!("Failed to update the scores: {err}");
             }
 
             if let Err(err) = warm_versions_cache(&context).await {
-                error!("Failed to update the versions: {}", err);
+                error!("Failed to update the versions: {err}");
             }
 
             if let Err(err) = warm_commissions_cache(&context).await {
-                error!("Failed to update the commissions: {}", err);
+                error!("Failed to update the commissions: {err}");
             }
 
             if let Err(err) = warm_uptimes_cache(&context).await {
-                error!("Failed to update the uptimes: {}", err);
+                error!("Failed to update the uptimes: {err}");
             }
 
             if let Err(err) = warm_cluster_stats_cache(&context).await {
-                error!("Failed to update the cluster stats: {}", err);
+                error!("Failed to update the cluster stats: {err}");
             }
 
             if let Err(err) = warm_validators_cache(&context).await {
-                error!("Failed to update the validators: {}", err);
+                error!("Failed to update the validators: {err}");
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();

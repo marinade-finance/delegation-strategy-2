@@ -29,7 +29,7 @@ jobs:
           sudo apt-get -y install libudev-dev pkg-config
 
       - name: 🦿 Install Rust tookchain
-        uses: dtolnay/rust-toolchain@1.84.0
+        uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
 

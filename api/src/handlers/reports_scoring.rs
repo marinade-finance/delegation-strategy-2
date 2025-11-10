@@ -21,15 +21,15 @@ pub struct ResponseReportScoring {
 
 fn md_pre_msol_votes(ui_id: &String) -> String {
     format!(
-        "# Report {}\n\
-        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
-        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
+        "# Report {ui_id}\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{ui_id})\n\
+        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
         ```bash\n\
-        mkdir -p \"scoring-{}\"\n\
-        cd \"scoring-{}\"\n\
-        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
+        mkdir -p \"scoring-{ui_id}\"\n\
+        cd \"scoring-{ui_id}\"\n\
+        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/\" \
             --input-file - --no-clobber <<<$'validators.csv\nself-stake.csv\nparams.env\nblacklist.csv'\n\
         ```\n\
         Install dependencies for R (assumes you have R installed already):\n\
@@ -43,20 +43,20 @@ fn md_pre_msol_votes(ui_id: &String) -> String {
         export SCORING_R=./scoring.R\n\
         bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/392fb39/scripts/scoring-run.bash)\"\n\
         ```\n\
-    ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
+    ")
 }
 
 fn md_pre_vemnde_votes(ui_id: &String) -> String {
     format!(
-        "# Report {}\n\
-        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
-        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
+        "# Report {ui_id}\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{ui_id})\n\
+        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
         ```bash\n\
-        mkdir -p \"scoring-{}\"\n\
-        cd \"scoring-{}\"\n\
-        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
+        mkdir -p \"scoring-{ui_id}\"\n\
+        cd \"scoring-{ui_id}\"\n\
+        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/\" \
             --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nparams.env\nblacklist.csv'\n\
         ```\n\
         Install dependencies for R (assumes you have R installed already):\n\
@@ -70,20 +70,20 @@ fn md_pre_vemnde_votes(ui_id: &String) -> String {
         export SCORING_R=./scoring.R\n\
         bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/7c51106/scripts/scoring-run.bash)\"\n\
         ```\n\
-    ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
+    ")
 }
 
 fn md_pre_psr(ui_id: &String) -> String {
     format!(
-        "# Report {}\n\
-        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
-        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
+        "# Report {ui_id}\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{ui_id})\n\
+        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
         ```bash\n\
-        mkdir -p \"scoring-{}\"\n\
-        cd \"scoring-{}\"\n\
-        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
+        mkdir -p \"scoring-{ui_id}\"\n\
+        cd \"scoring-{ui_id}\"\n\
+        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/\" \
             --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nvemnde-votes.csv\nparams.env\nblacklist.csv'\n\
         ```\n\
         Install dependencies for R (assumes you have R installed already):\n\
@@ -97,20 +97,20 @@ fn md_pre_psr(ui_id: &String) -> String {
         export SCORING_R=./scoring.R\n\
         bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
         ```\n\
-    ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
+    ")
 }
 
 fn md_latest(ui_id: &String) -> String {
     format!(
-        "# Report {}\n\
-        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{})\n\
-        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/scores.csv)\n\
+        "# Report {ui_id}\n\
+        - [HTML report](https://validators-api.marinade.finance/reports/scoring/{ui_id})\n\
+        - [CSV Scores](https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/scores.csv)\n\
         ## Reproduce the results\n\
         Get the source data:\n\
         ```bash\n\
-        mkdir -p \"scoring-{}\"\n\
-        cd \"scoring-{}\"\n\
-        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/\" \
+        mkdir -p \"scoring-{ui_id}\"\n\
+        cd \"scoring-{ui_id}\"\n\
+        wget --base \"https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{ui_id}/\" \
             --input-file - --no-clobber <<<$'validators.csv\nmsol-votes.csv\nvemnde-votes.csv\nparams.env\nblacklist.csv\nvalidator-bonds.csv'\n\
         ```\n\
         Install dependencies for R (assumes you have R installed already):\n\
@@ -124,7 +124,7 @@ fn md_latest(ui_id: &String) -> String {
         export SCORING_R=./scoring.R\n\
         bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
         ```\n\
-    ", ui_id, ui_id, ui_id, ui_id, ui_id, ui_id)
+    ")
 }
 
 fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
@@ -158,7 +158,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
         match store::scoring::load_scoring_runs(&context.read().await.psql_client).await {
             Ok(scoring_runs) => scoring_runs,
             Err(err) => {
-                error!("Failed to fetch scoring run records: {}", err);
+                error!("Failed to fetch scoring run records: {err}");
                 return Ok(response_error_500("Failed to fetch records!".into()));
             }
         };

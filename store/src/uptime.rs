@@ -10,7 +10,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
-pub struct StoreUptimeOptions {
+pub struct StoreUptimeParams {
     #[structopt(long = "snapshot-file")]
     snapshot_path: String,
 }
@@ -27,12 +27,12 @@ fn status_from_delinquency(delinquent: bool) -> &'static str {
 }
 
 pub async fn store_uptime(
-    options: StoreUptimeOptions,
+    params: StoreUptimeParams,
     psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Storing uptime...");
 
-    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let mut validators_with_extended_status: HashSet<String> = HashSet::new();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
@@ -84,10 +84,7 @@ pub async fn store_uptime(
             }
         }
 
-        debug!(
-            "found uptime record: {} {} {} {} {}",
-            id, vote_account, status, start_at, end_at
-        );
+        debug!("found uptime record: {id} {vote_account} {status} {start_at} {end_at}");
     }
 
     let mut query = UpdateQueryCombiner::new(
@@ -123,7 +120,7 @@ pub async fn store_uptime(
                     &default_status_end_at,
                 ];
                 query.add(&mut params);
-                warn!("Validator {} is now DOWN", vote_account);
+                warn!("Validator {vote_account} is now DOWN");
             } else {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                     vote_account,
@@ -133,7 +130,7 @@ pub async fn store_uptime(
                     &default_status_end_at,
                 ];
                 query.add(&mut params);
-                info!("Validator {} is now UP", vote_account);
+                info!("Validator {vote_account} is now UP");
             }
         }
     }

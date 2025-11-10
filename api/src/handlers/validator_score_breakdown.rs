@@ -64,7 +64,7 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN.inc();
 
-    log::info!("Query validator score breakdown {:?}", query_params);
+    log::info!("Query validator score breakdown {query_params:?}");
 
     let CachedSingleRunScores {
         scores,

@@ -265,7 +265,7 @@ pub async fn handler(
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
 
-    log::info!("Query validators {:?}", config);
+    log::info!("Query validators {config:?}");
 
     let validators = get_validators(context.clone(), config).await;
 
@@ -295,7 +295,7 @@ pub async fn handler(
             StatusCode::OK,
         ),
         Err(err) => {
-            error!("Failed to fetch validator records: {}", err);
+            error!("Failed to fetch validator records: {err}");
             response_error_500("Failed to fetch records!".into())
         }
     })

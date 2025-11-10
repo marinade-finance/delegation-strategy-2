@@ -13,7 +13,7 @@ use solana_sdk::clock::Epoch;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-pub struct ValidatorsOptions {
+pub struct ValidatorsParams {
     #[structopt(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
@@ -125,17 +125,17 @@ pub struct Snapshot {
 
 pub fn collect_validators_info(
     common_params: CommonParams,
-    options: ValidatorsOptions,
+    validator_params: ValidatorsParams,
 ) -> anyhow::Result<()> {
-    info!("Collecting snaphost of validators: {:?}", &options);
+    info!("Collecting snaphost of validators: {:?}", &validator_params);
     let client = solana_client(common_params.rpc_url, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    info!("Current epoch: {:?}", current_epoch_info);
+    info!("Current epoch: {current_epoch_info:?}");
 
-    let epoch = options.epoch.unwrap_or(current_epoch_info.epoch);
-    info!("Looking at epoch: {}", epoch);
+    let epoch = validator_params.epoch.unwrap_or(current_epoch_info.epoch);
+    info!("Looking at epoch: {epoch}");
 
     let mut validators: Vec<ValidatorSnapshot> = vec![];
 
@@ -155,10 +155,7 @@ pub fn collect_validators_info(
         "Total activated stake: {}",
         total_activated_live_stake + total_activated_delinquent_stake
     );
-    info!(
-        "Delinquent activated stake: {}",
-        total_activated_delinquent_stake
-    );
+    info!("Delinquent activated stake: {total_activated_delinquent_stake}");
     let stake_history = get_stake_history(&client)?;
     let minimum_superminority_stake = get_minimum_superminority_stake(&vote_accounts);
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
@@ -169,8 +166,8 @@ pub fn collect_validators_info(
         &client,
         epoch,
         &stake_history,
-        &options.bonds_url,
-        options.rpc_attempts,
+        &validator_params.bonds_url,
+        validator_params.rpc_attempts,
     )?;
     let validators_info = get_validators_info(&client)?;
     let node_ips = get_cluster_nodes_ips(&client)?;
@@ -181,9 +178,9 @@ pub fn collect_validators_info(
         foundation_stake.values().sum::<u64>()
     );
 
-    let data_centers = match options.whois {
+    let data_centers = match validator_params.whois {
         Some(whois) => get_data_centers(
-            WhoisClient::new(whois, options.whois_bearer_token),
+            WhoisClient::new(whois, validator_params.whois_bearer_token),
             node_ips.clone(),
         )?,
         _ => Default::default(),

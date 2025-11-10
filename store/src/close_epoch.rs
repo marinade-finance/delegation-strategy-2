@@ -9,7 +9,7 @@ use structopt::StructOpt;
 use tokio_postgres::{types::ToSql, Client};
 
 #[derive(Debug, StructOpt)]
-pub struct CloseEpochOptions {
+pub struct CloseEpochParams {
     #[structopt(long = "snapshot-file")]
     snapshot_path: String,
 }
@@ -147,12 +147,12 @@ struct ValidatorUpdateRecord {
 }
 
 pub async fn close_epoch(
-    options: CloseEpochOptions,
+    epoch_params: CloseEpochParams,
     psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     info!("Finalizing validators snapshot...");
 
-    let snapshot_file = std::fs::File::open(options.snapshot_path)?;
+    let snapshot_file = std::fs::File::open(epoch_params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
     let snapshot_epoch: Decimal = snapshot.epoch.into();

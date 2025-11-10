@@ -10,5 +10,9 @@ See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
 export RPC_URL=...
 export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
 
+# verification `jito_priority_fee` table
 cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-priority
+
+# verification jit `mev` table
+cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-mev
 ```

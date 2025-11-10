@@ -29,7 +29,7 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATORS_FLAT.inc();
 
-    log::info!("Query flat validators {:?}", query_params);
+    log::info!("Query flat validators {query_params:?}");
 
     let epochs = query_params.epochs.unwrap_or(DEFAULT_EPOCHS);
     let validators = store::utils::load_validators_aggregated_flat(
@@ -42,7 +42,7 @@ pub async fn handler(
     let validators = match validators {
         Ok(validators) => validators,
         Err(err) => {
-            error!("Failed to fetch validator records: {}", err);
+            error!("Failed to fetch validator records: {err}");
             return Ok(response_error_500("Failed to fetch records!".into()).into_response());
         }
     };

@@ -31,7 +31,7 @@ async fn voter_max_commission_in_epoch(
     psql_client: &Client,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, u8>> {
-    log::info!("Loading max commission per voter in epoch: {}", epoch);
+    log::info!("Loading max commission per voter in epoch: {epoch}");
     let mut commissions: HashMap<_, _> = Default::default();
 
     let rows = psql_client
@@ -65,10 +65,7 @@ async fn voters_with_marinade_stake_in_epoch(
     psql_client: &Client,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, f64>> {
-    log::info!(
-        "Loading list of validators with Marinade stake in epoch: {}",
-        epoch
-    );
+    log::info!("Loading list of validators with Marinade stake in epoch: {epoch}");
     Ok(psql_client
         .query(
             "SELECT
@@ -88,7 +85,7 @@ async fn voters_credits_performance_in_epoch(
     psql_client: &Client,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, f64>> {
-    log::info!("Loading list of poor voters: {}", epoch);
+    log::info!("Loading list of poor voters: {epoch}");
     Ok(psql_client
         .query(
             "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) AS stake_weighted_avg_credits FROM validators WHERE epoch = $1)
@@ -111,7 +108,7 @@ pub async fn load_unstake_hints(
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, HashSet<UnstakeHint>>> {
-    log::info!("Loading unstake hints in epoch: {}", epoch);
+    log::info!("Loading unstake hints in epoch: {epoch}");
     let mut hints: HashMap<_, HashSet<_>> = Default::default();
 
     let commissions_in_this_epoch = voter_max_commission_in_epoch(psql_client, epoch).await?;
@@ -166,7 +163,7 @@ pub async fn load_marinade_unstake_hint_records(
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<UnstakeHintRecord>> {
-    log::info!("Loading Marinade unstake hint records in epoch: {}", epoch);
+    log::info!("Loading Marinade unstake hint records in epoch: {epoch}");
 
     let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
 
@@ -193,7 +190,7 @@ pub async fn load_global_unstake_hint_records(
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<GlobalUnstakeHintRecord>> {
-    log::info!("Loading global unstake hint records in epoch: {}", epoch);
+    log::info!("Loading global unstake hint records in epoch: {epoch}");
 
     let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
 

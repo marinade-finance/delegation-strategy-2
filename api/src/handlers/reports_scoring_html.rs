@@ -30,15 +30,12 @@ pub async fn handler(
             .unwrap());
     }
 
-    let report_remote_url = format!("https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{}/report.html", scoring_ui_id);
+    let report_remote_url = format!("https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{scoring_ui_id}/report.html");
 
     let response = match reqwest::get(&report_remote_url).await {
         Ok(response) => response,
         Err(err) => {
-            error!(
-                "Failed to fetch the HTML ({}) from the remote: {}",
-                report_remote_url, err
-            );
+            error!("Failed to fetch the HTML ({report_remote_url}) from the remote: {err}");
             return Ok(http::response::Builder::new()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header(hyper::header::CONTENT_TYPE, "text/plain")

@@ -67,7 +67,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                     .epoch_stats
                     .iter()
                     .filter(|validator| validator.epoch == last_epoch)
-                    .last();
+                    .next_back();
                 match current_epoch_stats {
                     Some(current_epoch_stats) => records.push(StakingChange {
                         identity: validator.identity.clone(),
@@ -86,7 +86,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                 }
             }
             None => {
-                warn!("Couldn't find info for {} in current epoch", vote_account);
+                warn!("Couldn't find info for {vote_account} in current epoch");
                 continue;
             }
         }
@@ -127,7 +127,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
             ))
         }
         Err(err) => {
-            error!("Failed to fetch scores records: {}", err);
+            error!("Failed to fetch scores records: {err}");
             Ok(response_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch records".into(),

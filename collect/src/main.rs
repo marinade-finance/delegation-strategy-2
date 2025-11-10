@@ -2,7 +2,7 @@ use collect::common::*;
 use collect::validators::*;
 use collect::validators_jito::{collect_jito_info, JitoAccountType, JitoParams};
 use collect::validators_performance::{
-    collect_validators_performance_info, ValidatorsPerformanceOptions,
+    collect_validators_performance_info, ValidatorsPerformanceParams,
 };
 use env_logger::Env;
 use log::info;
@@ -20,8 +20,8 @@ struct Params {
 
 #[derive(Debug, StructOpt)]
 enum CollectCommand {
-    Validators(ValidatorsOptions),
-    ValidatorsPerformance(ValidatorsPerformanceOptions),
+    Validators(ValidatorsParams),
+    ValidatorsPerformance(ValidatorsPerformanceParams),
     JitoMev(JitoParams),
     JitoPriority(JitoParams),
 }
@@ -44,9 +44,11 @@ fn main() -> anyhow::Result<()> {
 
     let command_name = params.command.to_string();
     let result = match params.command {
-        CollectCommand::Validators(options) => collect_validators_info(params.common, options),
-        CollectCommand::ValidatorsPerformance(options) => {
-            collect_validators_performance_info(params.common, options)
+        CollectCommand::Validators(validators_params) => {
+            collect_validators_info(params.common, validators_params)
+        }
+        CollectCommand::ValidatorsPerformance(performance_params) => {
+            collect_validators_performance_info(params.common, performance_params)
         }
         CollectCommand::JitoMev(jito_params) => collect_jito_info(
             params.common,
@@ -62,7 +64,9 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(_) => info!("Collect {command_name} finished successfully."),
-        Err(err) => anyhow::bail!("Collect {command_name} rocessing finished with an error: {err}"),
+        Err(err) => {
+            anyhow::bail!("Collect {command_name} processing finished with an error: {err}")
+        }
     }
 
     Ok(())

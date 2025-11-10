@@ -39,7 +39,7 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_ADMIN_SCORE_UPLOAD.inc();
-    log::info!("Uploading scores {:?}", query_params);
+    log::info!("Uploading scores {query_params:?}");
 
     if !logged_in {
         log::error!("Unauthorized access!");
@@ -83,7 +83,7 @@ pub async fn handler(
         })
         .await
         .map_err(|err| {
-            log::error!("CSV reading error: {}", err);
+            log::error!("CSV reading error: {err}");
             warp::reject::reject()
         })?;
 
@@ -97,7 +97,7 @@ pub async fn handler(
                 rows_processed += 1;
             }
             Err(err) => {
-                log::error!("Failed to parse the CSV row: {}", err);
+                log::error!("Failed to parse the CSV row: {err}");
                 return Ok(response_error(
                     StatusCode::BAD_REQUEST,
                     "Cannot parse the CSV!".into(),
@@ -122,7 +122,7 @@ pub async fn handler(
             StatusCode::OK,
         ),
         Err(err) => {
-            log::error!("Failed to store the scoring: {}", err);
+            log::error!("Failed to store the scoring: {err}");
             response_error_500("Failed to store the scoring!".into())
         }
     })

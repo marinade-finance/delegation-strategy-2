@@ -210,6 +210,7 @@ fn fetch_program_accounts_with_retry(
                         min_context_slot: None,
                     },
                     with_context: None,
+                    sort_results: None,
                 },
             )
         },
@@ -218,15 +219,14 @@ fn fetch_program_accounts_with_retry(
             warn!(
                 "Attempt {} has failed: {}, retrying in {:?} seconds",
                 attempt,
-                err.to_string(),
+                err,
                 backoff.as_secs()
             )
         },
     )
     .map_err(|e| {
         anyhow::Error::new(e).context(format!(
-            "Failed to fetch program accounts for program_id: {} at index {}",
-            program_id, byte_pos
+            "Failed to fetch program accounts for program_id: {program_id} at index {byte_pos}"
         ))
     })
 }
@@ -372,9 +372,9 @@ pub fn collect_jito_info(
     let epoch = jito_params
         .current_epoch_override
         .unwrap_or(current_epoch_info.epoch);
-    info!("Current epoch: {:?}", current_epoch_info);
+    info!("Current epoch: {current_epoch_info:?}");
     let looking_at_epoch = epoch - 1;
-    info!("Looking at epoch: {}", looking_at_epoch);
+    info!("Looking at epoch: {looking_at_epoch}");
 
     let raw_accounts = jito_accounts(
         &client,
@@ -385,17 +385,11 @@ pub fn collect_jito_info(
 
     let validators = match account_type {
         JitoAccountType::MevTipDistribution => {
-            info!(
-                "Deserializing MEV Tip Distribution accounts for epoch {}",
-                looking_at_epoch
-            );
+            info!("Deserializing MEV Tip Distribution accounts for epoch {looking_at_epoch}");
             deserialize_mev_tip_distribution(&raw_accounts, looking_at_epoch)?
         }
         JitoAccountType::PriorityFeeDistribution => {
-            info!(
-                "Deserializing Priority Fee Distribution accounts for epoch {}",
-                looking_at_epoch
-            );
+            info!("Deserializing Priority Fee Distribution accounts for epoch {looking_at_epoch}");
             deserialize_priority_fee_distribution(&raw_accounts, looking_at_epoch)?
         }
     };

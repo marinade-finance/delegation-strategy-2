@@ -59,10 +59,7 @@ pub fn get_data_centers(
             Ok(info) => {
                 data_centers.insert(node.clone(), (ip.clone(), info));
             }
-            Err(err) => warn!(
-                "Couldn't fetch info about IP {} of node {}: {}",
-                ip, node, err
-            ),
+            Err(err) => warn!("Couldn't fetch info about IP {ip} of node {node}: {err}"),
         };
     }
 
