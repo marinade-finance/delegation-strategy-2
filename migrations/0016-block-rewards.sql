@@ -10,4 +10,7 @@ CREATE TABLE validators_block_rewards (
 
   PRIMARY KEY(id),
   UNIQUE(epoch, identity_account, vote_account)
-)
+);
+
+CREATE INDEX idx_validators_block_rewards_epoch
+    ON validators_block_rewards(epoch);

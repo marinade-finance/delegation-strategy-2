@@ -87,8 +87,7 @@ use utoipa::OpenApi;
         workflow_metrics_upload::handler,
         jito_mev::handler,
         jito::handler,
-        validators_block_rewards::handler_last,
-        validators_block_rewards::handler_epoch,
+        validators_block_rewards::handler,
     )
 )]
 pub struct ApiDoc;

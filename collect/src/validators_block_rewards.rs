@@ -145,9 +145,8 @@ pub fn collect_validator_block_rewards_info(
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    let epoch = rewards_params.epoch.unwrap_or(current_epoch_info.epoch);
     info!("Current epoch: {current_epoch_info:?}");
-    let looking_at_epoch = epoch - 1;
+    let looking_at_epoch = rewards_params.epoch.unwrap_or(current_epoch_info.epoch - 1);
     info!("Looking at epoch: {looking_at_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
@@ -167,7 +166,7 @@ pub fn collect_validator_block_rewards_info(
         &ValidatorsBlockRewardsSnapshot {
             version: DATA_VERSION,
             epoch: looking_at_epoch,
-            loaded_at_epoch: epoch,
+            loaded_at_epoch: current_epoch_info.epoch,
             loaded_at_slot_index: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             block_rewards,

@@ -23,9 +23,9 @@ cargo run --bin collect -- validators --epoch $EPOCH | \
 cargo run --bin collect -- validators-performance --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/snapshot-performance.yaml
 
-cargo run --bin collect -- jito-priority --current-epoch-override $EPOCH | \
+cargo run --bin collect -- jito-priority --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/jito-priority.yaml
-cargo run --bin collect -- jito-mev --current-epoch-override $EPOCH | \
+cargo run --bin collect -- jito-mev --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/jito-mev.yaml
 
 # getBlockProduction method works only with recent epochs (cannot work with EPOCH-1)

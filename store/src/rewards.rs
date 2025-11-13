@@ -1,24 +1,28 @@
+use crate::validators_block_rewards::VALIDATORS_BLOCK_REWARDS_TABLE;
 use rust_decimal::Decimal;
 use tokio_postgres::Client;
 
-async fn get_jito_rewards_by_table(
+/// Aggregates rewards by epoch, excluding epochs with too many NULLs in total_epoch_rewards
+/// to avoid not fully collected data
+async fn get_rewards_by_table(
     psql_client: &Client,
     table_name: &str,
+    amount_column_name: &str,
     epochs: u64,
     limit_null_count: u8,
 ) -> anyhow::Result<Vec<(u64, f64)>> {
     let query = format!(
         r#"
-        SELECT SUM(COALESCE(total_epoch_rewards, 0)) / 1e9 AS amount, epoch
+        SELECT SUM(COALESCE({amount_column_name}, 0)) / 1e9 AS amount, epoch
         FROM {table_name}
         GROUP BY epoch
-        HAVING COUNT(CASE WHEN total_epoch_rewards IS NULL THEN 1 END) < {limit_null_count}
+        HAVING COUNT(CASE WHEN {amount_column_name} IS NULL THEN 1 END) < {limit_null_count}
         ORDER BY epoch DESC LIMIT $1
         "#
     );
 
-    // total_epoch_rewards may be NULL as data on commission is loaded at start of epoch
-    // when JITO has not run own snapshot processing that updates data about rewards
+    // amount_column_name may be NULL as data on commission is loaded at start of epoch
+    // when not run snapshot processing that updates data about rewards
     // query ignores whole epoch if there is at least one NULL value
     let rows = psql_client
         .query(&query, &[&i64::try_from(epochs)?])
@@ -33,6 +37,22 @@ async fn get_jito_rewards_by_table(
             )
         })
         .collect())
+}
+
+async fn get_jito_rewards_by_table(
+    psql_client: &Client,
+    table_name: &str,
+    epochs: u64,
+    limit_null_count: u8,
+) -> anyhow::Result<Vec<(u64, f64)>> {
+    get_rewards_by_table(
+        psql_client,
+        table_name,
+        "total_epoch_rewards",
+        epochs,
+        limit_null_count,
+    )
+    .await
 }
 
 pub async fn get_mev_rewards(psql_client: &Client, epochs: u64) -> anyhow::Result<Vec<(u64, f64)>> {
@@ -65,4 +85,19 @@ pub async fn get_estimated_inflation_rewards(
             )
         })
         .collect())
+}
+
+pub async fn get_block_rewards(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<(u64, f64)>> {
+    // limit_null_count: at least 10 rows per epoch filled, then considering data is well loaded
+    get_rewards_by_table(
+        psql_client,
+        VALIDATORS_BLOCK_REWARDS_TABLE,
+        "amount",
+        epochs,
+        10,
+    )
+    .await
 }
