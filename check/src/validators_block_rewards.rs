@@ -26,7 +26,7 @@ pub async fn check_block_rewards(
 
     if params.slot_offset_wait > 432_000.into() {
         return Err(anyhow::anyhow!(
-            "slot-offset-wait value {} is too high. Max slots per epoch is 423000",
+            "slot-offset-wait value {} is too high. Max slots per epoch is 432000",
             params.slot_offset_wait
         ));
     }

@@ -285,8 +285,8 @@ pub struct JitoPriorityFeeRecord {
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct JitoRecord {
-    pub vote_account: String,
     pub epoch: Decimal,
+    pub vote_account: String,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
     pub priority_total_lamports_transferred: Option<u64>,

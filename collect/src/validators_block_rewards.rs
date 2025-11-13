@@ -138,7 +138,7 @@ pub fn collect_validator_block_rewards_info(
     common_params: CommonParams,
     rewards_params: BlockRewardsParams,
 ) -> anyhow::Result<()> {
-    info!("Collecting snapshot of JITO validators accounts");
+    info!("Collecting validator block rewards snapshot");
     let timeout = Duration::from_secs(rewards_params.rpc_timeout);
     let client =
         solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
