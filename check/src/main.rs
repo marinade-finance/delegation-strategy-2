@@ -1,4 +1,5 @@
 use crate::validators_jito::{check_jito, ValidatorsJitoCheckParams};
+use check::validators_block_rewards::{check_block_rewards, BlockRewardsCheckParams};
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use log::info;
@@ -30,6 +31,7 @@ struct Params {
 enum StoreCommand {
     JitoMev(ValidatorsJitoCheckParams),
     JitoPriority(ValidatorsJitoCheckParams),
+    BlockRewards(BlockRewardsCheckParams),
 }
 
 pub mod validators_jito;
@@ -67,6 +69,15 @@ async fn main() -> anyhow::Result<()> {
                 &psql_client,
                 &rpc_client,
                 collect::validators_jito::JitoAccountType::PriorityFeeDistribution.db_table_name(),
+            )
+            .await
+        }
+        StoreCommand::BlockRewards(rewards_params) => {
+            check_block_rewards(
+                rewards_params,
+                &psql_client,
+                &rpc_client,
+                store::validators_block_rewards::VALIDATORS_BLOCK_REWARDS_TABLE,
             )
             .await
         }

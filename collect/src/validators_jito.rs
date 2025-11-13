@@ -36,10 +36,10 @@ pub struct JitoParams {
     rpc_timeout: u64,
 
     #[structopt(
-        long = "current-epoch-override",
-        help = "Act as if current epoch was set to this value."
+        long = "epoch",
+        help = "Overriding 'epoch' to act as if current epoch was set to this value."
     )]
-    current_epoch_override: Option<u64>,
+    epoch: Option<u64>,
 }
 
 const JITO_SNAPSHOT_VERSION: u16 = 1;
@@ -369,11 +369,8 @@ pub fn collect_jito_info(
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
-    let epoch = jito_params
-        .current_epoch_override
-        .unwrap_or(current_epoch_info.epoch);
     info!("Current epoch: {current_epoch_info:?}");
-    let looking_at_epoch = epoch - 1;
+    let looking_at_epoch = jito_params.epoch.unwrap_or(current_epoch_info.epoch - 1);
     info!("Looking at epoch: {looking_at_epoch}");
 
     let raw_accounts = jito_accounts(
@@ -400,7 +397,7 @@ pub fn collect_jito_info(
             version: JITO_SNAPSHOT_VERSION,
             account_type: account_type.clone(),
             epoch: looking_at_epoch,
-            loaded_at_epoch: epoch,
+            loaded_at_epoch: current_epoch_info.epoch,
             loaded_at_slot_index: current_epoch_info.slot_index,
             created_at: created_at.to_string(),
             validators,

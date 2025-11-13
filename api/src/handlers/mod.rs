@@ -18,6 +18,7 @@ pub mod uptimes;
 pub mod validator_score_breakdown;
 pub mod validator_score_breakdowns;
 pub mod validator_scores;
+pub mod validators_block_rewards;
 pub mod validators_flat;
 pub mod versions;
 pub mod workflow_metrics_upload;

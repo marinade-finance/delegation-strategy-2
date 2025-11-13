@@ -6,6 +6,7 @@ use env_logger::Env;
 use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use structopt::StructOpt;
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
@@ -37,6 +38,7 @@ enum StoreCommand {
     Versions(StoreVersionsParams),
     ClusterInfo(StoreClusterInfoParams),
     Validators(StoreValidatorsParams),
+    ValidatorsBlockRewards(StoreBlockRewardsParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
@@ -102,6 +104,9 @@ async fn main() -> anyhow::Result<()> {
                 JitoAccountType::PriorityFeeDistribution,
             )
             .await
+        }
+        StoreCommand::ValidatorsBlockRewards(store_params) => {
+            store_block_rewards(store_params, &mut psql_client).await
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
