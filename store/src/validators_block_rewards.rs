@@ -1,13 +1,11 @@
 use crate::dto::{ValidatorBlockReward, ValidatorBlockRewardsRecord};
-use crate::utils::*;
 use chrono::{DateTime, Utc};
 use collect::validators_block_rewards::ValidatorsBlockRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use structopt::StructOpt;
-use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
 pub const VALIDATORS_BLOCK_REWARDS_TABLE: &str = "validators_block_rewards";
@@ -34,7 +32,7 @@ pub async fn store_block_rewards(
             anyhow::anyhow!("Failed to parse snapshot block rewards file '{path}': {e}")
         })?;
 
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
     let snapshot_epoch = Decimal::from(snapshot.epoch);
 
     info!(
@@ -55,136 +53,76 @@ pub async fn store_block_rewards(
         })
         .collect();
 
-    let mut updated_identities: HashSet<_> = Default::default();
-
     info!(
         "Processing snapshot loaded block rewards records {}",
         block_rewards.keys().len()
     );
 
-    let existing_records = get_existing_block_rewards(psql_client, snapshot_epoch).await?;
-    let mut updates: u64 = 0;
+    let records: Vec<_> = block_rewards.values().collect();
 
-    for chunk in existing_records.chunks(DEFAULT_CHUNK_SIZE) {
-        let mut query = UpdateQueryCombiner::new(
-            VALIDATORS_BLOCK_REWARDS_TABLE.to_string(),
-            "
-            identity_account = u.identity_account,
-            vote_account = u.vote_account,
-            authorized_voter = u.authorized_voter,
-            amount = u.amount,
-            epoch = u.epoch,
-            updated_at = u.updated_at
-            "
-                .to_string(),
-            "u(
-                identity_account,
-                vote_account,
-                authorized_voter,
-                amount,
-                epoch,
-                updated_at
-            )"
-                .to_string(),
-            format!("{VALIDATORS_BLOCK_REWARDS_TABLE}.identity_account = u.identity_account AND {VALIDATORS_BLOCK_REWARDS_TABLE}.vote_account = u.vote_account AND {VALIDATORS_BLOCK_REWARDS_TABLE}.epoch = u.epoch"),
+    let mut total_upserted = 0;
+
+    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
+        // Build arrays for each column
+        let identity_accounts: Vec<&str> =
+            chunk.iter().map(|r| r.identity_account.as_str()).collect();
+        let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
+        let authorized_voters: Vec<&str> =
+            chunk.iter().map(|r| r.authorized_voter.as_str()).collect();
+        let amounts: Vec<&Decimal> = chunk.iter().map(|r| &r.amount).collect();
+        let epochs: Vec<&Decimal> = chunk.iter().map(|r| &r.epoch).collect();
+        let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
+        let created_ats = updated_ats.clone();
+
+        let query = format!(
+            "INSERT INTO {VALIDATORS_BLOCK_REWARDS_TABLE} (
+            identity_account,
+            vote_account,
+            authorized_voter,
+            amount,
+            epoch,
+            created_at,
+            updated_at
+        )
+        SELECT * FROM UNNEST(
+            $1::TEXT[],
+            $2::TEXT[],
+            $3::TEXT[],
+            $4::NUMERIC[],
+            $5::NUMERIC[],
+            $6::TIMESTAMP WITH TIME ZONE[],
+            $7::TIMESTAMP WITH TIME ZONE[]
+        )
+        ON CONFLICT (epoch, identity_account, vote_account)
+        DO UPDATE SET
+            authorized_voter = EXCLUDED.authorized_voter,
+            amount = EXCLUDED.amount,
+            updated_at = EXCLUDED.updated_at"
         );
 
-        for row in chunk {
-            let identity_account: &str = row.get("identity_account");
-            let vote_account: &str = row.get("vote_account");
-            let key = (identity_account.to_string(), vote_account.to_string());
+        let rows_affected = psql_client
+            .execute(
+                &query,
+                &[
+                    &identity_accounts,
+                    &vote_accounts,
+                    &authorized_voters,
+                    &amounts,
+                    &epochs,
+                    &created_ats,
+                    &updated_ats,
+                ],
+            )
+            .await?;
 
-            if let Some(reward) = block_rewards.get(&key) {
-                let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    &reward.identity_account,
-                    &reward.vote_account,
-                    &reward.authorized_voter,
-                    &reward.amount,
-                    &reward.epoch,
-                    &snapshot_created_at,
-                ];
-                query.add(
-                    &mut params,
-                    HashMap::from_iter([
-                        (0, "TEXT".into()),                     // identity_account
-                        (1, "TEXT".into()),                     // vote_account
-                        (2, "TEXT".into()),                     // authorized_voter
-                        (3, "NUMERIC".into()),                  // amount
-                        (4, "NUMERIC".into()),                  // epoch
-                        (5, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                    ]),
-                );
-                updated_identities.insert(key);
-            }
-        }
-        updates += query.execute(psql_client).await?.unwrap_or(0);
-        info!(
-            "Trying to update {} previously existing block rewards records. SQL updated records: {}",
-            updated_identities.len(),
-            updates
-        );
+        total_upserted += rows_affected;
+
+        info!("Upserted {rows_affected} block rewards records in this chunk",);
     }
 
-    let block_rewards_to_insert: Vec<_> = block_rewards
-        .into_iter()
-        .filter(|(key, _)| !updated_identities.contains(key))
-        .collect();
-    let mut insertions = 0;
-
-    for chunk in block_rewards_to_insert.chunks(DEFAULT_CHUNK_SIZE) {
-        let mut query = InsertQueryCombiner::new(
-            VALIDATORS_BLOCK_REWARDS_TABLE.to_string(),
-            "
-        identity_account,
-        vote_account,
-        authorized_voter,
-        amount,
-        epoch,
-        created_at,
-        updated_at
-        "
-            .to_string(),
-        );
-
-        for (key, reward) in chunk {
-            if updated_identities.contains(key) {
-                continue;
-            }
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &reward.identity_account,
-                &reward.vote_account,
-                &reward.authorized_voter,
-                &reward.amount,
-                &snapshot_epoch,
-                &snapshot_created_at,
-                &snapshot_created_at,
-            ];
-            query.add(&mut params);
-        }
-        insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Inserted new block rewards records {insertions}");
-    }
-
-    info!("Stored block rewards snapshot: {updates} updated, {insertions} inserted");
+    info!("Stored block rewards snapshot: {total_upserted} total records upserted",);
 
     Ok(())
-}
-
-async fn get_existing_block_rewards(
-    psql_client: &Client,
-    snapshot_epoch: Decimal,
-) -> anyhow::Result<Vec<tokio_postgres::Row>> {
-    let select_query = format!(
-        "SELECT identity_account, vote_account FROM {VALIDATORS_BLOCK_REWARDS_TABLE} WHERE epoch = $1"
-    );
-    psql_client
-        .query(&select_query, &[&snapshot_epoch])
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to get existing block rewards from DB for epoch {snapshot_epoch}: {e} [{e:?}]"
-            )
-        })
 }
 
 pub async fn get_last_block_rewards(

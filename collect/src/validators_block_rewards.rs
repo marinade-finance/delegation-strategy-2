@@ -3,7 +3,7 @@ use anyhow::Context;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
-use log::{error, info};
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_sdk::clock::Epoch;
@@ -36,6 +36,13 @@ pub struct BlockRewardsParams {
         help = "Act as if current epoch was set to this value."
     )]
     epoch: Option<u64>,
+
+    #[structopt(
+        long = "loading-limit",
+        help = "When loading validators' block rewards data, we expect a higher number from the ETL to consider the data valid.",
+        default_value = "10"
+    )]
+    loading_limit: u32,
 }
 
 const DATA_VERSION: u16 = 1;
@@ -125,12 +132,6 @@ async fn query_validator_block_rewards(
 
     info!("Retrieved {row_count} rows from BigQuery for epoch {epoch}");
 
-    if row_count == 0 {
-        // No data found for the epoch - data are not available yet
-        error!("No data found for epoch {epoch}. This epoch may not have data yet.");
-        anyhow::bail!("No data found for epoch {epoch}.");
-    }
-
     Ok(results)
 }
 
@@ -156,22 +157,26 @@ pub fn collect_validator_block_rewards_info(
             .await
     })?;
 
-    info!(
-        "Successfully retrieved {} validator block rewards",
-        block_rewards.len()
-    );
+    if block_rewards.len() <= rewards_params.loading_limit as usize {
+        warn!("No data found for epoch {looking_at_epoch}. This epoch may not have data available yet. The collection will be retried next time.");
+    } else {
+        info!(
+            "Successfully retrieved {} validator block rewards",
+            block_rewards.len()
+        );
 
-    serde_yaml::to_writer(
-        std::io::stdout(),
-        &ValidatorsBlockRewardsSnapshot {
-            version: DATA_VERSION,
-            epoch: looking_at_epoch,
-            loaded_at_epoch: current_epoch_info.epoch,
-            loaded_at_slot_index: current_epoch_info.slot_index,
-            created_at: created_at.to_string(),
-            block_rewards,
-        },
-    )?;
+        serde_yaml::to_writer(
+            std::io::stdout(),
+            &ValidatorsBlockRewardsSnapshot {
+                version: DATA_VERSION,
+                epoch: looking_at_epoch,
+                loaded_at_epoch: current_epoch_info.epoch,
+                loaded_at_slot_index: current_epoch_info.slot_index,
+                created_at: created_at.to_string(),
+                block_rewards,
+            },
+        )?;
+    }
 
     Ok(())
 }

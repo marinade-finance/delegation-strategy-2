@@ -33,7 +33,7 @@ pub async fn store_jito(
         .map_err(|e| anyhow::anyhow!("Failed to open snapshot file '{path}': {e}"))?;
     let snapshot: JitoSnapshot = serde_yaml::from_reader(snapshot_file)
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot file '{path}': {e}",))?;
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>()?;
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
     let snapshot_loaded_at_slot_index = Decimal::from(snapshot.loaded_at_slot_index);
     let snapshot_epoch = Decimal::from(snapshot.epoch);
 

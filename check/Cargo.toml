@@ -14,3 +14,4 @@ solana-client = { workspace = true }
 structopt = { workspace = true }
 tokio-postgres = { workspace = true }
 tokio = { workspace = true }
+validator = { workspace = true }

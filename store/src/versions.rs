@@ -24,7 +24,7 @@ pub async fn store_versions(
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
 
     info!("Loaded the snapshot");
 
