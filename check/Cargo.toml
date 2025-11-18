@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 collect = { path = "../collect" }
+store = { path = "../store" }
 log = { workspace = true }
 env_logger = { workspace = true }
 rust_decimal = { workspace = true }
@@ -13,3 +14,4 @@ solana-client = { workspace = true }
 structopt = { workspace = true }
 tokio-postgres = { workspace = true }
 tokio = { workspace = true }
+validator = { workspace = true }

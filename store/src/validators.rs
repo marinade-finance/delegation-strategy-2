@@ -26,7 +26,7 @@ pub async fn store_validators(
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
 
     let validators: HashMap<_, _> = snapshot
         .validators

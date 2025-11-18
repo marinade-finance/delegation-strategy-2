@@ -36,7 +36,7 @@ pub async fn store_uptime(
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
     let mut validators_with_extended_status: HashSet<String> = HashSet::new();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
     let default_status_end_at = snapshot_created_at
         .checked_add_signed(Duration::minutes(1))
         .unwrap();

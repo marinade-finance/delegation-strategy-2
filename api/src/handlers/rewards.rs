@@ -2,7 +2,9 @@ use crate::context::WrappedContext;
 use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use store::rewards::{get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards};
+use store::rewards::{
+    get_block_rewards, get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards,
+};
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: u64 = 20;
@@ -12,6 +14,8 @@ pub struct ResponseRewards {
     rewards_mev: Vec<(u64, f64)>,
     rewards_inflation_est: Vec<(u64, f64)>,
     rewards_jito_priority: Vec<(u64, f64)>,
+    /// block production rewards based on signature count and priority fees
+    rewards_block: Vec<(u64, f64)>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -37,10 +41,11 @@ pub async fn handler(
 
     let context_guard = context.read().await;
     let psql_client = &context_guard.psql_client;
-    let (inflation_result, mev_result, jito_result) = tokio::join!(
+    let (inflation_result, mev_result, jito_result, block_result) = tokio::join!(
         get_estimated_inflation_rewards(psql_client, epochs),
         get_mev_rewards(psql_client, epochs),
-        get_jito_priority_rewards(psql_client, epochs)
+        get_jito_priority_rewards(psql_client, epochs),
+        get_block_rewards(psql_client, epochs),
     );
 
     let rewards_inflation_est = match inflation_result {
@@ -74,11 +79,23 @@ pub async fn handler(
         }
     };
 
+    let rewards_block = match block_result {
+        Ok(r) => r,
+        Err(err) => {
+            error!("Failed to fetch Block rewards: {err}");
+            return Ok(response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch Block rewards!".into(),
+            ));
+        }
+    };
+
     Ok(warp::reply::with_status(
         json(&ResponseRewards {
             rewards_mev,
             rewards_inflation_est,
             rewards_jito_priority,
+            rewards_block,
         }),
         StatusCode::OK,
     ))

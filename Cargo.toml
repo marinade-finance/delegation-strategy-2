@@ -29,6 +29,7 @@ csv = "1.1"
 utoipa = { version = "3.2.1", features = ["chrono", "decimal"] }
 solana-client = "2.2.20"
 solana-program = "2.2.1"
+validator = { version = "0.20.0", features = ["derive"] }
 
 # API-specific dependencies
 bytes = "1.0"

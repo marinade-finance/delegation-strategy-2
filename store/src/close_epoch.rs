@@ -154,7 +154,7 @@ pub async fn close_epoch(
 
     let snapshot_file = std::fs::File::open(epoch_params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at = snapshot.created_at.parse::<DateTime<Utc>>().unwrap();
+    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let rewards = snapshot.rewards.unwrap();
 

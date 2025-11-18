@@ -1,5 +1,6 @@
 use collect::common::*;
 use collect::validators::*;
+use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
 use collect::validators_jito::{collect_jito_info, JitoAccountType, JitoParams};
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceParams,
@@ -24,6 +25,7 @@ enum CollectCommand {
     ValidatorsPerformance(ValidatorsPerformanceParams),
     JitoMev(JitoParams),
     JitoPriority(JitoParams),
+    ValidatorsBlockRewards(BlockRewardsParams),
 }
 
 impl Display for CollectCommand {
@@ -33,6 +35,7 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsPerformance(_) => write!(f, "validators-performance"),
             CollectCommand::JitoMev(_) => write!(f, "jito-mev"),
             CollectCommand::JitoPriority(_) => write!(f, "jito-priority"),
+            CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
         }
     }
 }
@@ -60,6 +63,9 @@ fn main() -> anyhow::Result<()> {
             jito_params,
             JitoAccountType::PriorityFeeDistribution,
         ),
+        CollectCommand::ValidatorsBlockRewards(rewards_params) => {
+            collect_validator_block_rewards_info(params.common, rewards_params)
+        }
     };
 
     match result {
