@@ -13,6 +13,7 @@ collect_store_validators_block_rewards() {
       set -e
       echo "Collecting validators block rewards"
       ${SCRIPT_DIR}/collect-validators-block-rewards.bash > "$output_file"
+      echo "Storing validators block rewards from $output_file"
       ${SCRIPT_DIR}/store-validators-block-rewards.bash "$output_file"
       set +e
       ;;

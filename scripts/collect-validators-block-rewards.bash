@@ -8,8 +8,9 @@ then
   echo "Env variable RPC_URL is missing!" >&2
   exit 1
 fi
-if [[ -z $GOOGLE_APPLICATION_CREDENTIALS || ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]
-then
+if [[ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]] || [[ -f "$GOOGLE_APPLICATION_CREDENTIALS_JSON" ]]; then
+  : # At least one valid file exists, continue
+else
   echo "Env variable GOOGLE_APPLICATION_CREDENTIALS is missing or points to a non-existent file!" >&2
   exit 2
 fi
