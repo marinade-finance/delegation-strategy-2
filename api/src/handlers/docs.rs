@@ -6,11 +6,11 @@ const HTML: &str = "<!doctype html>
 <head>
   <meta charset=\"UTF-8\"/>
   <title>Marinade's Delegation Strategy API</title>
-  <link rel=\"stylesheet\" type=\"text/css\" href=\"https://public.marinade.finance/swagger-ui-dist/5/swagger-ui.css\">
+  <link rel=\"stylesheet\" type=\"text/css\" href=\"https://public.marinade.finance/swagger-ui.v5.31.0.css\">
 </head>
 <body>
   <div id=\"swagger-ui\"></div>
-  <script src=\"https://public.marinade.finance/swagger-ui-dist/5/swagger-ui-bundle.js\"></script>
+  <script src=\"https://public.marinade.finance/swagger-ui.v5.31.0.js\"></script>
   <script>
     window.onload = function() {
       SwaggerUIBundle({
