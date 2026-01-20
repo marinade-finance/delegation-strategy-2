@@ -16,8 +16,7 @@ const HTML: &str = "<!doctype html>
       SwaggerUIBundle({
         url: '/docs.json',
         dom_id: '#swagger-ui',
-        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-        layout: 'StandaloneLayout'
+        presets: [SwaggerUIBundle.presets.apis]
       });
     };
   </script>
