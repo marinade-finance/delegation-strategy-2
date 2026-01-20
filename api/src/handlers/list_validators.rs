@@ -45,7 +45,7 @@ pub struct QueryParams {
     limit: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
 pub enum OrderField {
     Stake,
     Credits,
@@ -55,7 +55,7 @@ pub enum OrderField {
     Uptime,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
 pub enum OrderDirection {
     ASC,
     DESC,

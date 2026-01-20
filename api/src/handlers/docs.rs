@@ -5,10 +5,21 @@ const HTML: &str = "<!doctype html>
 <html>
 <head>
   <meta charset=\"UTF-8\"/>
+  <title>Marinade's Delegation Strategy API</title>
+  <link rel=\"stylesheet\" type=\"text/css\" href=\"https://public.marinade.finance/swagger-ui.v5.31.0.css\">
 </head>
 <body>
-  <redoc spec-url=\"/docs.json\" native-scrollbars></redoc>
-  <script src=\"https://public.marinade.finance/redoc.v2.0.0.standalone.js\"></script>
+  <div id=\"swagger-ui\"></div>
+  <script src=\"https://public.marinade.finance/swagger-ui.v5.31.0.js\"></script>
+  <script>
+    window.onload = function() {
+      SwaggerUIBundle({
+        url: '/docs.json',
+        dom_id: '#swagger-ui',
+        presets: [SwaggerUIBundle.presets.apis]
+      });
+    };
+  </script>
 </body>
 </html>";
 
