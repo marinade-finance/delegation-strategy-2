@@ -25,6 +25,8 @@ use utoipa::OpenApi;
         schemas(config::ResponseConfig),
         schemas(config::StakeDelegationAuthorityRecord),
         schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
+        schemas(list_validators::OrderDirection),
+        schemas(list_validators::OrderField),
         schemas(list_validators::ResponseValidators),
         schemas(reports_commission_changes::CommissionChange),
         schemas(reports_commission_changes::ResponseCommissionChanges),
