@@ -14,7 +14,8 @@ pub struct ResponseUptimes {
     uptimes: Vec<UptimeRecord>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
 }
@@ -23,7 +24,11 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "List uptimes",
-    path = "/validators/<vote_account>/uptimes",
+    path = "/validators/{vote_account}/uptimes",
+    params(
+        ("vote_account" = String, Path, description = "Vote account or identity of the validator"),
+        QueryParams
+    ),
     responses(
         (status = 200, body = ResponseUptimes)
     )

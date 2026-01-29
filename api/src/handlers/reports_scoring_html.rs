@@ -8,7 +8,10 @@ use warp::{http, http::StatusCode, hyper, Reply};
     get,
     tag = "Scoring",
     operation_id = "Show the scoring report",
-    path = "/reports/scoring/<report_id>",
+    path = "/reports/scoring/{report_id}",
+    params(
+        ("report_id" = String, Path, description = "Scoring run ID in format epoch.run_number")
+    ),
     responses(
         (status = 200)
     )

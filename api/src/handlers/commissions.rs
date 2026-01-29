@@ -14,7 +14,8 @@ pub struct ResponseCommissions {
     commissions: Vec<CommissionRecord>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
 }
@@ -23,7 +24,11 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "List commission changes",
-    path = "/validators/<vote_account>/commissions",
+    path = "/validators/{vote_account}/commissions",
+    params(
+        ("vote_account" = String, Path, description = "Vote account or identity of the validator"),
+        QueryParams
+    ),
     responses(
         (status = 200, body = ResponseCommissions)
     )

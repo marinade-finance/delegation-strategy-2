@@ -13,7 +13,8 @@ pub struct ResponseClusterStats {
     cluster_stats: ClusterStats,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<usize>,
 }
@@ -23,6 +24,7 @@ pub struct QueryParams {
     tag = "General",
     operation_id = "Show cluster stats",
     path = "/cluster-stats",
+    params(QueryParams),
     responses(
         (status = 200, body = ResponseClusterStats)
     )
