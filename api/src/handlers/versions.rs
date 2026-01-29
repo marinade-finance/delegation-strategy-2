@@ -18,7 +18,10 @@ pub struct QueryParams {}
     get,
     tag = "Validators",
     operation_id = "List versions of a validator",
-    path = "/validators/<vote_account>/versions",
+    path = "/validators/{vote_account}/versions",
+    params(
+        ("vote_account" = String, Path, description = "Vote account or identity of the validator")
+    ),
     responses(
         (status = 200, body = ResponseVersions)
     )

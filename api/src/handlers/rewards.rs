@@ -18,7 +18,8 @@ pub struct ResponseRewards {
     rewards_block: Vec<(u64, f64)>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<u64>,
 }
@@ -28,6 +29,7 @@ pub struct QueryParams {
     tag = "Rewards",
     operation_id = "List rewards",
     path = "/rewards",
+    params(QueryParams),
     responses(
         (status = 200, body = ResponseRewards)
     )
