@@ -17,11 +17,11 @@ env:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: 🚧 Checkout project
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: ⚙️ Install rust compilation dependencies
         run: |
@@ -29,12 +29,12 @@ jobs:
           sudo apt-get -y install libudev-dev pkg-config
 
       - name: 🦿 Install Rust tookchain
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@e814c742d4444ce2f3f6abddea7faf00161ed941 # 1.88.0
         with:
           components: rustfmt, clippy
 
       - name: 🧠 Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/bin/
