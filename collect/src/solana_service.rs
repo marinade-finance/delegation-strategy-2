@@ -29,7 +29,6 @@ use solana_sdk::{
     sysvar,
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
-use solana_vote_program::vote_state::VoteState;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -343,6 +342,7 @@ pub fn get_apy(
     Ok(apy)
 }
 
+// Relies on vote account layout and needs updating in case the authorized withdrawer position would change
 pub fn get_withdraw_authorities(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashSet<(String, String)>> {
@@ -351,12 +351,19 @@ pub fn get_withdraw_authorities(
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
 
     for (account_pubkey, account) in vote_accounts {
-        if let Ok(vote_state) = VoteState::deserialize(&account.data) {
-            withdraw_authorities.insert((
-                vote_state.authorized_withdrawer.to_string(),
-                account_pubkey.to_string(),
-            ));
+        if account.data.len() < 68 {
+            continue;
         }
+        let authorized_withdrawer =
+            Pubkey::new_from_array(account.data[36..68].try_into().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read vote account {account_pubkey} authorized_withdrawer: {e}"
+                )
+            })?);
+        withdraw_authorities.insert((
+            authorized_withdrawer.to_string(),
+            account_pubkey.to_string(),
+        ));
     }
     Ok(withdraw_authorities)
 }
