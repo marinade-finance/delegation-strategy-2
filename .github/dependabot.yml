@@ -8,6 +8,5 @@ updates:
       actions:
         patterns:
           - '*'
-# NOTE: add this when using Rust toolchain in the repo
-#    ignore:
-#      - dependency-name: 'dtolnay/rust-toolchain'
+    ignore:
+      - dependency-name: 'dtolnay/rust-toolchain'
