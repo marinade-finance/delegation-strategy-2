@@ -426,15 +426,17 @@ pub fn get_self_stake(
     if bonds.iter().all(|b| b.funded_amount == Decimal::ZERO) {
         if allow_zero_funded_bonds {
             warn!(
-                "All {} bonds from {} have zero funded amounts",
+                "All {} bonds from {} for epoch {} have zero funded amounts",
                 bonds.len(),
-                bonds_url
+                bonds_url,
+                epoch
             );
         } else {
             anyhow::bail!(
-                "All {} bonds from {} have zero funded amounts, expected at least one non-zero amount",
+                "All {} bonds from {} for epoch {} have zero funded amounts, expected at least one non-zero amount",
                 bonds.len(),
-                bonds_url
+                bonds_url,
+                epoch
             );
         }
     }
