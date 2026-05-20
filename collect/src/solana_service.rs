@@ -419,7 +419,11 @@ pub fn get_self_stake(
     let bonds = fetch_bonds(bonds_url)?;
     assert!(!bonds.is_empty(), "Failed to fetch bonds data");
     if bonds.iter().all(|b| b.funded_amount == Decimal::ZERO) {
-        log::warn!("All bonds have zero funded amounts");
+        log::warn!(
+            "All {} bonds from {} have zero funded amounts",
+            bonds.len(),
+            bonds_url
+        );
     }
 
     for bond in bonds {
