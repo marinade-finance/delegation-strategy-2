@@ -418,10 +418,9 @@ pub fn get_self_stake(
 
     let bonds = fetch_bonds(bonds_url)?;
     assert!(!bonds.is_empty(), "Failed to fetch bonds data");
-    assert!(
-        !bonds.iter().all(|b| b.funded_amount == Decimal::ZERO),
-        "All bonds have zero funded amounts, expected at least one non-zero amount"
-    );
+    if bonds.iter().all(|b| b.funded_amount == Decimal::ZERO) {
+        log::warn!("All bonds have zero funded amounts");
+    }
 
     for bond in bonds {
         let funded_amount_u64 = bond
