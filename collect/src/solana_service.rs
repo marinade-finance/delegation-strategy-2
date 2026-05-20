@@ -403,6 +403,7 @@ pub fn get_self_stake(
     epoch: Epoch,
     stake_history: &StakeHistory,
     bonds_url: &str,
+    allow_zero_funded_bonds: bool,
     rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
@@ -417,13 +418,25 @@ pub fn get_self_stake(
     assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
 
     let bonds = fetch_bonds(bonds_url)?;
-    assert!(!bonds.is_empty(), "Failed to fetch bonds data");
-    if bonds.iter().all(|b| b.funded_amount == Decimal::ZERO) {
-        log::warn!(
-            "All {} bonds from {} have zero funded amounts",
-            bonds.len(),
-            bonds_url
+    if bonds.is_empty() {
+        anyhow::bail!(
+            "Fetched empty bonds list from {bonds_url} for epoch {epoch}, expected at least one bond"
         );
+    }
+    if bonds.iter().all(|b| b.funded_amount == Decimal::ZERO) {
+        if allow_zero_funded_bonds {
+            warn!(
+                "All {} bonds from {} have zero funded amounts",
+                bonds.len(),
+                bonds_url
+            );
+        } else {
+            anyhow::bail!(
+                "All {} bonds from {} have zero funded amounts, expected at least one non-zero amount",
+                bonds.len(),
+                bonds_url
+            );
+        }
     }
 
     for bond in bonds {
