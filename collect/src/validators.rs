@@ -30,6 +30,12 @@ pub struct ValidatorsParams {
     pub bonds_url: String,
 
     #[structopt(
+        long = "allow-zero-funded-bonds",
+        help = "When set (or ALLOW_ZERO_FUNDED_BONDS=true), if all bonds have funded_amount == 0, log a warning instead of failing."
+    )]
+    pub allow_zero_funded_bonds: bool,
+
+    #[structopt(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
@@ -162,11 +168,17 @@ pub fn collect_validators_info(
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let institutional_stake = get_institutional_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
+    let allow_zero_funded_bonds = validator_params.allow_zero_funded_bonds
+        || std::env::var("ALLOW_ZERO_FUNDED_BONDS")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false);
     let self_stake = get_self_stake(
         &client,
         epoch,
         &stake_history,
         &validator_params.bonds_url,
+        allow_zero_funded_bonds,
         validator_params.rpc_attempts,
     )?;
     let validators_info = get_validators_info(&client)?;
