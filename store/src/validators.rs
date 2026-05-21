@@ -88,7 +88,14 @@ pub async fn store_validators(
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
             updated_at = u.updated_at,
-            info_icon_url = u.info_icon_url
+            info_icon_url = u.info_icon_url,
+            client_id = u.client_id,
+            client_type = u.client_type,
+            feature_set = u.feature_set,
+            shred_version = u.shred_version,
+            gossip_port = u.gossip_port,
+            rpc_public = u.rpc_public,
+            pubsub_public = u.pubsub_public
             "
             .to_string(),
             "u(
@@ -122,7 +129,14 @@ pub async fn store_validators(
                 blocks_produced,
                 skip_rate,
                 updated_at,
-                info_icon_url
+                info_icon_url,
+                client_id,
+                client_type,
+                feature_set,
+                shred_version,
+                gossip_port,
+                rpc_public,
+                pubsub_public
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -163,6 +177,13 @@ pub async fn store_validators(
                     &v.skip_rate,
                     &snapshot_created_at,
                     &v.info_icon_url,
+                    &v.client_id,
+                    &v.client_type,
+                    &v.feature_set,
+                    &v.shred_version,
+                    &v.gossip_port,
+                    &v.rpc_public,
+                    &v.pubsub_public,
                 ];
                 query.add(
                     &mut params,
@@ -186,6 +207,13 @@ pub async fn store_validators(
                         (28, "DOUBLE PRECISION".into()),         // skip_rate
                         (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                         (30, "TEXT".into()),                     // icon_url
+                        (31, "TEXT".into()),                     // client_id
+                        (32, "TEXT".into()),                     // client_type
+                        (33, "BIGINT".into()),                   // feature_set
+                        (34, "INTEGER".into()),                  // shred_version
+                        (35, "INTEGER".into()),                  // gossip_port
+                        (36, "BOOL".into()),                     // rpc_public
+                        (37, "BOOL".into()),                     // pubsub_public
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -244,7 +272,14 @@ pub async fn store_validators(
         uptime,
         downtime,
         updated_at,
-        info_icon_url
+        info_icon_url,
+        client_id,
+        client_type,
+        feature_set,
+        shred_version,
+        gossip_port,
+        rpc_public,
+        pubsub_public
         "
             .to_string(),
         );
@@ -291,6 +326,13 @@ pub async fn store_validators(
                 &v.downtime,
                 &snapshot_created_at,
                 &v.info_icon_url,
+                &v.client_id,
+                &v.client_type,
+                &v.feature_set,
+                &v.shred_version,
+                &v.gossip_port,
+                &v.rpc_public,
+                &v.pubsub_public,
             ];
             query.add(&mut params);
         }
