@@ -10,6 +10,7 @@ use log::info;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
+use std::collections::HashMap;
 use std::time::Duration;
 use structopt::StructOpt;
 
@@ -113,6 +114,12 @@ pub struct ValidatorSnapshot {
     pub identity: String,
     pub vote_account: String,
     pub node_ip: Option<String>,
+    #[serde(default)]
+    pub gossip_port: Option<u16>,
+    #[serde(default)]
+    pub rpc_public: Option<bool>,
+    #[serde(default)]
+    pub pubsub_public: Option<bool>,
     pub info_name: Option<String>,
     pub info_url: Option<String>,
     pub info_details: Option<String>,
@@ -194,7 +201,7 @@ pub fn collect_validators_info(
         validator_params.rpc_attempts,
     )?;
     let validators_info = get_validators_info(&client)?;
-    let node_ips = get_cluster_nodes_ips(&client)?;
+    let node_info = get_cluster_nodes_info(&client)?;
 
     info!("Self stake: {}", self_stake.values().sum::<u64>());
     info!(
@@ -203,10 +210,16 @@ pub fn collect_validators_info(
     );
 
     let data_centers = match validator_params.whois {
-        Some(whois) => get_data_centers(
-            WhoisClient::new(whois, validator_params.whois_bearer_token),
-            node_ips.clone(),
-        )?,
+        Some(whois) => {
+            let node_ips: HashMap<String, String> = node_info
+                .iter()
+                .filter_map(|(identity, n)| n.ip.clone().map(|ip| (identity.clone(), ip)))
+                .collect();
+            get_data_centers(
+                WhoisClient::new(whois, validator_params.whois_bearer_token),
+                node_ips,
+            )?
+        }
         _ => Default::default(),
     };
 
@@ -215,6 +228,7 @@ pub fn collect_validators_info(
         epoch,
         &vote_accounts,
         validator_params.rpc_attempts,
+        &node_info,
     )?;
 
     for vote_account in vote_accounts
@@ -236,10 +250,18 @@ pub fn collect_validators_info(
             .cloned()
             .unwrap_or_else(Default::default);
 
+        let node = node_info.get(&identity);
+
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
             identity: identity.clone(),
-            node_ip: data_centers.get(&identity).map(|(ip, _)| ip.clone()),
+            node_ip: data_centers
+                .get(&identity)
+                .map(|(ip, _)| ip.clone())
+                .or_else(|| node.and_then(|n| n.ip.clone())),
+            gossip_port: node.and_then(|n| n.gossip_port),
+            rpc_public: node.map(|n| n.rpc_public),
+            pubsub_public: node.map(|n| n.pubsub_public),
             data_center: data_centers
                 .get(&identity)
                 .map(|(_ip, data_center)| ValidatorDataCenter::new(data_center.clone())),
