@@ -57,7 +57,7 @@ pub fn get_foundation_stakes(
     let mut foundation_authority = pubkey!("mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5");
 
     if rpc_client.url().contains("testnet") {
-        foundation_authority = pubkey!("spa8QF2uL9Z5EkYKFeVKNWjgTJgkwV5CMkdKHZwn3P6");
+        foundation_authority = pubkey!("4UeMu1PU7goa4rYzViSiuZjDvo9px3JtsXUoinmkSrCX");
     }
 
     let foundation_stakes = get_stakes_grouped_by_validator(
@@ -70,7 +70,8 @@ pub fn get_foundation_stakes(
 
     assert!(
         !foundation_stakes.is_empty(),
-        "Failed to fetch foundation stake data"
+        "No stake accounts found for foundation delegation authority {foundation_authority}. \
+         Authority may have been rotated; verify on-chain history of this pubkey and update the code if necessary."
     );
     Ok(foundation_stakes)
 }
