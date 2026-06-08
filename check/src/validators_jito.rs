@@ -23,7 +23,7 @@ pub async fn check_jito(
     psql_client: &Client,
     rpc_client: &RpcClient,
     db_table: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     info!("Checking epoch data about epoch in DB table {db_table}");
 
     let row_optional = psql_client
@@ -64,7 +64,7 @@ pub async fn check_jito(
                     "The previous epoch ({}) has surpassed the last recorded table {db_table} epoch ({sql_epoch}). Initiating data collection for {db_table} analysis.",
                     current_epoch - Decimal::one()
                 );
-                return Ok(());
+                return Ok(true);
             }
 
             // If the stored slot index in SQL elapses the expected interval timing, we will proceed with the data collection.
@@ -74,7 +74,7 @@ pub async fn check_jito(
                     "With the current slot index {current_slot_index} of epoch {current_epoch}, the time elapsed since the execution interval is {} slots, compared to the saved slot index {sql_slot_index}",
                     params.execution_interval_slots,
                 );
-                return Ok(());
+                return Ok(true);
             }
 
             if sql_slot_index + params.execution_interval_slots
@@ -87,13 +87,14 @@ pub async fn check_jito(
                 );
             }
 
-            Err(anyhow::anyhow!(
-                "{db_table} data collection for the epoch prior to {current_epoch} and current slot index {current_slot_index} has already been processed",
-            ))
+            info!(
+                "{db_table} data collection for the epoch prior to {current_epoch} and current slot index {current_slot_index} has already been processed"
+            );
+            Ok(false)
         }
         None => {
             info!("No {db_table} data found in DB. Proceed with data collection.");
-            Ok(())
+            Ok(true)
         }
     }
 }

@@ -20,6 +20,10 @@ if [[ -z $POSTGRES_URL ]]; then
   echo "Env variable POSTGRES_URL is missing!" >&2
   exit 23
 fi
+if [[ -z $PG_SSLROOTCERT ]]; then
+  echo "Env variable PG_SSLROOTCERT is missing!" >&2
+  exit 24
+fi
 
 "$BIN_DIR/check" \
   --rpc-url "$RPC_URL" \

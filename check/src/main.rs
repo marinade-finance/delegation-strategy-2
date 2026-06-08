@@ -3,13 +3,17 @@ use check::validators_block_rewards::{check_block_rewards, BlockRewardsCheckPara
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use log::info;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use structopt::StructOpt;
-use tokio_postgres::NoTls;
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
+
+    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    pub postgres_ssl_root_cert: String,
 
     #[structopt(short = "u", long = "rpc-url", env = "RPC_URL")]
     pub rpc_url: String,
@@ -37,17 +41,39 @@ enum StoreCommand {
 pub mod validators_jito;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    match run().await {
+        Ok(true) => {}
+        Ok(false) => {
+            info!("Not a good time to collect, skipping");
+            std::process::exit(1);
+        }
+        Err(err) => {
+            log::error!("Check failed: {err:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<bool> {
     let params = Params::from_args();
-    info!("params {params:?}");
-    let (psql_client, psql_conn) =
-        tokio_postgres::connect(&params.common.postgres_url, NoTls).await?;
+    info!(
+        "Running check command {:?} with commitment {}",
+        params.command, params.common.commitment
+    );
+    let mut builder = SslConnector::builder(SslMethod::tls())?;
+    builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
+    let connector = MakeTlsConnector::new(builder.build());
+
+    let mut psql_config: tokio_postgres::Config = params.common.postgres_url.parse()?;
+    psql_config.ssl_mode(tokio_postgres::config::SslMode::Require);
+    let (psql_client, psql_conn) = psql_config.connect(connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {err}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     });
 

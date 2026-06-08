@@ -17,15 +17,15 @@ pub struct BlockRewardsCheckParams {
     slot_offset_wait: u64,
 }
 
-/// Verification if block rewards data collection is possible
-/// When data is already part of PosgreSQL table or if it is too early to collect data in the epoch
-/// then waiting error is returned to indicate to wait with data collection
+/// Verification if block rewards data collection is possible.
+/// Returns `Ok(true)` to proceed with collection, `Ok(false)` to skip
+/// (data already in the PostgreSQL table or too early in the epoch to collect).
 pub async fn check_block_rewards(
     params: BlockRewardsCheckParams,
     psql_client: &Client,
     rpc_client: &RpcClient,
     db_table: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     info!("Checking epoch data about epoch in DB table {db_table}");
 
     // in block rewards, we only care about epoch
@@ -66,24 +66,26 @@ pub async fn check_block_rewards(
                 return if current_slot_index > params.slot_offset_wait {
                     // the slot offset wait is overpassed, we can proceed
                     // this is a preliminary check as the real collection may happen only when Google stakes-etl job loaded data to BQ
-                    Ok(())
+                    Ok(true)
                 } else {
-                    Err(anyhow::anyhow!(
+                    info!(
                         "To execute required to wait at epoch {current_epoch} for slot index {}, approximately {} seconds",
                         params.slot_offset_wait - current_slot_index,
                         (params.slot_offset_wait - current_slot_index) * MILLISECONDS_PER_SLOT / 1000u64
-                    ))
+                    );
+                    Ok(false)
                 };
             }
 
-            Err(anyhow::anyhow!(
+            info!(
                 "{db_table} data collection for the epoch prior {} has already been processed",
                 current_epoch - 1
-            ))
+            );
+            Ok(false)
         }
         None => {
             info!("No {db_table} data found in DB. Proceed with data collection.");
-            Ok(())
+            Ok(true)
         }
     }
 }
