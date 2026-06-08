@@ -262,7 +262,7 @@ pub fn get_validators_info(
 
     let mut validator_info_map = HashMap::new();
     if validator_info.is_empty() {
-        println!("No validator info accounts found");
+        warn!("No validator info accounts found");
     }
     for (validator_info_pubkey, validator_info_account) in validator_info.iter() {
         match parse_validator_info(validator_info_pubkey, validator_info_account) {

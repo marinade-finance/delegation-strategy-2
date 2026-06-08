@@ -1,6 +1,8 @@
 use std::{thread, time::Duration};
 use structopt::StructOpt;
 
+pub const MILLISECONDS_PER_SLOT: u64 = 400; // 0.4 seconds per slot
+
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
     #[structopt(short = "u", long = "url", env = "RPC_URL")]

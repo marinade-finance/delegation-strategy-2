@@ -39,13 +39,23 @@ pub struct BlockRewardsParams {
 
     #[structopt(
         long = "loading-limit",
+        env = "LOADING_LIMIT",
         help = "When loading validators' block rewards data, we expect a higher number from the ETL to consider the data valid.",
         default_value = "10"
     )]
     loading_limit: u32,
+
+    #[structopt(
+        long = "max-data-delay-hours",
+        env = "MAX_DATA_DELAY_HOURS",
+        help = "Fail instead of skipping when block rewards data is still missing this many hours after the target epoch ended (approximate; assumes ~400ms slots). 0 disables the check. Ignored when --epoch is set (backfill).",
+        default_value = "12"
+    )]
+    max_data_delay_hours: u64,
 }
 
 const DATA_VERSION: u16 = 1;
+const MILLISECONDS_PER_HOUR: u64 = 3_600_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidatorsBlockRewardsSnapshot {
@@ -158,7 +168,32 @@ pub fn collect_validator_block_rewards_info(
     })?;
 
     if block_rewards.len() <= rewards_params.loading_limit as usize {
-        warn!("No data found for epoch {looking_at_epoch}. This epoch may not have data available yet. The collection will be retried next time.");
+        if rewards_params.epoch.is_some() {
+            warn!(
+                "No data found for backfill epoch {looking_at_epoch}. May not be available yet. BigQuery returned {} rows (loading limit {}).",
+                block_rewards.len(),
+                rewards_params.loading_limit,
+            );
+        } else {
+            let hours_since_epoch_end = current_epoch_info
+                .slot_index
+                .saturating_mul(MILLISECONDS_PER_SLOT)
+                / MILLISECONDS_PER_HOUR;
+            if rewards_params.max_data_delay_hours > 0
+                && hours_since_epoch_end >= rewards_params.max_data_delay_hours
+            {
+                anyhow::bail!(
+                    "No block rewards data for epoch {looking_at_epoch}: BigQuery returned {} rows (loading limit {}) ~{hours_since_epoch_end}h after the epoch ended (threshold {}h). Upstream stakes-etl load is overdue.",
+                    block_rewards.len(),
+                    rewards_params.loading_limit,
+                    rewards_params.max_data_delay_hours,
+                );
+            }
+            warn!(
+                "No data found for epoch {looking_at_epoch} (~{hours_since_epoch_end}h after epoch end). May not be available yet; will retry next run. BigQuery returned {} rows.",
+                block_rewards.len(),
+            );
+        }
     } else {
         info!(
             "Successfully retrieved {} validator block rewards",

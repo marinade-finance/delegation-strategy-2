@@ -4,7 +4,7 @@ use solana_client::rpc_client::RpcClient;
 use structopt::StructOpt;
 use tokio_postgres::Client;
 
-pub const MILLISECONDS_PER_SLOT: u64 = 400; // 0.4 seconds per slot
+pub use collect::common::MILLISECONDS_PER_SLOT;
 
 #[derive(Debug, StructOpt)]
 pub struct ValidatorsJitoCheckParams {
