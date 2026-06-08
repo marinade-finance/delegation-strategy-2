@@ -170,7 +170,7 @@ pub fn collect_validator_block_rewards_info(
     if block_rewards.len() <= rewards_params.loading_limit as usize {
         if rewards_params.epoch.is_some() {
             warn!(
-                "No data found for backfill epoch {looking_at_epoch}. May not be available yet. BigQuery returned {} rows (loading limit {}).",
+                "Insufficient block rewards data for backfill epoch {looking_at_epoch} (rows <= loading limit). May not be available yet. BigQuery returned {} rows (loading limit {}).",
                 block_rewards.len(),
                 rewards_params.loading_limit,
             );
@@ -183,15 +183,16 @@ pub fn collect_validator_block_rewards_info(
                 && hours_since_epoch_end >= rewards_params.max_data_delay_hours
             {
                 anyhow::bail!(
-                    "No block rewards data for epoch {looking_at_epoch}: BigQuery returned {} rows (loading limit {}) ~{hours_since_epoch_end}h after the epoch ended (threshold {}h). Upstream stakes-etl load is overdue.",
+                    "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit): BigQuery returned {} rows (loading limit {}) ~{hours_since_epoch_end}h after the epoch ended (threshold {}h). Upstream stakes-etl load is overdue.",
                     block_rewards.len(),
                     rewards_params.loading_limit,
                     rewards_params.max_data_delay_hours,
                 );
             }
             warn!(
-                "No data found for epoch {looking_at_epoch} (~{hours_since_epoch_end}h after epoch end). May not be available yet; will retry next run. BigQuery returned {} rows.",
+                "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit, ~{hours_since_epoch_end}h after epoch end). May not be available yet; will retry next run. BigQuery returned {} rows (loading limit {}).",
                 block_rewards.len(),
+                rewards_params.loading_limit,
             );
         }
     } else {
