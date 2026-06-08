@@ -59,13 +59,17 @@ async fn main() {
 
 async fn run() -> anyhow::Result<bool> {
     let params = Params::from_args();
-    info!("params {params:?}");
+    info!(
+        "Running check command {:?} with commitment {}",
+        params.command, params.common.commitment
+    );
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
     let connector = MakeTlsConnector::new(builder.build());
 
-    let (psql_client, psql_conn) =
-        tokio_postgres::connect(&params.common.postgres_url, connector).await?;
+    let mut psql_config: tokio_postgres::Config = params.common.postgres_url.parse()?;
+    psql_config.ssl_mode(tokio_postgres::config::SslMode::Require);
+    let (psql_client, psql_conn) = psql_config.connect(connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {err}");

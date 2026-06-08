@@ -17,9 +17,9 @@ pub struct BlockRewardsCheckParams {
     slot_offset_wait: u64,
 }
 
-/// Verification if block rewards data collection is possible
-/// When data is already part of PosgreSQL table or if it is too early to collect data in the epoch
-/// then waiting error is returned to indicate to wait with data collection
+/// Verification if block rewards data collection is possible.
+/// Returns `Ok(true)` to proceed with collection, `Ok(false)` to skip
+/// (data already in the PostgreSQL table or too early in the epoch to collect).
 pub async fn check_block_rewards(
     params: BlockRewardsCheckParams,
     psql_client: &Client,
