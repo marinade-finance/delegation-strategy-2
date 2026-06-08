@@ -13,5 +13,7 @@ rust_decimal = { workspace = true }
 solana-client = { workspace = true }
 structopt = { workspace = true }
 tokio-postgres = { workspace = true }
+openssl = { workspace = true }
+postgres-openssl = { workspace = true }
 tokio = { workspace = true }
 validator = { workspace = true }

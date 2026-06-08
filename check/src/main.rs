@@ -3,13 +3,17 @@ use check::validators_block_rewards::{check_block_rewards, BlockRewardsCheckPara
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use log::info;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use structopt::StructOpt;
-use tokio_postgres::NoTls;
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
     #[structopt(long = "postgres-url")]
     postgres_url: String,
+
+    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    pub postgres_ssl_root_cert: String,
 
     #[structopt(short = "u", long = "rpc-url", env = "RPC_URL")]
     pub rpc_url: String,
@@ -42,8 +46,12 @@ async fn main() -> anyhow::Result<()> {
 
     let params = Params::from_args();
     info!("params {params:?}");
+    let mut builder = SslConnector::builder(SslMethod::tls())?;
+    builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
+    let connector = MakeTlsConnector::new(builder.build());
+
     let (psql_client, psql_conn) =
-        tokio_postgres::connect(&params.common.postgres_url, NoTls).await?;
+        tokio_postgres::connect(&params.common.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {err}");
