@@ -25,7 +25,7 @@ pub async fn check_block_rewards(
     psql_client: &Client,
     rpc_client: &RpcClient,
     db_table: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     info!("Checking epoch data about epoch in DB table {db_table}");
 
     // in block rewards, we only care about epoch
@@ -66,24 +66,26 @@ pub async fn check_block_rewards(
                 return if current_slot_index > params.slot_offset_wait {
                     // the slot offset wait is overpassed, we can proceed
                     // this is a preliminary check as the real collection may happen only when Google stakes-etl job loaded data to BQ
-                    Ok(())
+                    Ok(true)
                 } else {
-                    Err(anyhow::anyhow!(
+                    info!(
                         "To execute required to wait at epoch {current_epoch} for slot index {}, approximately {} seconds",
                         params.slot_offset_wait - current_slot_index,
                         (params.slot_offset_wait - current_slot_index) * MILLISECONDS_PER_SLOT / 1000u64
-                    ))
+                    );
+                    Ok(false)
                 };
             }
 
-            Err(anyhow::anyhow!(
+            info!(
                 "{db_table} data collection for the epoch prior {} has already been processed",
                 current_epoch - 1
-            ))
+            );
+            Ok(false)
         }
         None => {
             info!("No {db_table} data found in DB. Proceed with data collection.");
-            Ok(())
+            Ok(true)
         }
     }
 }

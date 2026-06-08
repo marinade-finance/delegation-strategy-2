@@ -41,9 +41,23 @@ enum StoreCommand {
 pub mod validators_jito;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    match run().await {
+        Ok(true) => {}
+        Ok(false) => {
+            info!("Not a good time to collect, skipping");
+            std::process::exit(1);
+        }
+        Err(err) => {
+            log::error!("Check failed: {err:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<bool> {
     let params = Params::from_args();
     info!("params {params:?}");
     let mut builder = SslConnector::builder(SslMethod::tls())?;
@@ -55,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             log::error!("Connection error: {err}");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     });
 
