@@ -179,6 +179,7 @@ fn compute_score_breakdowns(
             .iter()
             .find(|s| s.scoring_run_id == score.scoring_run_id.into())
         {
+            #[allow(deprecated)]
             score_breakdowns.push(ScoreBreakdown {
                 vote_account: score.vote_account.clone(),
                 score: score.score,

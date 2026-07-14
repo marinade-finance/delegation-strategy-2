@@ -11,7 +11,8 @@ use solana_program::{
     pubkey::Pubkey,
     stake_history::{StakeHistory, StakeHistoryEntry},
 };
-use solana_sdk::{pubkey, stake};
+use solana_sdk::pubkey;
+use solana_stake_interface as stake;
 use std::collections::*;
 
 pub fn get_marinade_stakes(

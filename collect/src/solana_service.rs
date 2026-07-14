@@ -18,7 +18,6 @@ use solana_client::{
 use solana_commitment_config::CommitmentConfig;
 use solana_config_program::{get_config_data, ConfigKeys};
 use solana_program::{
-    stake::{self, state::StakeStateV2},
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
@@ -29,6 +28,7 @@ use solana_sdk::{
     sysvar,
 };
 use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_stake_interface::{self as stake, state::StakeStateV2};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -116,15 +116,20 @@ pub fn get_cluster_nodes_versions(
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
 fn is_plausible_node_version(version: &str) -> bool {
+    let numeric = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
     let mut parts = version.splitn(3, '.');
-    let numeric = |part: Option<&str>| {
-        part.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    };
-    numeric(parts.next())
-        && numeric(parts.next())
-        && parts
-            .next()
-            .is_some_and(|p| p.starts_with(|c: char| c.is_ascii_digit()))
+    parts.next().is_some_and(numeric)
+        && parts.next().is_some_and(numeric)
+        && parts.next().is_some_and(|p| match p.split_once('-') {
+            None => numeric(p),
+            Some((patch, prerelease)) => {
+                numeric(patch)
+                    && !prerelease.is_empty()
+                    && prerelease
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'.')
+            }
+        })
 }
 
 pub fn get_cluster_nodes_ips(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, String>> {
@@ -608,5 +613,10 @@ mod tests {
         assert!(!is_plausible_node_version("v4.1.0"));
         assert!(!is_plausible_node_version("4.x.0"));
         assert!(!is_plausible_node_version(".."));
+        assert!(!is_plausible_node_version("4.1.0garbage"));
+        assert!(!is_plausible_node_version("4.1.0/extra"));
+        assert!(!is_plausible_node_version("4.1.0-"));
+        assert!(!is_plausible_node_version("4.1.0-rc/1"));
+        assert!(!is_plausible_node_version("4.1.0.1"));
     }
 }
