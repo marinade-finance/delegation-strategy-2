@@ -74,7 +74,7 @@ pub async fn store_validators(
             dc_asn = u.dc_asn,
             dc_aso = u.dc_aso,
             commission_advertised = u.commission_advertised,
-            version = u.version,
+            version = COALESCE(u.version, validators.version),
             activated_stake = u.activated_stake,
             marinade_stake = u.marinade_stake,
             foundation_stake = u.foundation_stake,

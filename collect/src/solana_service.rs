@@ -90,7 +90,7 @@ pub fn get_cluster_nodes_versions(
     Ok(cluster_nodes
         .iter()
         .filter_map(|node| {
-            node.version.clone().map(|version| {
+            node.version.clone().and_then(|version| {
                 let version = version
                     .split_once(char::is_whitespace)
                     .map(|(version, extra)| {
@@ -101,10 +101,30 @@ pub fn get_cluster_nodes_versions(
                         version.to_string()
                     })
                     .unwrap_or(version);
-                (node.pubkey.clone(), version)
+                if !is_plausible_node_version(&version) {
+                    warn!(
+                        "Node {} reports malformed version: '{version}', ignoring",
+                        node.pubkey
+                    );
+                    return None;
+                }
+                Some((node.pubkey.clone(), version))
             })
         })
         .collect())
+}
+
+// A malformed gossip version is dropped so store never replaces the last known good version with it.
+fn is_plausible_node_version(version: &str) -> bool {
+    let mut parts = version.splitn(3, '.');
+    let numeric = |part: Option<&str>| {
+        part.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    };
+    numeric(parts.next())
+        && numeric(parts.next())
+        && parts
+            .next()
+            .is_some_and(|p| p.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 pub fn get_cluster_nodes_ips(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, String>> {
@@ -570,4 +590,23 @@ pub fn fetch_self_stake(
     }
 
     Ok(self_stake)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_plausible_node_version;
+
+    #[test]
+    fn plausible_node_versions() {
+        assert!(is_plausible_node_version("4.1.0"));
+        assert!(is_plausible_node_version("4.1.0-rc.1"));
+        assert!(is_plausible_node_version("4.2.0-beta.0"));
+        assert!(is_plausible_node_version("0.505.20216"));
+        assert!(!is_plausible_node_version(""));
+        assert!(!is_plausible_node_version("unknown"));
+        assert!(!is_plausible_node_version("4.1"));
+        assert!(!is_plausible_node_version("v4.1.0"));
+        assert!(!is_plausible_node_version("4.x.0"));
+        assert!(!is_plausible_node_version(".."));
+    }
 }
