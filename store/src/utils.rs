@@ -1124,7 +1124,7 @@ pub async fn load_block_production_stats(
 	                epoch,
                     COALESCE(SUM(blocks_produced), 0) blocks_produced,
                     COALESCE(SUM(leader_slots), 0) leader_slots,
-                    (1 - COALESCE(SUM(blocks_produced), 0)  / coalesce(SUM(leader_slots), 1))::DOUBLE PRECISION avg_skip_rate
+                    COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
                 FROM validators
                 WHERE epoch > $1
                 GROUP BY epoch ORDER BY epoch DESC",
