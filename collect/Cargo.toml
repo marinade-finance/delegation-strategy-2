@@ -2,6 +2,7 @@
 name = "collect"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,6 +13,7 @@ env_logger = { workspace = true }
 structopt = { workspace = true }
 solana-client = { workspace = true }
 solana-vote-program = { workspace = true }
+solana-stake-interface = { workspace = true }
 rust_decimal = { workspace = true }
 solana-sdk = { workspace = true }
 solana-program = { workspace = true }

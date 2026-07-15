@@ -35,7 +35,7 @@ validator = { version = "0.20.0", features = ["derive"] }
 bytes = "1.11"
 futures = { version = "0.3", default-features = false }
 warp = "0.3"
-prometheus = "0.13.3"
+prometheus = { version = "0.13.3", default-features = false }
 lazy_static = "1.4.0"
 regex = "1.7.2"
 
@@ -46,6 +46,7 @@ redis = { version = "0.23.0", features = ["json"] }
 # Collect-specific dependencies
 solana-vote-program = "2.2.20"
 solana-sdk = "2.2.2"
+solana-stake-interface = { version = "1.2.1", features = ["serde"] }
 solana-account-decoder = "2.2.20"
 solana-config-program = "2.2.20"
 solana-commitment-config = "2.2.1"

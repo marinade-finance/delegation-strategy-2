@@ -127,35 +127,35 @@ pub async fn handler(
         .map(|(_, ValidatorScoreRecord { score, .. })| *score)
         .min_by(|a, b| to_fixed_for_sort(*a).cmp(&to_fixed_for_sort(*b)));
 
+    #[allow(deprecated)]
+    let score_breakdown = ScoreBreakdown {
+        vote_account,
+        score,
+        min_score_eligible_algo,
+        rank,
+        ui_hints,
+        vemnde_votes,
+        msol_votes,
+        component_scores,
+        component_ranks,
+        component_values,
+        component_weights,
+        components,
+        eligible_stake_algo,
+        eligible_stake_vemnde,
+        eligible_stake_mnde: eligible_stake_vemnde,
+        eligible_stake_msol,
+        target_stake_algo,
+        target_stake_vemnde,
+        target_stake_mnde: target_stake_vemnde,
+        target_stake_msol,
+        scoring_run_id,
+        created_at,
+        epoch,
+        ui_id,
+    };
     Ok(warp::reply::with_status(
-        json(&ResponseScoreBreakdown {
-            score_breakdown: ScoreBreakdown {
-                vote_account,
-                score,
-                min_score_eligible_algo,
-                rank,
-                ui_hints,
-                vemnde_votes,
-                msol_votes,
-                component_scores,
-                component_ranks,
-                component_values,
-                component_weights,
-                components,
-                eligible_stake_algo,
-                eligible_stake_vemnde,
-                eligible_stake_mnde: eligible_stake_vemnde,
-                eligible_stake_msol,
-                target_stake_algo,
-                target_stake_vemnde,
-                target_stake_mnde: target_stake_vemnde,
-                target_stake_msol,
-                scoring_run_id,
-                created_at,
-                epoch,
-                ui_id,
-            },
-        }),
+        json(&ResponseScoreBreakdown { score_breakdown }),
         StatusCode::OK,
     ))
 }
