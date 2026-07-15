@@ -1,5 +1,5 @@
 use crate::common::*;
-use crate::solana_service::solana_client;
+use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,7 @@ use serde_yaml;
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
 use solana_sdk::clock::Epoch;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -16,6 +17,13 @@ pub struct ValidatorsPerformanceParams {
 
     #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
+
+    #[structopt(
+        long = "rpc-timeout",
+        help = "How long to wait for RPC response (seconds).",
+        default_value = "300"
+    )]
+    rpc_timeout: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,7 +139,11 @@ pub fn collect_validators_performance_info(
     performance_params: ValidatorsPerformanceParams,
 ) -> anyhow::Result<()> {
     info!("Collecting snaphost of validators' performance");
-    let client = solana_client(common_params.rpc_url, common_params.commitment);
+    let client = solana_client_with_timeout(
+        common_params.rpc_url,
+        Duration::from_secs(performance_params.rpc_timeout),
+        common_params.commitment,
+    );
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;
