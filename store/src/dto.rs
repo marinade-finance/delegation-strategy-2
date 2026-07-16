@@ -309,6 +309,42 @@ pub struct VersionRecord {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct StakersRecord {
+    pub epoch: u64,
+    pub epoch_end_at: Option<DateTime<Utc>>,
+    pub unique_stakers: u64,
+    pub active_stake: Decimal,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct SettlementRecord {
+    /// Raw upstream JSON tagged enum, e.g. `"Bidding"` or `{"ProtectedEvent":{...}}`.
+    pub reason: String,
+    /// Raw upstream JSON, e.g. `{"funder":"ValidatorBond"}`.
+    pub meta: String,
+    /// Settlement amount in lamports.
+    pub amount: Decimal,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct PerformanceRecord {
+    pub blocks_produced: u64,
+    pub leader_slots: u64,
+    pub skip_rate: f64,
+    pub credits: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct EventEpochRecord {
+    pub epoch: u64,
+    pub epoch_end_at: Option<DateTime<Utc>>,
+    pub performance: PerformanceRecord,
+    pub uptime_pct: Option<f64>,
+    pub downtime: Option<u64>,
+    pub settlements: Vec<SettlementRecord>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct CommissionRecord {
     pub epoch: u64,
     pub epoch_start_at: DateTime<Utc>,

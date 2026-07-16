@@ -1,10 +1,12 @@
 use collect::common::*;
 use collect::validators::*;
 use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
+use collect::validators_events::{collect_validator_events_info, EventsParams};
 use collect::validators_jito::{collect_jito_info, JitoAccountType, JitoParams};
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceParams,
 };
+use collect::validators_stakers::{collect_validator_stakers_info, StakersParams};
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
@@ -26,6 +28,8 @@ enum CollectCommand {
     JitoMev(JitoParams),
     JitoPriority(JitoParams),
     ValidatorsBlockRewards(BlockRewardsParams),
+    ValidatorsStakers(StakersParams),
+    ValidatorsEvents(EventsParams),
 }
 
 impl Display for CollectCommand {
@@ -36,6 +40,8 @@ impl Display for CollectCommand {
             CollectCommand::JitoMev(_) => write!(f, "jito-mev"),
             CollectCommand::JitoPriority(_) => write!(f, "jito-priority"),
             CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
+            CollectCommand::ValidatorsStakers(_) => write!(f, "validators-stakers"),
+            CollectCommand::ValidatorsEvents(_) => write!(f, "validators-events"),
         }
     }
 }
@@ -65,6 +71,12 @@ fn main() -> anyhow::Result<()> {
         ),
         CollectCommand::ValidatorsBlockRewards(rewards_params) => {
             collect_validator_block_rewards_info(params.common, rewards_params)
+        }
+        CollectCommand::ValidatorsStakers(stakers_params) => {
+            collect_validator_stakers_info(params.common, stakers_params)
+        }
+        CollectCommand::ValidatorsEvents(events_params) => {
+            collect_validator_events_info(params.common, events_params)
         }
     };
 

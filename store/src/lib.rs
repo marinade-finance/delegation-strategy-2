@@ -3,4 +3,6 @@ pub mod rewards;
 pub mod scoring;
 pub mod utils;
 pub mod validators_block_rewards;
+pub mod validators_events;
 pub mod validators_jito;
+pub mod validators_stakers;
