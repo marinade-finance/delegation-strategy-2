@@ -31,14 +31,14 @@ pub async fn store_stakers(
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot stakers file '{path}': {e}"))?;
 
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
-    let snapshot_epoch = Decimal::from(snapshot.epoch);
 
     info!(
-        "Loaded the stakers snapshot for epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
-        snapshot_epoch,
+        "Loaded the stakers snapshot from epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}. {} records.",
+        snapshot.from_epoch,
         snapshot_created_at,
         snapshot.loaded_at_epoch,
-        snapshot.loaded_at_slot_index
+        snapshot.loaded_at_slot_index,
+        snapshot.stakers.len()
     );
 
     let mut total_upserted = 0;
@@ -49,7 +49,7 @@ pub async fn store_stakers(
             chunk.iter().map(|r| Decimal::from(r.unique_stakers)).collect();
         let active_stakes: Vec<Decimal> =
             chunk.iter().map(|r| Decimal::from(r.active_stake)).collect();
-        let epochs: Vec<Decimal> = vec![snapshot_epoch; chunk.len()];
+        let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
         let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
         let created_ats = updated_ats.clone();
 
