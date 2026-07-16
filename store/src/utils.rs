@@ -689,6 +689,9 @@ pub async fn load_validators(
             let dc_aso = row
                 .get::<_, Option<String>>("dc_aso")
                 .unwrap_or("Unknown".into());
+            let dc_country = row
+                .get::<_, Option<String>>("dc_country")
+                .unwrap_or("Unknown".into());
 
             let dcc_full_city = concentrations
                 .as_ref()
@@ -699,6 +702,9 @@ pub async fn load_validators(
             let dcc_aso = concentrations
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
+            let dcc_country = concentrations
+                .as_ref()
+                .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
             let record = records
                 .entry(vote_account.clone())
@@ -724,6 +730,7 @@ pub async fn load_validators(
                     dcc_full_city,
                     dcc_asn,
                     dcc_aso,
+                    dcc_country,
                     commission_max_observed: row.get::<_, Option<i32>>("commission_max_observed"),
                     commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
                     commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
@@ -1206,6 +1213,7 @@ pub async fn load_dc_concentration_stats(
         let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
         let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
         let mut dc_stake_by_city: HashMap<_, _> = Default::default();
+        let mut dc_stake_by_country: HashMap<_, _> = Default::default();
         let mut total_active_stake = 0;
 
         let rows = psql_client
@@ -1214,6 +1222,7 @@ pub async fn load_dc_concentration_stats(
                     activated_stake,
                     dc_aso,
                     dc_asn,
+                    dc_country,
                     CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city
                 FROM validators WHERE epoch = $1",
                 &[&Decimal::from(epoch)],
@@ -1231,12 +1240,18 @@ pub async fn load_dc_concentration_stats(
             let dc_city: String = row
                 .get::<_, Option<String>>("dc_full_city")
                 .unwrap_or("Unknown".to_string());
+            let dc_country: String = row
+                .get::<_, Option<String>>("dc_country")
+                .unwrap_or("Unknown".to_string());
 
             total_active_stake += activated_stake;
             *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
             *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
             *(dc_stake_by_city
                 .entry(dc_city)
+                .or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_country
+                .entry(dc_country)
                 .or_insert(Default::default())) += activated_stake;
         }
 
@@ -1258,6 +1273,11 @@ pub async fn load_dc_concentration_stats(
                 total_active_stake,
             ),
             dc_stake_by_city,
+            dc_concentration_by_country: map_stake_to_concentration(
+                &dc_stake_by_country,
+                total_active_stake,
+            ),
+            dc_stake_by_country,
         })
     }
 

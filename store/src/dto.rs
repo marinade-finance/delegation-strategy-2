@@ -232,6 +232,7 @@ pub struct ValidatorRecord {
     pub dcc_full_city: Option<f64>,
     pub dcc_asn: Option<f64>,
     pub dcc_aso: Option<f64>,
+    pub dcc_country: Option<f64>,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
@@ -381,6 +382,8 @@ pub struct DCConcentrationStats {
     pub dc_stake_by_asn: HashMap<String, u64>,
     pub dc_concentration_by_city: HashMap<String, f64>,
     pub dc_stake_by_city: HashMap<String, u64>,
+    pub dc_concentration_by_country: HashMap<String, f64>,
+    pub dc_stake_by_country: HashMap<String, u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
