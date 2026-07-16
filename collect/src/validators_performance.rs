@@ -1,7 +1,7 @@
 use crate::common::*;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
-use log::info;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
@@ -17,6 +17,13 @@ pub struct ValidatorsPerformanceParams {
 
     #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
+
+    #[structopt(
+        long = "rpc-attempts",
+        help = "How many times to retry the operation.",
+        default_value = "10"
+    )]
+    rpc_attempts: usize,
 
     #[structopt(
         long = "rpc-timeout",
@@ -64,6 +71,7 @@ pub fn validators_performance(
     client: &RpcClient,
     epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
+    rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, ValidatorPerformance>> {
     let mut validators: HashMap<String, ValidatorPerformance> = Default::default();
 
@@ -72,7 +80,14 @@ pub fn validators_performance(
         .iter()
         .map(|v| v.vote_pubkey.clone())
         .collect();
-    let production_by_validator = get_block_production_by_validator(client, epoch)?;
+    // block production is the first RPC after the whois fetch; retry so a keep-alive socket dropped during that idle gap doesn't abort the whole snapshot
+    let production_by_validator = retry_blocking(
+        || get_block_production_by_validator(client, epoch),
+        QuadraticBackoffStrategy::iter_durations(rpc_attempts),
+        |err, attempt, backoff| {
+            warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
+        },
+    )?;
     let node_versions = get_cluster_nodes_versions(client)?;
     let credits = get_credits(client, epoch)?;
 
@@ -161,7 +176,12 @@ pub fn collect_validators_performance_info(
         vote_accounts.delinquent.len()
     );
 
-    let validators = validators_performance(&client, epoch, &vote_accounts)?;
+    let validators = validators_performance(
+        &client,
+        epoch,
+        &vote_accounts,
+        performance_params.rpc_attempts,
+    )?;
 
     let rewards = if performance_params.with_rewards {
         Some(validator_rewards(&client, epoch, &vote_accounts)?)
