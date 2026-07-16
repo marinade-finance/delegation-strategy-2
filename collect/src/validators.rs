@@ -210,7 +210,12 @@ pub fn collect_validators_info(
         _ => Default::default(),
     };
 
-    let performance = validators_performance(&client, epoch, &vote_accounts)?;
+    let performance = validators_performance(
+        &client,
+        epoch,
+        &vote_accounts,
+        validator_params.rpc_attempts,
+    )?;
 
     for vote_account in vote_accounts
         .current
