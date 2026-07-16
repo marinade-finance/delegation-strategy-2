@@ -672,6 +672,8 @@ pub async fn load_validators(
                 commission_advertised,
                 commission_effective,
                 version,
+                mev.mev_commission AS mev_commission_bps,
+                jpf.validator_commission AS priority_commission_bps,
                 activated_stake,
                 marinade_stake,
                 foundation_stake,
@@ -694,6 +696,14 @@ pub async fn load_validators(
                 LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
                 LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
                 LEFT JOIN epochs ON epochs.epoch = validators.epoch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, mev_commission
+                    FROM mev ORDER BY vote_account, epoch, created_at DESC
+                ) mev ON mev.vote_account = validators.vote_account AND mev.epoch = validators.epoch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
+                    FROM jito_priority_fee ORDER BY vote_account, epoch, created_at DESC
+                ) jpf ON jpf.vote_account = validators.vote_account AND jpf.epoch = validators.epoch
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(display_epochs)],
@@ -850,6 +860,12 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
                 version: row.get("version"),
+                mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
+                priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
+                dc_asn: row.get::<_, Option<i32>>("dc_asn"),
+                dc_aso: row.get::<_, Option<String>>("dc_aso"),
+                dc_city: row.get::<_, Option<String>>("dc_city"),
+                dc_country: row.get::<_, Option<String>>("dc_country"),
                 activated_stake: row.get::<_, Decimal>("activated_stake"),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                 foundation_stake: row.get::<_, Decimal>("foundation_stake"),
