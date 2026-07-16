@@ -22,6 +22,7 @@ tokio-postgres = { workspace = true }
 openssl = { workspace = true }
 postgres-openssl = { workspace = true }
 tokio = { workspace = true }
+google-cloud-bigquery = { workspace = true }
 collect = { path = "../collect" }
 chrono = { workspace = true }
 csv = { workspace = true }

@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, StakersRecord, UptimeRecord, ValidatorRecord,
+    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
     ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
 };
 use tokio::time::{sleep, Duration, Instant};
@@ -17,7 +17,6 @@ type CachedValidators = HashMap<String, ValidatorRecord>;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
-type CachedStakers = HashMap<String, Vec<StakersRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedValidatorsAggregated = Vec<ValidatorsAggregated>;
 
@@ -39,7 +38,6 @@ pub struct Cache {
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
-    pub stakers: CachedStakers,
     pub cluster_stats: CachedClusterStats,
     pub validators_aggregated: CachedValidatorsAggregated,
     pub validators_single_run_scores: CachedSingleRunScores,
@@ -71,10 +69,6 @@ impl Cache {
 
     pub fn get_uptimes(&self, vote_account: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(vote_account).cloned()
-    }
-
-    pub fn get_stakers(&self, vote_account: &String) -> Option<Vec<StakersRecord>> {
-        self.stakers.get(vote_account).cloned()
     }
 
     pub fn get_validators_aggregated(&self) -> CachedValidatorsAggregated {
@@ -115,6 +109,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
         context.read().await.scoring_url.clone(),
+        context.read().await.apy_api_url.clone(),
         DEFAULT_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
     )
@@ -183,22 +178,6 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     info!(
         "Loaded {} uptimes to cache in {} ms",
         uptimes.len(),
-        warmup_timer.elapsed().as_millis()
-    );
-
-    Ok(())
-}
-pub async fn warm_stakers_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading stakers from DB");
-    let warmup_timer = Instant::now();
-    let stakers =
-        store::validators_stakers::load_stakers(&context.read().await.psql_client, DEFAULT_EPOCHS)
-            .await?;
-
-    context.write().await.cache.stakers.clone_from(&stakers);
-    info!(
-        "Loaded {} stakers to cache in {} ms",
-        stakers.len(),
         warmup_timer.elapsed().as_millis()
     );
 
@@ -298,10 +277,6 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
 
             if let Err(err) = warm_uptimes_cache(&context).await {
                 error!("Failed to update the uptimes: {err}");
-            }
-
-            if let Err(err) = warm_stakers_cache(&context).await {
-                error!("Failed to update the stakers: {err}");
             }
 
             if let Err(err) = warm_cluster_stats_cache(&context).await {

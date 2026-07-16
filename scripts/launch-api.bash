@@ -17,4 +17,5 @@ fi
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
   --blacklist-path "$BLACKLIST_CSV" \
-  --scoring-url "$SCORING_URL"
+  --scoring-url "$SCORING_URL" \
+  --apy-api-url "$APY_API_URL"

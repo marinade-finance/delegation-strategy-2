@@ -256,6 +256,8 @@ pub struct ValidatorRecord {
     pub has_last_epoch_stats: bool,
     pub avg_uptime_pct: Option<f64>,
     pub avg_apy: Option<f64>,
+    pub unique_delegators: Option<u64>,
+    pub avg_take_rate: Option<f64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -306,14 +308,6 @@ pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct StakersRecord {
-    pub epoch: u64,
-    pub epoch_end_at: Option<DateTime<Utc>>,
-    pub unique_stakers: u64,
-    pub active_stake: Decimal,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

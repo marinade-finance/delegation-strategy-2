@@ -8,7 +8,6 @@ use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
-use store::validators_stakers::{store_stakers, StoreStakersParams};
 use structopt::StructOpt;
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
@@ -41,7 +40,6 @@ enum StoreCommand {
     ClusterInfo(StoreClusterInfoParams),
     Validators(StoreValidatorsParams),
     ValidatorsBlockRewards(StoreBlockRewardsParams),
-    ValidatorsStakers(StoreStakersParams),
     ValidatorsEvents(StoreEventsParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
@@ -111,9 +109,6 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::ValidatorsBlockRewards(store_params) => {
             store_block_rewards(store_params, &mut psql_client).await
-        }
-        StoreCommand::ValidatorsStakers(store_params) => {
-            store_stakers(store_params, &mut psql_client).await
         }
         StoreCommand::ValidatorsEvents(store_params) => {
             store_events(store_params, &mut psql_client).await

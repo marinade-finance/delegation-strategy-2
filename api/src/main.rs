@@ -2,7 +2,7 @@ use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, stakers, unstake_hints, uptimes,
+    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -33,6 +33,9 @@ pub struct Params {
 
     #[structopt(long = "scoring-url")]
     scoring_url: String,
+
+    #[structopt(long = "apy-api-url", default_value = "https://apy.marinade.finance")]
+    apy_api_url: String,
 
     #[structopt(long = "glossary-path")]
     glossary_path: String,
@@ -71,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         params.glossary_path,
         params.blacklist_path,
         params.scoring_url,
+        params.apy_api_url,
     )?));
     cache::spawn_cache_warmer(context.clone());
     let cors = warp::cors()
@@ -150,13 +154,6 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<uptimes::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(uptimes::handler);
-
-    let route_stakers = warp::path!("validators" / String / "stakers")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(warp::query::<stakers::QueryParams>())
-        .and(with_context(context.clone()))
-        .and_then(stakers::handler);
 
     let route_events = warp::path!("validators" / String / "events")
         .and(warp::path::end())
@@ -277,7 +274,6 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validators_flat)
         .or(route_validators_block_rewards)
         .or(route_uptimes)
-        .or(route_stakers)
         .or(route_events)
         .or(route_versions)
         .or(route_commissions)

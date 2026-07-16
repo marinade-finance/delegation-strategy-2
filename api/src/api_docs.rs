@@ -1,7 +1,7 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, stakers, unstake_hints, uptimes,
+    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -42,7 +42,6 @@ use utoipa::OpenApi;
         schemas(store::dto::UnstakeHintRecord),
         schemas(store::dto::UnstakeHint),
         schemas(store::dto::UptimeRecord),
-        schemas(store::dto::StakersRecord),
         schemas(store::dto::EventEpochRecord),
         schemas(store::dto::SettlementRecord),
         schemas(store::dto::PerformanceRecord),
@@ -59,7 +58,6 @@ use utoipa::OpenApi;
         schemas(store::dto::ValidatorBlockRewardsRecord),
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
-        schemas(stakers::ResponseStakers),
         schemas(events::ResponseEvents),
         schemas(validator_score_breakdown::ResponseScoreBreakdown),
         schemas(validator_score_breakdown::ScoreBreakdown),
@@ -87,7 +85,6 @@ use utoipa::OpenApi;
         unstake_hints::handler,
         global_unstake_hints::handler,
         uptimes::handler,
-        stakers::handler,
         events::handler,
         validator_score_breakdown::handler,
         validator_score_breakdowns::handler,

@@ -5,6 +5,9 @@ use crate::dto::{
     ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
+use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
+use google_cloud_bigquery::http::job::query::QueryRequest;
+use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
 use std::sync::Arc;
 use std::{
@@ -526,9 +529,51 @@ pub fn update_validators_ranks<T>(
     }
 }
 
+const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
+const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
+const STAKES_TABLE: &str = "stakes";
+
+/// Fetches the current (latest available epoch) unique delegator count per validator directly
+/// from BigQuery. Delegator = distinct `withdraw_authority`. No history is stored; this runs at
+/// cache-warm time. Requires GOOGLE_APPLICATION_CREDENTIALS[_JSON] in the environment.
+pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+
+    let project_table = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.{STAKES_TABLE}");
+    let query = format!(
+        "SELECT vote_account, \
+                CAST(COUNT(DISTINCT withdraw_authority) AS INT64) AS unique_delegators \
+         FROM `{project_table}` \
+         WHERE active > 0 AND vote_account IS NOT NULL \
+           AND epoch = (SELECT MAX(epoch) FROM `{project_table}`) \
+         GROUP BY vote_account"
+    );
+
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
+
+    let mut records: HashMap<String, u64> = Default::default();
+    while let Some(row) = iter.next().await? {
+        let vote_account = row.column::<String>(0)?;
+        let unique_delegators_str = row.column::<String>(1)?;
+        records.insert(vote_account, unique_delegators_str.parse()?);
+    }
+
+    Ok(records)
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
+    apy_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
@@ -703,6 +748,8 @@ pub async fn load_validators(
 
                     avg_uptime_pct: None,
                     avg_apy: None,
+                    unique_delegators: None,
+                    avg_take_rate: None,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -809,8 +856,119 @@ pub async fn load_validators(
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;
+
+    log::info!("Updating unique delegators...");
+    let unique_delegators = match load_latest_unique_delegators().await {
+        Ok(delegators) => delegators,
+        Err(err) => {
+            log::error!("Failed to load unique delegators from BigQuery: {err}");
+            Default::default()
+        }
+    };
+    for (vote_account, record) in records.iter_mut() {
+        record.unique_delegators = unique_delegators.get(vote_account).copied();
+    }
+
+    log::info!("Updating take rate...");
+    update_validators_with_take_rate(&apy_api_url, &mut records).await?;
+
     log::info!("Records prepared...");
     Ok(records)
+}
+
+const APY_SCRAPER_WORKERS: usize = 10;
+
+#[derive(serde::Deserialize)]
+struct RollingApyResponse {
+    times: Vec<f64>,
+    values: Vec<f64>,
+}
+
+async fn fetch_rolling_apy(url: &str) -> Option<RollingApyResponse> {
+    match reqwest::get(url).await {
+        Ok(resp) if resp.status().is_success() => resp.json::<RollingApyResponse>().await.ok(),
+        Ok(resp) => {
+            log::error!("Failed to fetch rolling apy {url}: {}", resp.status());
+            None
+        }
+        Err(e) => {
+            log::error!("Error fetching rolling apy {url}: {e}");
+            None
+        }
+    }
+}
+
+async fn fetch_take_rate(apy_api_url: &str, vote_account: &str) -> Option<f64> {
+    let net_url = format!("{apy_api_url}/v1/rolling-apy/validator/{vote_account}");
+    let gross_url = format!("{apy_api_url}/v1/rolling-apy/validator/total/{vote_account}");
+
+    let net = fetch_rolling_apy(&net_url).await?;
+    let gross = fetch_rolling_apy(&gross_url).await?;
+
+    let net_by_time: HashMap<i64, f64> = net
+        .times
+        .iter()
+        .zip(net.values.iter())
+        .map(|(t, v)| (t.round() as i64, *v))
+        .collect();
+
+    let mut sum = 0.0;
+    let mut count = 0u64;
+    for (i, t) in gross.times.iter().enumerate() {
+        let gross_apy = gross.values[i];
+        if gross_apy <= 0.0 {
+            continue;
+        }
+        if let Some(net_apy) = net_by_time.get(&(t.round() as i64)) {
+            sum += 1.0 - net_apy / gross_apy;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
+}
+
+pub async fn update_validators_with_take_rate(
+    apy_api_url: &str,
+    validators: &mut HashMap<String, ValidatorRecord>,
+) -> anyhow::Result<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, f64)>();
+
+    let handle = tokio::spawn(async move {
+        let mut result: HashMap<String, f64> = Default::default();
+        while let Some((vote_account, take_rate)) = rx.recv().await {
+            result.insert(vote_account, take_rate);
+        }
+        result
+    });
+
+    let permits = Arc::new(Semaphore::new(APY_SCRAPER_WORKERS));
+    for vote_account in validators.keys().cloned().collect::<Vec<_>>() {
+        let apy_api_url = apy_api_url.to_string();
+        let tx = tx.clone();
+        let permit = permits.clone().acquire_owned().await?;
+        tokio::spawn(async move {
+            if let Some(take_rate) = fetch_take_rate(&apy_api_url, &vote_account).await {
+                let _ = tx.send((vote_account, take_rate));
+            }
+            drop(permit);
+        });
+    }
+
+    drop(tx);
+
+    let (result,) = join!(handle);
+    let take_rates = result?;
+
+    for (vote_account, record) in validators.iter_mut() {
+        record.avg_take_rate = take_rates.get(vote_account).copied();
+    }
+
+    Ok(())
 }
 
 pub async fn update_validators_with_scores(
