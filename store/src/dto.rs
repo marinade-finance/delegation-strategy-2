@@ -259,6 +259,7 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
+    pub incidents: Vec<IncidentRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -269,6 +270,15 @@ pub struct UptimeRecord {
     pub status: String,
     pub start_at: DateTime<Utc>,
     pub end_at: DateTime<Utc>,
+}
+
+/// A single downtime incident (one DOWN interval from the uptimes table).
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct IncidentRecord {
+    pub epoch: u64,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+    pub downtime_seconds: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

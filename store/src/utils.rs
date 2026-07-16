@@ -1,8 +1,8 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo,
-    RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats,
-    ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow,
-    ValidatorWarning, ValidatorsAggregated, VersionRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, IncidentRecord,
+    RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat,
+    ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record,
+    ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
@@ -201,6 +201,54 @@ async fn get_apy_calculators(
     }
 
     Ok(result)
+}
+
+/// Window (in epochs) over which per-validator downtime incidents are counted for the
+/// `incidents_count` field on `/validators`. Adjust here to change the FE's "N incidents in
+/// last X epochs" window.
+const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+
+/// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
+/// validator over the last `epochs` epochs. Each `DOWN` row is one incident (a new row is inserted
+/// on every UP↔DOWN transition; `end_at` is extended while the status holds). The frontend decides
+/// what counts as "significant" from `downtime_seconds`.
+pub async fn load_incidents(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
+    let rows = psql_client
+        .query(
+            "
+            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
+            SELECT
+                vote_account,
+                uptimes.epoch,
+                start_at,
+                end_at,
+                EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
+            FROM uptimes
+            CROSS JOIN cluster
+            WHERE status = 'DOWN' AND uptimes.epoch > cluster.last_epoch - $1::NUMERIC
+            ORDER BY start_at ASC",
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+
+    let mut records: HashMap<String, Vec<IncidentRecord>> = Default::default();
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        records
+            .entry(vote_account)
+            .or_default()
+            .push(IncidentRecord {
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
+                start_at: row.get("start_at"),
+                end_at: row.get("end_at"),
+                downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+            });
+    }
+
+    Ok(records)
 }
 
 pub async fn load_uptimes(
@@ -757,6 +805,7 @@ pub async fn load_validators(
                     avg_apy: None,
                     unique_delegators: None,
                     avg_take_rate: None,
+                    incidents: Vec::new(),
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -874,6 +923,12 @@ pub async fn load_validators(
     };
     for (vote_account, record) in records.iter_mut() {
         record.unique_delegators = unique_delegators.get(vote_account).copied();
+    }
+
+    log::info!("Updating incidents...");
+    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    for (vote_account, record) in records.iter_mut() {
+        record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
 
     log::info!("Updating take rate...");
