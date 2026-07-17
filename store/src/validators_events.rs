@@ -101,22 +101,52 @@ pub async fn store_events(
     Ok(())
 }
 
+pub const DEFAULT_EVENTS_WINDOW_EPOCHS: u64 = 80;
+
+/// `from = true` -> smallest epoch ending on/after `date`; else largest ending on/before.
+pub async fn resolve_epoch_for_date(
+    psql_client: &Client,
+    date: DateTime<Utc>,
+    from: bool,
+) -> anyhow::Result<Option<u64>> {
+    let (cmp, order) = if from { (">=", "ASC") } else { ("<=", "DESC") };
+    let query = format!(
+        "SELECT epoch FROM epochs WHERE end_at {cmp} $1 ORDER BY epoch {order} LIMIT 1"
+    );
+    let row = psql_client.query_opt(&query, &[&date]).await?;
+    match row {
+        Some(row) => Ok(Some(row.get::<_, Decimal>("epoch").try_into()?)),
+        None => Ok(None),
+    }
+}
+
 pub async fn get_events_with_context(
     psql_client: &Client,
     vote_account: &str,
-    epochs: u64,
+    from_epoch: Option<u64>,
 ) -> anyhow::Result<Vec<EventEpochRecord>> {
+    let from_epoch = match from_epoch {
+        Some(from_epoch) => from_epoch,
+        None => {
+            let last_epoch: Option<Decimal> = psql_client
+                .query_one("SELECT MAX(epoch) AS last_epoch FROM cluster_info", &[])
+                .await?
+                .get("last_epoch");
+            last_epoch
+                .and_then(|e| e.to_u64())
+                .unwrap_or(0)
+                .saturating_sub(DEFAULT_EVENTS_WINDOW_EPOCHS)
+        }
+    };
+    let from_epoch = Decimal::from(from_epoch);
+
     let settlement_rows = psql_client
         .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT epoch, reason, meta, amount
-            FROM validators_events
-            CROSS JOIN cluster
-            WHERE vote_account = $1
-                AND epoch > cluster.last_epoch - $2::NUMERIC
-            ORDER BY epoch ASC",
-            &[&vote_account, &Decimal::from(epochs)],
+            "SELECT epoch, reason, meta, amount
+             FROM validators_events
+             WHERE vote_account = $1 AND epoch >= $2::NUMERIC
+             ORDER BY epoch ASC",
+            &[&vote_account, &from_epoch],
         )
         .await?;
 
@@ -135,9 +165,7 @@ pub async fn get_events_with_context(
 
     let perf_rows = psql_client
         .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
+            "SELECT
                 validators.epoch,
                 epochs.end_at AS epoch_end,
                 blocks_produced,
@@ -148,11 +176,9 @@ pub async fn get_events_with_context(
                 downtime
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE validators.vote_account = $1
-                AND validators.epoch > cluster.last_epoch - $2::NUMERIC
+            WHERE validators.vote_account = $1 AND validators.epoch >= $2::NUMERIC
             ORDER BY validators.epoch ASC",
-            &[&vote_account, &Decimal::from(epochs)],
+            &[&vote_account, &from_epoch],
         )
         .await?;
 
