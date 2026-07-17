@@ -41,6 +41,7 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
+    query_incident_free: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -75,6 +76,7 @@ pub struct GetValidatorsConfig {
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
+    pub query_incident_free: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
@@ -222,6 +224,10 @@ pub fn filter_validators(
         validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
     }
 
+    if let Some(query_incident_free) = config.query_incident_free {
+        validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
+    }
+
     validators.into_values().collect()
 }
 
@@ -261,6 +267,7 @@ pub async fn handler(
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
+        query_incident_free: query_params.query_incident_free,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
