@@ -182,26 +182,47 @@ pub async fn get_events_with_context(
         )
         .await?;
 
-    let mut records = Vec::new();
+    let mut by_epoch: HashMap<u64, EventEpochRecord> = Default::default();
     for row in perf_rows {
         let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        records.push(EventEpochRecord {
+        by_epoch.insert(
             epoch,
-            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
-            performance: PerformanceRecord {
-                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-                leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-                skip_rate: row.get("skip_rate"),
-                credits: row.get::<_, Decimal>("credits").try_into()?,
+            EventEpochRecord {
+                epoch,
+                epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
+                performance: Some(PerformanceRecord {
+                    blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+                    leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+                    skip_rate: row.get("skip_rate"),
+                    credits: row.get::<_, Decimal>("credits").try_into()?,
+                }),
+                uptime_pct: row.get("uptime_pct"),
+                downtime: row
+                    .get::<_, Option<Decimal>>("downtime")
+                    .map(|n| n.try_into())
+                    .transpose()?,
+                settlements: Vec::new(),
             },
-            uptime_pct: row.get("uptime_pct"),
-            downtime: row
-                .get::<_, Option<Decimal>>("downtime")
-                .map(|n| n.try_into())
-                .transpose()?,
-            settlements: settlements_by_epoch.remove(&epoch).unwrap_or_default(),
-        });
+        );
     }
+
+    // Settlement-only epochs (no matching validators row) are preserved with no performance.
+    for (epoch, settlements) in settlements_by_epoch {
+        by_epoch
+            .entry(epoch)
+            .or_insert_with(|| EventEpochRecord {
+                epoch,
+                epoch_end_at: None,
+                performance: None,
+                uptime_pct: None,
+                downtime: None,
+                settlements: Vec::new(),
+            })
+            .settlements = settlements;
+    }
+
+    let mut records: Vec<EventEpochRecord> = by_epoch.into_values().collect();
+    records.sort_by_key(|record| record.epoch);
 
     Ok(records)
 }

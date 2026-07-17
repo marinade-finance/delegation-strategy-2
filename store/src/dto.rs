@@ -349,7 +349,7 @@ pub struct PerformanceRecord {
 pub struct EventEpochRecord {
     pub epoch: u64,
     pub epoch_end_at: Option<DateTime<Utc>>,
-    pub performance: PerformanceRecord,
+    pub performance: Option<PerformanceRecord>,
     pub uptime_pct: Option<f64>,
     pub downtime: Option<u64>,
     pub settlements: Vec<SettlementRecord>,
