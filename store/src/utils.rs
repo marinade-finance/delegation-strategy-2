@@ -616,6 +616,106 @@ pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u
     Ok(records)
 }
 
+/// Rolling window (days) for the take-rate average. Mirrors apy-api's `DEFAULT_ROLLING_APY_WINDOW`.
+const TAKE_RATE_WINDOW_DAYS: u64 = 30;
+
+async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Option<u64>> {
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+    let mut iter = bq_client.query::<Row>(GOOGLE_BQ_PROJECT_ID, request).await?;
+    match iter.next().await? {
+        Some(row) => Ok(row.column::<Option<String>>(0)?.map(|s| s.parse()).transpose()?),
+        None => Ok(None),
+    }
+}
+
+/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
+/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
+/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
+/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
+pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+
+    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
+
+    let min_epoch = match scalar_u64(
+        &bq_client,
+        format!(
+            "SELECT CAST(MIN(epoch) AS STRING) FROM `{ds}.epochs` \
+             WHERE epoch_end_time >= TIMESTAMP_SUB( \
+                 (SELECT MAX(epoch_end_time) FROM `{ds}.epochs`), INTERVAL {TAKE_RATE_WINDOW_DAYS} DAY)"
+        ),
+    )
+    .await?
+    {
+        Some(min_epoch) => min_epoch,
+        None => return Ok(Default::default()),
+    };
+
+    let query = format!(
+        "SELECT vote_account, CAST(take_rate AS STRING) AS take_rate FROM (
+            WITH stakers AS (
+                SELECT
+                    stakes.vote_account AS vote_account,
+                    stakes.epoch AS epoch,
+                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
+                    SUM(COALESCE(mev.amount, 0)) AS staker_mev
+                FROM `{ds}.stakes` stakes
+                LEFT JOIN `{ds}.rewards_inflation` inflation
+                    ON stakes.stake_account = inflation.stake_account
+                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
+                LEFT JOIN `{ds}.rewards_mev` mev
+                    ON stakes.stake_account = mev.stake_account
+                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
+                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
+                GROUP BY stakes.vote_account, stakes.epoch
+            )
+            SELECT
+                stakers.vote_account AS vote_account,
+                SAFE_DIVIDE(
+                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0)),
+                    SUM(staker_inflation + staker_mev
+                        + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
+                ) AS take_rate
+            FROM stakers
+            LEFT JOIN `{ds}.rewards_validators_inflation` vi
+                ON stakers.vote_account = vi.vote_account
+                AND stakers.epoch = vi.epoch AND vi.epoch >= {min_epoch}
+            LEFT JOIN `{ds}.rewards_validators_mev` vm
+                ON stakers.vote_account = vm.vote_account
+                AND stakers.epoch = vm.epoch AND vm.epoch >= {min_epoch}
+            LEFT JOIN `{ds}.rewards_validators_blocks` vb
+                ON stakers.vote_account = vb.vote_account
+                AND stakers.epoch = vb.epoch AND vb.epoch >= {min_epoch}
+            GROUP BY stakers.vote_account
+        )
+        WHERE take_rate IS NOT NULL"
+    );
+
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
+
+    let mut records: HashMap<String, f64> = Default::default();
+    while let Some(row) = iter.next().await? {
+        let vote_account = row.column::<String>(0)?;
+        let take_rate_str = row.column::<String>(1)?;
+        records.insert(vote_account, take_rate_str.parse()?);
+    }
+
+    Ok(records)
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
@@ -811,6 +911,7 @@ pub async fn load_validators(
                     avg_uptime_pct: None,
                     avg_apy: None,
                     unique_delegators: None,
+                    avg_take_rate: None,
                     incidents: Vec::new(),
                     has_last_epoch_stats: false,
                     rugged_commission: false,
@@ -941,6 +1042,18 @@ pub async fn load_validators(
     let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+    }
+
+    log::info!("Updating take rates...");
+    let take_rates = match load_take_rates().await {
+        Ok(take_rates) => take_rates,
+        Err(err) => {
+            log::error!("Failed to load take rates from BigQuery: {err}");
+            Default::default()
+        }
+    };
+    for (vote_account, record) in records.iter_mut() {
+        record.avg_take_rate = take_rates.get(vote_account).copied();
     }
 
     log::info!("Records prepared...");

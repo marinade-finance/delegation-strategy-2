@@ -264,6 +264,7 @@ pub struct ValidatorRecord {
     pub avg_uptime_pct: Option<f64>,
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
+    pub avg_take_rate: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
 }
 
