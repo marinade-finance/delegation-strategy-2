@@ -1170,25 +1170,37 @@ pub async fn load_block_production_stats(
     Ok(stats)
 }
 
-pub async fn load_client_diversity_stats(
+struct StakeDistribution {
+    epoch: u64,
+    total_stake: u64,
+    stake_by: HashMap<String, u64>,
+    share_by: HashMap<String, f64>,
+    count_by: HashMap<String, u64>,
+}
+
+// column_expr is interpolated into SQL; call only with compile-time literals
+async fn load_stake_distribution(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<Vec<ClientDiversityStats>> {
+    column_expr: &str,
+) -> anyhow::Result<Vec<StakeDistribution>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
         _ => return Ok(Default::default()),
     };
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
 
-    let mut stats: Vec<ClientDiversityStats> = Default::default();
+    let mut distributions: Vec<StakeDistribution> = Default::default();
 
     for epoch in (first_epoch..=last_epoch).rev() {
         let rows = psql_client
             .query(
-                "SELECT
-                    COALESCE(client_type, 'unknown') AS client_type,
+                &format!(
+                    "SELECT
+                    {column_expr} AS grouping_key,
                     activated_stake
-                FROM validators WHERE epoch = $1",
+                FROM validators WHERE epoch = $1"
+                ),
                 &[&Decimal::from(epoch)],
             )
             .await?;
@@ -1197,11 +1209,11 @@ pub async fn load_client_diversity_stats(
         let mut count_by: HashMap<String, u64> = Default::default();
         let mut total_stake: u64 = 0;
         for row in rows.iter() {
-            let client_type: String = row.get("client_type");
+            let grouping_key: String = row.get("grouping_key");
             let activated: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
             total_stake += activated;
-            *stake_by.entry(client_type.clone()).or_insert(0) += activated;
-            *count_by.entry(client_type).or_insert(0) += 1;
+            *stake_by.entry(grouping_key.clone()).or_insert(0) += activated;
+            *count_by.entry(grouping_key).or_insert(0) += 1;
         }
 
         let share_by: HashMap<String, f64> = stake_by
@@ -1218,74 +1230,55 @@ pub async fn load_client_diversity_stats(
             })
             .collect();
 
-        stats.push(ClientDiversityStats {
+        distributions.push(StakeDistribution {
             epoch,
-            total_activated_stake: total_stake,
-            client_stake: stake_by,
-            client_share: share_by,
-            client_validator_count: count_by,
+            total_stake,
+            stake_by,
+            share_by,
+            count_by,
         });
     }
-    Ok(stats)
+    Ok(distributions)
+}
+
+pub async fn load_client_diversity_stats(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<ClientDiversityStats>> {
+    Ok(
+        load_stake_distribution(psql_client, epochs, "COALESCE(client_type, 'unknown')")
+            .await?
+            .into_iter()
+            .map(|distribution| ClientDiversityStats {
+                epoch: distribution.epoch,
+                total_activated_stake: distribution.total_stake,
+                client_stake: distribution.stake_by,
+                client_share: distribution.share_by,
+                client_validator_count: distribution.count_by,
+            })
+            .collect(),
+    )
 }
 
 pub async fn load_feature_set_stats(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<FeatureSetStats>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-
-    let mut stats: Vec<FeatureSetStats> = Default::default();
-
-    for epoch in (first_epoch..=last_epoch).rev() {
-        let rows = psql_client
-            .query(
-                "SELECT
-                    COALESCE(feature_set::TEXT, 'unknown') AS feature_set,
-                    activated_stake
-                FROM validators WHERE epoch = $1",
-                &[&Decimal::from(epoch)],
-            )
-            .await?;
-
-        let mut stake_by: HashMap<String, u64> = Default::default();
-        let mut count_by: HashMap<String, u64> = Default::default();
-        let mut total_stake: u64 = 0;
-        for row in rows.iter() {
-            let feature_set: String = row.get("feature_set");
-            let activated: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
-            total_stake += activated;
-            *stake_by.entry(feature_set.clone()).or_insert(0) += activated;
-            *count_by.entry(feature_set).or_insert(0) += 1;
-        }
-
-        let share_by: HashMap<String, f64> = stake_by
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    if total_stake > 0 {
-                        *v as f64 / total_stake as f64
-                    } else {
-                        0.0
-                    },
-                )
-            })
-            .collect();
-
-        stats.push(FeatureSetStats {
-            epoch,
-            total_activated_stake: total_stake,
-            feature_set_stake: stake_by,
-            feature_set_share: share_by,
-            feature_set_validator_count: count_by,
-        });
-    }
-    Ok(stats)
+    Ok(load_stake_distribution(
+        psql_client,
+        epochs,
+        "COALESCE(feature_set::TEXT, 'unknown')",
+    )
+    .await?
+    .into_iter()
+    .map(|distribution| FeatureSetStats {
+        epoch: distribution.epoch,
+        total_activated_stake: distribution.total_stake,
+        feature_set_stake: distribution.stake_by,
+        feature_set_share: distribution.share_by,
+        feature_set_validator_count: distribution.count_by,
+    })
+    .collect())
 }
 
 pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
@@ -1351,7 +1344,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
                 agg_versions AS (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account),
-                agg_clients AS (select vote_account, (array_agg(client_type order by created_at desc))[1] as last_client_type from versions where client_type is not null group by vote_account)
+                agg_clients AS (select vote_account, (array_agg(client_type order by created_at desc))[1] as last_client_type from versions where client_type is not null and epoch <= $2 group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
