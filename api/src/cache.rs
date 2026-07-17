@@ -9,7 +9,7 @@ use store::dto::{
 };
 use tokio::time::{sleep, Duration, Instant};
 
-pub(crate) use store::utils::DEFAULT_EPOCHS;
+pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
 const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 
@@ -109,7 +109,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
         context.read().await.scoring_url.clone(),
-        DEFAULT_EPOCHS,
+        DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
     )
     .await?;
@@ -136,7 +136,8 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
     info!("Loading commissions from DB");
     let warmup_timer = Instant::now();
     let commissions =
-        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context
         .write()
@@ -156,7 +157,8 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
     info!("Loading versions from DB");
     let warmup_timer = Instant::now();
     let versions =
-        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context.write().await.cache.versions.clone_from(&versions);
     info!(
@@ -171,7 +173,7 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     info!("Loading uptimes from DB");
     let warmup_timer = Instant::now();
     let uptimes =
-        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
     info!(
@@ -186,7 +188,8 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
     info!("Loading cluster_stats from DB");
     let warmup_timer = Instant::now();
     let cluster_stats =
-        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(

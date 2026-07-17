@@ -19,7 +19,7 @@ use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
-pub const DEFAULT_EPOCHS: u64 = 80;
+pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
 const IDEAL_SLOT_DURATION_MS: u64 = 400;

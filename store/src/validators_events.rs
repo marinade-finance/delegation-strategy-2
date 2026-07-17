@@ -1,5 +1,5 @@
 use crate::dto::{EventEpochRecord, PerformanceRecord, SettlementRecord};
-use crate::utils::DEFAULT_EPOCHS;
+use crate::utils::DEFAULT_CACHE_EPOCHS;
 use chrono::{DateTime, Utc};
 use collect::validators_events::ValidatorsEventsSnapshot;
 use log::info;
@@ -133,7 +133,7 @@ pub async fn get_events_with_context(
             last_epoch
                 .and_then(|e| e.to_u64())
                 .unwrap_or(0)
-                .saturating_sub(DEFAULT_EPOCHS)
+                .saturating_sub(DEFAULT_CACHE_EPOCHS)
         }
     };
     let from_epoch = Decimal::from(from_epoch);
