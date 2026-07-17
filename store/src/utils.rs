@@ -581,9 +581,7 @@ const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
 const STAKES_TABLE: &str = "stakes";
 
-/// Fetches the current (latest available epoch) unique delegator count per validator directly
-/// from BigQuery. Delegator = distinct `withdraw_authority`. No history is stored; this runs at
-/// cache-warm time. Requires GOOGLE_APPLICATION_CREDENTIALS[_JSON] in the environment.
+/// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
 pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
