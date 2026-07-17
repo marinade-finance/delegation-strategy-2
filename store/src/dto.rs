@@ -101,6 +101,13 @@ pub struct Validator {
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
     pub version: Option<String>,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub feature_set: Option<i64>,
+    pub shred_version: Option<i32>,
+    pub gossip_port: Option<i32>,
+    pub rpc_public: Option<bool>,
+    pub pubsub_public: Option<bool>,
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
@@ -155,6 +162,13 @@ impl Validator {
             commission_advertised: Some(v.performance.commission as i32),
             commission_effective: None,
             version: v.performance.version.clone(),
+            client_id: v.performance.client_id.clone(),
+            client_type: v.performance.client_type.clone(),
+            feature_set: v.performance.feature_set.map(|f| f as i64),
+            shred_version: v.performance.shred_version.map(|s| s as i32),
+            gossip_port: v.gossip_port.map(|p| p as i32),
+            rpc_public: v.rpc_public,
+            pubsub_public: v.pubsub_public,
             activated_stake: v.activated_stake.into(),
             marinade_stake: v.marinade_stake.into(),
             foundation_stake: v.foundation_stake.into(),
@@ -186,6 +200,13 @@ pub struct ValidatorEpochStats {
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
     pub version: Option<String>,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub feature_set: Option<u32>,
+    pub shred_version: Option<u16>,
+    pub gossip_port: Option<u16>,
+    pub rpc_public: Option<bool>,
+    pub pubsub_public: Option<bool>,
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
@@ -241,6 +262,13 @@ pub struct ValidatorRecord {
     pub rugged_commission: bool,
     pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub feature_set: Option<u32>,
+    pub shred_version: Option<u16>,
+    pub gossip_port: Option<u16>,
+    pub rpc_public: Option<bool>,
+    pub pubsub_public: Option<bool>,
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
@@ -305,6 +333,10 @@ pub struct ValidatorBlockRewardsRecord {
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub feature_set: Option<u32>,
+    pub shred_version: Option<u16>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -362,9 +394,29 @@ pub struct BlockProductionStats {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ClientDiversityStats {
+    pub epoch: u64,
+    pub total_activated_stake: u64,
+    pub client_stake: HashMap<String, u64>,
+    pub client_share: HashMap<String, f64>,
+    pub client_validator_count: HashMap<String, u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct FeatureSetStats {
+    pub epoch: u64,
+    pub total_activated_stake: u64,
+    pub feature_set_stake: HashMap<String, u64>,
+    pub feature_set_share: HashMap<String, f64>,
+    pub feature_set_validator_count: HashMap<String, u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ClusterStats {
     pub block_production_stats: Vec<BlockProductionStats>,
     pub dc_concentration_stats: Vec<DCConcentrationStats>,
+    pub client_diversity_stats: Vec<ClientDiversityStats>,
+    pub feature_set_stats: Vec<FeatureSetStats>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -388,6 +440,7 @@ pub struct ValidatorAggregatedFlat {
     pub dc_aso: String,
     pub marinade_stake: f64,
     pub version: String,
+    pub client_type: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
