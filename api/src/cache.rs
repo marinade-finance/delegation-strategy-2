@@ -9,7 +9,7 @@ use store::dto::{
 };
 use tokio::time::{sleep, Duration, Instant};
 
-pub(crate) const DEFAULT_EPOCHS: u64 = 80;
+pub(crate) use store::utils::DEFAULT_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
 const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 

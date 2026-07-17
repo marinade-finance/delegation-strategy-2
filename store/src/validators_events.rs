@@ -1,4 +1,5 @@
 use crate::dto::{EventEpochRecord, PerformanceRecord, SettlementRecord};
+use crate::utils::DEFAULT_EPOCHS;
 use chrono::{DateTime, Utc};
 use collect::validators_events::ValidatorsEventsSnapshot;
 use log::info;
@@ -101,8 +102,6 @@ pub async fn store_events(
     Ok(())
 }
 
-pub const DEFAULT_EVENTS_WINDOW_EPOCHS: u64 = 80;
-
 /// `from = true` -> smallest epoch ending on/after `date`; else largest ending on/before.
 pub async fn resolve_epoch_for_date(
     psql_client: &Client,
@@ -110,9 +109,8 @@ pub async fn resolve_epoch_for_date(
     from: bool,
 ) -> anyhow::Result<Option<u64>> {
     let (cmp, order) = if from { (">=", "ASC") } else { ("<=", "DESC") };
-    let query = format!(
-        "SELECT epoch FROM epochs WHERE end_at {cmp} $1 ORDER BY epoch {order} LIMIT 1"
-    );
+    let query =
+        format!("SELECT epoch FROM epochs WHERE end_at {cmp} $1 ORDER BY epoch {order} LIMIT 1");
     let row = psql_client.query_opt(&query, &[&date]).await?;
     match row {
         Some(row) => Ok(Some(row.get::<_, Decimal>("epoch").try_into()?)),
@@ -135,7 +133,7 @@ pub async fn get_events_with_context(
             last_epoch
                 .and_then(|e| e.to_u64())
                 .unwrap_or(0)
-                .saturating_sub(DEFAULT_EVENTS_WINDOW_EPOCHS)
+                .saturating_sub(DEFAULT_EPOCHS)
         }
     };
     let from_epoch = Decimal::from(from_epoch);

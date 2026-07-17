@@ -40,7 +40,10 @@ impl QueryParams {
                 )),
                 Err(err) => {
                     error!("Failed to resolve query_from_date: {err}");
-                    Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch records!".into()))
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to fetch records!".into(),
+                    ))
                 }
             },
             (None, None) => Ok(None),

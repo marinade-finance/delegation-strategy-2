@@ -18,6 +18,9 @@ use tokio::join;
 use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client};
 
+/// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
+pub const DEFAULT_EPOCHS: u64 = 80;
+
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
 const IDEAL_SLOT_DURATION_MS: u64 = 400;
 const SLOTS_IN_EPOCH: u64 = 432000;
@@ -204,14 +207,12 @@ async fn get_apy_calculators(
 }
 
 /// Window (in epochs) over which per-validator downtime incidents are counted for the
-/// `incidents_count` field on `/validators`. Adjust here to change the FE's "N incidents in
-/// last X epochs" window.
+/// `incidents_count` field on `/validators`.
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator over the last `epochs` epochs. Each `DOWN` row is one incident (a new row is inserted
-/// on every UP↔DOWN transition; `end_at` is extended while the status holds). The frontend decides
-/// what counts as "significant" from `downtime_seconds`.
+/// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
+/// length of downtime.
 pub async fn load_incidents(
     psql_client: &Client,
     epochs: u64,
@@ -625,9 +626,14 @@ async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Optio
         use_legacy_sql: false,
         ..Default::default()
     };
-    let mut iter = bq_client.query::<Row>(GOOGLE_BQ_PROJECT_ID, request).await?;
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
     match iter.next().await? {
-        Some(row) => Ok(row.column::<Option<String>>(0)?.map(|s| s.parse()).transpose()?),
+        Some(row) => Ok(row
+            .column::<Option<String>>(0)?
+            .map(|s| s.parse())
+            .transpose()?),
         None => Ok(None),
     }
 }
