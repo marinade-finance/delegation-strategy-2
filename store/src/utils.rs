@@ -582,18 +582,41 @@ const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
 const STAKES_TABLE: &str = "stakes";
 
+/// Latest epoch present in BigQuery; the gate for refreshing BigQuery-sourced caches.
+pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
+    scalar_u64(
+        &bq_client,
+        format!("SELECT CAST(MAX(epoch) AS STRING) FROM `{ds}.epochs`"),
+    )
+    .await
+}
+
 /// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
 pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
     let project_table = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.{STAKES_TABLE}");
+
+    // Resolve the latest epoch as a literal first so the main query prunes to a single partition.
+    let max_epoch = match scalar_u64(
+        &bq_client,
+        format!("SELECT CAST(MAX(epoch) AS STRING) FROM `{project_table}`"),
+    )
+    .await?
+    {
+        Some(epoch) => epoch,
+        None => return Ok(Default::default()),
+    };
+
     let query = format!(
         "SELECT vote_account, \
                 CAST(COUNT(DISTINCT withdraw_authority) AS INT64) AS unique_delegators \
          FROM `{project_table}` \
-         WHERE active > 0 AND vote_account IS NOT NULL \
-           AND epoch = (SELECT MAX(epoch) FROM `{project_table}`) \
+         WHERE active > 0 AND vote_account IS NOT NULL AND epoch = {max_epoch} \
          GROUP BY vote_account"
     );
 
@@ -688,9 +711,7 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
                         + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
                 ) AS take_rate
             FROM stakers
-            -- Pre-aggregate each reward table to one row per (vote_account, epoch); these are
-            -- external BigQuery tables with no key constraint, so joining raw would fan out and
-            -- skew the outer SUM() if any table ever has duplicate keys.
+            -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
             LEFT JOIN (
                 SELECT vote_account, epoch, SUM(amount) AS amount
                 FROM `{ds}.rewards_validators_inflation`
@@ -742,6 +763,8 @@ pub async fn load_validators(
     scoring_url: String,
     display_epochs: u64,
     computing_epochs: u64,
+    unique_delegators: &HashMap<String, u64>,
+    take_rates: &HashMap<String, f64>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1048,13 +1071,6 @@ pub async fn load_validators(
     update_with_warnings(&mut records, epochs_range.clone()).await?;
 
     log::info!("Updating unique delegators...");
-    let unique_delegators = match load_latest_unique_delegators().await {
-        Ok(delegators) => delegators,
-        Err(err) => {
-            log::error!("Failed to load unique delegators from BigQuery: {err}");
-            Default::default()
-        }
-    };
     for (vote_account, record) in records.iter_mut() {
         record.unique_delegators = unique_delegators.get(vote_account).copied();
     }
@@ -1066,13 +1082,6 @@ pub async fn load_validators(
     }
 
     log::info!("Updating take rates...");
-    let take_rates = match load_take_rates().await {
-        Ok(take_rates) => take_rates,
-        Err(err) => {
-            log::error!("Failed to load take rates from BigQuery: {err}");
-            Default::default()
-        }
-    };
     for (vote_account, record) in records.iter_mut() {
         record.avg_take_rate = take_rates.get(vote_account).copied();
     }
