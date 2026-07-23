@@ -42,6 +42,7 @@ pub struct QueryParams {
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
+    search_properties: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -77,6 +78,7 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
@@ -199,12 +201,18 @@ pub fn filter_validators(
 
     if let Some(query) = &config.query {
         let query = query.to_lowercase();
+        let search_properties = config.search_properties.unwrap_or(false);
         validators.retain(|_, v| {
+            let matches = |field: &Option<String>| {
+                field
+                    .as_ref()
+                    .is_some_and(|s| s.to_lowercase().contains(&query))
+            };
             v.vote_account.to_lowercase().contains(&query)
                 || v.identity.to_lowercase().contains(&query)
-                || v.info_name
-                    .clone()
-                    .is_some_and(|info_name| info_name.to_lowercase().contains(&query))
+                || matches(&v.info_name)
+                || (search_properties
+                    && (matches(&v.dc_country) || matches(&v.dc_city) || matches(&v.dc_full_city)))
         });
     }
 
@@ -268,6 +276,7 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };
