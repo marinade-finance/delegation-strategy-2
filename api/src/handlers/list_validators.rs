@@ -30,6 +30,8 @@ pub struct ResponseValidators {
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<usize>,
+    /// Text search over validator name, vote account and identity. To also search other
+    /// properties (datacenter location), set `search_properties=true`.
     query: Option<String>,
     query_from_date: Option<DateTime<Utc>>,
     query_vote_accounts: Option<String>,
@@ -42,6 +44,8 @@ pub struct QueryParams {
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
+    /// When true, `query` also matches datacenter location fields (country, city) in addition to
+    /// validator name, vote account and identity.
     search_properties: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
