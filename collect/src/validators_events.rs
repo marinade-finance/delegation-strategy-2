@@ -62,7 +62,7 @@ pub struct ValidatorSettlement {
     pub vote_account: String,
     pub reason: String,
     pub meta: String,
-    pub amount: u64,
+    pub amount: i64,
 }
 
 async fn create_bigquery_client() -> anyhow::Result<BqClient> {
@@ -115,9 +115,9 @@ async fn query_validator_settlements(
         let epoch: Epoch = epoch_str
             .parse()
             .context(format!("Failed to parse epoch '{epoch_str}' as u64"))?;
-        let amount: u64 = amount_str
+        let amount: i64 = amount_str
             .parse()
-            .context(format!("Failed to parse amount '{amount_str}' as u64"))?;
+            .context(format!("Failed to parse amount '{amount_str}' as i64"))?;
 
         results.push(ValidatorSettlement {
             epoch,

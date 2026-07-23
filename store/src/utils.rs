@@ -206,8 +206,8 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Window (in epochs) over which per-validator downtime incidents are counted for the
-/// `incidents_count` field on `/validators`.
+/// Window (in epochs) over which per-validator downtime incidents are collected for the
+/// `incidents` field on `/validators`.
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
@@ -688,15 +688,30 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
                         + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
                 ) AS take_rate
             FROM stakers
-            LEFT JOIN `{ds}.rewards_validators_inflation` vi
-                ON stakers.vote_account = vi.vote_account
-                AND stakers.epoch = vi.epoch AND vi.epoch >= {min_epoch}
-            LEFT JOIN `{ds}.rewards_validators_mev` vm
-                ON stakers.vote_account = vm.vote_account
-                AND stakers.epoch = vm.epoch AND vm.epoch >= {min_epoch}
-            LEFT JOIN `{ds}.rewards_validators_blocks` vb
-                ON stakers.vote_account = vb.vote_account
-                AND stakers.epoch = vb.epoch AND vb.epoch >= {min_epoch}
+            -- Pre-aggregate each reward table to one row per (vote_account, epoch); these are
+            -- external BigQuery tables with no key constraint, so joining raw would fan out and
+            -- skew the outer SUM() if any table ever has duplicate keys.
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_inflation`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vi
+                ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_mev`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vm
+                ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_blocks`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vb
+                ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
             GROUP BY stakers.vote_account
         )
         WHERE take_rate IS NOT NULL"

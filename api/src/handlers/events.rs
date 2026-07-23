@@ -62,7 +62,10 @@ impl QueryParams {
         QueryParams
     ),
     responses(
-        (status = 200, body = ResponseEvents)
+        (status = 200, body = ResponseEvents),
+        (status = 400, description = "Invalid query params (query_from_epoch / query_from_date are mutually exclusive, or query_from_date is outside the recorded epoch range)"),
+        (status = 404, description = "No validator found for the given vote account or identity"),
+        (status = 500, description = "Failed to fetch records")
     )
 )]
 pub async fn handler(
