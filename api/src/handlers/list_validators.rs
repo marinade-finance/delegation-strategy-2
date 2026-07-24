@@ -24,6 +24,8 @@ const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 pub struct ResponseValidators {
     validators: Vec<ValidatorRecord>,
     validators_aggregated: Vec<ValidatorsAggregated>,
+    /// Number of validators matching the query and filters, before `offset`/`limit`.
+    total_count: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -44,6 +46,8 @@ pub struct QueryParams {
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
+    query_verified: Option<bool>,
+    query_flagged: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
@@ -59,6 +63,7 @@ pub enum OrderField {
     Apy,
     Commission,
     Uptime,
+    TakeRate,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
@@ -82,6 +87,8 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub query_verified: Option<bool>,
+    pub query_flagged: Option<bool>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
@@ -90,19 +97,23 @@ pub struct GetValidatorsConfig {
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
-) -> anyhow::Result<Vec<ValidatorRecord>> {
+) -> anyhow::Result<(Vec<ValidatorRecord>, usize)> {
     let validators = context.read().await.cache.get_validators();
 
     let mut validators = filter_validators(validators, &config);
+    let total_count = validators.len();
 
     let field_extractor = get_field_extractor(config.order_field);
 
-    validators.sort_by(
-        |a: &ValidatorRecord, b: &ValidatorRecord| match config.order_direction {
+    // Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
+    // on every cache refresh and makes offset pages overlap or skip rows.
+    validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
+        let ord = match config.order_direction {
             OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
             OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
-        },
-    );
+        };
+        ord.then_with(|| a.vote_account.cmp(&b.vote_account))
+    });
     let max_epoch = validators
         .iter()
         .flat_map(|validator| &validator.epoch_stats)
@@ -111,7 +122,7 @@ pub async fn get_validators(
         .unwrap_or(0);
     let min_epoch = (max_epoch + 1).saturating_sub(config.epochs as u64);
 
-    Ok(validators
+    let page = validators
         .into_iter()
         .skip(config.offset)
         .take(config.limit)
@@ -132,7 +143,9 @@ pub async fn get_validators(
 
             v
         })
-        .collect())
+        .collect();
+
+    Ok((page, total_count))
 }
 
 fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
@@ -150,6 +163,9 @@ fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) 
         }
         OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
             Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
+        }),
+        OrderField::TakeRate => Box::new(|a: &ValidatorRecord| {
+            Decimal::from(to_fixed_for_sort(a.avg_take_rate.unwrap_or(0.0)))
         }),
     }
 }
@@ -240,6 +256,14 @@ pub fn filter_validators(
         validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
     }
 
+    if let Some(query_verified) = config.query_verified {
+        validators.retain(|_, v| v.verified == query_verified);
+    }
+
+    if let Some(query_flagged) = config.query_flagged {
+        validators.retain(|_, v| v.warnings.is_empty() != query_flagged);
+    }
+
     validators.into_values().collect()
 }
 
@@ -280,6 +304,8 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        query_verified: query_params.query_verified,
+        query_flagged: query_params.query_flagged,
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
@@ -307,10 +333,11 @@ pub async fn handler(
     }
 
     Ok(match validators {
-        Ok(validators) => warp::reply::with_status(
+        Ok((validators, total_count)) => warp::reply::with_status(
             json(&ResponseValidators {
                 validators,
                 validators_aggregated,
+                total_count,
             }),
             StatusCode::OK,
         ),

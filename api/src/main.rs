@@ -34,6 +34,13 @@ pub struct Params {
     #[structopt(long = "scoring-url")]
     scoring_url: String,
 
+    #[structopt(
+        long = "validator-bonds-api-url",
+        env = "VALIDATOR_BONDS_API_URL",
+        default_value = "https://validator-bonds-api.marinade.finance"
+    )]
+    validator_bonds_api_url: String,
+
     #[structopt(long = "glossary-path")]
     glossary_path: String,
 
@@ -71,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         params.glossary_path,
         params.blacklist_path,
         params.scoring_url,
+        params.validator_bonds_api_url,
     )?));
     cache::spawn_cache_warmer(context.clone());
     let cors = warp::cors()

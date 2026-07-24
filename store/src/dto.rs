@@ -266,6 +266,8 @@ pub struct ValidatorRecord {
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
+    #[serde(default)]
+    pub verified: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

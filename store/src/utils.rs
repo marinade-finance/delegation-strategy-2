@@ -758,9 +758,32 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
     Ok(records)
 }
 
+#[derive(serde::Deserialize)]
+struct VerifiedValidatorsResponse {
+    verified_validators: Vec<String>,
+}
+
+// `base` is the validator-bonds API base URL; the verified path is appended here.
+pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
+    let url = format!("{}/validators/verified", base.trim_end_matches('/'));
+    let resp = reqwest::get(&url).await?;
+    anyhow::ensure!(
+        resp.status().is_success(),
+        "verified endpoint returned {}",
+        resp.status()
+    );
+    Ok(resp
+        .json::<VerifiedValidatorsResponse>()
+        .await?
+        .verified_validators
+        .into_iter()
+        .collect())
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
+    validator_bonds_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
     unique_delegators: &HashMap<String, u64>,
@@ -957,6 +980,7 @@ pub async fn load_validators(
                     unique_delegators: None,
                     avg_take_rate: None,
                     incidents: Vec::new(),
+                    verified: false,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -1079,6 +1103,18 @@ pub async fn load_validators(
     let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+    }
+
+    log::info!("Updating verified flag...");
+    match load_verified_validators(&validator_bonds_api_url).await {
+        Ok(verified) => {
+            for (vote_account, record) in records.iter_mut() {
+                record.verified = verified.contains(vote_account);
+            }
+        }
+        Err(err) => log::warn!(
+            "Failed to load verified validators, leaving all unverified this cycle: {err}"
+        ),
     }
 
     log::info!("Updating take rates...");
