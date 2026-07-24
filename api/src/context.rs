@@ -8,6 +8,7 @@ pub struct Context {
     pub glossary_path: String,
     pub blacklist_path: String,
     pub scoring_url: String,
+    pub validator_bonds_api_url: String,
     pub cache: Cache,
 }
 
@@ -17,12 +18,14 @@ impl Context {
         glossary_path: String,
         blacklist_path: String,
         scoring_url: String,
+        validator_bonds_api_url: String,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             psql_client,
             glossary_path,
             blacklist_path,
             scoring_url,
+            validator_bonds_api_url,
             cache: Cache::new(),
         })
     }

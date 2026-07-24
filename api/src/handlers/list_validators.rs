@@ -44,6 +44,7 @@ pub struct QueryParams {
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
+    query_verified: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
@@ -82,6 +83,7 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub query_verified: Option<bool>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
@@ -240,6 +242,10 @@ pub fn filter_validators(
         validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
     }
 
+    if let Some(query_verified) = config.query_verified {
+        validators.retain(|_, v| v.verified == query_verified);
+    }
+
     validators.into_values().collect()
 }
 
@@ -280,6 +286,7 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        query_verified: query_params.query_verified,
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),

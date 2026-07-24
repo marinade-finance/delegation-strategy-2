@@ -169,6 +169,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
         context.read().await.scoring_url.clone(),
+        context.read().await.validator_bonds_api_url.clone(),
         DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
         &unique_delegators,
