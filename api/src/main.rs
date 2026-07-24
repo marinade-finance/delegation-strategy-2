@@ -1,7 +1,7 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, global_unstake_hints, glossary,
-    jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
+    admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
+    glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
     reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
@@ -151,6 +151,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(uptimes::handler);
 
+    let route_events = warp::path!("validators" / String / "events")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<events::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(events::handler);
+
     let route_versions = warp::path!("validators" / String / "versions")
         .and(warp::path::end())
         .and(warp::get())
@@ -263,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validators_flat)
         .or(route_validators_block_rewards)
         .or(route_uptimes)
+        .or(route_events)
         .or(route_versions)
         .or(route_commissions)
         .or(route_glossary)

@@ -1,10 +1,13 @@
 use crate::dto::{
-    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, RugInfo,
-    RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats,
-    ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow,
-    ValidatorWarning, ValidatorsAggregated, VersionRecord,
+    BlockProductionStats, ClusterStats, CommissionRecord, DCConcentrationStats, IncidentRecord,
+    RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat,
+    ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record,
+    ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
+use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
+use google_cloud_bigquery::http::job::query::QueryRequest;
+use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
 use std::sync::Arc;
 use std::{
@@ -14,6 +17,9 @@ use std::{
 use tokio::join;
 use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client};
+
+/// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
+pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
 const IDEAL_SLOT_DURATION_MS: u64 = 400;
@@ -198,6 +204,52 @@ async fn get_apy_calculators(
     }
 
     Ok(result)
+}
+
+/// Window (in epochs) over which per-validator downtime incidents are collected for the
+/// `incidents` field on `/validators`.
+const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+
+/// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
+/// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
+/// length of downtime.
+pub async fn load_incidents(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
+    let rows = psql_client
+        .query(
+            "
+            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
+            SELECT
+                vote_account,
+                uptimes.epoch,
+                start_at,
+                end_at,
+                EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
+            FROM uptimes
+            CROSS JOIN cluster
+            WHERE status = 'DOWN' AND uptimes.epoch > cluster.last_epoch - $1::NUMERIC
+            ORDER BY start_at ASC",
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+
+    let mut records: HashMap<String, Vec<IncidentRecord>> = Default::default();
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        records
+            .entry(vote_account)
+            .or_default()
+            .push(IncidentRecord {
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
+                start_at: row.get("start_at"),
+                end_at: row.get("end_at"),
+                downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+            });
+    }
+
+    Ok(records)
 }
 
 pub async fn load_uptimes(
@@ -526,11 +578,193 @@ pub fn update_validators_ranks<T>(
     }
 }
 
+const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
+const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
+const STAKES_TABLE: &str = "stakes";
+
+/// Latest epoch present in BigQuery; the gate for refreshing BigQuery-sourced caches.
+pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
+    scalar_u64(
+        &bq_client,
+        format!("SELECT CAST(MAX(epoch) AS STRING) FROM `{ds}.epochs`"),
+    )
+    .await
+}
+
+/// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
+pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+
+    let project_table = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.{STAKES_TABLE}");
+
+    // Resolve the latest epoch as a literal first so the main query prunes to a single partition.
+    let max_epoch = match scalar_u64(
+        &bq_client,
+        format!("SELECT CAST(MAX(epoch) AS STRING) FROM `{project_table}`"),
+    )
+    .await?
+    {
+        Some(epoch) => epoch,
+        None => return Ok(Default::default()),
+    };
+
+    let query = format!(
+        "SELECT vote_account, \
+                CAST(COUNT(DISTINCT withdraw_authority) AS INT64) AS unique_delegators \
+         FROM `{project_table}` \
+         WHERE active > 0 AND vote_account IS NOT NULL AND epoch = {max_epoch} \
+         GROUP BY vote_account"
+    );
+
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
+
+    let mut records: HashMap<String, u64> = Default::default();
+    while let Some(row) = iter.next().await? {
+        let vote_account = row.column::<String>(0)?;
+        let unique_delegators_str = row.column::<String>(1)?;
+        records.insert(vote_account, unique_delegators_str.parse()?);
+    }
+
+    Ok(records)
+}
+
+/// Rolling window (days) for the take-rate average. Mirrors apy-api's `DEFAULT_ROLLING_APY_WINDOW`.
+const TAKE_RATE_WINDOW_DAYS: u64 = 30;
+
+async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Option<u64>> {
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
+    match iter.next().await? {
+        Some(row) => Ok(row
+            .column::<Option<String>>(0)?
+            .map(|s| s.parse())
+            .transpose()?),
+        None => Ok(None),
+    }
+}
+
+/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
+/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
+/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
+/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
+pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+
+    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
+
+    let min_epoch = match scalar_u64(
+        &bq_client,
+        format!(
+            "SELECT CAST(MIN(epoch) AS STRING) FROM `{ds}.epochs` \
+             WHERE epoch_end_time >= TIMESTAMP_SUB( \
+                 (SELECT MAX(epoch_end_time) FROM `{ds}.epochs`), INTERVAL {TAKE_RATE_WINDOW_DAYS} DAY)"
+        ),
+    )
+    .await?
+    {
+        Some(min_epoch) => min_epoch,
+        None => return Ok(Default::default()),
+    };
+
+    let query = format!(
+        "SELECT vote_account, CAST(take_rate AS STRING) AS take_rate FROM (
+            WITH stakers AS (
+                SELECT
+                    stakes.vote_account AS vote_account,
+                    stakes.epoch AS epoch,
+                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
+                    SUM(COALESCE(mev.amount, 0)) AS staker_mev
+                FROM `{ds}.stakes` stakes
+                LEFT JOIN `{ds}.rewards_inflation` inflation
+                    ON stakes.stake_account = inflation.stake_account
+                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
+                LEFT JOIN `{ds}.rewards_mev` mev
+                    ON stakes.stake_account = mev.stake_account
+                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
+                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
+                GROUP BY stakes.vote_account, stakes.epoch
+            )
+            SELECT
+                stakers.vote_account AS vote_account,
+                SAFE_DIVIDE(
+                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0)),
+                    SUM(staker_inflation + staker_mev
+                        + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
+                ) AS take_rate
+            FROM stakers
+            -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_inflation`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vi
+                ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_mev`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vm
+                ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
+            LEFT JOIN (
+                SELECT vote_account, epoch, SUM(amount) AS amount
+                FROM `{ds}.rewards_validators_blocks`
+                WHERE epoch >= {min_epoch}
+                GROUP BY vote_account, epoch
+            ) vb
+                ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
+            GROUP BY stakers.vote_account
+        )
+        WHERE take_rate IS NOT NULL"
+    );
+
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await?;
+
+    let mut records: HashMap<String, f64> = Default::default();
+    while let Some(row) = iter.next().await? {
+        let vote_account = row.column::<String>(0)?;
+        let take_rate_str = row.column::<String>(1)?;
+        records.insert(vote_account, take_rate_str.parse()?);
+    }
+
+    Ok(records)
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
     display_epochs: u64,
     computing_epochs: u64,
+    unique_delegators: &HashMap<String, u64>,
+    take_rates: &HashMap<String, f64>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -579,6 +813,8 @@ pub async fn load_validators(
                 commission_advertised,
                 commission_effective,
                 version,
+                mev.mev_commission AS mev_commission_bps,
+                jpf.validator_commission AS priority_commission_bps,
                 activated_stake,
                 marinade_stake,
                 foundation_stake,
@@ -601,6 +837,14 @@ pub async fn load_validators(
                 LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
                 LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
                 LEFT JOIN epochs ON epochs.epoch = validators.epoch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, mev_commission
+                    FROM mev ORDER BY vote_account, epoch, created_at DESC
+                ) mev ON mev.vote_account = validators.vote_account AND mev.epoch = validators.epoch
+                LEFT JOIN (
+                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
+                    FROM jito_priority_fee ORDER BY vote_account, epoch, created_at DESC
+                ) jpf ON jpf.vote_account = validators.vote_account AND jpf.epoch = validators.epoch
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(display_epochs)],
@@ -644,6 +888,9 @@ pub async fn load_validators(
             let dc_aso = row
                 .get::<_, Option<String>>("dc_aso")
                 .unwrap_or("Unknown".into());
+            let dc_country = row
+                .get::<_, Option<String>>("dc_country")
+                .unwrap_or("Unknown".into());
 
             let dcc_full_city = concentrations
                 .as_ref()
@@ -654,6 +901,9 @@ pub async fn load_validators(
             let dcc_aso = concentrations
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
+            let dcc_country = concentrations
+                .as_ref()
+                .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
             let record = records
                 .entry(vote_account.clone())
@@ -679,6 +929,7 @@ pub async fn load_validators(
                     dcc_full_city,
                     dcc_asn,
                     dcc_aso,
+                    dcc_country,
                     commission_max_observed: row.get::<_, Option<i32>>("commission_max_observed"),
                     commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
                     commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
@@ -703,6 +954,9 @@ pub async fn load_validators(
 
                     avg_uptime_pct: None,
                     avg_apy: None,
+                    unique_delegators: None,
+                    avg_take_rate: None,
+                    incidents: Vec::new(),
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -747,6 +1001,12 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
                 version: row.get("version"),
+                mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
+                priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
+                dc_asn: row.get::<_, Option<i32>>("dc_asn"),
+                dc_aso: row.get::<_, Option<String>>("dc_aso"),
+                dc_city: row.get::<_, Option<String>>("dc_city"),
+                dc_country: row.get::<_, Option<String>>("dc_country"),
                 activated_stake: row.get::<_, Decimal>("activated_stake"),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                 foundation_stake: row.get::<_, Decimal>("foundation_stake"),
@@ -809,6 +1069,23 @@ pub async fn load_validators(
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;
+
+    log::info!("Updating unique delegators...");
+    for (vote_account, record) in records.iter_mut() {
+        record.unique_delegators = unique_delegators.get(vote_account).copied();
+    }
+
+    log::info!("Updating incidents...");
+    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    for (vote_account, record) in records.iter_mut() {
+        record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+    }
+
+    log::info!("Updating take rates...");
+    for (vote_account, record) in records.iter_mut() {
+        record.avg_take_rate = take_rates.get(vote_account).copied();
+    }
+
     log::info!("Records prepared...");
     Ok(records)
 }
@@ -1048,6 +1325,7 @@ pub async fn load_dc_concentration_stats(
         let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
         let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
         let mut dc_stake_by_city: HashMap<_, _> = Default::default();
+        let mut dc_stake_by_country: HashMap<_, _> = Default::default();
         let mut total_active_stake = 0;
 
         let rows = psql_client
@@ -1056,6 +1334,7 @@ pub async fn load_dc_concentration_stats(
                     activated_stake,
                     dc_aso,
                     dc_asn,
+                    dc_country,
                     CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city
                 FROM validators WHERE epoch = $1",
                 &[&Decimal::from(epoch)],
@@ -1073,12 +1352,18 @@ pub async fn load_dc_concentration_stats(
             let dc_city: String = row
                 .get::<_, Option<String>>("dc_full_city")
                 .unwrap_or("Unknown".to_string());
+            let dc_country: String = row
+                .get::<_, Option<String>>("dc_country")
+                .unwrap_or("Unknown".to_string());
 
             total_active_stake += activated_stake;
             *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
             *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
             *(dc_stake_by_city
                 .entry(dc_city)
+                .or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_country
+                .entry(dc_country)
                 .or_insert(Default::default())) += activated_stake;
         }
 
@@ -1100,6 +1385,11 @@ pub async fn load_dc_concentration_stats(
                 total_active_stake,
             ),
             dc_stake_by_city,
+            dc_concentration_by_country: map_stake_to_concentration(
+                &dc_stake_by_country,
+                total_active_stake,
+            ),
+            dc_stake_by_country,
         })
     }
 

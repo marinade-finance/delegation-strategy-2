@@ -30,6 +30,8 @@ pub struct ResponseValidators {
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<usize>,
+    /// Text search over validator name, vote account and identity. To also search other
+    /// properties (datacenter location), set `search_properties=true`.
     query: Option<String>,
     query_from_date: Option<DateTime<Utc>>,
     query_vote_accounts: Option<String>,
@@ -41,6 +43,10 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
+    query_incident_free: Option<bool>,
+    /// When true, `query` also matches datacenter location fields (country, city) in addition to
+    /// validator name, vote account and identity.
+    search_properties: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -75,6 +81,8 @@ pub struct GetValidatorsConfig {
     pub query_marinade_stake: Option<bool>,
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
+    pub query_incident_free: Option<bool>,
+    pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
@@ -197,12 +205,18 @@ pub fn filter_validators(
 
     if let Some(query) = &config.query {
         let query = query.to_lowercase();
+        let search_properties = config.search_properties.unwrap_or(false);
         validators.retain(|_, v| {
+            let matches = |field: &Option<String>| {
+                field
+                    .as_ref()
+                    .is_some_and(|s| s.to_lowercase().contains(&query))
+            };
             v.vote_account.to_lowercase().contains(&query)
                 || v.identity.to_lowercase().contains(&query)
-                || v.info_name
-                    .clone()
-                    .is_some_and(|info_name| info_name.to_lowercase().contains(&query))
+                || matches(&v.info_name)
+                || (search_properties
+                    && (matches(&v.dc_country) || matches(&v.dc_city) || matches(&v.dc_full_city)))
         });
     }
 
@@ -220,6 +234,10 @@ pub fn filter_validators(
 
     if let Some(query_score) = config.query_score {
         validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
+    }
+
+    if let Some(query_incident_free) = config.query_incident_free {
+        validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
     }
 
     validators.into_values().collect()
@@ -261,6 +279,8 @@ pub async fn handler(
         query_marinade_stake: query_params.query_marinade_stake,
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
+        query_incident_free: query_params.query_incident_free,
+        search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
     };

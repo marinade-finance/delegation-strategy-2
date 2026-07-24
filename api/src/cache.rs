@@ -9,7 +9,7 @@ use store::dto::{
 };
 use tokio::time::{sleep, Duration, Instant};
 
-pub(crate) const DEFAULT_EPOCHS: u64 = 80;
+pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
 const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 
@@ -42,6 +42,56 @@ pub struct Cache {
     pub validators_aggregated: CachedValidatorsAggregated,
     pub validators_single_run_scores: CachedSingleRunScores,
     pub validators_multi_run_scores: CachedMultiRunScores,
+    pub per_epoch: Option<PerEpochCache>,
+}
+
+/// BigQuery-sourced validator data, cached and refreshed only when a new epoch lands in BigQuery.
+#[derive(Default, Clone)]
+pub struct PerEpochCache {
+    pub epoch: u64,
+    pub unique_delegators: HashMap<String, u64>,
+    pub take_rates: HashMap<String, f64>,
+}
+
+impl PerEpochCache {
+    /// `Some(refreshed)` when BigQuery's latest epoch advanced past `cached`; `None` on a cache hit or failure.
+    pub async fn load(cached: &Option<PerEpochCache>) -> Option<PerEpochCache> {
+        let last_epoch = match store::utils::load_last_bigquery_epoch().await {
+            Ok(Some(epoch)) => epoch,
+            Ok(None) => return None,
+            Err(err) => {
+                error!("Failed to read last BigQuery epoch: {err}");
+                return None;
+            }
+        };
+
+        if cached.as_ref().map(|c| c.epoch) == Some(last_epoch) {
+            return None;
+        }
+
+        info!(
+            "BigQuery epoch changed ({:?} -> {last_epoch}), refreshing",
+            cached.as_ref().map(|c| c.epoch)
+        );
+        let delegators = store::utils::load_latest_unique_delegators().await;
+        let take_rates = store::utils::load_take_rates().await;
+        match (delegators, take_rates) {
+            (Ok(unique_delegators), Ok(take_rates)) => Some(PerEpochCache {
+                epoch: last_epoch,
+                unique_delegators,
+                take_rates,
+            }),
+            (delegators, take_rates) => {
+                if let Err(err) = delegators {
+                    error!("Failed to load unique delegators from BigQuery: {err}");
+                }
+                if let Err(err) = take_rates {
+                    error!("Failed to load take rates from BigQuery: {err}");
+                }
+                None
+            }
+        }
+    }
 }
 
 impl Cache {
@@ -106,23 +156,34 @@ impl Cache {
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
+
+    let cached = context.read().await.cache.per_epoch.clone();
+
+    let refreshed = PerEpochCache::load(&cached).await;
+    let (unique_delegators, take_rates) = refreshed
+        .as_ref()
+        .or(cached.as_ref())
+        .map(|c| (c.unique_delegators.clone(), c.take_rates.clone()))
+        .unwrap_or_default();
+
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
         context.read().await.scoring_url.clone(),
-        DEFAULT_EPOCHS,
+        DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
+        &unique_delegators,
+        &take_rates,
     )
     .await?;
 
-    context
-        .write()
-        .await
-        .cache
-        .validators
-        .clone_from(&validators);
-
-    context.write().await.cache.validators_aggregated =
-        store::utils::aggregate_validators(&validators);
+    {
+        let mut ctx = context.write().await;
+        if let Some(refreshed) = refreshed {
+            ctx.cache.per_epoch = Some(refreshed);
+        }
+        ctx.cache.validators.clone_from(&validators);
+        ctx.cache.validators_aggregated = store::utils::aggregate_validators(&validators);
+    }
 
     info!(
         "Loaded {} validators to cache in {} ms",
@@ -136,7 +197,8 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
     info!("Loading commissions from DB");
     let warmup_timer = Instant::now();
     let commissions =
-        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context
         .write()
@@ -156,7 +218,8 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
     info!("Loading versions from DB");
     let warmup_timer = Instant::now();
     let versions =
-        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context.write().await.cache.versions.clone_from(&versions);
     info!(
@@ -171,7 +234,7 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     info!("Loading uptimes from DB");
     let warmup_timer = Instant::now();
     let uptimes =
-        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
 
     context.write().await.cache.uptimes.clone_from(&uptimes);
     info!(
@@ -186,7 +249,8 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
     info!("Loading cluster_stats from DB");
     let warmup_timer = Instant::now();
     let cluster_stats =
-        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_EPOCHS).await?;
+        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
+            .await?;
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(

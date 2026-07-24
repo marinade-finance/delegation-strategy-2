@@ -186,6 +186,12 @@ pub struct ValidatorEpochStats {
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
     pub version: Option<String>,
+    pub mev_commission_bps: Option<i32>,
+    pub priority_commission_bps: Option<i32>,
+    pub dc_asn: Option<i32>,
+    pub dc_aso: Option<String>,
+    pub dc_city: Option<String>,
+    pub dc_country: Option<String>,
     pub activated_stake: Decimal,
     pub marinade_stake: Decimal,
     pub foundation_stake: Decimal,
@@ -232,6 +238,7 @@ pub struct ValidatorRecord {
     pub dcc_full_city: Option<f64>,
     pub dcc_asn: Option<f64>,
     pub dcc_aso: Option<f64>,
+    pub dcc_country: Option<f64>,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
@@ -256,6 +263,9 @@ pub struct ValidatorRecord {
     pub has_last_epoch_stats: bool,
     pub avg_uptime_pct: Option<f64>,
     pub avg_apy: Option<f64>,
+    pub unique_delegators: Option<u64>,
+    pub avg_take_rate: Option<f64>,
+    pub incidents: Vec<IncidentRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -266,6 +276,15 @@ pub struct UptimeRecord {
     pub status: String,
     pub start_at: DateTime<Utc>,
     pub end_at: DateTime<Utc>,
+}
+
+/// A single downtime incident (one DOWN interval from the uptimes table).
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct IncidentRecord {
+    pub epoch: u64,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+    pub downtime_seconds: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -306,6 +325,34 @@ pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct SettlementRecord {
+    /// Raw upstream JSON tagged enum, e.g. `"Bidding"` or `{"ProtectedEvent":{...}}`.
+    pub reason: String,
+    /// Raw upstream JSON, e.g. `{"funder":"ValidatorBond"}`.
+    pub meta: String,
+    /// Settlement amount in lamports.
+    pub amount: Decimal,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct PerformanceRecord {
+    pub blocks_produced: u64,
+    pub leader_slots: u64,
+    pub skip_rate: f64,
+    pub credits: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct EventEpochRecord {
+    pub epoch: u64,
+    pub epoch_end_at: Option<DateTime<Utc>>,
+    pub performance: Option<PerformanceRecord>,
+    pub uptime_pct: Option<f64>,
+    pub downtime: Option<u64>,
+    pub settlements: Vec<SettlementRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -351,6 +398,8 @@ pub struct DCConcentrationStats {
     pub dc_stake_by_asn: HashMap<String, u64>,
     pub dc_concentration_by_city: HashMap<String, f64>,
     pub dc_stake_by_city: HashMap<String, u64>,
+    pub dc_concentration_by_country: HashMap<String, f64>,
+    pub dc_stake_by_country: HashMap<String, u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

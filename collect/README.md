@@ -47,3 +47,12 @@ mkdir -p $OUTPUT_DIR
 cargo run --bin collect -- -u $RPC_URL validators-block-rewards --epoch $EPOCH |\
   tee "$OUTPUT_DIR"/validators-block-rewards.yaml
 ```
+
+## validators-events range
+
+`validators-events` (PSR settlements) is queried by epoch range, upserted idempotently:
+
+- **Recurring cron:** use `--epochs-back N` (bounded window, re-queries the last N epochs each run to backfill late-arriving settlements). This is the steady-state mode. Settlements for epoch X are only generated after X closes (in X+1) and their amounts keep changing over a ~3–4 epoch claim window, so a single latest-epoch query would miss/undercount them — the window re-captures them. See https://docs.marinade.finance/marinade-protocol/protocol-overview/protected-staking-rewards
+- **One-off historical backfill:** use `--from-epoch N` (queries all epochs `>= N`).
+
+Runs are stateless (no synced-epoch cursor): each run re-queries its whole window and upserts, so an interrupted run is fixed by simply re-running. Prefer `--epochs-back` for the cron — a fixed `--from-epoch` grows the re-queried window unbounded as epochs advance.
