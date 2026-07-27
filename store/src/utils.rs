@@ -1136,15 +1136,14 @@ pub async fn load_validators(
     }
 
     log::info!("Updating verified flag...");
-    match load_verified_validators(&validator_bonds_api_url).await {
-        Ok(verified) => {
-            for (vote_account, record) in records.iter_mut() {
-                record.verified = verified.contains(vote_account);
-            }
-        }
-        Err(err) => log::warn!(
-            "Failed to load verified validators, leaving all unverified this cycle: {err}"
-        ),
+    let verified = load_verified_validators(&validator_bonds_api_url)
+        .await
+        .map_err(|err| {
+            log::error!("Failed to load verified validators, keeping previous cache intact: {err}");
+            err
+        })?;
+    for (vote_account, record) in records.iter_mut() {
+        record.verified = verified.contains(vote_account);
     }
 
     log::info!("Updating take rates...");
