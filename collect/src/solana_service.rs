@@ -5,6 +5,7 @@ use crate::validators::*;
 use bincode::deserialize;
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
@@ -13,6 +14,7 @@ use solana_client::{
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
+    rpc_request::RpcRequest,
     rpc_response::RpcVoteAccountStatus,
 };
 use solana_commitment_config::CommitmentConfig;
@@ -32,6 +34,7 @@ use solana_stake_interface::{self as stake, state::StakeStateV2};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
+    sync::OnceLock,
     thread::sleep,
     time::Duration,
 };
@@ -81,37 +84,107 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
     Ok(credits)
 }
 
-pub fn get_cluster_nodes_versions(
-    rpc_client: &RpcClient,
-) -> anyhow::Result<HashMap<String, String>> {
-    info!("Getting cluster nodes versions");
-    let cluster_nodes = rpc_client.get_cluster_nodes()?;
+const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");
 
-    Ok(cluster_nodes
-        .iter()
-        .filter_map(|node| {
-            node.version.clone().and_then(|version| {
-                let version = version
-                    .split_once(char::is_whitespace)
-                    .map(|(version, extra)| {
-                        warn!(
-                            "Node {} has version: {version} with extra info: {extra}",
-                            node.pubkey
-                        );
-                        version.to_string()
-                    })
-                    .unwrap_or(version);
-                if !is_plausible_node_version(&version) {
-                    warn!(
-                        "Node {} reports malformed version: '{version}', ignoring",
-                        node.pubkey
-                    );
-                    return None;
-                }
-                Some((node.pubkey.clone(), version))
-            })
+struct ClientRegistry {
+    names: HashMap<u16, String>,
+    ids_by_name: HashMap<String, u16>,
+}
+
+fn client_registry() -> &'static ClientRegistry {
+    static REGISTRY: OnceLock<ClientRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut names = HashMap::new();
+        let mut ids_by_name = HashMap::new();
+        let mut reader = csv::Reader::from_reader(CLIENT_IDS_CSV.as_bytes());
+        for record in reader.records().flatten() {
+            let (Some(id), Some(name)) = (record.get(0), record.get(1)) else {
+                continue;
+            };
+            let Ok(id) = id.trim().parse::<u16>() else {
+                continue;
+            };
+            ids_by_name.insert(canonical_client_name(name), id);
+            names.insert(id, name.trim().to_string());
+        }
+        ClientRegistry { names, ids_by_name }
+    })
+}
+
+// Agave renders registry names without the separators the CSV uses ("AgaveBam" vs "Agave Bam").
+fn canonical_client_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientId {
+    Registered(u16),
+    Unrecognized(Option<u16>),
+    Missing,
+}
+
+// The gossip client id is a number; the responding RPC node renders it to a name from its own
+// compiled-in table and falls back to "Unknown(N)", so both forms have to resolve to the same id.
+pub fn resolve_client_id(client_id: Option<&str>) -> ClientId {
+    let Some(raw) = client_id.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return ClientId::Missing;
+    };
+    let registry = client_registry();
+
+    if let Some(number) = raw
+        .strip_prefix("Unknown(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .and_then(|number| number.trim().parse::<u16>().ok())
+    {
+        return if registry.names.contains_key(&number) {
+            ClientId::Registered(number)
+        } else {
+            ClientId::Unrecognized(Some(number))
+        };
+    }
+
+    match registry.ids_by_name.get(&canonical_client_name(raw)) {
+        Some(id) => ClientId::Registered(*id),
+        None => ClientId::Unrecognized(None),
+    }
+}
+
+impl ClientId {
+    pub fn vendor(&self) -> Option<&'static str> {
+        self.groupings().map(|(vendor, _)| vendor)
+    }
+
+    pub fn lineage(&self) -> Option<&'static str> {
+        self.groupings().map(|(_, lineage)| lineage)
+    }
+
+    // Vendor is who ships the binary, lineage is which codebase it forks; the registry assigns a
+    // separate id per lineage variant of a vendor, so both are a function of the id alone.
+    fn groupings(&self) -> Option<(&'static str, &'static str)> {
+        let ClientId::Registered(id) = self else {
+            return None;
+        };
+        Some(match id {
+            0 => ("solana-labs", "agave"),
+            1 => ("jito", "agave"),
+            2 => ("frankendancer", "frankendancer"),
+            3 => ("agave", "agave"),
+            4 => ("paladin", "agave"),
+            5 => ("firedancer", "firedancer"),
+            6 => ("bam", "agave"),
+            7 => ("sig", "sig"),
+            8 => ("rakurai", "agave"),
+            9 => ("harmonic", "firedancer"),
+            10 => ("harmonic", "agave"),
+            11 => ("harmonic", "frankendancer"),
+            12 => ("bam", "frankendancer"),
+            13 => ("raiku", "agave"),
+            _ => return None,
         })
-        .collect())
+    }
 }
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
@@ -132,18 +205,104 @@ fn is_plausible_node_version(version: &str) -> bool {
         })
 }
 
-pub fn get_cluster_nodes_ips(rpc_client: &RpcClient) -> anyhow::Result<HashMap<String, String>> {
-    info!("Getting cluster nodes IPs");
-    let cluster_nodes = rpc_client.get_cluster_nodes()?;
+#[derive(Debug, Clone, Default)]
+pub struct NodeContact {
+    pub ip: Option<String>,
+    pub gossip_port: Option<u16>,
+    pub version: Option<String>,
+    pub client_id: Option<String>,
+    pub client_vendor: Option<&'static str>,
+    pub client_lineage: Option<&'static str>,
+    pub feature_set: Option<u32>,
+    pub shred_version: Option<u16>,
+    pub rpc_public: bool,
+    pub pubsub_public: bool,
+}
 
-    Ok(cluster_nodes
-        .iter()
-        .filter_map(|node| {
-            node.gossip
-                .as_ref()
-                .map(|gossip| (node.pubkey.clone(), gossip.ip().to_string()))
-        })
-        .collect())
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcContactInfoExt {
+    pubkey: String,
+    gossip: Option<String>,
+    rpc: Option<String>,
+    pubsub: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    feature_set: Option<u32>,
+    shred_version: Option<u16>,
+}
+
+pub fn get_cluster_nodes_info(
+    rpc_client: &RpcClient,
+) -> anyhow::Result<HashMap<String, NodeContact>> {
+    info!("Getting cluster nodes info");
+    let raw: Vec<RpcContactInfoExt> = rpc_client.send(RpcRequest::GetClusterNodes, Value::Null)?;
+
+    let mut out: HashMap<String, NodeContact> = HashMap::with_capacity(raw.len());
+    for node in raw {
+        let version = node.version.and_then(|v| {
+            let version = v
+                .split_once(char::is_whitespace)
+                .map(|(version, extra)| {
+                    warn!(
+                        "Node {} has version: {version} with extra info: {extra}",
+                        node.pubkey
+                    );
+                    version.to_string()
+                })
+                .unwrap_or(v);
+            if !is_plausible_node_version(&version) {
+                warn!(
+                    "Node {} reports malformed version: '{version}', ignoring",
+                    node.pubkey
+                );
+                return None;
+            }
+            Some(version)
+        });
+
+        let (ip, gossip_port) = node
+            .gossip
+            .as_deref()
+            .and_then(parse_socket_addr)
+            .map(|(ip, port)| (Some(ip), Some(port)))
+            .unwrap_or((None, None));
+
+        let resolved = resolve_client_id(node.client_id.as_deref());
+        if let ClientId::Unrecognized(number) = resolved {
+            warn!(
+                "Node {} reports client id '{}' (number {:?}) missing from client-ids.csv",
+                node.pubkey,
+                node.client_id.as_deref().unwrap_or_default(),
+                number
+            );
+        }
+
+        out.insert(
+            node.pubkey.clone(),
+            NodeContact {
+                ip,
+                gossip_port,
+                version,
+                client_id: node.client_id,
+                client_vendor: resolved.vendor(),
+                client_lineage: resolved.lineage(),
+                feature_set: node.feature_set,
+                shred_version: node.shred_version,
+                rpc_public: node.rpc.is_some(),
+                pubsub_public: node.pubsub.is_some(),
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn parse_socket_addr(s: &str) -> Option<(String, u16)> {
+    let (ip, port) = s.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    let ip = ip.trim_start_matches('[').trim_end_matches(']').to_string();
+    Some((ip, port))
 }
 
 pub fn get_total_activated_stake(vote_accounts: &RpcVoteAccountStatus) -> (u64, u64) {
@@ -599,7 +758,7 @@ pub fn fetch_self_stake(
 
 #[cfg(test)]
 mod tests {
-    use super::is_plausible_node_version;
+    use super::*;
 
     #[test]
     fn plausible_node_versions() {
@@ -618,5 +777,124 @@ mod tests {
         assert!(!is_plausible_node_version("4.1.0-"));
         assert!(!is_plausible_node_version("4.1.0-rc/1"));
         assert!(!is_plausible_node_version("4.1.0.1"));
+    }
+
+    // Guards the vendored registry against upstream additions: a new client-ids.csv row with no
+    // grouping arm fails here instead of silently becoming an unclassified validator.
+    #[test]
+    fn every_registered_client_id_has_groupings() {
+        for id in client_registry().names.keys() {
+            assert!(
+                ClientId::Registered(*id).groupings().is_some(),
+                "client id {id} is in client-ids.csv but has no vendor/lineage mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_names_rendered_by_agave() {
+        assert_eq!(resolve_client_id(Some("Agave")), ClientId::Registered(3));
+        assert_eq!(resolve_client_id(Some("JitoLabs")), ClientId::Registered(1));
+        assert_eq!(resolve_client_id(Some("AgaveBam")), ClientId::Registered(6));
+        assert_eq!(
+            resolve_client_id(Some("Frankendancer")),
+            ClientId::Registered(2)
+        );
+        assert_eq!(
+            resolve_client_id(Some("Firedancer")),
+            ClientId::Registered(5)
+        );
+    }
+
+    #[test]
+    fn resolves_unknown_number_through_the_registry() {
+        assert_eq!(
+            resolve_client_id(Some("Unknown(8)")),
+            ClientId::Registered(8)
+        );
+        assert_eq!(
+            resolve_client_id(Some("Unknown(11)")),
+            ClientId::Registered(11)
+        );
+        assert_eq!(
+            resolve_client_id(Some("Unknown(8)")).vendor(),
+            Some("rakurai")
+        );
+    }
+
+    #[test]
+    fn same_validator_resolves_identically_whichever_form_the_rpc_renders() {
+        assert_eq!(
+            resolve_client_id(Some("Unknown(6)")),
+            resolve_client_id(Some("AgaveBam"))
+        );
+        assert_eq!(
+            resolve_client_id(Some("Unknown(1)")),
+            resolve_client_id(Some("Jito Labs"))
+        );
+    }
+
+    #[test]
+    fn vendor_groups_harmonic_across_lineages() {
+        for id in [9, 10, 11] {
+            assert_eq!(ClientId::Registered(id).vendor(), Some("harmonic"));
+        }
+        assert_eq!(ClientId::Registered(9).lineage(), Some("firedancer"));
+        assert_eq!(ClientId::Registered(10).lineage(), Some("agave"));
+        assert_eq!(ClientId::Registered(11).lineage(), Some("frankendancer"));
+    }
+
+    #[test]
+    fn vendor_separates_bam_from_plain_agave() {
+        assert_eq!(ClientId::Registered(6).vendor(), Some("bam"));
+        assert_eq!(ClientId::Registered(6).lineage(), Some("agave"));
+        assert_eq!(ClientId::Registered(3).vendor(), Some("agave"));
+        assert_eq!(ClientId::Registered(12).vendor(), Some("bam"));
+        assert_eq!(ClientId::Registered(12).lineage(), Some("frankendancer"));
+    }
+
+    #[test]
+    fn unregistered_number_keeps_the_number() {
+        assert_eq!(
+            resolve_client_id(Some("Unknown(86)")),
+            ClientId::Unrecognized(Some(86))
+        );
+        assert_eq!(
+            resolve_client_id(Some("Unknown(37013)")),
+            ClientId::Unrecognized(Some(37013))
+        );
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).vendor(), None);
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).lineage(), None);
+    }
+
+    #[test]
+    fn unknown_name_has_no_recoverable_number() {
+        assert_eq!(
+            resolve_client_id(Some("brand-new-client/1.0")),
+            ClientId::Unrecognized(None)
+        );
+    }
+
+    #[test]
+    fn absent_client_id_is_missing() {
+        assert_eq!(resolve_client_id(None), ClientId::Missing);
+        assert_eq!(resolve_client_id(Some("   ")), ClientId::Missing);
+        assert_eq!(resolve_client_id(None).vendor(), None);
+    }
+
+    #[test]
+    fn parse_socket_addr_ipv4() {
+        assert_eq!(
+            parse_socket_addr("10.0.0.1:8001"),
+            Some(("10.0.0.1".to_string(), 8001))
+        );
+    }
+
+    #[test]
+    fn parse_socket_addr_ipv6() {
+        assert_eq!(
+            parse_socket_addr("[2001:db8::1]:8001"),
+            Some(("2001:db8::1".to_string(), 8001))
+        );
     }
 }

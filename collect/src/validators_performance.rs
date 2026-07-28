@@ -49,6 +49,16 @@ pub struct ClusterInflation {
 pub struct ValidatorPerformance {
     pub commission: u8,
     pub version: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_vendor: Option<String>,
+    #[serde(default)]
+    pub client_lineage: Option<String>,
+    #[serde(default)]
+    pub feature_set: Option<u32>,
+    #[serde(default)]
+    pub shred_version: Option<u16>,
     pub credits: u64,
     pub leader_slots: usize,
     pub blocks_produced: usize,
@@ -72,6 +82,7 @@ pub fn validators_performance(
     epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
     rpc_attempts: usize,
+    node_info: &HashMap<String, NodeContact>,
 ) -> anyhow::Result<HashMap<String, ValidatorPerformance>> {
     let mut validators: HashMap<String, ValidatorPerformance> = Default::default();
 
@@ -88,7 +99,6 @@ pub fn validators_performance(
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
         },
     )?;
-    let node_versions = get_cluster_nodes_versions(client)?;
     let credits = get_credits(client, epoch)?;
 
     for vote_account in vote_accounts
@@ -103,11 +113,18 @@ pub fn validators_performance(
             .cloned()
             .unwrap_or((0, 0));
 
+        let node = node_info.get(&identity);
+
         validators.insert(
             vote_pubkey.clone(),
             ValidatorPerformance {
                 commission: vote_account.commission,
-                version: node_versions.get(&identity).cloned(),
+                version: node.and_then(|n| n.version.clone()),
+                client_id: node.and_then(|n| n.client_id.clone()),
+                client_vendor: node.and_then(|n| n.client_vendor.map(str::to_string)),
+                client_lineage: node.and_then(|n| n.client_lineage.map(str::to_string)),
+                feature_set: node.and_then(|n| n.feature_set),
+                shred_version: node.and_then(|n| n.shred_version),
                 credits: credits.get(&vote_pubkey).cloned().unwrap_or(0),
                 leader_slots,
                 blocks_produced,
@@ -176,11 +193,13 @@ pub fn collect_validators_performance_info(
         vote_accounts.delinquent.len()
     );
 
+    let node_info = get_cluster_nodes_info(&client)?;
     let validators = validators_performance(
         &client,
         epoch,
         &vote_accounts,
         performance_params.rpc_attempts,
+        &node_info,
     )?;
 
     let rewards = if performance_params.with_rewards {
