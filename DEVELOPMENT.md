@@ -29,3 +29,19 @@ docker cp postgresql-${DB}:/etc/ssl/certs/ssl-cert-snakeoil.pem /tmp/postgres-ro
 ```
 
 The PostgreSQL URL is then `postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy`
+
+# 2. Run the SQL loader tests
+
+`store/tests/cluster_stats_sql.rs` exercises the `/cluster-stats` and
+`/validators/flat` queries against a real PostgreSQL. It creates its own schema,
+applies `migrations/*.sql` into it and drops it again, so it needs an empty
+database only on the first run.
+
+```bash
+export DS_TEST_POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
+cargo test --all-features
+```
+
+Without `DS_TEST_POSTGRES_URL` the tests report why they are skipped and pass.
+On Podman, start the container with `podman run` and export
+`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`.

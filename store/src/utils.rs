@@ -1484,27 +1484,38 @@ async fn load_stake_distribution(
     };
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
 
-    let mut distributions: Vec<StakeDistribution> = Default::default();
-
-    for epoch in (first_epoch..=last_epoch).rev() {
-        let rows = psql_client
-            .query(
-                &format!(
-                    "SELECT
+    let rows = psql_client
+        .query(
+            &format!(
+                "SELECT
+                    epoch,
                     {column_expr} AS grouping_key,
                     SUM(activated_stake) AS stake,
                     COUNT(*) AS validator_count
-                FROM validators WHERE epoch = $1
-                GROUP BY 1"
-                ),
-                &[&Decimal::from(epoch)],
-            )
-            .await?;
+                FROM validators WHERE epoch BETWEEN $1 AND $2
+                GROUP BY epoch, grouping_key"
+            ),
+            &[&Decimal::from(first_epoch), &Decimal::from(last_epoch)],
+        )
+        .await?;
 
+    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
+    for row in rows {
+        rows_by_epoch
+            .entry(row.get::<_, Decimal>("epoch").try_into()?)
+            .or_default()
+            .push(row);
+    }
+
+    let mut distributions: Vec<StakeDistribution> = Default::default();
+
+    // Callers pair these per-epoch series with load_dc_concentration_stats, so an epoch with no
+    // validator rows must still yield an entry instead of being dropped by the SQL grouping.
+    for epoch in (first_epoch..=last_epoch).rev() {
         let mut stake_by: HashMap<String, u64> = Default::default();
         let mut count_by: HashMap<String, u64> = Default::default();
         let mut total_stake: u64 = 0;
-        for row in rows.iter() {
+        for row in rows_by_epoch.remove(&epoch).unwrap_or_default().iter() {
             let grouping_key: String = row.get("grouping_key");
             let stake: u64 = row.get::<_, Decimal>("stake").try_into()?;
             total_stake += stake;
@@ -1656,14 +1667,16 @@ pub async fn load_validators_aggregated_flat(
     last_epoch: u64,
     epochs: u64,
 ) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
+    let epochs = epochs.max(1);
+    // last_version is deliberately left unbounded while the client columns are bounded to $2:
+    // adding the bound changes what historical scoring runs see, so it needs a ds-sam side check.
     let rows = psql_client
             .query(
                 "with
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account),
-                agg_clients AS (select vote_account, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null))[1] as last_client_lineage from versions where epoch <= $2 group by vote_account)
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null and epoch <= $2))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null and epoch <= $2))[1] as last_client_lineage from versions group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -1676,14 +1689,13 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    coalesce((array_agg(agg_clients.last_client_vendor))[1], 'unknown') AS last_client_vendor,
-                    coalesce((array_agg(agg_clients.last_client_lineage))[1], 'unknown') AS last_client_lineage
+                    coalesce((array_agg(agg_versions.last_client_vendor))[1], 'unknown') AS last_client_vendor,
+                    coalesce((array_agg(agg_versions.last_client_lineage))[1], 'unknown') AS last_client_lineage
                 FROM
                     validators
                     LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
                     LEFT JOIN cluster_skip_rate ON cluster_skip_rate.epoch = validators.epoch
                     LEFT JOIN agg_versions ON validators.vote_account = agg_versions.vote_account
-                    LEFT JOIN agg_clients ON validators.vote_account = agg_clients.vote_account
                 WHERE
                 validators.epoch BETWEEN $1 AND $2
                 GROUP BY validators.vote_account

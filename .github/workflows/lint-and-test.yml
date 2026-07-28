@@ -19,6 +19,20 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.4
+        env:
+          POSTGRES_DB: delegation-strategy
+          POSTGRES_USER: delegation-strategy
+          POSTGRES_PASSWORD: delegation-strategy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: 🚧 Checkout project
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -50,4 +64,6 @@ jobs:
         run: cargo fmt -- --check && cargo clippy
 
       - name: 🧨 Run cargo tests
+        env:
+          DS_TEST_POSTGRES_URL: postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy
         run: cargo test --all-features
