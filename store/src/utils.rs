@@ -1492,8 +1492,10 @@ async fn load_stake_distribution(
                 &format!(
                     "SELECT
                     {column_expr} AS grouping_key,
-                    activated_stake
-                FROM validators WHERE epoch = $1"
+                    SUM(activated_stake) AS stake,
+                    COUNT(*) AS validator_count
+                FROM validators WHERE epoch = $1
+                GROUP BY 1"
                 ),
                 &[&Decimal::from(epoch)],
             )
@@ -1504,10 +1506,13 @@ async fn load_stake_distribution(
         let mut total_stake: u64 = 0;
         for row in rows.iter() {
             let grouping_key: String = row.get("grouping_key");
-            let activated: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
-            total_stake += activated;
-            *stake_by.entry(grouping_key.clone()).or_insert(0) += activated;
-            *count_by.entry(grouping_key).or_insert(0) += 1;
+            let stake: u64 = row.get::<_, Decimal>("stake").try_into()?;
+            total_stake += stake;
+            stake_by.insert(grouping_key.clone(), stake);
+            count_by.insert(
+                grouping_key,
+                row.get::<_, i64>("validator_count").try_into()?,
+            );
         }
 
         let share_by: HashMap<String, f64> = stake_by
