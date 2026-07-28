@@ -1,5 +1,5 @@
 use crate::dto::{
-    BlockProductionStats, ClientDiversityStats, ClusterStats, CommissionRecord,
+    BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
     UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
@@ -311,7 +311,7 @@ pub async fn load_versions(
             "
             WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, version, client_id, client_type, feature_set, shred_version, epoch, created_at
+                vote_account, version, client_id, client_vendor, client_lineage, feature_set, shred_version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -327,7 +327,8 @@ pub async fn load_versions(
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
             client_id: row.get("client_id"),
-            client_type: row.get("client_type"),
+            client_vendor: row.get("client_vendor"),
+            client_lineage: row.get("client_lineage"),
             feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
             shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
             created_at: row.get("created_at"),
@@ -821,7 +822,8 @@ pub async fn load_validators(
                 mev.mev_commission AS mev_commission_bps,
                 jpf.validator_commission AS priority_commission_bps,
                 client_id,
-                client_type,
+                client_vendor,
+                client_lineage,
                 feature_set,
                 shred_version,
                 gossip_port,
@@ -949,7 +951,8 @@ pub async fn load_validators(
                     commission_aggregated: None,
                     version: row.get("version"),
                     client_id: row.get("client_id"),
-                    client_type: row.get("client_type"),
+                    client_vendor: row.get("client_vendor"),
+                    client_lineage: row.get("client_lineage"),
                     feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                     shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                     gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1027,7 +1030,8 @@ pub async fn load_validators(
                 dc_city: row.get::<_, Option<String>>("dc_city"),
                 dc_country: row.get::<_, Option<String>>("dc_country"),
                 client_id: row.get("client_id"),
-                client_type: row.get("client_type"),
+                client_vendor: row.get("client_vendor"),
+                client_lineage: row.get("client_lineage"),
                 feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                 shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                 gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1536,7 +1540,7 @@ pub async fn load_client_diversity_stats(
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientDiversityStats>> {
     Ok(
-        load_stake_distribution(psql_client, epochs, "COALESCE(client_type, 'unknown')")
+        load_stake_distribution(psql_client, epochs, "COALESCE(client_vendor, 'unknown')")
             .await?
             .into_iter()
             .map(|distribution| ClientDiversityStats {
@@ -1545,6 +1549,25 @@ pub async fn load_client_diversity_stats(
                 client_stake: distribution.stake_by,
                 client_share: distribution.share_by,
                 client_validator_count: distribution.count_by,
+            })
+            .collect(),
+    )
+}
+
+pub async fn load_client_lineage_stats(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<ClientLineageStats>> {
+    Ok(
+        load_stake_distribution(psql_client, epochs, "COALESCE(client_lineage, 'unknown')")
+            .await?
+            .into_iter()
+            .map(|distribution| ClientLineageStats {
+                epoch: distribution.epoch,
+                total_activated_stake: distribution.total_stake,
+                lineage_stake: distribution.stake_by,
+                lineage_share: distribution.share_by,
+                lineage_validator_count: distribution.count_by,
             })
             .collect(),
     )
@@ -1576,6 +1599,7 @@ pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Re
         block_production_stats: load_block_production_stats(psql_client, epochs).await?,
         dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
         client_diversity_stats: load_client_diversity_stats(psql_client, epochs).await?,
+        client_lineage_stats: load_client_lineage_stats(psql_client, epochs).await?,
         feature_set_stats: load_feature_set_stats(psql_client, epochs).await?,
     })
 }
@@ -1634,7 +1658,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
                 agg_versions AS (select vote_account, (array_agg(version order by created_at desc))[1] as last_version from versions where version is not null group by vote_account),
-                agg_clients AS (select vote_account, (array_agg(client_type order by created_at desc))[1] as last_client_type from versions where client_type is not null and epoch <= $2 group by vote_account)
+                agg_clients AS (select vote_account, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null))[1] as last_client_lineage from versions where epoch <= $2 group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -1647,7 +1671,8 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    coalesce((array_agg(agg_clients.last_client_type))[1], 'unknown') AS last_client_type
+                    coalesce((array_agg(agg_clients.last_client_vendor))[1], 'unknown') AS last_client_vendor,
+                    coalesce((array_agg(agg_clients.last_client_lineage))[1], 'unknown') AS last_client_lineage
                 FROM
                     validators
                     LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
@@ -1678,7 +1703,8 @@ pub async fn load_validators_aggregated_flat(
             dc_aso: row.get("dc_aso"),
             marinade_stake: row.get("marinade_stake"),
             version: row.get("last_version"),
-            client_type: row.get("last_client_type"),
+            client_vendor: row.get("last_client_vendor"),
+            client_lineage: row.get("last_client_lineage"),
         });
     }
 

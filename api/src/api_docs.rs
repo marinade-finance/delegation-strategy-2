@@ -36,6 +36,7 @@ use utoipa::OpenApi;
         schemas(rewards::ResponseRewards),
         schemas(store::dto::BlockProductionStats),
         schemas(store::dto::ClientDiversityStats),
+        schemas(store::dto::ClientLineageStats),
         schemas(store::dto::ClusterStats),
         schemas(store::dto::CommissionRecord),
         schemas(store::dto::DCConcentrationStats),

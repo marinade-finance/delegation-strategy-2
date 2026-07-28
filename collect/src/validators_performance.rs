@@ -52,7 +52,9 @@ pub struct ValidatorPerformance {
     #[serde(default)]
     pub client_id: Option<String>,
     #[serde(default)]
-    pub client_type: Option<String>,
+    pub client_vendor: Option<String>,
+    #[serde(default)]
+    pub client_lineage: Option<String>,
     #[serde(default)]
     pub feature_set: Option<u32>,
     #[serde(default)]
@@ -119,7 +121,8 @@ pub fn validators_performance(
                 commission: vote_account.commission,
                 version: node.and_then(|n| n.version.clone()),
                 client_id: node.and_then(|n| n.client_id.clone()),
-                client_type: node.map(|n| n.client_type.as_str().to_string()),
+                client_vendor: node.and_then(|n| n.client_vendor.map(str::to_string)),
+                client_lineage: node.and_then(|n| n.client_lineage.map(str::to_string)),
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),
                 credits: credits.get(&vote_pubkey).cloned().unwrap_or(0),

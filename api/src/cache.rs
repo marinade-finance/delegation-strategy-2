@@ -155,6 +155,12 @@ impl Cache {
                     .take(epochs)
                     .cloned()
                     .collect(),
+                client_lineage_stats: cluster_stats
+                    .client_lineage_stats
+                    .iter()
+                    .take(epochs)
+                    .cloned()
+                    .collect(),
                 feature_set_stats: cluster_stats
                     .feature_set_stats
                     .iter()

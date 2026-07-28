@@ -90,7 +90,8 @@ pub async fn store_validators(
             updated_at = u.updated_at,
             info_icon_url = u.info_icon_url,
             client_id = u.client_id,
-            client_type = u.client_type,
+            client_vendor = u.client_vendor,
+            client_lineage = u.client_lineage,
             feature_set = u.feature_set,
             shred_version = u.shred_version,
             gossip_port = u.gossip_port,
@@ -131,7 +132,8 @@ pub async fn store_validators(
                 updated_at,
                 info_icon_url,
                 client_id,
-                client_type,
+                client_vendor,
+                client_lineage,
                 feature_set,
                 shred_version,
                 gossip_port,
@@ -178,7 +180,8 @@ pub async fn store_validators(
                     &snapshot_created_at,
                     &v.info_icon_url,
                     &v.client_id,
-                    &v.client_type,
+                    &v.client_vendor,
+                    &v.client_lineage,
                     &v.feature_set,
                     &v.shred_version,
                     &v.gossip_port,
@@ -208,12 +211,13 @@ pub async fn store_validators(
                         (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                         (30, "TEXT".into()),                     // icon_url
                         (31, "TEXT".into()),                     // client_id
-                        (32, "TEXT".into()),                     // client_type
-                        (33, "BIGINT".into()),                   // feature_set
-                        (34, "INTEGER".into()),                  // shred_version
-                        (35, "INTEGER".into()),                  // gossip_port
-                        (36, "BOOL".into()),                     // rpc_public
-                        (37, "BOOL".into()),                     // pubsub_public
+                        (32, "TEXT".into()),                     // client_vendor
+                        (33, "TEXT".into()),                     // client_lineage
+                        (34, "BIGINT".into()),                   // feature_set
+                        (35, "INTEGER".into()),                  // shred_version
+                        (36, "INTEGER".into()),                  // gossip_port
+                        (37, "BOOL".into()),                     // rpc_public
+                        (38, "BOOL".into()),                     // pubsub_public
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -274,7 +278,8 @@ pub async fn store_validators(
         updated_at,
         info_icon_url,
         client_id,
-        client_type,
+        client_vendor,
+        client_lineage,
         feature_set,
         shred_version,
         gossip_port,
@@ -327,7 +332,8 @@ pub async fn store_validators(
                 &snapshot_created_at,
                 &v.info_icon_url,
                 &v.client_id,
-                &v.client_type,
+                &v.client_vendor,
+                &v.client_lineage,
                 &v.feature_set,
                 &v.shred_version,
                 &v.gossip_port,

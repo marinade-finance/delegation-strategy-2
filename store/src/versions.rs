@@ -37,7 +37,8 @@ pub async fn store_versions(
             vote_account,
             version,
             client_id,
-            client_type,
+            client_vendor,
+            client_lineage,
             feature_set,
             shred_version,
             epoch
@@ -51,7 +52,8 @@ pub async fn store_versions(
         let vote_account: &str = row.get("vote_account");
         let version: Option<String> = row.get("version");
         let client_id: Option<String> = row.get("client_id");
-        let client_type: Option<String> = row.get("client_type");
+        let client_vendor: Option<String> = row.get("client_vendor");
+        let client_lineage: Option<String> = row.get("client_lineage");
         let feature_set: Option<i64> = row.get("feature_set");
         let shred_version: Option<i32> = row.get("shred_version");
         let epoch: Decimal = row.get("epoch");
@@ -62,7 +64,8 @@ pub async fn store_versions(
             if epoch == snapshot_epoch
                 && version == validator_snapshot.version
                 && client_id == validator_snapshot.client_id
-                && client_type == validator_snapshot.client_type
+                && client_vendor == validator_snapshot.client_vendor
+                && client_lineage == validator_snapshot.client_lineage
                 && feature_set == snapshot_feature_set
                 && shred_version == snapshot_shred_version
             {
@@ -73,7 +76,7 @@ pub async fn store_versions(
 
     let mut query = InsertQueryCombiner::new(
         "versions".to_string(),
-        "vote_account, version, client_id, client_type, feature_set, shred_version, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, version, client_id, client_vendor, client_lineage, feature_set, shred_version, epoch_slot, epoch, created_at".to_string(),
     );
 
     let rows_to_insert: Vec<(&String, &_, Option<i64>, Option<i32>)> = snapshot
@@ -95,7 +98,8 @@ pub async fn store_versions(
             *vote_account,
             &v.version,
             &v.client_id,
-            &v.client_type,
+            &v.client_vendor,
+            &v.client_lineage,
             feature_set,
             shred_version,
             &snapshot_epoch_slot,

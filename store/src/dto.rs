@@ -102,7 +102,8 @@ pub struct Validator {
     pub commission_effective: Option<i32>,
     pub version: Option<String>,
     pub client_id: Option<String>,
-    pub client_type: Option<String>,
+    pub client_vendor: Option<String>,
+    pub client_lineage: Option<String>,
     pub feature_set: Option<i64>,
     pub shred_version: Option<i32>,
     pub gossip_port: Option<i32>,
@@ -163,7 +164,8 @@ impl Validator {
             commission_effective: None,
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.clone(),
-            client_type: v.performance.client_type.clone(),
+            client_vendor: v.performance.client_vendor.clone(),
+            client_lineage: v.performance.client_lineage.clone(),
             feature_set: v.performance.feature_set.map(|f| f as i64),
             shred_version: v.performance.shred_version.map(|s| s as i32),
             gossip_port: v.gossip_port.map(|p| p as i32),
@@ -207,7 +209,8 @@ pub struct ValidatorEpochStats {
     pub dc_city: Option<String>,
     pub dc_country: Option<String>,
     pub client_id: Option<String>,
-    pub client_type: Option<String>,
+    pub client_vendor: Option<String>,
+    pub client_lineage: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub gossip_port: Option<u16>,
@@ -270,7 +273,8 @@ pub struct ValidatorRecord {
     pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
     pub client_id: Option<String>,
-    pub client_type: Option<String>,
+    pub client_vendor: Option<String>,
+    pub client_lineage: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub gossip_port: Option<u16>,
@@ -353,7 +357,8 @@ pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
     pub client_id: Option<String>,
-    pub client_type: Option<String>,
+    pub client_vendor: Option<String>,
+    pub client_lineage: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub created_at: DateTime<Utc>,
@@ -452,6 +457,15 @@ pub struct ClientDiversityStats {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ClientLineageStats {
+    pub epoch: u64,
+    pub total_activated_stake: u64,
+    pub lineage_stake: HashMap<String, u64>,
+    pub lineage_share: HashMap<String, f64>,
+    pub lineage_validator_count: HashMap<String, u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct FeatureSetStats {
     pub epoch: u64,
     pub total_activated_stake: u64,
@@ -465,6 +479,7 @@ pub struct ClusterStats {
     pub block_production_stats: Vec<BlockProductionStats>,
     pub dc_concentration_stats: Vec<DCConcentrationStats>,
     pub client_diversity_stats: Vec<ClientDiversityStats>,
+    pub client_lineage_stats: Vec<ClientLineageStats>,
     pub feature_set_stats: Vec<FeatureSetStats>,
 }
 
@@ -489,7 +504,8 @@ pub struct ValidatorAggregatedFlat {
     pub dc_aso: String,
     pub marinade_stake: f64,
     pub version: String,
-    pub client_type: String,
+    pub client_vendor: String,
+    pub client_lineage: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
