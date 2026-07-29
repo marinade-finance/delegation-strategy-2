@@ -394,6 +394,134 @@ mod tests {
         );
     }
 
+    // Context owns a live Client, so get_validators cannot be exercised without a database
+    // even though it never queries one
+    async fn context_with(records: Vec<ValidatorRecord>) -> Option<WrappedContext> {
+        let url = std::env::var("DS_TEST_POSTGRES_URL").ok()?;
+        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let mut context = crate::context::Context::new(
+            client,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        context.cache.validators = cache_of(records);
+        Some(std::sync::Arc::new(tokio::sync::RwLock::new(context)))
+    }
+
+    fn stake_record(vote_account: &str, epochs: &[u64], stake: u64) -> ValidatorRecord {
+        let mut record = record(vote_account, &format!("id-{vote_account}"), epochs);
+        record.activated_stake = Decimal::from(stake);
+        record
+    }
+
+    #[tokio::test]
+    async fn get_validators_orders_by_stake_and_pages_without_touching_the_rest() {
+        let records = vec![
+            stake_record("small", &[LAST_EPOCH - 1, LAST_EPOCH], 10),
+            stake_record("large", &[LAST_EPOCH - 1, LAST_EPOCH], 30),
+            stake_record("medium", &[LAST_EPOCH - 1, LAST_EPOCH], 20),
+        ];
+        let Some(context) = context_with(records).await else {
+            eprintln!("skipping: DS_TEST_POSTGRES_URL is not set");
+            return;
+        };
+
+        let all = get_validators(context.clone(), config()).await.unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["large", "medium", "small"],
+            "default order is stake descending"
+        );
+
+        let page = get_validators(
+            context.clone(),
+            GetValidatorsConfig {
+                offset: 1,
+                limit: 1,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["medium"],
+            "offset and limit apply to the sorted order"
+        );
+
+        let ascending = get_validators(
+            context,
+            GetValidatorsConfig {
+                order_direction: OrderDirection::ASC,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ascending
+                .iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["small", "medium", "large"]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_validators_trims_epoch_stats_to_the_requested_window() {
+        let epochs: Vec<u64> = (LAST_EPOCH - 4..=LAST_EPOCH).collect();
+        let Some(context) = context_with(vec![stake_record("only", &epochs, 10)]).await else {
+            eprintln!("skipping: DS_TEST_POSTGRES_URL is not set");
+            return;
+        };
+
+        let two = get_validators(
+            context.clone(),
+            GetValidatorsConfig {
+                epochs: 2,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            two[0]
+                .epoch_stats
+                .iter()
+                .map(|es| es.epoch)
+                .collect::<Vec<_>>(),
+            vec![LAST_EPOCH - 1, LAST_EPOCH],
+            "epochs=2 keeps only the newest two, in their stored order"
+        );
+
+        let none = get_validators(
+            context,
+            GetValidatorsConfig {
+                epochs: 0,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(none.len(), 1, "the validator is still returned");
+        assert!(
+            none[0].epoch_stats.is_empty(),
+            "epochs=0 is what marinade-web sends: the record stays, every epoch stat goes"
+        );
+    }
+
     #[test]
     fn filters_by_presence_of_a_name() {
         let mut named = record("named", "id-named", &[LAST_EPOCH - 1, LAST_EPOCH]);

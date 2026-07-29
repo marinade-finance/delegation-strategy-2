@@ -1871,3 +1871,83 @@ pub async fn store_scoring(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(vote_account: &str, stake_by_epoch: &[(u64, u64)]) -> ValidatorRecord {
+        ValidatorRecord {
+            vote_account: vote_account.into(),
+            epoch_stats: stake_by_epoch
+                .iter()
+                .map(|&(epoch, stake)| ValidatorEpochStats {
+                    epoch,
+                    activated_stake: Decimal::from(stake),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn rank_by_stake(records: Vec<ValidatorRecord>) -> HashMap<String, ValidatorRecord> {
+        let mut validators: HashMap<String, ValidatorRecord> = records
+            .into_iter()
+            .map(|record| (record.vote_account.clone(), record))
+            .collect();
+        update_validators_ranks(
+            &mut validators,
+            |a: &ValidatorEpochStats| a.activated_stake,
+            |a: &mut ValidatorEpochStats, rank: usize| a.rank_activated_stake = Some(rank),
+        );
+        validators
+    }
+
+    fn rank_at(validators: &HashMap<String, ValidatorRecord>, vote: &str, epoch: u64) -> usize {
+        validators[vote]
+            .epoch_stats
+            .iter()
+            .find(|stats| stats.epoch == epoch)
+            .unwrap()
+            .rank_activated_stake
+            .unwrap()
+    }
+
+    #[test]
+    fn ranks_highest_stake_first_and_shares_a_rank_on_ties() {
+        let validators = rank_by_stake(vec![
+            record("low", &[(100, 10)]),
+            record("tied-a", &[(100, 20)]),
+            record("tied-b", &[(100, 20)]),
+        ]);
+
+        assert_eq!(rank_at(&validators, "tied-a", 100), 2);
+        assert_eq!(rank_at(&validators, "tied-b", 100), 2);
+        assert_eq!(rank_at(&validators, "low", 100), 3);
+    }
+
+    // epoch_stats are stored in a different order per validator, and each validator's stake
+    // rank differs per epoch, so a rank written by sorted position instead of by epoch lands
+    // on the wrong entry
+    #[test]
+    fn ranks_land_on_the_epoch_they_were_computed_for() {
+        let validators = rank_by_stake(vec![
+            record("a", &[(98, 10), (99, 30), (100, 20)]),
+            record("b", &[(100, 30), (99, 10), (98, 20)]),
+            record("c", &[(99, 20), (98, 30), (100, 10)]),
+        ]);
+
+        assert_eq!(rank_at(&validators, "a", 98), 3);
+        assert_eq!(rank_at(&validators, "b", 98), 2);
+        assert_eq!(rank_at(&validators, "c", 98), 1);
+
+        assert_eq!(rank_at(&validators, "b", 99), 3);
+        assert_eq!(rank_at(&validators, "c", 99), 2);
+        assert_eq!(rank_at(&validators, "a", 99), 1);
+
+        assert_eq!(rank_at(&validators, "c", 100), 3);
+        assert_eq!(rank_at(&validators, "a", 100), 2);
+        assert_eq!(rank_at(&validators, "b", 100), 1);
+    }
+}
