@@ -57,13 +57,40 @@ async fn insert_validator(
     client_vendor: Option<&str>,
     client_lineage: Option<&str>,
 ) {
+    insert_validator_in_dc(
+        client,
+        vote_account,
+        epoch,
+        activated_stake,
+        credits,
+        client_vendor,
+        client_lineage,
+        None,
+        0.0,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_validator_in_dc(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+    activated_stake: u64,
+    credits: u64,
+    client_vendor: Option<&str>,
+    client_lineage: Option<&str>,
+    dc_aso: Option<&str>,
+    skip_rate: f64,
+) {
     client
         .execute(
             "INSERT INTO validators (
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
-                leader_slots, blocks_produced, skip_rate, client_vendor, client_lineage, updated_at
-            ) VALUES ($1, $2, $3, $4, 0, 0, false, 0, $5, 100, 100, 0, $6, $7, NOW())",
+                leader_slots, blocks_produced, skip_rate, client_vendor, client_lineage,
+                dc_aso, updated_at
+            ) VALUES ($1, $2, $3, $4, 0, 0, false, 0, $5, 100, 100, $8, $6, $7, $9, NOW())",
             &[
                 &format!("identity-{vote_account}"),
                 &vote_account,
@@ -72,6 +99,8 @@ async fn insert_validator(
                 &Decimal::from(credits),
                 &client_vendor,
                 &client_lineage,
+                &skip_rate,
+                &dc_aso,
             ],
         )
         .await
@@ -290,6 +319,105 @@ async fn validators_flat_client_columns_keep_open_lower_bound_and_bounded_upper_
     assert_eq!(
         validator.version, "2.2.0",
         "last_version is deliberately unbounded and still reports data from above last_epoch"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// the cluster_stake / cluster_skip_rate / dc CTEs are bounded to the epoch window; an epoch
+// outside it must not reach any of the three aggregates
+#[tokio::test]
+async fn validators_flat_ignores_rows_outside_the_epoch_window() {
+    let schema = "ds_test_validators_flat_window";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    let first_epoch = LAST_EPOCH - EPOCHS + 1;
+    for epoch in first_epoch..=LAST_EPOCH {
+        insert_validator_in_dc(
+            &client,
+            "voteA",
+            epoch,
+            100,
+            10,
+            None,
+            None,
+            Some("aso1"),
+            0.5,
+        )
+        .await;
+        insert_validator_in_dc(
+            &client,
+            "voteB",
+            epoch,
+            300,
+            10,
+            None,
+            None,
+            Some("aso2"),
+            0.1,
+        )
+        .await;
+    }
+
+    let outside = first_epoch - 1;
+    insert_validator_in_dc(
+        &client,
+        "voteA",
+        outside,
+        10_000,
+        10,
+        None,
+        None,
+        Some("aso1"),
+        0.9,
+    )
+    .await;
+    insert_validator_in_dc(
+        &client,
+        "voteB",
+        outside,
+        10_000,
+        10,
+        None,
+        None,
+        Some("aso2"),
+        0.9,
+    )
+    .await;
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    assert_eq!(
+        validators.len(),
+        2,
+        "the out-of-window epoch must not add to the HAVING COUNT(*)"
+    );
+
+    let a = validators
+        .iter()
+        .find(|v| v.vote_account == "voteA")
+        .unwrap();
+
+    // 100 of 400 in-window stake per epoch; the epoch-990 row would move this to 10100/20400
+    assert!(
+        (a.avg_dc_concentration - 0.25).abs() < 1e-9,
+        "avg_dc_concentration was {}",
+        a.avg_dc_concentration
+    );
+
+    // leader_slots is 100 (< 200), so grace uses least(own skip rate, cluster weighted) =
+    // least(0.5, (0.5*100 + 0.1*300) / 400) = 0.2
+    assert!(
+        (a.avg_grace_skip_rate - 0.2).abs() < 1e-9,
+        "avg_grace_skip_rate was {}",
+        a.avg_grace_skip_rate
     );
 
     client

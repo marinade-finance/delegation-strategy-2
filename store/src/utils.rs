@@ -1692,9 +1692,9 @@ pub async fn load_validators_aggregated_flat(
     let rows = psql_client
             .query(
                 "with
-                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
+                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators where epoch between $1 and $2 group by epoch),
+                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators where epoch between $1 and $2 group by epoch),
+                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch where validators.epoch between $1 and $2 group by validators.epoch, dc_aso, cluster_stake.stake),
                 agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null and epoch <= $2))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null and epoch <= $2))[1] as last_client_lineage from versions group by vote_account)
                 select
                     validators.vote_account,
