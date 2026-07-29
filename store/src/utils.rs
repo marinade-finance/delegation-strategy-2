@@ -1509,8 +1509,7 @@ async fn load_stake_distribution(
 
     let mut distributions: Vec<StakeDistribution> = Default::default();
 
-    // Callers pair these per-epoch series with load_dc_concentration_stats, so an epoch with no
-    // validator rows must still yield an entry instead of being dropped by the SQL grouping.
+    // Callers pair this with load_dc_concentration_stats, so a row-less epoch still needs an entry
     for epoch in (first_epoch..=last_epoch).rev() {
         let mut stake_by: HashMap<String, u64> = Default::default();
         let mut count_by: HashMap<String, u64> = Default::default();
@@ -1668,8 +1667,7 @@ pub async fn load_validators_aggregated_flat(
     epochs: u64,
 ) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
     let epochs = epochs.max(1);
-    // last_version is deliberately left unbounded while the client columns are bounded to $2:
-    // adding the bound changes what historical scoring runs see, so it needs a ds-sam side check.
+    // last_version stays unbounded: bounding it to $2 moves the scripts/scoring.R min-version gate
     let rows = psql_client
             .query(
                 "with

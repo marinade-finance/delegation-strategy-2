@@ -1,0 +1,10 @@
+CREATE INDEX IF NOT EXISTS idx_versions_vote_account_created_at ON versions (vote_account, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commissions_vote_account_created_at ON commissions (vote_account, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_uptimes_vote_account_end_at ON uptimes (vote_account, end_at DESC);
+CREATE INDEX IF NOT EXISTS idx_versions_epoch ON versions (epoch);
+CREATE INDEX IF NOT EXISTS idx_commissions_epoch ON commissions (epoch);
+CREATE INDEX IF NOT EXISTS idx_uptimes_epoch ON uptimes (epoch);
+CREATE INDEX IF NOT EXISTS idx_mev_vote_account_epoch_created_at ON mev (vote_account, epoch, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jito_priority_fee_vote_account_epoch_created_at ON jito_priority_fee (vote_account, epoch, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cluster_info_epoch ON cluster_info (epoch);
+CREATE INDEX IF NOT EXISTS idx_scores_scoring_run_id ON scores (scoring_run_id);

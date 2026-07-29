@@ -283,7 +283,7 @@ async fn validators_flat_survives_zero_epochs() {
         .unwrap();
     assert!(
         validators.is_empty(),
-        "epochs=0 can never satisfy the HAVING clause"
+        "epochs=0 collapses to a 1-epoch window, short of the 7 positive-credit epochs HAVING requires"
     );
 
     client

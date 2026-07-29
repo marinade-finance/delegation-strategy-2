@@ -75,13 +75,8 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching events {:?}", &vote_account);
 
-    let validators = context.read().await.cache.get_validators();
-    let validator = validators.iter().find(|(_vote_key, record)| {
-        record.identity == vote_account || record.vote_account == vote_account
-    });
-
-    let vote_key = match validator {
-        Some((vote_key, _validator)) => vote_key.clone(),
+    let vote_key = match context.read().await.cache.find_validator_key(&vote_account) {
+        Some(vote_key) => vote_key,
         None => {
             error!("No validator found for {}", &vote_account);
             return Ok(response_error(

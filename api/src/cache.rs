@@ -105,6 +105,16 @@ impl Cache {
         self.validators.clone()
     }
 
+    pub fn find_validator_key(&self, vote_account_or_identity: &str) -> Option<String> {
+        self.validators
+            .iter()
+            .find(|(_, record)| {
+                record.identity == vote_account_or_identity
+                    || record.vote_account == vote_account_or_identity
+            })
+            .map(|(vote_key, _)| vote_key.clone())
+    }
+
     pub fn get_commissions(&self, vote_account: &String) -> Option<Vec<CommissionRecord>> {
         self.commissions.get(vote_account).cloned()
     }
@@ -374,4 +384,41 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
             sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_with(records: &[(&str, &str)]) -> Cache {
+        let mut cache = Cache::new();
+        for (vote_account, identity) in records {
+            cache.validators.insert(
+                vote_account.to_string(),
+                ValidatorRecord {
+                    vote_account: vote_account.to_string(),
+                    identity: identity.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        cache
+    }
+
+    #[test]
+    fn find_validator_key_resolves_vote_account_and_identity() {
+        let cache = cache_with(&[("vote-a", "id-a"), ("vote-b", "id-b")]);
+
+        assert_eq!(
+            cache.find_validator_key("vote-a"),
+            Some("vote-a".to_string())
+        );
+        assert_eq!(cache.find_validator_key("id-b"), Some("vote-b".to_string()));
+        assert_eq!(cache.find_validator_key("nope"), None);
+    }
+
+    #[test]
+    fn find_validator_key_on_an_empty_cache_is_none() {
+        assert_eq!(Cache::new().find_validator_key("vote-a"), None);
+    }
 }

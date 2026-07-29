@@ -41,14 +41,11 @@ pub async fn handler(
     info!("Fetching commissions {:?}", &vote_account);
     metrics::REQUEST_COUNT_COMMISSIONS.inc();
 
-    let validators = context.read().await.cache.get_validators();
-    let validator = validators.iter().find(|(_vote_key, record)| {
-        record.identity == vote_account || record.vote_account == vote_account
-    });
+    let vote_key = context.read().await.cache.find_validator_key(&vote_account);
 
-    match validator {
-        Some((vote_key, _validator)) => {
-            let commissions = context.read().await.cache.get_commissions(vote_key);
+    match vote_key {
+        Some(vote_key) => {
+            let commissions = context.read().await.cache.get_commissions(&vote_key);
 
             Ok(match commissions {
                 Some(mut commissions) => {
