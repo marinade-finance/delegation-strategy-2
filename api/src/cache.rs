@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorsAggregated, VersionRecord,
+    ValidatorScoreRecord, VersionRecord,
 };
 use tokio::time::{sleep, Duration, Instant};
 
@@ -18,7 +18,6 @@ type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
-type CachedValidatorsAggregated = Vec<ValidatorsAggregated>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {
@@ -39,7 +38,6 @@ pub struct Cache {
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
-    pub validators_aggregated: CachedValidatorsAggregated,
     pub validators_single_run_scores: CachedSingleRunScores,
     pub validators_multi_run_scores: CachedMultiRunScores,
     pub per_epoch: Option<PerEpochCache>,
@@ -121,10 +119,6 @@ impl Cache {
         self.uptimes.get(vote_account).cloned()
     }
 
-    pub fn get_validators_aggregated(&self) -> CachedValidatorsAggregated {
-        self.validators_aggregated.clone()
-    }
-
     pub fn get_validators_multi_run_scores(&self) -> CachedMultiRunScores {
         self.validators_multi_run_scores.clone()
     }
@@ -201,7 +195,6 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
             ctx.cache.per_epoch = Some(refreshed);
         }
         ctx.cache.validators.clone_from(&validators);
-        ctx.cache.validators_aggregated = store::utils::aggregate_validators(&validators);
     }
 
     info!(

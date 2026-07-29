@@ -315,32 +315,18 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
-    let mut validators_aggregated = context.read().await.cache.get_validators_aggregated();
-
-    if let Some(from_date) = query_params.query_from_date {
-        validators_aggregated = validators_aggregated
-            .iter()
-            .filter(|v| v.epoch_start_date.is_some())
-            .filter(|v| v.epoch_start_date.unwrap() > from_date)
-            .cloned()
-            .collect();
-    } else {
-        validators_aggregated = validators_aggregated
-            .iter()
-            .take(query_params.epochs.unwrap_or(DEFAULT_EPOCHS))
-            .cloned()
-            .collect();
-    }
-
     Ok(match validators {
-        Ok((validators, total_count)) => warp::reply::with_status(
-            json(&ResponseValidators {
-                validators,
-                validators_aggregated,
-                total_count,
-            }),
-            StatusCode::OK,
-        ),
+        Ok((validators, total_count)) => {
+            let validators_aggregated = store::utils::aggregate_validators(&validators);
+            warp::reply::with_status(
+                json(&ResponseValidators {
+                    validators,
+                    validators_aggregated,
+                    total_count,
+                }),
+                StatusCode::OK,
+            )
+        }
         Err(err) => {
             error!("Failed to fetch validator records: {err}");
             response_error_500("Failed to fetch records!".into())

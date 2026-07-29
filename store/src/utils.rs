@@ -1655,15 +1655,13 @@ pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Re
     })
 }
 
-pub fn aggregate_validators(
-    validators: &HashMap<String, ValidatorRecord>,
-) -> Vec<ValidatorsAggregated> {
+pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAggregated> {
     let mut epochs: HashSet<_> = Default::default();
     let mut epochs_start_dates: HashMap<u64, DateTime<Utc>> = Default::default();
     let mut marinade_scores: HashMap<u64, Vec<f64>> = Default::default();
     let mut apys: HashMap<u64, Vec<f64>> = Default::default();
 
-    for (_, validator) in validators.iter() {
+    for validator in validators.iter() {
         for epoch_stats in validator.epoch_stats.iter() {
             epochs.insert(epoch_stats.epoch);
             epochs_start_dates.insert(
