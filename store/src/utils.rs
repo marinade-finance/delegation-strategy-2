@@ -548,21 +548,25 @@ pub fn update_validators_ranks<T>(
 ) where
     T: Ord,
 {
-    let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
+    let mut stats_by_epoch: HashMap<u64, Vec<(String, usize, T)>> = Default::default();
     for (vote_account, record) in validators.iter() {
-        for validator_epoch_stats in record.epoch_stats.iter() {
+        for (stats_index, validator_epoch_stats) in record.epoch_stats.iter().enumerate() {
             stats_by_epoch
                 .entry(validator_epoch_stats.epoch)
                 .or_default()
-                .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
+                .push((
+                    vote_account.clone(),
+                    stats_index,
+                    field_extractor(validator_epoch_stats),
+                ));
         }
     }
 
-    for (epoch, stats) in stats_by_epoch.iter_mut() {
-        stats.sort_by(|(_, stat_a), (_, stat_b)| stat_a.cmp(stat_b));
+    for stats in stats_by_epoch.values_mut() {
+        stats.sort_by(|(_, _, stat_a), (_, _, stat_b)| stat_a.cmp(stat_b));
         let mut previous_value: Option<&T> = None;
         let mut same_ranks: usize = 0;
-        for (index, (vote_account, stat)) in stats.iter().enumerate() {
+        for (index, (vote_account, stats_index, stat)) in stats.iter().enumerate() {
             if let Some(some_previous_value) = previous_value {
                 if some_previous_value == stat {
                     same_ranks += 1;
@@ -572,13 +576,8 @@ pub fn update_validators_ranks<T>(
             }
             previous_value = Some(stat);
 
-            let validator_epoch_stats = validators
-                .get_mut(vote_account)
-                .unwrap()
-                .epoch_stats
-                .iter_mut()
-                .find(|a| a.epoch == *epoch)
-                .unwrap();
+            let validator_epoch_stats =
+                &mut validators.get_mut(vote_account).unwrap().epoch_stats[*stats_index];
             rank_updater(validator_epoch_stats, stats.len() - index + same_ranks);
         }
     }
@@ -1070,7 +1069,6 @@ pub async fn load_validators(
     })
     .await?;
 
-    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
     let mut first_epoch = last_epoch - display_epochs.min(last_epoch) + 1;
     let mut epochs_range = first_epoch..=last_epoch;
 
