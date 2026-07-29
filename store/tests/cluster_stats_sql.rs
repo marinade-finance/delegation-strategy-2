@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use store::utils::{
-    load_client_diversity_stats, load_dc_concentration_stats, load_validators_aggregated_flat,
+    load_block_production_stats, load_client_diversity_stats, load_dc_concentration_stats,
+    load_validators_aggregated_flat,
 };
 use tokio_postgres::{Client, NoTls};
 
@@ -187,6 +188,35 @@ async fn stake_distribution_emits_every_requested_epoch_including_gaps() {
         epochs,
         "cluster-stats series must cover the same epoch window"
     );
+
+    let block_production = load_block_production_stats(&client, EPOCHS).await.unwrap();
+    assert_eq!(
+        block_production
+            .iter()
+            .map(|stats| stats.epoch)
+            .collect::<Vec<u64>>(),
+        epochs,
+        "cluster-stats series must cover the same epoch window"
+    );
+
+    let gap_production = block_production
+        .iter()
+        .find(|stats| stats.epoch == GAP_EPOCH)
+        .unwrap();
+    assert_eq!(gap_production.blocks_produced, 0);
+    assert_eq!(gap_production.leader_slots, 0);
+    assert_eq!(gap_production.avg_skip_rate, 1.0);
+
+    let oldest_production = block_production
+        .iter()
+        .find(|stats| stats.epoch == first_epoch)
+        .unwrap();
+    assert_eq!(
+        oldest_production.leader_slots, 300,
+        "the oldest requested epoch must be inside the window, not excluded by an exclusive bound"
+    );
+    assert_eq!(oldest_production.blocks_produced, 300);
+    assert_eq!(oldest_production.avg_skip_rate, 0.0);
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

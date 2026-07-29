@@ -1446,22 +1446,51 @@ pub async fn load_block_production_stats(
                     COALESCE(SUM(leader_slots), 0) leader_slots,
                     COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
                 FROM validators
-                WHERE epoch > $1
-                GROUP BY epoch ORDER BY epoch DESC",
-                &[&Decimal::from(first_epoch)],
+                WHERE epoch BETWEEN $1 AND $2
+                GROUP BY epoch",
+                &[&Decimal::from(first_epoch), &Decimal::from(last_epoch)],
             )
             .await?;
 
-    for row in rows {
-        stats.push(BlockProductionStats {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-            avg_skip_rate: row.get("avg_skip_rate"),
-        })
+    let mut rows_by_epoch = group_rows_by_epoch(rows)?;
+
+    // paired positionally with the other cluster-stats series, so a row-less epoch still needs an entry
+    for epoch in (first_epoch..=last_epoch).rev() {
+        stats.push(
+            match rows_by_epoch
+                .remove(&epoch)
+                .and_then(|rows| rows.into_iter().next())
+            {
+                Some(row) => BlockProductionStats {
+                    epoch,
+                    blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+                    leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+                    avg_skip_rate: row.get("avg_skip_rate"),
+                },
+                None => BlockProductionStats {
+                    epoch,
+                    blocks_produced: 0,
+                    leader_slots: 0,
+                    avg_skip_rate: 1.0,
+                },
+            },
+        )
     }
 
     Ok(stats)
+}
+
+fn group_rows_by_epoch(
+    rows: Vec<tokio_postgres::Row>,
+) -> anyhow::Result<HashMap<u64, Vec<tokio_postgres::Row>>> {
+    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
+    for row in rows {
+        rows_by_epoch
+            .entry(row.get::<_, Decimal>("epoch").try_into()?)
+            .or_default()
+            .push(row);
+    }
+    Ok(rows_by_epoch)
 }
 
 struct StakeDistribution {
@@ -1499,13 +1528,7 @@ async fn load_stake_distribution(
         )
         .await?;
 
-    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
-    for row in rows {
-        rows_by_epoch
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .push(row);
-    }
+    let mut rows_by_epoch = group_rows_by_epoch(rows)?;
 
     let mut distributions: Vec<StakeDistribution> = Default::default();
 
