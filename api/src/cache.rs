@@ -1,7 +1,9 @@
 use crate::context::WrappedContext;
 use log::{error, info};
 use rust_decimal::Decimal;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
@@ -367,11 +369,30 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let run_every = Duration::from_secs(CACHE_WARMUP_TIME_S);
-            let sleep_seconds = now.as_secs() % run_every.as_secs();
-            sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
+            let sleep_seconds = warmup_sleep_seconds(
+                now.as_secs(),
+                warmup_phase_seconds(CACHE_WARMUP_TIME_S),
+                CACHE_WARMUP_TIME_S,
+            );
+            sleep(Duration::from_secs(sleep_seconds)).await;
         }
     });
+}
+
+// replicas warming on the same wall-clock boundary hit the shared connection as a 2x spike
+fn warmup_phase_seconds(period_seconds: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    std::env::var("HOSTNAME")
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish() % period_seconds
+}
+
+fn warmup_sleep_seconds(now_seconds: u64, phase_seconds: u64, period_seconds: u64) -> u64 {
+    match (period_seconds + phase_seconds - now_seconds % period_seconds) % period_seconds {
+        0 => period_seconds,
+        wait => wait,
+    }
 }
 
 #[cfg(test)]
@@ -408,5 +429,30 @@ mod tests {
     #[test]
     fn find_validator_key_on_an_empty_cache_is_none() {
         assert_eq!(Cache::new().find_validator_key("vote-a"), None);
+    }
+
+    #[test]
+    fn warmup_without_a_phase_keeps_the_previous_boundary_alignment() {
+        assert_eq!(warmup_sleep_seconds(0, 0, 600), 600);
+        assert_eq!(warmup_sleep_seconds(1, 0, 600), 599);
+        assert_eq!(warmup_sleep_seconds(599, 0, 600), 1);
+        assert_eq!(warmup_sleep_seconds(600, 0, 600), 600);
+    }
+
+    #[test]
+    fn warmup_wakes_on_its_own_phase_within_one_period() {
+        for phase in [0, 1, 137, 599] {
+            for now in [0, 1, 137, 599, 600, 12_345] {
+                let sleep = warmup_sleep_seconds(now, phase, 600);
+                assert!((1..=600).contains(&sleep), "phase {phase} now {now}");
+                assert_eq!((now + sleep) % 600, phase, "phase {phase} now {now}");
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_phase_is_stable_and_within_the_period() {
+        assert_eq!(warmup_phase_seconds(600), warmup_phase_seconds(600));
+        assert!(warmup_phase_seconds(600) < 600);
     }
 }
