@@ -395,7 +395,11 @@ mod tests {
         }
     }
 
-    fn validator(vote_account: &str, stake: i64, warnings: Vec<ValidatorWarning>) -> ValidatorRecord {
+    fn validator(
+        vote_account: &str,
+        stake: i64,
+        warnings: Vec<ValidatorWarning>,
+    ) -> ValidatorRecord {
         ValidatorRecord {
             identity: format!("id-{vote_account}"),
             vote_account: vote_account.to_string(),
