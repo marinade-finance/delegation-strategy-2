@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
+    time::Duration,
 };
 use tokio::join;
 use tokio::sync::Semaphore;
@@ -28,6 +29,9 @@ const SLOTS_IN_EPOCH: u64 = 432000;
 const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
 const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
 const SCORING_SCRAPER_WORKERS: usize = 10;
+/// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
+/// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
+const HTTP_TIMEOUT_S: u64 = 60;
 
 pub struct InsertQueryCombiner<'a> {
     pub insertions: u64,
@@ -772,7 +776,10 @@ struct VerifiedValidatorsResponse {
 // `base` is the validator-bonds API base URL; the verified path is appended here.
 pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
     let url = format!("{}/validators/verified", base.trim_end_matches('/'));
-    let resp = reqwest::get(&url).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()?;
+    let resp = client.get(&url).send().await?;
     anyhow::ensure!(
         resp.status().is_success(),
         "verified endpoint returned {}",
@@ -1200,13 +1207,17 @@ pub async fn load_scores_in_epochs(
     });
 
     let permits = Arc::new(Semaphore::new(SCORING_SCRAPER_WORKERS));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()?;
     for epoch in epochs {
         let url = format!("{scoring_url}/api/v1/scores/breakdowns?epoch={epoch}");
         let tx = tx.clone();
+        let client = client.clone();
         let permit = permits.clone().acquire_owned().await?;
         tokio::spawn(async move {
             log::info!("Fetching scores from {url}...");
-            match reqwest::get(&url).await {
+            match client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(scores) = resp.json::<Vec<ValidatorScoreV2Record>>().await {
                         let mut epoch_scores: HashMap<String, f64> = Default::default();
