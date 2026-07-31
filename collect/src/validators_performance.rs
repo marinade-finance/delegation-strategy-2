@@ -45,16 +45,41 @@ pub struct ClusterInflation {
     pub inflation_taper: f64,
 }
 
+// Snapshots predating the numeric client_id hold the rendered string, and store reads them back post-deploy.
+fn deserialize_client_id<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrRendered {
+        Number(u16),
+        Rendered(String),
+    }
+
+    Ok(
+        match Option::<NumberOrRendered>::deserialize(deserializer)? {
+            Some(NumberOrRendered::Number(id)) => Some(id),
+            Some(NumberOrRendered::Rendered(raw)) => resolve_client_id(Some(&raw)).number(),
+            None => None,
+        },
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValidatorPerformance {
     pub commission: u8,
     pub version: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_client_id")]
+    pub client_id: Option<u16>,
     #[serde(default)]
-    pub client_id: Option<String>,
+    pub client_name: Option<String>,
     #[serde(default)]
     pub client_vendor: Option<String>,
     #[serde(default)]
     pub client_lineage: Option<String>,
+    #[serde(default)]
+    pub client_id_raw: Option<String>,
     #[serde(default)]
     pub feature_set: Option<u32>,
     #[serde(default)]
@@ -120,9 +145,11 @@ pub fn validators_performance(
             ValidatorPerformance {
                 commission: vote_account.commission,
                 version: node.and_then(|n| n.version.clone()),
-                client_id: node.and_then(|n| n.client_id.clone()),
+                client_id: node.and_then(|n| n.client_id),
+                client_name: node.and_then(|n| n.client_name.clone()),
                 client_vendor: node.and_then(|n| n.client_vendor.map(str::to_string)),
                 client_lineage: node.and_then(|n| n.client_lineage.map(str::to_string)),
+                client_id_raw: node.and_then(|n| n.client_id_raw.clone()),
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),
                 credits: credits.get(&vote_pubkey).cloned().unwrap_or(0),

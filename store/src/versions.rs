@@ -51,19 +51,21 @@ pub async fn store_versions(
     {
         let vote_account: &str = row.get("vote_account");
         let version: Option<String> = row.get("version");
-        let client_id: Option<String> = row.get("client_id");
+        let client_id: Option<i32> = row.get("client_id");
         let client_vendor: Option<String> = row.get("client_vendor");
         let client_lineage: Option<String> = row.get("client_lineage");
         let feature_set: Option<i64> = row.get("feature_set");
         let shred_version: Option<i32> = row.get("shred_version");
         let epoch: Decimal = row.get("epoch");
 
+        // client_id_raw and the raw-derived client_name track the answering RPC's rendering, not the node.
         if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
+            let snapshot_client_id = validator_snapshot.client_id.map(|id| id as i32);
             let snapshot_feature_set = validator_snapshot.feature_set.map(|f| f as i64);
             let snapshot_shred_version = validator_snapshot.shred_version.map(|s| s as i32);
             if epoch == snapshot_epoch
                 && version == validator_snapshot.version
-                && client_id == validator_snapshot.client_id
+                && client_id == snapshot_client_id
                 && client_vendor == validator_snapshot.client_vendor
                 && client_lineage == validator_snapshot.client_lineage
                 && feature_set == snapshot_feature_set
@@ -76,10 +78,10 @@ pub async fn store_versions(
 
     let mut query = InsertQueryCombiner::new(
         "versions".to_string(),
-        "vote_account, version, client_id, client_vendor, client_lineage, feature_set, shred_version, epoch_slot, epoch, created_at".to_string(),
+        "vote_account, version, client_id, client_name, client_vendor, client_lineage, client_id_raw, feature_set, shred_version, epoch_slot, epoch, created_at".to_string(),
     );
 
-    let rows_to_insert: Vec<(&String, &_, Option<i64>, Option<i32>)> = snapshot
+    let rows_to_insert: Vec<_> = snapshot
         .validators
         .iter()
         .filter(|(va, _)| !skipped_vote_accounts.contains(*va))
@@ -87,19 +89,22 @@ pub async fn store_versions(
             (
                 va,
                 v,
+                v.client_id.map(|id| id as i32),
                 v.feature_set.map(|f| f as i64),
                 v.shred_version.map(|s| s as i32),
             )
         })
         .collect();
 
-    for (vote_account, v, feature_set, shred_version) in rows_to_insert.iter() {
+    for (vote_account, v, client_id, feature_set, shred_version) in rows_to_insert.iter() {
         let mut params: Vec<&(dyn ToSql + Sync)> = vec![
             *vote_account,
             &v.version,
-            &v.client_id,
+            client_id,
+            &v.client_name,
             &v.client_vendor,
             &v.client_lineage,
+            &v.client_id_raw,
             feature_set,
             shred_version,
             &snapshot_epoch_slot,

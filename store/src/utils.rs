@@ -315,7 +315,7 @@ pub async fn load_versions(
             "
             WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, version, client_id, client_vendor, client_lineage, feature_set, shred_version, epoch, created_at
+                vote_account, version, client_id, client_name, client_vendor, client_lineage, client_id_raw, feature_set, shred_version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -330,9 +330,11 @@ pub async fn load_versions(
         versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
-            client_id: row.get("client_id"),
+            client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+            client_name: row.get("client_name"),
             client_vendor: row.get("client_vendor"),
             client_lineage: row.get("client_lineage"),
+            client_id_raw: row.get("client_id_raw"),
             feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
             shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
             created_at: row.get("created_at"),
@@ -852,8 +854,10 @@ pub async fn load_validators(
                 mev.mev_commission AS mev_commission_bps,
                 jpf.validator_commission AS priority_commission_bps,
                 client_id,
+                client_name,
                 client_vendor,
                 client_lineage,
+                client_id_raw,
                 feature_set,
                 shred_version,
                 gossip_port,
@@ -980,9 +984,11 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
                     version: row.get("version"),
-                    client_id: row.get("client_id"),
+                    client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+                    client_name: row.get("client_name"),
                     client_vendor: row.get("client_vendor"),
                     client_lineage: row.get("client_lineage"),
+                    client_id_raw: row.get("client_id_raw"),
                     feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                     shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                     gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1060,9 +1066,11 @@ pub async fn load_validators(
                 dc_aso: row.get::<_, Option<String>>("dc_aso"),
                 dc_city: row.get::<_, Option<String>>("dc_city"),
                 dc_country: row.get::<_, Option<String>>("dc_country"),
-                client_id: row.get("client_id"),
+                client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+                client_name: row.get("client_name"),
                 client_vendor: row.get("client_vendor"),
                 client_lineage: row.get("client_lineage"),
+                client_id_raw: row.get("client_id_raw"),
                 feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                 shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                 gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
