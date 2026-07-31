@@ -548,21 +548,25 @@ pub fn update_validators_ranks<T>(
 ) where
     T: Ord,
 {
-    let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
+    let mut stats_by_epoch: HashMap<u64, Vec<(String, usize, T)>> = Default::default();
     for (vote_account, record) in validators.iter() {
-        for validator_epoch_stats in record.epoch_stats.iter() {
+        for (stats_index, validator_epoch_stats) in record.epoch_stats.iter().enumerate() {
             stats_by_epoch
                 .entry(validator_epoch_stats.epoch)
                 .or_default()
-                .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
+                .push((
+                    vote_account.clone(),
+                    stats_index,
+                    field_extractor(validator_epoch_stats),
+                ));
         }
     }
 
-    for (epoch, stats) in stats_by_epoch.iter_mut() {
-        stats.sort_by(|(_, stat_a), (_, stat_b)| stat_a.cmp(stat_b));
+    for stats in stats_by_epoch.values_mut() {
+        stats.sort_by(|(_, _, stat_a), (_, _, stat_b)| stat_a.cmp(stat_b));
         let mut previous_value: Option<&T> = None;
         let mut same_ranks: usize = 0;
-        for (index, (vote_account, stat)) in stats.iter().enumerate() {
+        for (index, (vote_account, stats_index, stat)) in stats.iter().enumerate() {
             if let Some(some_previous_value) = previous_value {
                 if some_previous_value == stat {
                     same_ranks += 1;
@@ -572,13 +576,8 @@ pub fn update_validators_ranks<T>(
             }
             previous_value = Some(stat);
 
-            let validator_epoch_stats = validators
-                .get_mut(vote_account)
-                .unwrap()
-                .epoch_stats
-                .iter_mut()
-                .find(|a| a.epoch == *epoch)
-                .unwrap();
+            let validator_epoch_stats =
+                &mut validators.get_mut(vote_account).unwrap().epoch_stats[*stats_index];
             rank_updater(validator_epoch_stats, stats.len() - index + same_ranks);
         }
     }
@@ -1070,7 +1069,6 @@ pub async fn load_validators(
     })
     .await?;
 
-    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
     let mut first_epoch = last_epoch - display_epochs.min(last_epoch) + 1;
     let mut epochs_range = first_epoch..=last_epoch;
 
@@ -1446,22 +1444,51 @@ pub async fn load_block_production_stats(
                     COALESCE(SUM(leader_slots), 0) leader_slots,
                     COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
                 FROM validators
-                WHERE epoch > $1
-                GROUP BY epoch ORDER BY epoch DESC",
-                &[&Decimal::from(first_epoch)],
+                WHERE epoch BETWEEN $1 AND $2
+                GROUP BY epoch",
+                &[&Decimal::from(first_epoch), &Decimal::from(last_epoch)],
             )
             .await?;
 
-    for row in rows {
-        stats.push(BlockProductionStats {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-            avg_skip_rate: row.get("avg_skip_rate"),
-        })
+    let mut rows_by_epoch = group_rows_by_epoch(rows)?;
+
+    // paired positionally with the other cluster-stats series, so a row-less epoch still needs an entry
+    for epoch in (first_epoch..=last_epoch).rev() {
+        stats.push(
+            match rows_by_epoch
+                .remove(&epoch)
+                .and_then(|rows| rows.into_iter().next())
+            {
+                Some(row) => BlockProductionStats {
+                    epoch,
+                    blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+                    leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+                    avg_skip_rate: row.get("avg_skip_rate"),
+                },
+                None => BlockProductionStats {
+                    epoch,
+                    blocks_produced: 0,
+                    leader_slots: 0,
+                    avg_skip_rate: 1.0,
+                },
+            },
+        )
     }
 
     Ok(stats)
+}
+
+fn group_rows_by_epoch(
+    rows: Vec<tokio_postgres::Row>,
+) -> anyhow::Result<HashMap<u64, Vec<tokio_postgres::Row>>> {
+    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
+    for row in rows {
+        rows_by_epoch
+            .entry(row.get::<_, Decimal>("epoch").try_into()?)
+            .or_default()
+            .push(row);
+    }
+    Ok(rows_by_epoch)
 }
 
 struct StakeDistribution {
@@ -1499,18 +1526,11 @@ async fn load_stake_distribution(
         )
         .await?;
 
-    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
-    for row in rows {
-        rows_by_epoch
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .push(row);
-    }
+    let mut rows_by_epoch = group_rows_by_epoch(rows)?;
 
     let mut distributions: Vec<StakeDistribution> = Default::default();
 
-    // Callers pair these per-epoch series with load_dc_concentration_stats, so an epoch with no
-    // validator rows must still yield an entry instead of being dropped by the SQL grouping.
+    // Callers pair this with load_dc_concentration_stats, so a row-less epoch still needs an entry
     for epoch in (first_epoch..=last_epoch).rev() {
         let mut stake_by: HashMap<String, u64> = Default::default();
         let mut count_by: HashMap<String, u64> = Default::default();
@@ -1668,14 +1688,13 @@ pub async fn load_validators_aggregated_flat(
     epochs: u64,
 ) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
     let epochs = epochs.max(1);
-    // last_version is deliberately left unbounded while the client columns are bounded to $2:
-    // adding the bound changes what historical scoring runs see, so it needs a ds-sam side check.
+    // last_version stays unbounded: bounding it to $2 moves the scripts/scoring.R min-version gate
     let rows = psql_client
             .query(
                 "with
-                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
+                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators where epoch between $1 and $2 group by epoch),
+                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators where epoch between $1 and $2 group by epoch),
+                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch where validators.epoch between $1 and $2 group by validators.epoch, dc_aso, cluster_stake.stake),
                 agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null and epoch <= $2))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null and epoch <= $2))[1] as last_client_lineage from versions group by vote_account)
                 select
                     validators.vote_account,
@@ -1851,4 +1870,84 @@ pub async fn store_scoring(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(vote_account: &str, stake_by_epoch: &[(u64, u64)]) -> ValidatorRecord {
+        ValidatorRecord {
+            vote_account: vote_account.into(),
+            epoch_stats: stake_by_epoch
+                .iter()
+                .map(|&(epoch, stake)| ValidatorEpochStats {
+                    epoch,
+                    activated_stake: Decimal::from(stake),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn rank_by_stake(records: Vec<ValidatorRecord>) -> HashMap<String, ValidatorRecord> {
+        let mut validators: HashMap<String, ValidatorRecord> = records
+            .into_iter()
+            .map(|record| (record.vote_account.clone(), record))
+            .collect();
+        update_validators_ranks(
+            &mut validators,
+            |a: &ValidatorEpochStats| a.activated_stake,
+            |a: &mut ValidatorEpochStats, rank: usize| a.rank_activated_stake = Some(rank),
+        );
+        validators
+    }
+
+    fn rank_at(validators: &HashMap<String, ValidatorRecord>, vote: &str, epoch: u64) -> usize {
+        validators[vote]
+            .epoch_stats
+            .iter()
+            .find(|stats| stats.epoch == epoch)
+            .unwrap()
+            .rank_activated_stake
+            .unwrap()
+    }
+
+    #[test]
+    fn ranks_highest_stake_first_and_shares_a_rank_on_ties() {
+        let validators = rank_by_stake(vec![
+            record("low", &[(100, 10)]),
+            record("tied-a", &[(100, 20)]),
+            record("tied-b", &[(100, 20)]),
+        ]);
+
+        assert_eq!(rank_at(&validators, "tied-a", 100), 2);
+        assert_eq!(rank_at(&validators, "tied-b", 100), 2);
+        assert_eq!(rank_at(&validators, "low", 100), 3);
+    }
+
+    // epoch_stats are stored in a different order per validator, and each validator's stake
+    // rank differs per epoch, so a rank written by sorted position instead of by epoch lands
+    // on the wrong entry
+    #[test]
+    fn ranks_land_on_the_epoch_they_were_computed_for() {
+        let validators = rank_by_stake(vec![
+            record("a", &[(98, 10), (99, 30), (100, 20)]),
+            record("b", &[(100, 30), (99, 10), (98, 20)]),
+            record("c", &[(99, 20), (98, 30), (100, 10)]),
+        ]);
+
+        assert_eq!(rank_at(&validators, "a", 98), 3);
+        assert_eq!(rank_at(&validators, "b", 98), 2);
+        assert_eq!(rank_at(&validators, "c", 98), 1);
+
+        assert_eq!(rank_at(&validators, "b", 99), 3);
+        assert_eq!(rank_at(&validators, "c", 99), 2);
+        assert_eq!(rank_at(&validators, "a", 99), 1);
+
+        assert_eq!(rank_at(&validators, "c", 100), 3);
+        assert_eq!(rank_at(&validators, "a", 100), 2);
+        assert_eq!(rank_at(&validators, "b", 100), 1);
+    }
 }

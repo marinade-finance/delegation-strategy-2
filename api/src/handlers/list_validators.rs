@@ -91,18 +91,16 @@ pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
 ) -> anyhow::Result<Vec<ValidatorRecord>> {
-    let validators = context.read().await.cache.get_validators();
+    let ctx = context.read().await;
 
-    let mut validators = filter_validators(validators, &config);
+    let mut validators = filter_validators(&ctx.cache.validators, &config);
 
     let field_extractor = get_field_extractor(config.order_field);
 
-    validators.sort_by(
-        |a: &ValidatorRecord, b: &ValidatorRecord| match config.order_direction {
-            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
-            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
-        },
-    );
+    validators.sort_by(|a, b| match config.order_direction {
+        OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
+        OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
+    });
     let max_epoch = validators
         .iter()
         .flat_map(|validator| &validator.epoch_stats)
@@ -115,19 +113,13 @@ pub async fn get_validators(
         .into_iter()
         .skip(config.offset)
         .take(config.limit)
-        .map(|mut v| {
-            v.epoch_stats = match config.query_from_date {
+        .map(|v| {
+            let mut v = v.clone();
+            match config.query_from_date {
                 Some(from_date) => v
                     .epoch_stats
-                    .into_iter()
-                    .filter(|es| es.epoch_start_at.is_some())
-                    .filter(|es| es.epoch_start_at.unwrap() > from_date)
-                    .collect(),
-                None => v
-                    .epoch_stats
-                    .into_iter()
-                    .filter(|es| es.epoch >= min_epoch)
-                    .collect(),
+                    .retain(|es| es.epoch_start_at.is_some_and(|start| start > from_date)),
+                None => v.epoch_stats.retain(|es| es.epoch >= min_epoch),
             };
 
             v
@@ -154,10 +146,10 @@ fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) 
     }
 }
 
-pub fn filter_validators(
-    mut validators: HashMap<String, ValidatorRecord>,
+pub fn filter_validators<'a>(
+    validators: &'a HashMap<String, ValidatorRecord>,
     config: &GetValidatorsConfig,
-) -> Vec<ValidatorRecord> {
+) -> Vec<&'a ValidatorRecord> {
     let last_epoch = validators
         .values()
         .flat_map(|validator| &validator.epoch_stats)
@@ -169,7 +161,9 @@ pub fn filter_validators(
     let last_epochs_with_credits_or_stake_start =
         last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE);
 
-    validators.retain(|_, validator| {
+    let mut validators: Vec<&ValidatorRecord> = validators.values().collect();
+
+    validators.retain(|validator| {
         // Check that validator has stats for the last 2 epochs including last
         if !(min_required_epoch..=last_epoch).all(|epoch| {
             validator
@@ -192,21 +186,21 @@ pub fn filter_validators(
     });
 
     if config.query_sfdp.is_some() {
-        validators.retain(|_, validator| validator.foundation_stake.gt(&Decimal::ZERO))
+        validators.retain(|validator| validator.foundation_stake.gt(&Decimal::ZERO))
     }
 
     if let Some(vote_accounts) = &config.query_vote_accounts {
-        validators.retain(|key, _| vote_accounts.contains(key));
+        validators.retain(|v| vote_accounts.contains(&v.vote_account));
     }
 
     if let Some(identities) = &config.query_identities {
-        validators.retain(|_, v| identities.contains(&v.identity));
+        validators.retain(|v| identities.contains(&v.identity));
     }
 
     if let Some(query) = &config.query {
         let query = query.to_lowercase();
         let search_properties = config.search_properties.unwrap_or(false);
-        validators.retain(|_, v| {
+        validators.retain(|v| {
             let matches = |field: &Option<String>| {
                 field
                     .as_ref()
@@ -221,26 +215,334 @@ pub fn filter_validators(
     }
 
     if let Some(query_superminority) = config.query_superminority {
-        validators.retain(|_, v| v.superminority == query_superminority);
+        validators.retain(|v| v.superminority == query_superminority);
     }
 
     if let Some(query_marinade_stake) = config.query_marinade_stake {
-        validators.retain(|_, v| (v.marinade_stake > Decimal::from(0)) == query_marinade_stake);
+        validators.retain(|v| (v.marinade_stake > Decimal::from(0)) == query_marinade_stake);
     }
 
     if let Some(query_with_names) = config.query_with_names {
-        validators.retain(|_, v| query_with_names == v.info_name.is_some());
+        validators.retain(|v| query_with_names == v.info_name.is_some());
     }
 
     if let Some(query_score) = config.query_score {
-        validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
+        validators.retain(|v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
     }
 
     if let Some(query_incident_free) = config.query_incident_free {
-        validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
+        validators.retain(|v| v.incidents.is_empty() == query_incident_free);
     }
 
-    validators.into_values().collect()
+    validators
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use store::dto::ValidatorEpochStats;
+
+    const LAST_EPOCH: u64 = 100;
+
+    fn config() -> GetValidatorsConfig {
+        GetValidatorsConfig {
+            order_direction: DEFAULT_ORDER_DIRECTION,
+            order_field: DEFAULT_ORDER_FIELD,
+            offset: 0,
+            limit: DEFAULT_LIMIT,
+            query: None,
+            query_identities: None,
+            query_vote_accounts: None,
+            query_superminority: None,
+            query_score: None,
+            query_marinade_stake: None,
+            query_with_names: None,
+            query_sfdp: None,
+            query_incident_free: None,
+            search_properties: None,
+            query_from_date: None,
+            epochs: DEFAULT_EPOCHS,
+        }
+    }
+
+    fn record(vote_account: &str, identity: &str, epochs: &[u64]) -> ValidatorRecord {
+        ValidatorRecord {
+            vote_account: vote_account.into(),
+            identity: identity.into(),
+            epoch_stats: epochs
+                .iter()
+                .map(|&epoch| ValidatorEpochStats {
+                    epoch,
+                    credits: 1,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    // production keys this map by vote_account (store::utils::load_validators), and the
+    // query_vote_accounts filter relies on that equivalence
+    fn cache_of(records: Vec<ValidatorRecord>) -> HashMap<String, ValidatorRecord> {
+        records
+            .into_iter()
+            .map(|record| (record.vote_account.clone(), record))
+            .collect()
+    }
+
+    fn kept(
+        validators: &HashMap<String, ValidatorRecord>,
+        config: &GetValidatorsConfig,
+    ) -> Vec<String> {
+        let mut kept: Vec<String> = filter_validators(validators, config)
+            .into_iter()
+            .map(|v| v.vote_account.clone())
+            .collect();
+        kept.sort();
+        kept
+    }
+
+    #[test]
+    fn drops_validators_missing_either_of_the_last_two_epochs() {
+        let validators = cache_of(vec![
+            record("full", "id-full", &[LAST_EPOCH - 1, LAST_EPOCH]),
+            record("gap", "id-gap", &[LAST_EPOCH]),
+            record("stale", "id-stale", &[LAST_EPOCH - 2, LAST_EPOCH - 1]),
+        ]);
+
+        assert_eq!(kept(&validators, &config()), vec!["full"]);
+    }
+
+    #[test]
+    fn drops_validators_without_credits_or_stake_in_the_last_two_epochs() {
+        let mut idle = record("idle", "id-idle", &[LAST_EPOCH - 1, LAST_EPOCH]);
+        for stats in idle.epoch_stats.iter_mut() {
+            stats.credits = 0;
+        }
+        let mut staked = record("staked", "id-staked", &[LAST_EPOCH - 1, LAST_EPOCH]);
+        for stats in staked.epoch_stats.iter_mut() {
+            stats.credits = 0;
+            stats.activated_stake = Decimal::from(1);
+        }
+
+        let validators = cache_of(vec![
+            idle,
+            staked,
+            record("active", "id-active", &[LAST_EPOCH - 1, LAST_EPOCH]),
+        ]);
+
+        assert_eq!(kept(&validators, &config()), vec!["active", "staked"]);
+    }
+
+    #[test]
+    fn filters_by_vote_account() {
+        let validators = cache_of(vec![
+            record("wanted", "id-wanted", &[LAST_EPOCH - 1, LAST_EPOCH]),
+            record("other", "id-other", &[LAST_EPOCH - 1, LAST_EPOCH]),
+        ]);
+
+        let config = GetValidatorsConfig {
+            query_vote_accounts: Some(vec!["wanted".to_string()]),
+            ..config()
+        };
+
+        assert_eq!(kept(&validators, &config), vec!["wanted"]);
+    }
+
+    #[test]
+    fn filters_by_identity() {
+        let validators = cache_of(vec![
+            record("wanted", "id-wanted", &[LAST_EPOCH - 1, LAST_EPOCH]),
+            record("other", "id-other", &[LAST_EPOCH - 1, LAST_EPOCH]),
+        ]);
+
+        let config = GetValidatorsConfig {
+            query_identities: Some(vec!["id-wanted".to_string()]),
+            ..config()
+        };
+
+        assert_eq!(kept(&validators, &config), vec!["wanted"]);
+    }
+
+    #[test]
+    fn text_query_matches_name_vote_account_and_identity_but_not_location_by_default() {
+        let mut named = record("aaa", "id-aaa", &[LAST_EPOCH - 1, LAST_EPOCH]);
+        named.info_name = Some("Alice Node".to_string());
+        let mut located = record("bbb", "id-bbb", &[LAST_EPOCH - 1, LAST_EPOCH]);
+        located.dc_city = Some("Alice Springs".to_string());
+
+        let validators = cache_of(vec![
+            named,
+            located,
+            record("alice-vote", "id-ccc", &[LAST_EPOCH - 1, LAST_EPOCH]),
+            record("ddd", "identity-alice", &[LAST_EPOCH - 1, LAST_EPOCH]),
+        ]);
+
+        let config = GetValidatorsConfig {
+            query: Some("ALICE".to_string()),
+            ..config()
+        };
+        assert_eq!(kept(&validators, &config), vec!["aaa", "alice-vote", "ddd"]);
+
+        let config = GetValidatorsConfig {
+            search_properties: Some(true),
+            ..config
+        };
+        assert_eq!(
+            kept(&validators, &config),
+            vec!["aaa", "alice-vote", "bbb", "ddd"]
+        );
+    }
+
+    // Context owns a live Client, so get_validators cannot be exercised without a database
+    // even though it never queries one
+    async fn context_with(records: Vec<ValidatorRecord>) -> Option<WrappedContext> {
+        let url = std::env::var("DS_TEST_POSTGRES_URL").ok()?;
+        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let mut context = crate::context::Context::new(
+            client,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        context.cache.validators = cache_of(records);
+        Some(std::sync::Arc::new(tokio::sync::RwLock::new(context)))
+    }
+
+    fn stake_record(vote_account: &str, epochs: &[u64], stake: u64) -> ValidatorRecord {
+        let mut record = record(vote_account, &format!("id-{vote_account}"), epochs);
+        record.activated_stake = Decimal::from(stake);
+        record
+    }
+
+    #[tokio::test]
+    async fn get_validators_orders_by_stake_and_pages_without_touching_the_rest() {
+        let records = vec![
+            stake_record("small", &[LAST_EPOCH - 1, LAST_EPOCH], 10),
+            stake_record("large", &[LAST_EPOCH - 1, LAST_EPOCH], 30),
+            stake_record("medium", &[LAST_EPOCH - 1, LAST_EPOCH], 20),
+        ];
+        let Some(context) = context_with(records).await else {
+            eprintln!("skipping: DS_TEST_POSTGRES_URL is not set");
+            return;
+        };
+
+        let all = get_validators(context.clone(), config()).await.unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["large", "medium", "small"],
+            "default order is stake descending"
+        );
+
+        let page = get_validators(
+            context.clone(),
+            GetValidatorsConfig {
+                offset: 1,
+                limit: 1,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["medium"],
+            "offset and limit apply to the sorted order"
+        );
+
+        let ascending = get_validators(
+            context,
+            GetValidatorsConfig {
+                order_direction: OrderDirection::ASC,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ascending
+                .iter()
+                .map(|v| v.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["small", "medium", "large"]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_validators_trims_epoch_stats_to_the_requested_window() {
+        let epochs: Vec<u64> = (LAST_EPOCH - 4..=LAST_EPOCH).collect();
+        let Some(context) = context_with(vec![stake_record("only", &epochs, 10)]).await else {
+            eprintln!("skipping: DS_TEST_POSTGRES_URL is not set");
+            return;
+        };
+
+        let two = get_validators(
+            context.clone(),
+            GetValidatorsConfig {
+                epochs: 2,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            two[0]
+                .epoch_stats
+                .iter()
+                .map(|es| es.epoch)
+                .collect::<Vec<_>>(),
+            vec![LAST_EPOCH - 1, LAST_EPOCH],
+            "epochs=2 keeps only the newest two, in their stored order"
+        );
+
+        let none = get_validators(
+            context,
+            GetValidatorsConfig {
+                epochs: 0,
+                ..config()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(none.len(), 1, "the validator is still returned");
+        assert!(
+            none[0].epoch_stats.is_empty(),
+            "epochs=0 is what marinade-web sends: the record stays, every epoch stat goes"
+        );
+    }
+
+    #[test]
+    fn filters_by_presence_of_a_name() {
+        let mut named = record("named", "id-named", &[LAST_EPOCH - 1, LAST_EPOCH]);
+        named.info_name = Some("Alice".to_string());
+        let validators = cache_of(vec![
+            named,
+            record("nameless", "id-nameless", &[LAST_EPOCH - 1, LAST_EPOCH]),
+        ]);
+
+        let config = GetValidatorsConfig {
+            query_with_names: Some(true),
+            ..config()
+        };
+        assert_eq!(kept(&validators, &config), vec!["named"]);
+
+        let config = GetValidatorsConfig {
+            query_with_names: Some(false),
+            ..config
+        };
+        assert_eq!(kept(&validators, &config), vec!["nameless"]);
+    }
 }
 
 #[utoipa::path(

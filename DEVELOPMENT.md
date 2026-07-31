@@ -33,9 +33,9 @@ The PostgreSQL URL is then `postgresql://delegation-strategy:delegation-strategy
 # 2. Run the SQL loader tests
 
 `store/tests/cluster_stats_sql.rs` exercises the `/cluster-stats` and
-`/validators/flat` queries against a real PostgreSQL. It creates its own schema,
-applies `migrations/*.sql` into it and drops it again, so it needs an empty
-database only on the first run.
+`/validators/flat` queries against a real PostgreSQL. It drops and recreates its
+own schema on every run, so the database does not have to be empty — permission
+to create a schema is enough, and repeat runs are safe.
 
 ```bash
 export DS_TEST_POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'

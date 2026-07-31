@@ -1,7 +1,9 @@
 use crate::context::WrappedContext;
 use log::{error, info};
 use rust_decimal::Decimal;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
@@ -105,6 +107,16 @@ impl Cache {
         self.validators.clone()
     }
 
+    pub fn find_validator_key(&self, vote_account_or_identity: &str) -> Option<String> {
+        self.validators
+            .iter()
+            .find(|(_, record)| {
+                record.identity == vote_account_or_identity
+                    || record.vote_account == vote_account_or_identity
+            })
+            .map(|(vote_key, _)| vote_key.clone())
+    }
+
     pub fn get_commissions(&self, vote_account: &String) -> Option<Vec<CommissionRecord>> {
         self.commissions.get(vote_account).cloned()
     }
@@ -194,18 +206,21 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
+    let validators_aggregated = store::utils::aggregate_validators(&validators);
+    let validators_len = validators.len();
+
     {
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
         }
-        ctx.cache.validators.clone_from(&validators);
-        ctx.cache.validators_aggregated = store::utils::aggregate_validators(&validators);
+        ctx.cache.validators = validators;
+        ctx.cache.validators_aggregated = validators_aggregated;
     }
 
     info!(
         "Loaded {} validators to cache in {} ms",
-        validators.len(),
+        validators_len,
         warmup_timer.elapsed().as_millis()
     );
 
@@ -218,15 +233,11 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
         store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context
-        .write()
-        .await
-        .cache
-        .commissions
-        .clone_from(&commissions);
+    let commissions_len = commissions.len();
+    context.write().await.cache.commissions = commissions;
     info!(
         "Loaded {} commissions to cache in {} ms",
-        commissions.len(),
+        commissions_len,
         warmup_timer.elapsed().as_millis()
     );
 
@@ -239,10 +250,11 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
         store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context.write().await.cache.versions.clone_from(&versions);
+    let versions_len = versions.len();
+    context.write().await.cache.versions = versions;
     info!(
         "Loaded {} versions to cache in {} ms",
-        versions.len(),
+        versions_len,
         warmup_timer.elapsed().as_millis()
     );
 
@@ -254,10 +266,11 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     let uptimes =
         store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
 
-    context.write().await.cache.uptimes.clone_from(&uptimes);
+    let uptimes_len = uptimes.len();
+    context.write().await.cache.uptimes = uptimes;
     info!(
         "Loaded {} uptimes to cache in {} ms",
-        uptimes.len(),
+        uptimes_len,
         warmup_timer.elapsed().as_millis()
     );
 
@@ -297,39 +310,26 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     let multi_run_scores =
         store::scoring::load_all_scores(&context.read().await.psql_client).await?;
 
-    let last_scoring_run =
-        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
-
     let multi_run_scoring_runs =
         store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
 
     let scores_len = scores.len();
     let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_single_run_scores
-        .clone_from(&CachedSingleRunScores {
-            scoring_run: last_scoring_run,
-            scores,
-        });
+    context.write().await.cache.validators_single_run_scores = CachedSingleRunScores {
+        scoring_run: last_scoring_run,
+        scores,
+    };
     info!(
         "Loaded {} single run scores to cache in {} ms",
         scores_len,
         warmup_timer.elapsed().as_millis()
     );
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_multi_run_scores
-        .clone_from(&CachedMultiRunScores {
-            scoring_runs: Some(multi_run_scoring_runs),
-            scores: multi_run_scores,
-        });
+    context.write().await.cache.validators_multi_run_scores = CachedMultiRunScores {
+        scoring_runs: Some(multi_run_scoring_runs),
+        scores: multi_run_scores,
+    };
     info!(
         "Loaded {} multiple run scores to cache in {} ms",
         multi_run_scores_len,
@@ -369,9 +369,90 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
             }
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let run_every = Duration::from_secs(CACHE_WARMUP_TIME_S);
-            let sleep_seconds = now.as_secs() % run_every.as_secs();
-            sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
+            let sleep_seconds = warmup_sleep_seconds(
+                now.as_secs(),
+                warmup_phase_seconds(CACHE_WARMUP_TIME_S),
+                CACHE_WARMUP_TIME_S,
+            );
+            sleep(Duration::from_secs(sleep_seconds)).await;
         }
     });
+}
+
+// replicas warming on the same wall-clock boundary hit the shared connection as a 2x spike
+fn warmup_phase_seconds(period_seconds: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    std::env::var("HOSTNAME")
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish() % period_seconds
+}
+
+fn warmup_sleep_seconds(now_seconds: u64, phase_seconds: u64, period_seconds: u64) -> u64 {
+    match (period_seconds + phase_seconds - now_seconds % period_seconds) % period_seconds {
+        0 => period_seconds,
+        wait => wait,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_with(records: &[(&str, &str)]) -> Cache {
+        let mut cache = Cache::new();
+        for (vote_account, identity) in records {
+            cache.validators.insert(
+                vote_account.to_string(),
+                ValidatorRecord {
+                    vote_account: vote_account.to_string(),
+                    identity: identity.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        cache
+    }
+
+    #[test]
+    fn find_validator_key_resolves_vote_account_and_identity() {
+        let cache = cache_with(&[("vote-a", "id-a"), ("vote-b", "id-b")]);
+
+        assert_eq!(
+            cache.find_validator_key("vote-a"),
+            Some("vote-a".to_string())
+        );
+        assert_eq!(cache.find_validator_key("id-b"), Some("vote-b".to_string()));
+        assert_eq!(cache.find_validator_key("nope"), None);
+    }
+
+    #[test]
+    fn find_validator_key_on_an_empty_cache_is_none() {
+        assert_eq!(Cache::new().find_validator_key("vote-a"), None);
+    }
+
+    #[test]
+    fn warmup_without_a_phase_keeps_the_previous_boundary_alignment() {
+        assert_eq!(warmup_sleep_seconds(0, 0, 600), 600);
+        assert_eq!(warmup_sleep_seconds(1, 0, 600), 599);
+        assert_eq!(warmup_sleep_seconds(599, 0, 600), 1);
+        assert_eq!(warmup_sleep_seconds(600, 0, 600), 600);
+    }
+
+    #[test]
+    fn warmup_wakes_on_its_own_phase_within_one_period() {
+        for phase in [0, 1, 137, 599] {
+            for now in [0, 1, 137, 599, 600, 12_345] {
+                let sleep = warmup_sleep_seconds(now, phase, 600);
+                assert!((1..=600).contains(&sleep), "phase {phase} now {now}");
+                assert_eq!((now + sleep) % 600, phase, "phase {phase} now {now}");
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_phase_is_stable_and_within_the_period() {
+        assert_eq!(warmup_phase_seconds(600), warmup_phase_seconds(600));
+        assert!(warmup_phase_seconds(600) < 600);
+    }
 }

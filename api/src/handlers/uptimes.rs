@@ -41,14 +41,11 @@ pub async fn handler(
     info!("Fetching uptimes {:?}", &vote_account);
     metrics::REQUEST_COUNT_UPTIMES.inc();
 
-    let validators = context.read().await.cache.get_validators();
-    let validator = validators.iter().find(|(_vote_key, record)| {
-        record.identity == vote_account || record.vote_account == vote_account
-    });
+    let vote_key = context.read().await.cache.find_validator_key(&vote_account);
 
-    match validator {
-        Some((vote_key, _validator)) => {
-            let uptimes = context.read().await.cache.get_uptimes(vote_key);
+    match vote_key {
+        Some(vote_key) => {
+            let uptimes = context.read().await.cache.get_uptimes(&vote_key);
 
             Ok(match uptimes {
                 Some(mut uptimes) => {
