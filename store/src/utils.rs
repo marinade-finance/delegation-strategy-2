@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
+    time::Duration,
 };
 use tokio::join;
 use tokio::sync::Semaphore;
@@ -28,6 +29,9 @@ const SLOTS_IN_EPOCH: u64 = 432000;
 const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
 const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
 const SCORING_SCRAPER_WORKERS: usize = 10;
+/// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
+/// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
+const HTTP_TIMEOUT_S: u64 = 60;
 
 pub struct InsertQueryCombiner<'a> {
     pub insertions: u64,
@@ -764,9 +768,35 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
     Ok(records)
 }
 
+#[derive(serde::Deserialize)]
+struct VerifiedValidatorsResponse {
+    verified_validators: Vec<String>,
+}
+
+// `base` is the validator-bonds API base URL; the verified path is appended here.
+pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
+    let url = format!("{}/validators/verified", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()?;
+    let resp = client.get(&url).send().await?;
+    anyhow::ensure!(
+        resp.status().is_success(),
+        "verified endpoint returned {}",
+        resp.status()
+    );
+    Ok(resp
+        .json::<VerifiedValidatorsResponse>()
+        .await?
+        .verified_validators
+        .into_iter()
+        .collect())
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
+    validator_bonds_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
     unique_delegators: &HashMap<String, u64>,
@@ -979,6 +1009,7 @@ pub async fn load_validators(
                     unique_delegators: None,
                     avg_take_rate: None,
                     incidents: Vec::new(),
+                    verified: false,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -1111,6 +1142,17 @@ pub async fn load_validators(
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
 
+    log::info!("Updating verified flag...");
+    let verified = load_verified_validators(&validator_bonds_api_url)
+        .await
+        .map_err(|err| {
+            log::error!("Failed to load verified validators, keeping previous cache intact: {err}");
+            err
+        })?;
+    for (vote_account, record) in records.iter_mut() {
+        record.verified = verified.contains(vote_account);
+    }
+
     log::info!("Updating take rates...");
     for (vote_account, record) in records.iter_mut() {
         record.avg_take_rate = take_rates.get(vote_account).copied();
@@ -1165,13 +1207,17 @@ pub async fn load_scores_in_epochs(
     });
 
     let permits = Arc::new(Semaphore::new(SCORING_SCRAPER_WORKERS));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()?;
     for epoch in epochs {
         let url = format!("{scoring_url}/api/v1/scores/breakdowns?epoch={epoch}");
         let tx = tx.clone();
+        let client = client.clone();
         let permit = permits.clone().acquire_owned().await?;
         tokio::spawn(async move {
             log::info!("Fetching scores from {url}...");
-            match reqwest::get(&url).await {
+            match client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(scores) = resp.json::<Vec<ValidatorScoreV2Record>>().await {
                         let mut epoch_scores: HashMap<String, f64> = Default::default();
@@ -1620,15 +1666,13 @@ pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Re
     })
 }
 
-pub fn aggregate_validators(
-    validators: &HashMap<String, ValidatorRecord>,
-) -> Vec<ValidatorsAggregated> {
+pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAggregated> {
     let mut epochs: HashSet<_> = Default::default();
     let mut epochs_start_dates: HashMap<u64, DateTime<Utc>> = Default::default();
     let mut marinade_scores: HashMap<u64, Vec<f64>> = Default::default();
     let mut apys: HashMap<u64, Vec<f64>> = Default::default();
 
-    for (_, validator) in validators.iter() {
+    for validator in validators.iter() {
         for epoch_stats in validator.epoch_stats.iter() {
             epochs.insert(epoch_stats.epoch);
             epochs_start_dates.insert(

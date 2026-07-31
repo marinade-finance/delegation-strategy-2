@@ -24,6 +24,8 @@ const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 pub struct ResponseValidators {
     validators: Vec<ValidatorRecord>,
     validators_aggregated: Vec<ValidatorsAggregated>,
+    /// Number of validators matching the query and filters, before `offset`/`limit`.
+    total_count: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -44,6 +46,8 @@ pub struct QueryParams {
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
+    query_verified: Option<bool>,
+    query_flagged: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
@@ -59,6 +63,7 @@ pub enum OrderField {
     Apy,
     Commission,
     Uptime,
+    TakeRate,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
@@ -82,6 +87,8 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub query_verified: Option<bool>,
+    pub query_flagged: Option<bool>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
@@ -90,19 +97,13 @@ pub struct GetValidatorsConfig {
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
-) -> anyhow::Result<Vec<ValidatorRecord>> {
+) -> anyhow::Result<(Vec<ValidatorRecord>, usize)> {
     let validators = context.read().await.cache.get_validators();
 
     let mut validators = filter_validators(validators, &config);
+    let total_count = validators.len();
 
-    let field_extractor = get_field_extractor(config.order_field);
-
-    validators.sort_by(
-        |a: &ValidatorRecord, b: &ValidatorRecord| match config.order_direction {
-            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
-            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
-        },
-    );
+    sort_validators(&mut validators, config.order_field, &config.order_direction);
     let max_epoch = validators
         .iter()
         .flat_map(|validator| &validator.epoch_stats)
@@ -111,7 +112,7 @@ pub async fn get_validators(
         .unwrap_or(0);
     let min_epoch = (max_epoch + 1).saturating_sub(config.epochs as u64);
 
-    Ok(validators
+    let page = validators
         .into_iter()
         .skip(config.offset)
         .take(config.limit)
@@ -132,7 +133,26 @@ pub async fn get_validators(
 
             v
         })
-        .collect())
+        .collect();
+
+    Ok((page, total_count))
+}
+
+// Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
+// on every cache refresh and makes offset pages overlap or skip rows.
+fn sort_validators(
+    validators: &mut [ValidatorRecord],
+    order_field: OrderField,
+    order_direction: &OrderDirection,
+) {
+    let field_extractor = get_field_extractor(order_field);
+    validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
+        let ord = match order_direction {
+            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
+            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
+        };
+        ord.then_with(|| a.vote_account.cmp(&b.vote_account))
+    });
 }
 
 fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
@@ -150,6 +170,9 @@ fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) 
         }
         OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
             Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
+        }),
+        OrderField::TakeRate => Box::new(|a: &ValidatorRecord| {
+            Decimal::from(to_fixed_for_sort(a.avg_take_rate.unwrap_or(0.0)))
         }),
     }
 }
@@ -240,6 +263,14 @@ pub fn filter_validators(
         validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
     }
 
+    if let Some(query_verified) = config.query_verified {
+        validators.retain(|_, v| v.verified == query_verified);
+    }
+
+    if let Some(query_flagged) = config.query_flagged {
+        validators.retain(|_, v| v.warnings.is_empty() != query_flagged);
+    }
+
     validators.into_values().collect()
 }
 
@@ -280,6 +311,8 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        query_verified: query_params.query_verified,
+        query_flagged: query_params.query_flagged,
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
@@ -289,34 +322,242 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
-    let mut validators_aggregated = context.read().await.cache.get_validators_aggregated();
-
-    if let Some(from_date) = query_params.query_from_date {
-        validators_aggregated = validators_aggregated
-            .iter()
-            .filter(|v| v.epoch_start_date.is_some())
-            .filter(|v| v.epoch_start_date.unwrap() > from_date)
-            .cloned()
-            .collect();
-    } else {
-        validators_aggregated = validators_aggregated
-            .iter()
-            .take(query_params.epochs.unwrap_or(DEFAULT_EPOCHS))
-            .cloned()
-            .collect();
-    }
-
     Ok(match validators {
-        Ok(validators) => warp::reply::with_status(
-            json(&ResponseValidators {
-                validators,
-                validators_aggregated,
-            }),
-            StatusCode::OK,
-        ),
+        Ok((validators, total_count)) => {
+            let validators_aggregated = store::utils::aggregate_validators(&validators);
+            warp::reply::with_status(
+                json(&ResponseValidators {
+                    validators,
+                    validators_aggregated,
+                    total_count,
+                }),
+                StatusCode::OK,
+            )
+        }
         Err(err) => {
             error!("Failed to fetch validator records: {err}");
             response_error_500("Failed to fetch records!".into())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use store::dto::{ValidatorEpochStats, ValidatorWarning};
+
+    fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
+        ValidatorEpochStats {
+            epoch,
+            epoch_start_at: None,
+            epoch_end_at: None,
+            commission_max_observed: None,
+            commission_min_observed: None,
+            commission_advertised: None,
+            commission_effective: None,
+            version: None,
+            mev_commission_bps: None,
+            priority_commission_bps: None,
+            dc_asn: None,
+            dc_aso: None,
+            dc_city: None,
+            dc_country: None,
+            client_id: None,
+            client_vendor: None,
+            client_lineage: None,
+            feature_set: None,
+            shred_version: None,
+            gossip_port: None,
+            rpc_public: None,
+            pubsub_public: None,
+            activated_stake: Decimal::from(stake),
+            marinade_stake: Decimal::ZERO,
+            foundation_stake: Decimal::ZERO,
+            marinade_native_stake: Decimal::ZERO,
+            institutional_stake: Decimal::ZERO,
+            self_stake: Decimal::ZERO,
+            superminority: false,
+            stake_to_become_superminority: Decimal::ZERO,
+            credits: 1,
+            leader_slots: 0,
+            blocks_produced: 0,
+            skip_rate: 0.0,
+            uptime_pct: None,
+            uptime: None,
+            downtime: None,
+            apr: None,
+            apy: None,
+            score: None,
+            rank_score: None,
+            rank_activated_stake: None,
+            rank_apy: None,
+        }
+    }
+
+    fn validator(
+        vote_account: &str,
+        stake: i64,
+        warnings: Vec<ValidatorWarning>,
+    ) -> ValidatorRecord {
+        ValidatorRecord {
+            identity: format!("id-{vote_account}"),
+            vote_account: vote_account.to_string(),
+            start_epoch: 99,
+            start_date: None,
+            info_name: None,
+            info_url: None,
+            info_keybase: None,
+            info_icon_url: None,
+            node_ip: None,
+            dc_coordinates_lat: None,
+            dc_coordinates_lon: None,
+            dc_continent: None,
+            dc_country_iso: None,
+            dc_country: None,
+            dc_city: None,
+            dc_full_city: None,
+            dc_asn: None,
+            dc_aso: None,
+            dcc_full_city: None,
+            dcc_asn: None,
+            dcc_aso: None,
+            dcc_country: None,
+            commission_max_observed: None,
+            commission_min_observed: None,
+            commission_advertised: None,
+            commission_effective: None,
+            commission_aggregated: None,
+            rugged_commission_occurrences: 0,
+            rugged_commission: false,
+            rugged_commission_info: Vec::new(),
+            version: None,
+            client_id: None,
+            client_vendor: None,
+            client_lineage: None,
+            feature_set: None,
+            shred_version: None,
+            gossip_port: None,
+            rpc_public: None,
+            pubsub_public: None,
+            activated_stake: Decimal::from(stake),
+            marinade_stake: Decimal::ZERO,
+            foundation_stake: Decimal::ZERO,
+            marinade_native_stake: Decimal::ZERO,
+            institutional_stake: Decimal::ZERO,
+            self_stake: Decimal::ZERO,
+            superminority: false,
+            credits: 1,
+            score: None,
+            warnings,
+            epoch_stats: vec![epoch_stat(99, stake), epoch_stat(100, stake)],
+            epochs_count: 2,
+            has_last_epoch_stats: true,
+            avg_uptime_pct: None,
+            avg_apy: None,
+            unique_delegators: None,
+            avg_take_rate: None,
+            incidents: Vec::new(),
+            verified: false,
+        }
+    }
+
+    fn config() -> GetValidatorsConfig {
+        GetValidatorsConfig {
+            order_direction: OrderDirection::DESC,
+            order_field: OrderField::Stake,
+            offset: 0,
+            limit: 100,
+            query: None,
+            query_identities: None,
+            query_vote_accounts: None,
+            query_superminority: None,
+            query_score: None,
+            query_marinade_stake: None,
+            query_with_names: None,
+            query_sfdp: None,
+            query_incident_free: None,
+            query_verified: None,
+            query_flagged: None,
+            search_properties: None,
+            query_from_date: None,
+            epochs: 15,
+        }
+    }
+
+    fn map(validators: Vec<ValidatorRecord>) -> HashMap<String, ValidatorRecord> {
+        validators
+            .into_iter()
+            .map(|v| (v.vote_account.clone(), v))
+            .collect()
+    }
+
+    fn vote_accounts(mut validators: Vec<ValidatorRecord>) -> Vec<String> {
+        validators.sort_by(|a, b| a.vote_account.cmp(&b.vote_account));
+        validators.into_iter().map(|v| v.vote_account).collect()
+    }
+
+    #[test]
+    fn query_flagged_true_keeps_only_validators_with_warnings() {
+        let validators = map(vec![
+            validator("flagged", 100, vec![ValidatorWarning::HighCommission]),
+            validator("clean", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_flagged: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["flagged".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_flagged_false_keeps_only_validators_without_warnings() {
+        let validators = map(vec![
+            validator("flagged", 100, vec![ValidatorWarning::LowUptime]),
+            validator("clean", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_flagged: Some(false),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["clean".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_flagged_none_keeps_all() {
+        let validators = map(vec![
+            validator("flagged", 100, vec![ValidatorWarning::Superminority]),
+            validator("clean", 100, vec![]),
+        ]);
+        assert_eq!(filter_validators(validators, &config()).len(), 2);
+    }
+
+    #[test]
+    fn sort_tiebreaks_on_vote_account_ascending() {
+        // Equal stake: order must fall back to vote_account ascending regardless of direction.
+        for direction in [OrderDirection::ASC, OrderDirection::DESC] {
+            let mut validators = vec![
+                validator("ccc", 100, vec![]),
+                validator("aaa", 100, vec![]),
+                validator("bbb", 100, vec![]),
+            ];
+            sort_validators(&mut validators, OrderField::Stake, &direction);
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["aaa", "bbb", "ccc"], "direction {direction:?}");
+        }
+    }
+
+    #[test]
+    fn sort_orders_by_field_before_tiebreak() {
+        let mut validators = vec![validator("aaa", 50, vec![]), validator("bbb", 100, vec![])];
+        sort_validators(&mut validators, OrderField::Stake, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["bbb", "aaa"]);
+    }
 }
