@@ -101,9 +101,11 @@ pub struct Validator {
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
     pub version: Option<String>,
-    pub client_id: Option<String>,
+    pub client_id: Option<i32>,
+    pub client_name: Option<String>,
     pub client_vendor: Option<String>,
     pub client_lineage: Option<String>,
+    pub client_id_raw: Option<String>,
     pub feature_set: Option<i64>,
     pub shred_version: Option<i32>,
     pub gossip_port: Option<i32>,
@@ -163,9 +165,11 @@ impl Validator {
             commission_advertised: Some(v.performance.commission as i32),
             commission_effective: None,
             version: v.performance.version.clone(),
-            client_id: v.performance.client_id.clone(),
+            client_id: v.performance.client_id.map(|id| id as i32),
+            client_name: v.performance.client_name.clone(),
             client_vendor: v.performance.client_vendor.clone(),
             client_lineage: v.performance.client_lineage.clone(),
+            client_id_raw: v.performance.client_id_raw.clone(),
             feature_set: v.performance.feature_set.map(|f| f as i64),
             shred_version: v.performance.shred_version.map(|s| s as i32),
             gossip_port: v.gossip_port.map(|p| p as i32),
@@ -208,9 +212,16 @@ pub struct ValidatorEpochStats {
     pub dc_aso: Option<String>,
     pub dc_city: Option<String>,
     pub dc_country: Option<String>,
-    pub client_id: Option<String>,
+    /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
+    pub client_id: Option<u16>,
+    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
+    pub client_name: Option<String>,
+    /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
+    /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
     pub client_lineage: Option<String>,
+    /// Literal `getClusterNodes.clientId`, rendered by the answering RPC's own table so the same node may report `Rakurai` or `Unknown(8)`; use `client_id` instead.
+    pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub gossip_port: Option<u16>,
@@ -272,9 +283,16 @@ pub struct ValidatorRecord {
     pub rugged_commission: bool,
     pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
-    pub client_id: Option<String>,
+    /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
+    pub client_id: Option<u16>,
+    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
+    pub client_name: Option<String>,
+    /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
+    /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
     pub client_lineage: Option<String>,
+    /// Literal `getClusterNodes.clientId`, rendered by the answering RPC's own table so the same node may report `Rakurai` or `Unknown(8)`; use `client_id` instead.
+    pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub gossip_port: Option<u16>,
@@ -358,9 +376,16 @@ pub struct ValidatorBlockRewardsRecord {
 pub struct VersionRecord {
     pub epoch: u64,
     pub version: Option<String>,
-    pub client_id: Option<String>,
+    /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
+    pub client_id: Option<u16>,
+    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
+    pub client_name: Option<String>,
+    /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
+    /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
     pub client_lineage: Option<String>,
+    /// Literal `getClusterNodes.clientId`, rendered by the answering RPC's own table so the same node may report `Rakurai` or `Unknown(8)`; use `client_id` instead.
+    pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub created_at: DateTime<Utc>,

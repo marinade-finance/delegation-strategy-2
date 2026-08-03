@@ -152,7 +152,30 @@ pub fn resolve_client_id(client_id: Option<&str>) -> ClientId {
     }
 }
 
+// The frontend renders this single field, so it stays populated even for ids our registry predates.
+fn client_display_name(resolved: ClientId, raw: Option<&str>) -> Option<String> {
+    resolved.name().map(str::to_string).or_else(|| {
+        raw.map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .map(str::to_string)
+    })
+}
+
 impl ClientId {
+    pub fn number(&self) -> Option<u16> {
+        match self {
+            ClientId::Registered(id) | ClientId::Unrecognized(Some(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> Option<&'static str> {
+        let ClientId::Registered(id) = self else {
+            return None;
+        };
+        client_registry().names.get(id).map(String::as_str)
+    }
+
     pub fn vendor(&self) -> Option<&'static str> {
         self.groupings().map(|(vendor, _)| vendor)
     }
@@ -210,9 +233,11 @@ pub struct NodeContact {
     pub ip: Option<String>,
     pub gossip_port: Option<u16>,
     pub version: Option<String>,
-    pub client_id: Option<String>,
+    pub client_id: Option<u16>,
+    pub client_name: Option<String>,
     pub client_vendor: Option<&'static str>,
     pub client_lineage: Option<&'static str>,
+    pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub rpc_public: bool,
@@ -279,15 +304,19 @@ pub fn get_cluster_nodes_info(
             );
         }
 
+        let client_name = client_display_name(resolved, node.client_id.as_deref());
+
         out.insert(
             node.pubkey.clone(),
             NodeContact {
                 ip,
                 gossip_port,
                 version,
-                client_id: node.client_id,
+                client_id: resolved.number(),
+                client_name,
                 client_vendor: resolved.vendor(),
                 client_lineage: resolved.lineage(),
+                client_id_raw: node.client_id,
                 feature_set: node.feature_set,
                 shred_version: node.shred_version,
                 rpc_public: node.rpc.is_some(),
@@ -783,12 +812,66 @@ mod tests {
     // grouping arm fails here instead of silently becoming an unclassified validator.
     #[test]
     fn every_registered_client_id_has_groupings() {
-        for id in client_registry().names.keys() {
+        for (id, name) in client_registry().names.iter() {
             assert!(
                 ClientId::Registered(*id).groupings().is_some(),
                 "client id {id} is in client-ids.csv but has no vendor/lineage mapping"
             );
+            assert!(
+                !name.is_empty(),
+                "client id {id} has an empty name column in client-ids.csv"
+            );
+            assert_eq!(
+                resolve_client_id(Some(name)).number(),
+                Some(*id),
+                "client id {id} does not resolve back from its own registry name {name}"
+            );
         }
+    }
+
+    #[test]
+    fn client_name_is_the_registry_name() {
+        assert_eq!(
+            resolve_client_id(Some("Unknown(8)")).name(),
+            Some("Rakurai")
+        );
+        assert_eq!(resolve_client_id(Some("Rakurai")).name(), Some("Rakurai"));
+        assert_eq!(
+            resolve_client_id(Some("AgaveBam")).name(),
+            Some("Agave Bam")
+        );
+        assert_eq!(
+            resolve_client_id(Some("JitoLabs")).name(),
+            Some("Jito Labs")
+        );
+    }
+
+    #[test]
+    fn display_name_never_drops_a_client_the_node_reported() {
+        let display = |raw| client_display_name(resolve_client_id(raw), raw);
+        assert_eq!(display(Some("Unknown(8)")), Some("Rakurai".to_string()));
+        assert_eq!(display(Some("AgaveBam")), Some("Agave Bam".to_string()));
+        assert_eq!(
+            display(Some("Unknown(86)")),
+            Some("Unknown(86)".to_string())
+        );
+        assert_eq!(
+            display(Some("brand-new/1.0")),
+            Some("brand-new/1.0".to_string())
+        );
+        assert_eq!(display(Some("   ")), None);
+        assert_eq!(display(None), None);
+    }
+
+    #[test]
+    fn client_number_survives_an_unregistered_id() {
+        assert_eq!(resolve_client_id(Some("Unknown(8)")).number(), Some(8));
+        assert_eq!(resolve_client_id(Some("Rakurai")).number(), Some(8));
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).number(), Some(86));
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).name(), None);
+        assert_eq!(resolve_client_id(Some("brand-new/1.0")).number(), None);
+        assert_eq!(resolve_client_id(None).number(), None);
+        assert_eq!(resolve_client_id(None).name(), None);
     }
 
     #[test]
