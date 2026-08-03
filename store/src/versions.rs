@@ -43,7 +43,7 @@ pub async fn store_versions(
             shred_version,
             epoch
         FROM versions
-        ORDER BY vote_account, created_at DESC
+        ORDER BY vote_account, created_at DESC, id DESC
     ",
             &[],
         )

@@ -345,7 +345,7 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{ValidatorEpochStats, ValidatorWarning};
+    use store::dto::{ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
 
     fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
@@ -364,7 +364,7 @@ mod tests {
             dc_city: None,
             dc_country: None,
             client_id: None,
-            client_name: None,
+            client_name: UNKNOWN_CLIENT_NAME.to_string(),
             client_vendor: None,
             client_lineage: None,
             client_id_raw: None,
@@ -435,7 +435,7 @@ mod tests {
             rugged_commission_info: Vec::new(),
             version: None,
             client_id: None,
-            client_name: None,
+            client_name: UNKNOWN_CLIENT_NAME.to_string(),
             client_vendor: None,
             client_lineage: None,
             client_id_raw: None,

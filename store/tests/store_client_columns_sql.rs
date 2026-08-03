@@ -5,6 +5,8 @@ use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanc
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use store::dto::UNKNOWN_CLIENT_NAME;
+use store::utils::load_versions;
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
@@ -39,6 +41,18 @@ fn no_client() -> ClientFields {
         client_vendor: None,
         client_lineage: None,
         client_id_raw: None,
+    }
+}
+
+// Unlike `no_client()`, this is an actual observation: the node reported a client, we just don't
+// have it in client-ids.csv yet. `client_id_raw`/`client_name` carry the raw rendering.
+fn unrecognized() -> ClientFields {
+    ClientFields {
+        client_id: None,
+        client_name: Some("Unknown(97)".into()),
+        client_vendor: None,
+        client_lineage: None,
+        client_id_raw: Some("Unknown(97)".into()),
     }
 }
 
@@ -219,6 +233,34 @@ async fn store_validators_keeps_the_last_known_client_when_gossip_reports_none()
         .unwrap();
 }
 
+// Regression test for P1-R1#1: COALESCE-ing client_id/vendor/lineage against the resolved value
+// (instead of against whether a client was observed at all) left a switch to an unrecognized
+// client indistinguishable from a transient gossip gap, so the old classification stuck around.
+#[tokio::test]
+async fn store_validators_clears_a_stale_classification_when_the_client_becomes_unrecognized() {
+    let schema = "ds_test_store_validators_unrecognized_switch";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    run_store_validators(&mut client, "unrecognized-seed", &agave()).await;
+    run_store_validators(&mut client, "unrecognized-switch", &unrecognized()).await;
+
+    let stored = stored_client_columns(&client, "validators").await;
+    assert_eq!(stored.len(), 1);
+    assert_matches(
+        &stored[0],
+        &unrecognized(),
+        "a validator switching to an unregistered client must not keep the old classification",
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
     let schema = "ds_test_store_versions_client";
@@ -261,6 +303,53 @@ async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
         stored_client_columns(&client, "versions").await.len(),
         2,
         "a different resolved client id must be recorded"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// The never-null contract is kept at the read layer, not in the column: NULL stays storable so
+// "the node reported no client" remains distinguishable from "the registry does not know this one".
+#[tokio::test]
+async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
+    let schema = "ds_test_load_versions_unknown_client";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW())",
+            &[&Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_name)
+             VALUES ($1, 1, $2, NOW(), NULL), ($1, 1, $2, NOW(), 'Agave')",
+            &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+
+    let versions = load_versions(&client, 1).await.unwrap();
+    let mut names: Vec<String> = versions
+        .get(VOTE_ACCOUNT)
+        .expect("both stored rows must load")
+        .iter()
+        .map(|record| record.client_name.clone())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["Agave".to_string(), UNKNOWN_CLIENT_NAME.to_string()],
+        "a NULL client_name reads back as the fallback, a stored one unchanged"
     );
 
     client
@@ -333,10 +422,18 @@ async fn migration_discards_client_data_collected_before_the_rename() {
     ))
     .unwrap();
     let wipes: Vec<&str> = sql
-        .lines()
-        .skip_while(|line| !line.starts_with("UPDATE"))
+        .split(';')
+        .filter(|statement| statement.contains("client_id_raw = NULL"))
         .collect();
-    client.batch_execute(&wipes.join("\n")).await.unwrap();
+    assert_eq!(
+        wipes.len(),
+        2,
+        "0019 must wipe both validators and versions"
+    );
+    client
+        .batch_execute(&format!("{};", wipes.join(";")))
+        .await
+        .unwrap();
 
     let stored = stored_client_columns(&client, "validators").await;
     assert_eq!(stored.len(), 1);
