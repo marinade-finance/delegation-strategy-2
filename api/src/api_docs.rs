@@ -1,7 +1,7 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
+    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -80,7 +80,9 @@ use utoipa::OpenApi;
         config::handler,
         docs::handler,
         glossary::handler,
+        health::handler,
         list_validators::handler,
+        readiness::handler,
         reports_commission_changes::handler,
         reports_scoring_html::handler,
         reports_scoring::handler,

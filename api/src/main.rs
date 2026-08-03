@@ -1,8 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
+    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -88,7 +88,8 @@ async fn main() -> anyhow::Result<()> {
         params.validator_bonds_api_url,
         params.apy_api_url,
     )?));
-    cache::spawn_cache_warmer(context.clone());
+    let ready = cache::ReadyFlag::default();
+    cache::spawn_cache_warmer(context.clone(), ready.clone());
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec![
@@ -111,6 +112,19 @@ async fn main() -> anyhow::Result<()> {
         .map(|| warp::reply::json(&<crate::api_docs::ApiDoc as utoipa::OpenApi>::openapi()));
 
     let route_api_docs_html = warp::path("docs").and(warp::get()).and_then(docs::handler);
+
+    // Dependency-free on purpose: a slow DB or upstream must never get the container killed.
+    let route_liveness = warp::path!("healthz")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and_then(health::handler);
+
+    // On the API port, not the metrics port: a reply also proves the Service's target port is bound.
+    let route_readiness = warp::path!("readyz")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_ready(ready))
+        .and_then(readiness::handler);
 
     let route_validators = warp::path!("validators")
         .and(warp::path::end())
@@ -278,6 +292,8 @@ async fn main() -> anyhow::Result<()> {
     let routes = top_level
         .or(route_api_docs_oas)
         .or(route_api_docs_html)
+        .or(route_liveness)
+        .or(route_readiness)
         .or(route_cluster_stats)
         .or(route_validators)
         .or(route_validator_score_breakdown)
@@ -315,6 +331,12 @@ fn with_context(
     context: WrappedContext,
 ) -> impl Filter<Extract = (WrappedContext,), Error = Infallible> + Clone {
     warp::any().map(move || context.clone())
+}
+
+fn with_ready(
+    ready: cache::ReadyFlag,
+) -> impl Filter<Extract = (cache::ReadyFlag,), Error = Infallible> + Clone {
+    warp::any().map(move || ready.clone())
 }
 
 fn with_admin_auth(
