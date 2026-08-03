@@ -715,98 +715,40 @@ async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Optio
     }
 }
 
-/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
-/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
-/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
-/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
-pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
-    let (config, _) = BqClientConfig::new_with_auth().await?;
-    let bq_client = BqClient::new(config).await?;
-
-    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
-
-    let min_epoch = match scalar_u64(
-        &bq_client,
-        format!(
-            "SELECT CAST(MIN(epoch) AS STRING) FROM `{ds}.epochs` \
-             WHERE epoch_end_time >= TIMESTAMP_SUB( \
-                 (SELECT MAX(epoch_end_time) FROM `{ds}.epochs`), INTERVAL {TAKE_RATE_WINDOW_DAYS} DAY)"
-        ),
-    )
-    .await?
-    {
-        Some(min_epoch) => min_epoch,
-        None => return Ok(Default::default()),
-    };
-
-    let query = format!(
-        "SELECT vote_account, CAST(take_rate AS STRING) AS take_rate FROM (
-            WITH stakers AS (
+/// Per-validator scalar take rate over the last `TAKE_RATE_WINDOW_DAYS`, derived from the persisted
+/// per-epoch `take_rates` table as `SUM(validator_rewards) / SUM(total_rewards)` (ratio of sums,
+/// byte-for-byte the same value the previous BigQuery query produced). The per-epoch rows are
+/// populated by the `take-rates` collect/store pipeline, so this reads Postgres only — no BigQuery.
+pub async fn load_avg_take_rates(psql_client: &Client) -> anyhow::Result<HashMap<String, f64>> {
+    let rows = psql_client
+        .query(
+            &format!(
+                "
+                WITH win AS (
+                    SELECT MIN(epoch) AS min_epoch FROM epochs
+                    WHERE end_at >= (SELECT MAX(end_at) FROM epochs)
+                        - INTERVAL '{TAKE_RATE_WINDOW_DAYS} days'
+                )
                 SELECT
-                    stakes.vote_account AS vote_account,
-                    stakes.epoch AS epoch,
-                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
-                    SUM(COALESCE(mev.amount, 0)) AS staker_mev
-                FROM `{ds}.stakes` stakes
-                LEFT JOIN `{ds}.rewards_inflation` inflation
-                    ON stakes.stake_account = inflation.stake_account
-                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
-                LEFT JOIN `{ds}.rewards_mev` mev
-                    ON stakes.stake_account = mev.stake_account
-                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
-                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
-                GROUP BY stakes.vote_account, stakes.epoch
-            )
-            SELECT
-                stakers.vote_account AS vote_account,
-                SAFE_DIVIDE(
-                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0)),
-                    SUM(staker_inflation + staker_mev
-                        + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
-                ) AS take_rate
-            FROM stakers
-            -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_inflation`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vi
-                ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_mev`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vm
-                ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_blocks`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vb
-                ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
-            GROUP BY stakers.vote_account
+                    vote_account,
+                    (SUM(validator_rewards) / NULLIF(SUM(total_rewards), 0))::DOUBLE PRECISION
+                        AS take_rate
+                FROM take_rates
+                CROSS JOIN win
+                WHERE take_rates.epoch >= win.min_epoch
+                GROUP BY vote_account
+                "
+            ),
+            &[],
         )
-        WHERE take_rate IS NOT NULL"
-    );
-
-    let request = QueryRequest {
-        query,
-        use_legacy_sql: false,
-        ..Default::default()
-    };
-
-    let mut iter = bq_client
-        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
         .await?;
 
     let mut records: HashMap<String, f64> = Default::default();
-    while let Some(row) = iter.next().await? {
-        let vote_account = row.column::<String>(0)?;
-        let take_rate_str = row.column::<String>(1)?;
-        records.insert(vote_account, take_rate_str.parse()?);
+    for row in rows {
+        if let Some(take_rate) = row.get::<_, Option<f64>>("take_rate") {
+            let vote_account: String = row.get("vote_account");
+            records.insert(vote_account, take_rate);
+        }
     }
 
     Ok(records)

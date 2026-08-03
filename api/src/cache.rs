@@ -50,7 +50,6 @@ pub struct Cache {
 pub struct PerEpochCache {
     pub epoch: u64,
     pub unique_delegators: HashMap<String, u64>,
-    pub take_rates: HashMap<String, f64>,
 }
 
 impl PerEpochCache {
@@ -73,21 +72,13 @@ impl PerEpochCache {
             "BigQuery epoch changed ({:?} -> {last_epoch}), refreshing",
             cached.as_ref().map(|c| c.epoch)
         );
-        let delegators = store::utils::load_latest_unique_delegators().await;
-        let take_rates = store::utils::load_take_rates().await;
-        match (delegators, take_rates) {
-            (Ok(unique_delegators), Ok(take_rates)) => Some(PerEpochCache {
+        match store::utils::load_latest_unique_delegators().await {
+            Ok(unique_delegators) => Some(PerEpochCache {
                 epoch: last_epoch,
                 unique_delegators,
-                take_rates,
             }),
-            (delegators, take_rates) => {
-                if let Err(err) = delegators {
-                    error!("Failed to load unique delegators from BigQuery: {err}");
-                }
-                if let Err(err) = take_rates {
-                    error!("Failed to load take rates from BigQuery: {err}");
-                }
+            Err(err) => {
+                error!("Failed to load unique delegators from BigQuery: {err}");
                 None
             }
         }
@@ -178,11 +169,22 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     let cached = context.read().await.cache.per_epoch.clone();
 
     let refreshed = PerEpochCache::load(&cached).await;
-    let (unique_delegators, take_rates) = refreshed
+    let unique_delegators = refreshed
         .as_ref()
         .or(cached.as_ref())
-        .map(|c| (c.unique_delegators.clone(), c.take_rates.clone()))
+        .map(|c| c.unique_delegators.clone())
         .unwrap_or_default();
+
+    // Scalar take rate is derived from the persisted per-epoch `take_rates` table (Postgres), not
+    // BigQuery. A failure here shouldn't block the validators load, so default to empty on error.
+    let take_rates =
+        match store::utils::load_avg_take_rates(&context.read().await.psql_client).await {
+            Ok(take_rates) => take_rates,
+            Err(err) => {
+                error!("Failed to load avg take rates from DB: {err}");
+                Default::default()
+            }
+        };
 
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
