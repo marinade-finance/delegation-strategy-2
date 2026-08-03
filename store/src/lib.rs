@@ -1,6 +1,7 @@
 pub mod dto;
 pub mod rewards;
 pub mod scoring;
+pub mod take_rates;
 pub mod utils;
 pub mod validators;
 pub mod validators_block_rewards;

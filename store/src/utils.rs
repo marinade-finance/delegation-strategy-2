@@ -1,7 +1,7 @@
 use crate::dto::{
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    TakeRateRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord,
 };
@@ -476,6 +476,48 @@ pub async fn load_commissions(
             epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
+            created_at: row.get("created_at"),
+        })
+    }
+
+    Ok(records)
+}
+
+pub async fn load_take_rate_series(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<HashMap<String, Vec<TakeRateRecord>>> {
+    let rows = psql_client
+        .query(
+            "
+            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
+            SELECT
+                vote_account, take_rate, take_rates.epoch,
+                epochs.start_at AS epoch_start, epochs.end_at AS epoch_end, created_at
+            FROM take_rates
+            LEFT JOIN epochs ON take_rates.epoch = epochs.epoch
+            CROSS JOIN cluster
+            WHERE take_rates.epoch > cluster.last_epoch - $1::NUMERIC
+            ORDER BY take_rates.epoch ASC
+            ",
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+
+    let mut records: HashMap<_, Vec<_>> = Default::default();
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        let take_rates = records
+            .entry(vote_account.clone())
+            .or_insert(Default::default());
+        let epoch_start_at: Option<DateTime<Utc>> =
+            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
+        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
+        take_rates.push(TakeRateRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
+            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
+            take_rate: row.get("take_rate"),
             created_at: row.get("created_at"),
         })
     }

@@ -51,6 +51,11 @@ lazy_static! {
         "How many times /commissions endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_TAKE_RATES: IntCounter = register_int_counter!(
+        "ds_request_count_take_rates",
+        "How many times /take-rates endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VERSIONS: IntCounter = register_int_counter!(
         "ds_request_count_versions",
         "How many times /versions endpoint was requested"

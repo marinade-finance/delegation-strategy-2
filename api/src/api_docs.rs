@@ -1,7 +1,7 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, jito, jito_mev, list_validators, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -21,6 +21,7 @@ use utoipa::OpenApi;
         schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(cluster_stats::ResponseClusterStats),
         schemas(commissions::ResponseCommissions),
+        schemas(take_rates::ResponseTakeRates),
         schemas(config::ConfigStakes),
         schemas(config::ResponseConfig),
         schemas(config::StakeDelegationAuthorityRecord),
@@ -39,6 +40,7 @@ use utoipa::OpenApi;
         schemas(store::dto::ClientLineageStats),
         schemas(store::dto::ClusterStats),
         schemas(store::dto::CommissionRecord),
+        schemas(store::dto::TakeRateRecord),
         schemas(store::dto::DCConcentrationStats),
         schemas(store::dto::FeatureSetStats),
         schemas(store::dto::GlobalUnstakeHintRecord),
@@ -77,6 +79,7 @@ use utoipa::OpenApi;
         admin_score_upload::handler,
         cluster_stats::handler,
         commissions::handler,
+        take_rates::handler,
         config::handler,
         docs::handler,
         glossary::handler,

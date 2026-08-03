@@ -6,6 +6,7 @@ use env_logger::Env;
 use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use structopt::StructOpt;
@@ -41,6 +42,7 @@ enum StoreCommand {
     Validators(StoreValidatorsParams),
     ValidatorsBlockRewards(StoreBlockRewardsParams),
     ValidatorsEvents(StoreEventsParams),
+    TakeRates(StoreTakeRatesParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
@@ -112,6 +114,9 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::ValidatorsEvents(store_params) => {
             store_events(store_params, &mut psql_client).await
+        }
+        StoreCommand::TakeRates(store_params) => {
+            store_take_rates(store_params, &mut psql_client).await
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,

@@ -4,8 +4,8 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, VersionRecord,
+    ClusterStats, CommissionRecord, ScoringRunRecord, TakeRateRecord, UptimeRecord,
+    ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
 use tokio::time::{sleep, Duration, Instant};
 
@@ -15,6 +15,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
+type CachedTakeRates = HashMap<String, Vec<TakeRateRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
@@ -35,6 +36,7 @@ pub struct CachedMultiRunScores {
 pub struct Cache {
     pub validators: CachedValidators,
     pub commissions: CachedCommissions,
+    pub take_rates: CachedTakeRates,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
@@ -109,6 +111,10 @@ impl Cache {
 
     pub fn get_all_commissions(&self) -> CachedCommissions {
         self.commissions.clone()
+    }
+
+    pub fn get_take_rates(&self, vote_account: &String) -> Option<Vec<TakeRateRecord>> {
+        self.take_rates.get(vote_account).cloned()
     }
 
     pub fn get_versions(&self, vote_account: &String) -> Option<Vec<VersionRecord>> {
@@ -221,6 +227,29 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
     info!(
         "Loaded {} commissions to cache in {} ms",
         commissions.len(),
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+pub async fn warm_take_rates_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading take rates from DB");
+    let warmup_timer = Instant::now();
+    let take_rates = store::utils::load_take_rate_series(
+        &context.read().await.psql_client,
+        DEFAULT_CACHE_EPOCHS,
+    )
+    .await?;
+
+    context
+        .write()
+        .await
+        .cache
+        .take_rates
+        .clone_from(&take_rates);
+    info!(
+        "Loaded {} take rates to cache in {} ms",
+        take_rates.len(),
         warmup_timer.elapsed().as_millis()
     );
 
@@ -348,6 +377,10 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
 
             if let Err(err) = warm_commissions_cache(&context).await {
                 error!("Failed to update the commissions: {err}");
+            }
+
+            if let Err(err) = warm_take_rates_cache(&context).await {
+                error!("Failed to update the take rates: {err}");
             }
 
             if let Err(err) = warm_uptimes_cache(&context).await {
