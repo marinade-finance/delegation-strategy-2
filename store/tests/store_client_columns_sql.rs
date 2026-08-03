@@ -416,6 +416,16 @@ async fn migration_discards_client_data_collected_before_the_rename() {
         .await
         .unwrap();
 
+    client
+        .execute(
+            "INSERT INTO versions (
+                vote_account, epoch_slot, epoch, created_at, client_id_raw, client_vendor
+            ) VALUES ($1, 1, $2, NOW(), 'AgaveBam', 'bam')",
+            &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+
     let sql = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../migrations/0019-client-registry-fields.sql"
@@ -441,6 +451,14 @@ async fn migration_discards_client_data_collected_before_the_rename() {
         &stored[0],
         &no_client(),
         "the migration must leave no pre-rename client data behind",
+    );
+
+    let stored_versions = stored_client_columns(&client, "versions").await;
+    assert_eq!(stored_versions.len(), 1);
+    assert_matches(
+        &stored_versions[0],
+        &no_client(),
+        "the migration must leave no pre-rename client data behind in versions",
     );
 
     client
