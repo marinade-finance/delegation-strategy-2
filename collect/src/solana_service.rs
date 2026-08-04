@@ -162,11 +162,12 @@ fn client_display_name(resolved: ClientId, raw: Option<&str>) -> Option<String> 
 }
 
 impl ClientId {
+    // Registry-only: an id we cannot classify must not vary with the answering RPC's rendering.
     pub fn number(&self) -> Option<u16> {
-        match self {
-            ClientId::Registered(id) | ClientId::Unrecognized(Some(id)) => Some(*id),
-            _ => None,
-        }
+        let ClientId::Registered(id) = self else {
+            return None;
+        };
+        Some(*id)
     }
 
     pub fn name(&self) -> Option<&'static str> {
@@ -265,6 +266,9 @@ pub fn get_cluster_nodes_info(
     let raw: Vec<RpcContactInfoExt> = rpc_client.send(RpcRequest::GetClusterNodes, Value::Null)?;
 
     let mut out: HashMap<String, NodeContact> = HashMap::with_capacity(raw.len());
+    // Counted and reported once per run: a client the registry predates appears on every node
+    // running it, and a per-node warning at that volume is what got the previous one ignored.
+    let mut unclassified_renderings: HashMap<String, usize> = HashMap::new();
     for node in raw {
         let version = node.version.and_then(|v| {
             let version = v
@@ -295,13 +299,11 @@ pub fn get_cluster_nodes_info(
             .unwrap_or((None, None));
 
         let resolved = resolve_client_id(node.client_id.as_deref());
-        if let ClientId::Unrecognized(number) = resolved {
-            warn!(
-                "Node {} reports client id '{}' (number {:?}) missing from client-ids.csv",
-                node.pubkey,
-                node.client_id.as_deref().unwrap_or_default(),
-                number
-            );
+        if matches!(resolved, ClientId::Unrecognized(_)) {
+            let rendering = node.client_id.as_deref().unwrap_or_default().trim();
+            *unclassified_renderings
+                .entry(rendering.to_string())
+                .or_default() += 1;
         }
 
         let client_name = client_display_name(resolved, node.client_id.as_deref());
@@ -324,7 +326,30 @@ pub fn get_cluster_nodes_info(
             },
         );
     }
+
+    if !unclassified_renderings.is_empty() {
+        warn!(
+            "Client ids missing from client-ids.csv, so these nodes stay unclassified: {}",
+            unclassified_clients_summary(&unclassified_renderings)
+        );
+    }
+
     Ok(out)
+}
+
+// Ordered by node count, so whichever client is worth adding to client-ids.csv first comes first.
+fn unclassified_clients_summary(renderings: &HashMap<String, usize>) -> String {
+    let mut renderings: Vec<_> = renderings.iter().collect();
+    renderings.sort_by(|(left_name, left_count), (right_name, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    renderings
+        .into_iter()
+        .map(|(rendering, count)| format!("{rendering} on {count} node(s)"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn parse_socket_addr(s: &str) -> Option<(String, u16)> {
@@ -864,14 +889,48 @@ mod tests {
     }
 
     #[test]
-    fn client_number_survives_an_unregistered_id() {
+    fn client_number_is_set_only_for_a_registered_id() {
         assert_eq!(resolve_client_id(Some("Unknown(8)")).number(), Some(8));
         assert_eq!(resolve_client_id(Some("Rakurai")).number(), Some(8));
-        assert_eq!(resolve_client_id(Some("Unknown(86)")).number(), Some(86));
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).number(), None);
         assert_eq!(resolve_client_id(Some("Unknown(86)")).name(), None);
         assert_eq!(resolve_client_id(Some("brand-new/1.0")).number(), None);
         assert_eq!(resolve_client_id(None).number(), None);
         assert_eq!(resolve_client_id(None).name(), None);
+    }
+
+    // A client the registry predates must store the same identity through either rendering, or the
+    // stored id flips with whichever RPC answered and store logs a client change that never happened.
+    // Id 86 is live on mainnet (Vexor), and the Foundation has not assigned it a registry entry.
+    #[test]
+    fn an_unregistered_client_stores_the_same_identity_whichever_form_the_rpc_renders() {
+        let stored = |raw| {
+            let resolved = resolve_client_id(Some(raw));
+            (resolved.number(), resolved.vendor(), resolved.lineage())
+        };
+        assert_eq!(stored("Unknown(86)"), (None, None, None));
+        assert_eq!(stored("Vexor"), stored("Unknown(86)"));
+
+        // A registered id stays fully classified through either rendering.
+        assert_eq!(
+            stored("Unknown(8)"),
+            (Some(8), Some("rakurai"), Some("agave"))
+        );
+        assert_eq!(stored("Rakurai"), stored("Unknown(8)"));
+    }
+
+    #[test]
+    fn unclassified_clients_are_summarised_by_node_count() {
+        let renderings = HashMap::from([
+            ("Raiku2".to_string(), 12),
+            ("Unknown(14)".to_string(), 37),
+            ("Vexor".to_string(), 12),
+        ]);
+        assert_eq!(
+            unclassified_clients_summary(&renderings),
+            "Unknown(14) on 37 node(s), Raiku2 on 12 node(s), Vexor on 12 node(s)"
+        );
+        assert_eq!(unclassified_clients_summary(&HashMap::new()), "");
     }
 
     #[test]
@@ -936,6 +995,8 @@ mod tests {
         assert_eq!(ClientId::Registered(12).lineage(), Some("frankendancer"));
     }
 
+    // Only about what the rendering can be parsed into: the number is kept in the resolution so the
+    // two unclassified shapes stay distinguishable, but `number()` deliberately does not expose it.
     #[test]
     fn unregistered_number_keeps_the_number() {
         assert_eq!(

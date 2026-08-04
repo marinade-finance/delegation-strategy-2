@@ -9,6 +9,9 @@ use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
+/// Served instead of null so every consumer has a client name to render.
+pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
+
 pub struct ValidatorJitoMEVInfo {
     pub vote_account: String,
     pub mev_commission: i32,
@@ -151,8 +154,8 @@ impl Validator {
             info_icon_url: v.info_icon_url.clone(),
 
             node_ip: v.node_ip.clone(),
-            dc_coordinates_lon: coordinates.map(|(_, lon)| lon),
-            dc_coordinates_lat: coordinates.map(|(lat, _)| lat),
+            dc_coordinates_lon: coordinates.map(|(lon, _)| lon),
+            dc_coordinates_lat: coordinates.map(|(_, lat)| lat),
             dc_continent: continent,
             dc_country_iso: country_iso,
             dc_country: country,
@@ -214,8 +217,8 @@ pub struct ValidatorEpochStats {
     pub dc_country: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    pub client_name: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -285,8 +288,8 @@ pub struct ValidatorRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    pub client_name: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -378,8 +381,8 @@ pub struct VersionRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    pub client_name: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
