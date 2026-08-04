@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use log::{error, info};
+use log::{error, info, warn};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -360,11 +360,15 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // Bail before the write so an empty result cannot overwrite a populated cache.
-    anyhow::ensure!(
-        !validators.is_empty(),
-        "no validators loaded, keeping previous cache intact"
-    );
+    // A freshly bootstrapped environment has no validators yet and must still be able to reach ready.
+    if validators.is_empty() {
+        let populated = !context.read().await.cache.validators.is_empty();
+        anyhow::ensure!(
+            !populated,
+            "no validators loaded, keeping previous cache intact"
+        );
+        warn!("No validators in DB, caching an empty set");
+    }
 
     let validators_len = validators.len();
     {
@@ -562,29 +566,37 @@ async fn warm_pending(context: &WrappedContext, steps: &[WarmStep], pending: &mu
 
 pub fn spawn_cache_warmer(context: WrappedContext, ready: ReadyFlag) {
     tokio::spawn(async move {
-        let steps = warm_steps();
-        let mut pending = [true; WARM_STEPS];
-        let mut retry_s = CACHE_RETRY_TIME_S;
+        let warmer = tokio::spawn(async move {
+            let steps = warm_steps();
+            let mut pending = [true; WARM_STEPS];
+            let mut retry_s = CACHE_RETRY_TIME_S;
 
-        loop {
-            info!("Warming up the cache");
-            warm_pending(&context, &steps, &mut pending).await;
+            loop {
+                info!("Warming up the cache");
+                warm_pending(&context, &steps, &mut pending).await;
 
-            // Fast retry only while cold and only for missing steps: a warm pod must not amplify load.
-            if !ready.is_ready() {
-                if cold_start_complete(&pending) {
-                    info!("Cache is warm, reporting ready");
-                    ready.mark_ready();
-                } else {
-                    info!("Cache warmup incomplete, retrying in {retry_s} s");
-                    sleep(Duration::from_secs(retry_s)).await;
-                    retry_s = next_retry_s(retry_s);
-                    continue;
+                // Fast retry only while cold and only for missing steps: a warm pod must not amplify load.
+                if !ready.is_ready() {
+                    if cold_start_complete(&pending) {
+                        info!("Cache is warm, reporting ready");
+                        ready.mark_ready();
+                    } else {
+                        info!("Cache warmup incomplete, retrying in {retry_s} s");
+                        sleep(Duration::from_secs(retry_s)).await;
+                        retry_s = next_retry_s(retry_s);
+                        continue;
+                    }
                 }
-            }
 
-            pending = [true; WARM_STEPS];
-            sleep(Duration::from_secs(seconds_until_next_window())).await;
+                pending = [true; WARM_STEPS];
+                sleep(Duration::from_secs(seconds_until_next_window())).await;
+            }
+        });
+
+        // Neither probe can observe a stopped warmer, so only process death sheds the frozen cache.
+        if let Err(err) = warmer.await {
+            error!("Cache warmer stopped unexpectedly: {err}");
+            std::process::exit(1);
         }
     });
 }
