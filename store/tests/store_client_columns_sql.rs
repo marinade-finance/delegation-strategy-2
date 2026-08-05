@@ -6,10 +6,12 @@ use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use store::dto::UNKNOWN_CLIENT_NAME;
-use store::utils::load_versions;
+use store::utils::{load_validators, load_versions};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
@@ -367,6 +369,102 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
         ],
         "a stored client_id labels the row, otherwise the reported name then the fallback"
     );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// `load_validators` aborts if the validator-bonds API is unreachable, so it must be answered here.
+async fn verified_validators_stub() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 1024];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..read]).contains("/validators/verified"),
+            "the stub answers the verified-validators endpoint only"
+        );
+        let body = r#"{"verified_validators":[]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+// `load_validators` derives the label independently of `load_versions` — record and epoch stats.
+#[tokio::test]
+async fn load_validators_labels_the_record_and_its_epoch_stats() {
+    let schema = "ds_test_load_validators_client_label";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW())",
+            &[&Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at, client_id, client_name
+            ) VALUES
+                ('identityRegistered', 'voteRegistered', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 12, 'FireBAM'),
+                ('identityReported', 'voteReported', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'Agave'),
+                ('identityNoClient', 'voteNoClient', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL)",
+            &[&Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+
+    let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
+    let validators = load_validators(
+        &client,
+        unreachable_scoring_url,
+        verified_validators_stub().await,
+        1,
+        1,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .await
+    .unwrap();
+
+    for (vote_account, expected) in [
+        ("voteRegistered", "Frankendancer + JitoBAM"),
+        ("voteReported", "Agave"),
+        ("voteNoClient", UNKNOWN_CLIENT_NAME),
+    ] {
+        let record = validators
+            .get(vote_account)
+            .unwrap_or_else(|| panic!("{vote_account} must load"));
+        assert_eq!(
+            record.client_label, expected,
+            "a stored client_id labels the record, otherwise the reported name then the fallback: {vote_account}"
+        );
+        assert_eq!(
+            record.epoch_stats.len(),
+            1,
+            "one epoch stats entry per stored epoch: {vote_account}"
+        );
+        assert_eq!(
+            record.epoch_stats[0].client_label, expected,
+            "the epoch stats label must match the record: {vote_account}"
+        );
+    }
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
