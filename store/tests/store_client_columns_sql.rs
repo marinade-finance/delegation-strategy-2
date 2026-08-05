@@ -10,7 +10,7 @@ use store::utils::{load_validators, load_versions};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio_postgres::Client;
 
@@ -381,11 +381,12 @@ async fn verified_validators_stub() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut request = [0u8; 1024];
-        let read = socket.read(&mut request).await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(socket);
+        let mut request_line = Vec::new();
+        stream.read_until(b'\n', &mut request_line).await.unwrap();
         assert!(
-            String::from_utf8_lossy(&request[..read]).contains("/validators/verified"),
+            String::from_utf8_lossy(&request_line).contains("/validators/verified"),
             "the stub answers the verified-validators endpoint only"
         );
         let body = r#"{"verified_validators":[]}"#;
@@ -393,7 +394,7 @@ async fn verified_validators_stub() -> String {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        socket.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(response.as_bytes()).await.unwrap();
     });
     format!("http://127.0.0.1:{port}")
 }
