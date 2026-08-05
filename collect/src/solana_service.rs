@@ -196,17 +196,17 @@ impl ClientId {
         let ClientId::Registered(id) = self else {
             return None;
         };
-        // Ids 2 and 5 are Vanilla rather than the "+ Jito" reports.firedancer.io shows: gossip tells us
-        // the lineage, never whether that node actually runs the Jito block engine.
+        // Ids 2 and 5 carry no "+ Jito": the bundle tile is a config flag in the same binary, so gossip
+        // cannot tell a bundle-running node from a plain one, and neither claim is observable.
         Some(match id {
-            0 => ("solana-labs", "agave", "Agave Vanilla"),
+            0 => ("solana-labs", "agave", "Agave"),
             1 => ("jito", "agave", "Agave + Jito"),
-            2 => ("frankendancer", "frankendancer", "Frankendancer Vanilla"),
-            3 => ("agave", "agave", "Agave Vanilla"),
+            2 => ("frankendancer", "frankendancer", "Frankendancer"),
+            3 => ("agave", "agave", "Agave"),
             4 => ("paladin", "agave", "Agave + Paladin"),
-            5 => ("firedancer", "firedancer", "Firedancer Vanilla"),
+            5 => ("firedancer", "firedancer", "Firedancer"),
             6 => ("bam", "agave", "Agave + JitoBAM"),
-            7 => ("sig", "sig", "Sig Vanilla"),
+            7 => ("sig", "sig", "Sig"),
             8 => ("rakurai", "agave", "Agave + Rakurai"),
             9 => ("harmonic", "firedancer", "Firedancer + Harmonic"),
             10 => ("harmonic", "agave", "Agave + Harmonic"),
@@ -898,20 +898,20 @@ mod tests {
     #[test]
     fn client_label_pairs_lineage_with_the_vendor_modification() {
         let label = |raw| resolve_client_id(Some(raw)).label();
-        assert_eq!(label("Agave"), Some("Agave Vanilla"));
-        assert_eq!(label("Solana Labs"), Some("Agave Vanilla"));
+        assert_eq!(label("Agave"), Some("Agave"));
+        assert_eq!(label("Solana Labs"), Some("Agave"));
         assert_eq!(label("JitoLabs"), Some("Agave + Jito"));
         assert_eq!(label("AgaveBam"), Some("Agave + JitoBAM"));
         assert_eq!(label("AgavePaladin"), Some("Agave + Paladin"));
         assert_eq!(label("Unknown(8)"), Some("Agave + Rakurai"));
         assert_eq!(label("Unknown(10)"), Some("Agave + Harmonic"));
         assert_eq!(label("Raiku"), Some("Agave + Raiku"));
-        assert_eq!(label("Frankendancer"), Some("Frankendancer Vanilla"));
+        assert_eq!(label("Frankendancer"), Some("Frankendancer"));
         assert_eq!(label("Unknown(11)"), Some("Frankendancer + Harmonic"));
         assert_eq!(label("Unknown(12)"), Some("Frankendancer + JitoBAM"));
-        assert_eq!(label("Firedancer"), Some("Firedancer Vanilla"));
+        assert_eq!(label("Firedancer"), Some("Firedancer"));
         assert_eq!(label("Unknown(9)"), Some("Firedancer + Harmonic"));
-        assert_eq!(label("Sig"), Some("Sig Vanilla"));
+        assert_eq!(label("Sig"), Some("Sig"));
         assert_eq!(label("Unknown(86)"), None);
         assert_eq!(resolve_client_id(None).label(), None);
     }
