@@ -331,25 +331,41 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
         .unwrap();
     client
         .execute(
-            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_name)
-             VALUES ($1, 1, $2, NOW(), NULL), ($1, 1, $2, NOW(), 'Agave')",
+            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_id, client_name)
+             VALUES ($1, 1, $2, NOW(), NULL, NULL),
+                    ($1, 1, $2, NOW(), NULL, 'Agave'),
+                    ($1, 1, $2, NOW(), 12, 'FireBAM')",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
         .await
         .unwrap();
 
     let versions = load_versions(&client, 1).await.unwrap();
-    let mut names: Vec<String> = versions
+    let records = versions
         .get(VOTE_ACCOUNT)
-        .expect("both stored rows must load")
-        .iter()
-        .map(|record| record.client_name.clone())
-        .collect();
+        .expect("every stored row must load");
+    let mut names: Vec<String> = records.iter().map(|r| r.client_name.clone()).collect();
     names.sort();
     assert_eq!(
         names,
-        vec!["Agave".to_string(), UNKNOWN_CLIENT_NAME.to_string()],
+        vec![
+            "Agave".to_string(),
+            "FireBAM".to_string(),
+            UNKNOWN_CLIENT_NAME.to_string()
+        ],
         "a NULL client_name reads back as the fallback, a stored one unchanged"
+    );
+
+    let mut labels: Vec<String> = records.iter().map(|r| r.client_label.clone()).collect();
+    labels.sort();
+    assert_eq!(
+        labels,
+        vec![
+            "Agave".to_string(),
+            "Frankendancer + JitoBAM".to_string(),
+            UNKNOWN_CLIENT_NAME.to_string()
+        ],
+        "a stored client_id labels the row, otherwise the reported name then the fallback"
     );
 
     client

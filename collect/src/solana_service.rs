@@ -178,34 +178,41 @@ impl ClientId {
     }
 
     pub fn vendor(&self) -> Option<&'static str> {
-        self.groupings().map(|(vendor, _)| vendor)
+        self.groupings().map(|(vendor, _, _)| vendor)
     }
 
     pub fn lineage(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, lineage)| lineage)
+        self.groupings().map(|(_, lineage, _)| lineage)
     }
 
-    // Vendor is who ships the binary, lineage is which codebase it forks; the registry assigns a
-    // separate id per lineage variant of a vendor, so both are a function of the id alone.
-    fn groupings(&self) -> Option<(&'static str, &'static str)> {
+    pub fn label(&self) -> Option<&'static str> {
+        self.groupings().map(|(_, _, label)| label)
+    }
+
+    // Vendor is who ships the binary, lineage is which codebase it forks, label renders the pair for
+    // display; the registry assigns a separate id per lineage variant of a vendor, so all three are a
+    // function of the id alone.
+    fn groupings(&self) -> Option<(&'static str, &'static str, &'static str)> {
         let ClientId::Registered(id) = self else {
             return None;
         };
+        // Ids 2 and 5 are Vanilla rather than the "+ Jito" reports.firedancer.io shows: gossip tells us
+        // the lineage, never whether that node actually runs the Jito block engine.
         Some(match id {
-            0 => ("solana-labs", "agave"),
-            1 => ("jito", "agave"),
-            2 => ("frankendancer", "frankendancer"),
-            3 => ("agave", "agave"),
-            4 => ("paladin", "agave"),
-            5 => ("firedancer", "firedancer"),
-            6 => ("bam", "agave"),
-            7 => ("sig", "sig"),
-            8 => ("rakurai", "agave"),
-            9 => ("harmonic", "firedancer"),
-            10 => ("harmonic", "agave"),
-            11 => ("harmonic", "frankendancer"),
-            12 => ("bam", "frankendancer"),
-            13 => ("raiku", "agave"),
+            0 => ("solana-labs", "agave", "Agave Vanilla"),
+            1 => ("jito", "agave", "Agave + Jito"),
+            2 => ("frankendancer", "frankendancer", "Frankendancer Vanilla"),
+            3 => ("agave", "agave", "Agave Vanilla"),
+            4 => ("paladin", "agave", "Agave + Paladin"),
+            5 => ("firedancer", "firedancer", "Firedancer Vanilla"),
+            6 => ("bam", "agave", "Agave + JitoBAM"),
+            7 => ("sig", "sig", "Sig Vanilla"),
+            8 => ("rakurai", "agave", "Agave + Rakurai"),
+            9 => ("harmonic", "firedancer", "Firedancer + Harmonic"),
+            10 => ("harmonic", "agave", "Agave + Harmonic"),
+            11 => ("harmonic", "frankendancer", "Frankendancer + Harmonic"),
+            12 => ("bam", "frankendancer", "Frankendancer + JitoBAM"),
+            13 => ("raiku", "agave", "Agave + Raiku"),
             _ => return None,
         })
     }
@@ -886,6 +893,43 @@ mod tests {
         );
         assert_eq!(display(Some("   ")), None);
         assert_eq!(display(None), None);
+    }
+
+    #[test]
+    fn client_label_pairs_lineage_with_the_vendor_modification() {
+        let label = |raw| resolve_client_id(Some(raw)).label();
+        assert_eq!(label("Agave"), Some("Agave Vanilla"));
+        assert_eq!(label("Solana Labs"), Some("Agave Vanilla"));
+        assert_eq!(label("JitoLabs"), Some("Agave + Jito"));
+        assert_eq!(label("AgaveBam"), Some("Agave + JitoBAM"));
+        assert_eq!(label("AgavePaladin"), Some("Agave + Paladin"));
+        assert_eq!(label("Unknown(8)"), Some("Agave + Rakurai"));
+        assert_eq!(label("Unknown(10)"), Some("Agave + Harmonic"));
+        assert_eq!(label("Raiku"), Some("Agave + Raiku"));
+        assert_eq!(label("Frankendancer"), Some("Frankendancer Vanilla"));
+        assert_eq!(label("Unknown(11)"), Some("Frankendancer + Harmonic"));
+        assert_eq!(label("Unknown(12)"), Some("Frankendancer + JitoBAM"));
+        assert_eq!(label("Firedancer"), Some("Firedancer Vanilla"));
+        assert_eq!(label("Unknown(9)"), Some("Firedancer + Harmonic"));
+        assert_eq!(label("Sig"), Some("Sig Vanilla"));
+        assert_eq!(label("Unknown(86)"), None);
+        assert_eq!(resolve_client_id(None).label(), None);
+    }
+
+    // The label repeats the lineage as display text, so a mapping edit that touches one and not the
+    // other fails here instead of serving a label that contradicts client_lineage.
+    #[test]
+    fn every_label_starts_with_its_own_lineage() {
+        for id in client_registry().names.keys() {
+            let client = ClientId::Registered(*id);
+            let (lineage, label) = (client.lineage().unwrap(), client.label().unwrap());
+            let mut expected = lineage.to_string();
+            expected[..1].make_ascii_uppercase();
+            assert!(
+                label.starts_with(&expected),
+                "client id {id} label {label} does not start with its lineage {lineage}"
+            );
+        }
     }
 
     #[test]
