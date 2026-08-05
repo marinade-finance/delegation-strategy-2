@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use collect::solana_service::ClientId;
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
@@ -11,6 +12,15 @@ use std::collections::HashMap;
 
 /// Served instead of null so every consumer has a client name to render.
 pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
+
+// Derived on read: the label follows client_id, falling back to the reported name, so a stored column would be a fourth copy to backfill on every mapping change.
+pub fn client_label(client_id: Option<u16>, reported_name: Option<&str>) -> String {
+    client_id
+        .and_then(|id| ClientId::Registered(id).label())
+        .or(reported_name)
+        .unwrap_or(UNKNOWN_CLIENT_NAME)
+        .to_string()
+}
 
 pub struct ValidatorJitoMEVInfo {
     pub vote_account: String,
@@ -219,6 +229,8 @@ pub struct ValidatorEpochStats {
     pub client_id: Option<u16>,
     /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
     pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -290,6 +302,8 @@ pub struct ValidatorRecord {
     pub client_id: Option<u16>,
     /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
     pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -383,6 +397,8 @@ pub struct VersionRecord {
     pub client_id: Option<u16>,
     /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
     pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.

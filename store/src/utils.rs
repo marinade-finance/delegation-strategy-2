@@ -1,7 +1,7 @@
 use crate::dto::{
-    BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
-    DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    client_label, BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats,
+    CommissionRecord, DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord,
+    ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord, UNKNOWN_CLIENT_NAME,
 };
@@ -324,16 +324,18 @@ pub async fn load_versions(
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
+        let client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
+        let client_name = row.get::<_, Option<String>>("client_name");
+        let label = client_label(client_id, client_name.as_deref());
         let versions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
         versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
-            client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_name: row
-                .get::<_, Option<String>>("client_name")
-                .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
+            client_id,
+            client_name: client_name.unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
+            client_label: label,
             client_vendor: row.get("client_vendor"),
             client_lineage: row.get("client_lineage"),
             client_id_raw: row.get("client_id_raw"),
@@ -955,6 +957,10 @@ pub async fn load_validators(
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
+            let client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
+            let client_name = row.get::<_, Option<String>>("client_name");
+            let label = client_label(client_id, client_name.as_deref());
+
             let record = records
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
@@ -986,10 +992,11 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
                     version: row.get("version"),
-                    client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                    client_name: row
-                        .get::<_, Option<String>>("client_name")
+                    client_id,
+                    client_name: client_name
+                        .clone()
                         .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
+                    client_label: label.clone(),
                     client_vendor: row.get("client_vendor"),
                     client_lineage: row.get("client_lineage"),
                     client_id_raw: row.get("client_id_raw"),
@@ -1070,10 +1077,9 @@ pub async fn load_validators(
                 dc_aso: row.get::<_, Option<String>>("dc_aso"),
                 dc_city: row.get::<_, Option<String>>("dc_city"),
                 dc_country: row.get::<_, Option<String>>("dc_country"),
-                client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                client_name: row
-                    .get::<_, Option<String>>("client_name")
-                    .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
+                client_id,
+                client_name: client_name.unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
+                client_label: label,
                 client_vendor: row.get("client_vendor"),
                 client_lineage: row.get("client_lineage"),
                 client_id_raw: row.get("client_id_raw"),
