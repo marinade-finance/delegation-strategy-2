@@ -13,8 +13,7 @@ use std::collections::HashMap;
 /// Served instead of null so every consumer has a client name to render.
 pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
 
-// Derived on read rather than stored: the label is a function of client_id alone, so a column would
-// be a fourth copy of it that every mapping change would have to backfill.
+// Derived on read: the label follows client_id, falling back to the reported name, so a stored column would be a fourth copy to backfill on every mapping change.
 pub fn client_label(client_id: Option<u16>, reported_name: Option<&str>) -> String {
     client_id
         .and_then(|id| ClientId::Registered(id).label())

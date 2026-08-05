@@ -199,6 +199,7 @@ impl ClientId {
         // Ids 2 and 5 carry no "+ Jito": the bundle tile is a config flag in the same binary, so gossip
         // cannot tell a bundle-running node from a plain one, and neither claim is observable.
         Some(match id {
+            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it labels bare like id 3.
             0 => ("solana-labs", "agave", "Agave"),
             1 => ("jito", "agave", "Agave + Jito"),
             2 => ("frankendancer", "frankendancer", "Frankendancer"),
