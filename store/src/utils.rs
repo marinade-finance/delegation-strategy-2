@@ -1753,7 +1753,7 @@ pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAgg
         })
         .collect();
 
-    agg.sort_by(|a, b| b.epoch.cmp(&a.epoch));
+    agg.sort_by_key(|a| std::cmp::Reverse(a.epoch));
 
     agg
 }
