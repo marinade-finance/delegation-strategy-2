@@ -1,13 +1,15 @@
 use crate::context::WrappedContext;
 use log::{error, info};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
     ValidatorScoreRecord, VersionRecord,
 };
 use tokio::time::{sleep, Duration, Instant};
+
+use store::utils::ValidatorOverlays;
 
 pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
@@ -31,8 +33,22 @@ pub struct CachedMultiRunScores {
     pub scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
 }
 
+/// One validator-bonds flag list plus how many refreshes in a row have fallen back to it.
+#[derive(Default, Clone)]
+pub struct CachedFlag {
+    pub vote_accounts: HashSet<String>,
+    pub consecutive_failures: u32,
+}
+
+#[derive(Default, Clone)]
+pub struct CachedBondFlags {
+    pub verified: CachedFlag,
+    pub protected: CachedFlag,
+}
+
 #[derive(Default)]
 pub struct Cache {
+    pub bond_flags: CachedBondFlags,
     pub validators: CachedValidators,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
@@ -165,6 +181,38 @@ impl Cache {
     }
 }
 
+/// Bounded so a permanently broken bonds API surfaces as an outage instead of flags frozen forever.
+const MAX_FLAG_FALLBACK_CYCLES: u32 = 6;
+
+fn resolve_flag(
+    flag: &str,
+    fetched: anyhow::Result<HashSet<String>>,
+    last: CachedFlag,
+) -> anyhow::Result<CachedFlag> {
+    let err = match fetched {
+        Ok(vote_accounts) => {
+            return Ok(CachedFlag {
+                vote_accounts,
+                consecutive_failures: 0,
+            })
+        }
+        Err(err) => err,
+    };
+
+    let consecutive_failures = last.consecutive_failures + 1;
+    if last.vote_accounts.is_empty() || consecutive_failures >= MAX_FLAG_FALLBACK_CYCLES {
+        return Err(err);
+    }
+
+    error!(
+        "Failed to load {flag} validators, reusing the last known list ({consecutive_failures}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
+    );
+    Ok(CachedFlag {
+        consecutive_failures,
+        ..last
+    })
+}
+
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
@@ -178,14 +226,37 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .map(|c| (c.unique_delegators.clone(), c.take_rates.clone()))
         .unwrap_or_default();
 
+    let scoring_url = context.read().await.scoring_url.clone();
+    let bonds_url = context.read().await.validator_bonds_api_url.clone();
+    let last_flags = context.read().await.cache.bond_flags.clone();
+
+    let bond_flags = CachedBondFlags {
+        verified: resolve_flag(
+            "verified",
+            store::utils::load_verified_validators(&bonds_url).await,
+            last_flags.verified,
+        )?,
+        protected: resolve_flag(
+            "protected",
+            store::utils::load_protected_validators(&bonds_url).await,
+            last_flags.protected,
+        )?,
+    };
+    context.write().await.cache.bond_flags = bond_flags.clone();
+
+    let overlays = ValidatorOverlays {
+        unique_delegators,
+        take_rates,
+        verified: bond_flags.verified.vote_accounts,
+        protected: bond_flags.protected.vote_accounts,
+    };
+
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
-        context.read().await.scoring_url.clone(),
-        context.read().await.validator_bonds_api_url.clone(),
+        scoring_url,
         DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
-        &unique_delegators,
-        &take_rates,
+        &overlays,
     )
     .await?;
 

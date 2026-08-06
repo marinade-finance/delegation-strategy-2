@@ -47,6 +47,8 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
     query_verified: Option<bool>,
+    /// Validators whose bond can back a PSR downtime claim, as reported by validator-bonds. A presence check, not a sufficiency check — see the `protected` field.
+    query_protected: Option<bool>,
     query_flagged: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
@@ -88,6 +90,7 @@ pub struct GetValidatorsConfig {
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
     pub query_verified: Option<bool>,
+    pub query_protected: Option<bool>,
     pub query_flagged: Option<bool>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
@@ -267,6 +270,10 @@ pub fn filter_validators(
         validators.retain(|_, v| v.verified == query_verified);
     }
 
+    if let Some(query_protected) = config.query_protected {
+        validators.retain(|_, v| v.protected == query_protected);
+    }
+
     if let Some(query_flagged) = config.query_flagged {
         validators.retain(|_, v| v.warnings.is_empty() != query_flagged);
     }
@@ -312,6 +319,7 @@ pub async fn handler(
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
         query_verified: query_params.query_verified,
+        query_protected: query_params.query_protected,
         query_flagged: query_params.query_flagged,
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
@@ -465,6 +473,7 @@ mod tests {
             avg_take_rate: None,
             incidents: Vec::new(),
             verified: false,
+            protected: false,
         }
     }
 
@@ -484,6 +493,7 @@ mod tests {
             query_sfdp: None,
             query_incident_free: None,
             query_verified: None,
+            query_protected: None,
             query_flagged: None,
             search_properties: None,
             query_from_date: None,
@@ -540,6 +550,54 @@ mod tests {
         let validators = map(vec![
             validator("flagged", 100, vec![ValidatorWarning::Superminority]),
             validator("clean", 100, vec![]),
+        ]);
+        assert_eq!(filter_validators(validators, &config()).len(), 2);
+    }
+
+    fn protected_validator(vote_account: &str) -> ValidatorRecord {
+        ValidatorRecord {
+            protected: true,
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    #[test]
+    fn query_protected_true_keeps_only_protected_validators() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_protected: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["bonded".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_protected_false_keeps_only_unprotected_validators() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_protected: Some(false),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["unbonded".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_protected_none_keeps_all() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
         ]);
         assert_eq!(filter_validators(validators, &config()).len(), 2);
     }

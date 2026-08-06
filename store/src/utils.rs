@@ -779,34 +779,70 @@ struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
 }
 
-// `base` is the validator-bonds API base URL; the verified path is appended here.
+#[derive(serde::Deserialize)]
+struct ProtectedValidatorsResponse {
+    protected_validators: Vec<String>,
+}
+
 pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
-    let url = format!("{}/validators/verified", base.trim_end_matches('/'));
+    load_validator_flag(base, "verified", |resp: VerifiedValidatorsResponse| {
+        resp.verified_validators
+    })
+    .await
+}
+
+pub async fn load_protected_validators(base: &str) -> anyhow::Result<HashSet<String>> {
+    load_validator_flag(base, "protected", |resp: ProtectedValidatorsResponse| {
+        resp.protected_validators
+    })
+    .await
+}
+
+// `base` is the validator-bonds API base URL; `/validators/{flag}` is appended here.
+async fn load_validator_flag<T, F>(
+    base: &str,
+    flag: &str,
+    vote_accounts: F,
+) -> anyhow::Result<HashSet<String>>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce(T) -> Vec<String>,
+{
+    let url = format!("{}/validators/{flag}", base.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
         .build()?;
     let resp = client.get(&url).send().await?;
     anyhow::ensure!(
         resp.status().is_success(),
-        "verified endpoint returned {}",
+        "{flag} endpoint returned {}",
         resp.status()
     );
-    Ok(resp
-        .json::<VerifiedValidatorsResponse>()
-        .await?
-        .verified_validators
-        .into_iter()
-        .collect())
+    let listed: HashSet<String> = vote_accounts(resp.json::<T>().await?).into_iter().collect();
+    // An empty list would clear the flag on every validator, so treat it as an upstream fault.
+    anyhow::ensure!(
+        !listed.is_empty(),
+        "{flag} endpoint returned an empty validator list"
+    );
+
+    Ok(listed)
+}
+
+/// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, and the validator-bonds flags the caller resolved.
+#[derive(Default)]
+pub struct ValidatorOverlays {
+    pub unique_delegators: HashMap<String, u64>,
+    pub take_rates: HashMap<String, f64>,
+    pub verified: HashSet<String>,
+    pub protected: HashSet<String>,
 }
 
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
-    validator_bonds_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
-    unique_delegators: &HashMap<String, u64>,
-    take_rates: &HashMap<String, f64>,
+    overlays: &ValidatorOverlays,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1027,6 +1063,7 @@ pub async fn load_validators(
                     avg_take_rate: None,
                     incidents: Vec::new(),
                     verified: false,
+                    protected: false,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -1153,7 +1190,7 @@ pub async fn load_validators(
 
     log::info!("Updating unique delegators...");
     for (vote_account, record) in records.iter_mut() {
-        record.unique_delegators = unique_delegators.get(vote_account).copied();
+        record.unique_delegators = overlays.unique_delegators.get(vote_account).copied();
     }
 
     log::info!("Updating incidents...");
@@ -1162,20 +1199,15 @@ pub async fn load_validators(
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
 
-    log::info!("Updating verified flag...");
-    let verified = load_verified_validators(&validator_bonds_api_url)
-        .await
-        .map_err(|err| {
-            log::error!("Failed to load verified validators, keeping previous cache intact: {err}");
-            err
-        })?;
+    log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
-        record.verified = verified.contains(vote_account);
+        record.verified = overlays.verified.contains(vote_account);
+        record.protected = overlays.protected.contains(vote_account);
     }
 
     log::info!("Updating take rates...");
     for (vote_account, record) in records.iter_mut() {
-        record.avg_take_rate = take_rates.get(vote_account).copied();
+        record.avg_take_rate = overlays.take_rates.get(vote_account).copied();
     }
 
     log::info!("Records prepared...");
