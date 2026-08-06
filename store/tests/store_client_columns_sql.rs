@@ -18,18 +18,12 @@ const IDENTITY: &str = "identityClientColumns";
 
 struct ClientFields {
     client_id: Option<u16>,
-    client_name: Option<String>,
-    client_vendor: Option<String>,
-    client_lineage: Option<String>,
     client_id_raw: Option<String>,
 }
 
 fn agave() -> ClientFields {
     ClientFields {
         client_id: Some(3),
-        client_name: Some("Agave".into()),
-        client_vendor: Some("agave".into()),
-        client_lineage: Some("agave".into()),
         client_id_raw: Some("Agave".into()),
     }
 }
@@ -37,21 +31,14 @@ fn agave() -> ClientFields {
 fn no_client() -> ClientFields {
     ClientFields {
         client_id: None,
-        client_name: None,
-        client_vendor: None,
-        client_lineage: None,
         client_id_raw: None,
     }
 }
 
-// Unlike `no_client()`, this is an actual observation: the node reported a client, we just don't
-// have it in client-ids.csv yet. `client_id_raw`/`client_name` carry the raw rendering.
+// Unlike `no_client()`, an actual observation: the node reported a client absent from client-ids.csv.
 fn unrecognized() -> ClientFields {
     ClientFields {
         client_id: None,
-        client_name: Some("Unknown(97)".into()),
-        client_vendor: None,
-        client_lineage: None,
         client_id_raw: Some("Unknown(97)".into()),
     }
 }
@@ -61,9 +48,6 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
         commission: 7,
         version: Some("2.0.0".into()),
         client_id: client.client_id,
-        client_name: client.client_name.clone(),
-        client_vendor: client.client_vendor.clone(),
-        client_lineage: client.client_lineage.clone(),
         client_id_raw: client.client_id_raw.clone(),
         feature_set: Some(123),
         shred_version: Some(456),
@@ -145,7 +129,7 @@ async fn stored_client_columns(client: &Client, table: &str) -> Vec<ClientFields
     client
         .query(
             &format!(
-                "SELECT client_id, client_name, client_vendor, client_lineage, client_id_raw
+                "SELECT client_id, client_id_raw
                  FROM {table} WHERE vote_account = $1 ORDER BY client_id NULLS LAST"
             ),
             &[&VOTE_ACCOUNT],
@@ -155,9 +139,6 @@ async fn stored_client_columns(client: &Client, table: &str) -> Vec<ClientFields
         .iter()
         .map(|row| ClientFields {
             client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_name: row.get("client_name"),
-            client_vendor: row.get("client_vendor"),
-            client_lineage: row.get("client_lineage"),
             client_id_raw: row.get("client_id_raw"),
         })
         .collect()
@@ -165,18 +146,6 @@ async fn stored_client_columns(client: &Client, table: &str) -> Vec<ClientFields
 
 fn assert_matches(actual: &ClientFields, expected: &ClientFields, context: &str) {
     assert_eq!(actual.client_id, expected.client_id, "client_id: {context}");
-    assert_eq!(
-        actual.client_name, expected.client_name,
-        "client_name: {context}"
-    );
-    assert_eq!(
-        actual.client_vendor, expected.client_vendor,
-        "client_vendor: {context}"
-    );
-    assert_eq!(
-        actual.client_lineage, expected.client_lineage,
-        "client_lineage: {context}"
-    );
     assert_eq!(
         actual.client_id_raw, expected.client_id_raw,
         "client_id_raw: {context}"
@@ -284,7 +253,6 @@ async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
     );
 
     let mut rerendered = agave();
-    rerendered.client_name = Some("Unknown(3)".into());
     rerendered.client_id_raw = Some("Unknown(3)".into());
     run_store_versions(&mut client, "versions-rerendered", &rerendered).await;
     assert_eq!(
@@ -295,8 +263,6 @@ async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
 
     let mut switched = agave();
     switched.client_id = Some(1);
-    switched.client_name = Some("Jito Labs".into());
-    switched.client_vendor = Some("jito".into());
     switched.client_id_raw = Some("JitoLabs".into());
     run_store_versions(&mut client, "versions-switched", &switched).await;
     assert_eq!(
@@ -311,10 +277,9 @@ async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
         .unwrap();
 }
 
-// The never-null contract is kept at the read layer, not in the column: NULL stays storable so
-// "the node reported no client" remains distinguishable from "the registry does not know this one".
+// Re-resolving client_id_raw is what makes a later client-ids.csv row reclassify old rows.
 #[tokio::test]
-async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
+async fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored() {
     let schema = "ds_test_load_versions_unknown_client";
     if skip_without_database(schema) {
         return;
@@ -331,9 +296,11 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
         .unwrap();
     client
         .execute(
-            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_id, client_name)
+            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_id, client_id_raw)
              VALUES ($1, 1, $2, NOW(), NULL, NULL),
+                    ($1, 1, $2, NOW(), NULL, 'Raiku2'),
                     ($1, 1, $2, NOW(), NULL, 'Agave'),
+                    ($1, 1, $2, NOW(), NULL, 'Unknown(12)'),
                     ($1, 1, $2, NOW(), 12, 'FireBAM')",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
@@ -344,28 +311,59 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
     let records = versions
         .get(VOTE_ACCOUNT)
         .expect("every stored row must load");
-    let mut names: Vec<String> = records.iter().map(|r| r.client_name.clone()).collect();
-    names.sort();
-    assert_eq!(
-        names,
-        vec![
-            "Agave".to_string(),
-            "FireBAM".to_string(),
-            UNKNOWN_CLIENT_NAME.to_string()
-        ],
-        "a NULL client_name reads back as the fallback, a stored one unchanged"
-    );
+    let mut derived: Vec<_> = records
+        .iter()
+        .map(|r| {
+            (
+                r.client_id_raw.clone(),
+                r.client_id,
+                r.client_name.clone(),
+                r.client_label.clone(),
+                r.client_vendor.clone(),
+                r.client_lineage.clone(),
+            )
+        })
+        .collect();
+    derived.sort();
 
-    let mut labels: Vec<String> = records.iter().map(|r| r.client_label.clone()).collect();
-    labels.sort();
-    assert_eq!(
-        labels,
-        vec![
-            "Agave".to_string(),
+    let unknown = |raw: Option<&str>| {
+        (
+            raw.map(str::to_string),
+            None,
+            UNKNOWN_CLIENT_NAME.to_string(),
+            UNKNOWN_CLIENT_NAME.to_string(),
+            None,
+            None,
+        )
+    };
+    let firebam = |raw: &str, stored: Option<u16>| {
+        (
+            Some(raw.to_string()),
+            stored.or(Some(12)),
+            "FireBAM".to_string(),
             "Frankendancer + JitoBAM".to_string(),
-            UNKNOWN_CLIENT_NAME.to_string()
+            Some("bam".to_string()),
+            Some("frankendancer".to_string()),
+        )
+    };
+    assert_eq!(
+        derived,
+        vec![
+            unknown(None),
+            (
+                Some("Agave".to_string()),
+                Some(3),
+                "Agave".to_string(),
+                "Agave".to_string(),
+                Some("agave".to_string()),
+                Some("agave".to_string()),
+            ),
+            firebam("FireBAM", Some(12)),
+            unknown(Some("Raiku2")),
+            firebam("Unknown(12)", None),
         ],
-        "a stored client_id labels the row, otherwise the reported name then the fallback"
+        "a registry name or an Unknown(N) rendering classifies even with no stored id; \
+         a client the registry does not know stays Unknown with its raw rendering intact"
     );
 
     client
@@ -374,9 +372,9 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
         .unwrap();
 }
 
-// `load_validators` derives the label independently of `load_versions` — record and epoch stats.
+// `load_validators` derives independently of `load_versions`, twice — record and epoch stats.
 #[tokio::test]
-async fn load_validators_labels_the_record_and_its_epoch_stats() {
+async fn load_validators_classifies_the_record_and_its_epoch_stats() {
     let schema = "ds_test_load_validators_client_label";
     if skip_without_database(schema) {
         return;
@@ -396,10 +394,11 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
             "INSERT INTO validators (
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
-                leader_slots, blocks_produced, skip_rate, updated_at, client_id, client_name
+                leader_slots, blocks_produced, skip_rate, updated_at, client_id, client_id_raw
             ) VALUES
                 ('identityRegistered', 'voteRegistered', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 12, 'FireBAM'),
-                ('identityReported', 'voteReported', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'Agave'),
+                ('identityRawOnly', 'voteRawOnly', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'JitoLabs'),
+                ('identityReported', 'voteReported', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'Raiku2'),
                 ('identityNoClient', 'voteNoClient', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL)",
             &[&Decimal::from(EPOCH)],
         )
@@ -442,17 +441,42 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
         "a vote account apy-api has no value for stays null instead of sorting as zero-ish data"
     );
 
+    let unknown = (UNKNOWN_CLIENT_NAME, UNKNOWN_CLIENT_NAME, None, None);
     for (vote_account, expected) in [
-        ("voteRegistered", "Frankendancer + JitoBAM"),
-        ("voteReported", "Agave"),
-        ("voteNoClient", UNKNOWN_CLIENT_NAME),
+        (
+            "voteRegistered",
+            (
+                "FireBAM",
+                "Frankendancer + JitoBAM",
+                Some("bam"),
+                Some("frankendancer"),
+            ),
+        ),
+        (
+            "voteRawOnly",
+            ("Jito Labs", "Agave + Jito", Some("jito"), Some("agave")),
+        ),
+        ("voteReported", unknown),
+        ("voteNoClient", unknown),
     ] {
         let record = validators
             .get(vote_account)
             .unwrap_or_else(|| panic!("{vote_account} must load"));
+        let expected = (
+            expected.0.to_string(),
+            expected.1.to_string(),
+            expected.2.map(str::to_string),
+            expected.3.map(str::to_string),
+        );
         assert_eq!(
-            record.client_label, expected,
-            "a stored client_id labels the record, otherwise the reported name then the fallback: {vote_account}"
+            (
+                record.client_name.clone(),
+                record.client_label.clone(),
+                record.client_vendor.clone(),
+                record.client_lineage.clone(),
+            ),
+            expected,
+            "a stored id or a resolvable raw rendering classifies the record, otherwise Unknown: {vote_account}"
         );
         assert_eq!(
             record.epoch_stats.len(),
@@ -460,8 +484,14 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
             "one epoch stats entry per stored epoch: {vote_account}"
         );
         assert_eq!(
-            record.epoch_stats[0].client_label, expected,
-            "the epoch stats label must match the record: {vote_account}"
+            (
+                record.epoch_stats[0].client_name.clone(),
+                record.epoch_stats[0].client_label.clone(),
+                record.epoch_stats[0].client_vendor.clone(),
+                record.epoch_stats[0].client_lineage.clone(),
+            ),
+            expected,
+            "the epoch stats must derive identically to the record: {vote_account}"
         );
     }
 
@@ -500,79 +530,33 @@ delinquent: false
 }
 
 #[tokio::test]
-async fn migration_discards_client_data_collected_before_the_rename() {
-    let schema = "ds_test_migration_client_wipe";
+async fn migration_drops_the_columns_now_derived_from_the_registry() {
+    let schema = "ds_test_migration_drops_derived";
     if skip_without_database(schema) {
         return;
     }
     let client = migrated_client(schema).await.unwrap();
 
-    let leftovers = client
-        .query(
-            "SELECT COUNT(*) AS stale FROM validators
-             WHERE client_id_raw IS NOT NULL OR client_vendor IS NOT NULL OR client_lineage IS NOT NULL",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(leftovers[0].get::<_, i64>("stale"), 0);
-
-    client
-        .execute(
-            "INSERT INTO validators (
-                identity, vote_account, epoch, activated_stake, marinade_stake,
-                marinade_native_stake, superminority, stake_to_become_superminority, credits,
-                leader_slots, blocks_produced, skip_rate, client_id_raw, client_vendor, updated_at
-            ) VALUES ($1, $2, $3, 0, 0, 0, false, 0, 0, 0, 0, 0, 'AgaveBam', 'bam', NOW())",
-            &[&IDENTITY, &VOTE_ACCOUNT, &Decimal::from(EPOCH)],
-        )
-        .await
-        .unwrap();
-
-    client
-        .execute(
-            "INSERT INTO versions (
-                vote_account, epoch_slot, epoch, created_at, client_id_raw, client_vendor
-            ) VALUES ($1, 1, $2, NOW(), 'AgaveBam', 'bam')",
-            &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
-        )
-        .await
-        .unwrap();
-
-    let sql = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../migrations/0019-client-registry-fields.sql"
-    ))
-    .unwrap();
-    let wipes: Vec<&str> = sql
-        .split(';')
-        .filter(|statement| statement.contains("client_id_raw = NULL"))
-        .collect();
-    assert_eq!(
-        wipes.len(),
-        2,
-        "0019 must wipe both validators and versions"
-    );
-    client
-        .batch_execute(&format!("{};", wipes.join(";")))
-        .await
-        .unwrap();
-
-    let stored = stored_client_columns(&client, "validators").await;
-    assert_eq!(stored.len(), 1);
-    assert_matches(
-        &stored[0],
-        &no_client(),
-        "the migration must leave no pre-rename client data behind",
-    );
-
-    let stored_versions = stored_client_columns(&client, "versions").await;
-    assert_eq!(stored_versions.len(), 1);
-    assert_matches(
-        &stored_versions[0],
-        &no_client(),
-        "the migration must leave no pre-rename client data behind in versions",
-    );
+    for table in ["validators", "versions"] {
+        let columns: Vec<String> = client
+            .query(
+                "SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = $2 AND column_name LIKE 'client%'",
+                &[&schema, &table],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>("column_name"))
+            .collect();
+        let mut columns = columns;
+        columns.sort();
+        assert_eq!(
+            columns,
+            vec!["client_id".to_string(), "client_id_raw".to_string()],
+            "{table} must keep the stored identity only, everything else is derived on read"
+        );
+    }
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
