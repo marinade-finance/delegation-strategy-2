@@ -1861,7 +1861,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -1893,7 +1893,7 @@ pub async fn load_validators_aggregated_flat(
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
     for row in rows.iter() {
-        // Both aggregates share a filter and an ordering, so they read off the same versions row.
+        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
         let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
         let last_client_id = effective_client_id(
             row.get::<_, Option<i32>>("last_client_id")
