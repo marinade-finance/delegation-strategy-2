@@ -721,24 +721,17 @@ pub fn get_commission_from_inflation_rewards(
         );
     }
     let queried = vote_addresses.len();
+    info!(
+        "Resolved commission for {} of {} validators: {} from commission, {} from commissionBps, {} without a reward, {} unresolved",
+        result.len(),
+        queried,
+        stats.from_commission,
+        stats.from_bps,
+        stats.no_reward,
+        stats.unresolved
+    );
     if result.len() * 2 < queried {
-        warn!(
-            "Resolved commission for {} of {} validators: {} without a reward, {} served neither commission nor commissionBps",
-            result.len(),
-            queried,
-            stats.no_reward,
-            stats.unresolved
-        );
-    } else {
-        info!(
-            "Resolved commission for {} of {} validators: {} from commission, {} from commissionBps, {} without a reward, {} unresolved",
-            result.len(),
-            queried,
-            stats.from_commission,
-            stats.from_bps,
-            stats.no_reward,
-            stats.unresolved
-        );
+        warn!("Resolved commission for fewer than half of the {queried} validators queried");
     }
 
     Ok(result)
