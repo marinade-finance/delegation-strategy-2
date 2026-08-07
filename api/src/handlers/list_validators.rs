@@ -146,34 +146,40 @@ fn sort_validators(
     order_direction: &OrderDirection,
 ) {
     let field_extractor = get_field_extractor(order_field);
-    validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
-        let ord = match order_direction {
-            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
-            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
-        };
-        ord.then_with(|| a.vote_account.cmp(&b.vote_account))
+    let descending = matches!(order_direction, OrderDirection::DESC);
+    // Missing sinks last in both directions: it must not read as a genuine value at either extreme.
+    validators.sort_by_cached_key(|validator| {
+        let key = field_extractor(validator).map(|value| if descending { -value } else { value });
+        (key.is_none(), key, validator.vote_account.clone())
     });
 }
 
-fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
+type FieldExtractor = fn(&ValidatorRecord) -> Option<Decimal>;
+
+// Commission and Uptime keep worst-case sentinels: for those two unknown means risk, not no-data.
+fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        OrderField::Stake => Box::new(|a: &ValidatorRecord| a.activated_stake),
-        OrderField::Credits => Box::new(|a: &ValidatorRecord| Decimal::from(a.credits)),
+        OrderField::Stake => |a: &ValidatorRecord| Some(a.activated_stake),
+        OrderField::Credits => |a: &ValidatorRecord| Some(Decimal::from(a.credits)),
         OrderField::MarinadeScore => {
-            Box::new(|a: &ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))
+            |a: &ValidatorRecord| a.score.and_then(to_fixed_for_sort).map(Decimal::from)
         }
-        OrderField::Apy => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
-        }),
+        OrderField::Apy => {
+            |a: &ValidatorRecord| a.avg_apy.and_then(to_fixed_for_sort).map(Decimal::from)
+        }
         OrderField::Commission => {
-            Box::new(|a: &ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100)))
+            |a: &ValidatorRecord| Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
         }
-        OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
-        }),
-        OrderField::TakeRate => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_take_rate.unwrap_or(0.0)))
-        }),
+        OrderField::Uptime => |a: &ValidatorRecord| {
+            Some(Decimal::from(
+                a.avg_uptime_pct.and_then(to_fixed_for_sort).unwrap_or(0),
+            ))
+        },
+        OrderField::TakeRate => |a: &ValidatorRecord| {
+            a.avg_take_rate
+                .and_then(to_fixed_for_sort)
+                .map(Decimal::from)
+        },
     }
 }
 
@@ -565,5 +571,102 @@ mod tests {
         sort_validators(&mut validators, OrderField::Stake, &OrderDirection::DESC);
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["bbb", "aaa"]);
+    }
+
+    type FieldSetter = fn(&mut ValidatorRecord, Option<f64>);
+
+    fn with_field(vote_account: &str, set: FieldSetter, value: Option<f64>) -> ValidatorRecord {
+        let mut record = validator(vote_account, 100, vec![]);
+        set(&mut record, value);
+        record
+    }
+
+    fn sinking_fields() -> Vec<(&'static str, OrderField, FieldSetter)> {
+        vec![
+            ("score", OrderField::MarinadeScore, |r, v| r.score = v),
+            ("apy", OrderField::Apy, |r, v| r.avg_apy = v),
+            ("take_rate", OrderField::TakeRate, |r, v| {
+                r.avg_take_rate = v
+            }),
+        ]
+    }
+
+    #[test]
+    fn sort_sinks_missing_values_in_both_directions() {
+        for direction in [OrderDirection::ASC, OrderDirection::DESC] {
+            for (label, field, set) in sinking_fields() {
+                let mut validators = vec![
+                    with_field("aaa_missing", set, None),
+                    with_field("bbb_zero", set, Some(0.0)),
+                    with_field("ccc_high", set, Some(0.05)),
+                ];
+                sort_validators(&mut validators, field, &direction);
+                let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+                let expected = match direction {
+                    OrderDirection::ASC => vec!["bbb_zero", "ccc_high", "aaa_missing"],
+                    OrderDirection::DESC => vec!["ccc_high", "bbb_zero", "aaa_missing"],
+                };
+                assert_eq!(order, expected, "{label} / {direction:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sort_keeps_missing_distinct_from_zero() {
+        // Missing used to fold onto 0.0, so an ascending sort opened with rows that have no value.
+        for (label, field, set) in sinking_fields() {
+            let mut validators = vec![
+                with_field("aaa_missing", set, None),
+                with_field("zzz_zero", set, Some(0.0)),
+            ];
+            sort_validators(&mut validators, field, &OrderDirection::ASC);
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["zzz_zero", "aaa_missing"], "{label}");
+        }
+    }
+
+    #[test]
+    fn sort_ranks_unknown_commission_as_max() {
+        let mut validators = vec![
+            validator("aaa_unknown", 100, vec![]),
+            validator("bbb_low", 100, vec![]),
+            validator("ccc_max", 100, vec![]),
+        ];
+        validators[1].commission_max_observed = Some(5);
+        validators[2].commission_max_observed = Some(100);
+        sort_validators(
+            &mut validators,
+            OrderField::Commission,
+            &OrderDirection::DESC,
+        );
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["aaa_unknown", "ccc_max", "bbb_low"]);
+    }
+
+    #[test]
+    fn sort_ranks_unknown_uptime_as_zero() {
+        let set: FieldSetter = |r, v| r.avg_uptime_pct = v;
+        let mut validators = vec![
+            with_field("aaa_unknown", set, None),
+            with_field("bbb_zero", set, Some(0.0)),
+            with_field("ccc_high", set, Some(0.99)),
+        ];
+        sort_validators(&mut validators, OrderField::Uptime, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["aaa_unknown", "bbb_zero", "ccc_high"]);
+    }
+
+    #[test]
+    fn sort_sinks_negative_and_non_finite_values() {
+        let set: FieldSetter = |r, v| r.avg_take_rate = v;
+        for degenerate in [-0.01, f64::NAN, f64::INFINITY] {
+            let mut validators = vec![
+                with_field("aaa_degenerate", set, Some(degenerate)),
+                with_field("zzz_zero", set, Some(0.0)),
+            ];
+            sort_validators(&mut validators, OrderField::TakeRate, &OrderDirection::ASC);
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["zzz_zero", "aaa_degenerate"], "{degenerate}");
+        }
     }
 }
