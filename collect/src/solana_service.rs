@@ -6,13 +6,13 @@ use bincode::deserialize;
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::ClientError,
     rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_config::{RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_request::RpcRequest,
     rpc_response::RpcVoteAccountStatus,
@@ -614,6 +614,61 @@ pub fn get_withdraw_authorities(
     Ok(withdraw_authorities)
 }
 
+// solana-client 2.2 RpcInflationReward predates commission_bps and would drop it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcInflationRewardExt {
+    #[allow(dead_code)]
+    epoch: Epoch,
+    #[allow(dead_code)]
+    amount: u64,
+    commission: Option<u8>,
+    commission_bps: Option<u16>,
+}
+
+#[derive(Debug, Default)]
+struct CommissionStats {
+    from_commission: usize,
+    from_bps: usize,
+    lossy: usize,
+    disagree: usize,
+    unresolved: usize,
+    no_reward: usize,
+}
+
+// Agave projects commissionBps onto the legacy percent this way; rounding down instead would let a
+// validator above the 10% eligibility cap read as exactly at it.
+fn bps_to_percent(bps: u16) -> u8 {
+    bps.min(10_000).div_ceil(100) as u8
+}
+
+fn resolve_commission_percent(
+    commission: Option<u8>,
+    commission_bps: Option<u16>,
+    stats: &mut CommissionStats,
+) -> Option<u8> {
+    // Basis points win: they are the finer-grained source, and `commission` is only ever a
+    // projection of them once SIMD-0291 is active.
+    if let Some(bps) = commission_bps {
+        if commission.is_some_and(|commission| bps_to_percent(bps) != commission) {
+            stats.disagree += 1;
+        }
+        if bps % 100 != 0 {
+            stats.lossy += 1;
+        }
+        stats.from_bps += 1;
+        return Some(bps_to_percent(bps));
+    }
+
+    if let Some(commission) = commission {
+        stats.from_commission += 1;
+        return Some(commission);
+    }
+
+    stats.unresolved += 1;
+    None
+}
+
 pub fn get_commission_from_inflation_rewards(
     rpc_client: &RpcClient,
     vote_accounts: &RpcVoteAccountStatus,
@@ -626,19 +681,57 @@ pub fn get_commission_from_inflation_rewards(
         .map(|v| Pubkey::from_str(&v.vote_pubkey).unwrap())
         .collect();
     let mut result: HashMap<String, u8> = Default::default();
+    let mut stats = CommissionStats::default();
     for vote_addresses_chunk in vote_addresses.chunks(100) {
-        let rewards = rpc_client.get_inflation_reward(vote_addresses_chunk, epoch)?;
+        let addresses: Vec<String> = vote_addresses_chunk
+            .iter()
+            .map(|address| address.to_string())
+            .collect();
+        let rewards: Vec<Option<RpcInflationRewardExt>> = rpc_client.send(
+            RpcRequest::GetInflationReward,
+            json!([
+                addresses,
+                RpcEpochConfig {
+                    epoch,
+                    commitment: Some(rpc_client.commitment()),
+                    min_context_slot: None,
+                }
+            ]),
+        )?;
         result.extend(vote_addresses_chunk.iter().zip(rewards).filter_map(
             |(vote_address, reward)| {
-                if let Some(reward) = reward {
-                    if let Some(commission) = reward.commission {
-                        return Some((vote_address.to_string(), commission));
-                    }
-                }
-
-                None
+                let Some(reward) = reward else {
+                    stats.no_reward += 1;
+                    return None;
+                };
+                let commission = resolve_commission_percent(
+                    reward.commission,
+                    reward.commission_bps,
+                    &mut stats,
+                )?;
+                Some((vote_address.to_string(), commission))
             },
         ));
+    }
+
+    if stats.lossy > 0 || stats.disagree > 0 {
+        warn!(
+            "Commission from inflation rewards: {} rounded to a whole percent, {} disagreed between commission and commissionBps",
+            stats.lossy, stats.disagree
+        );
+    }
+    let queried = vote_addresses.len();
+    info!(
+        "Resolved commission for {} of {} validators: {} from commission, {} from commissionBps, {} without a reward, {} unresolved",
+        result.len(),
+        queried,
+        stats.from_commission,
+        stats.from_bps,
+        stats.no_reward,
+        stats.unresolved
+    );
+    if result.len() * 2 < queried {
+        warn!("Resolved commission for fewer than half of the {queried} validators queried");
     }
 
     Ok(result)
@@ -821,6 +914,142 @@ pub fn fetch_self_stake(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commission_falls_back_to_the_legacy_percent_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(5), None, &mut stats),
+            Some(5)
+        );
+        assert_eq!(stats.from_commission, 1);
+        assert_eq!(stats.from_bps, 0);
+    }
+
+    #[test]
+    fn commission_falls_back_to_bps_once_percent_is_nulled() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(300), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.from_bps, 1);
+        assert_eq!(stats.lossy, 0);
+    }
+
+    #[test]
+    fn commission_rounds_bps_up_to_a_whole_percent_and_counts_it_lossy() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(250), &mut stats),
+            Some(3)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(249), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.lossy, 2);
+    }
+
+    #[test]
+    fn commission_just_over_the_eligibility_cap_does_not_round_down_onto_it() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(1000), &mut stats),
+            Some(10)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(1001), &mut stats),
+            Some(11)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(1049), &mut stats),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn commission_clamps_bps_beyond_the_full_percent_range() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(10_000), &mut stats),
+            Some(100)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(25_600), &mut stats),
+            Some(100)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(u16::MAX), &mut stats),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn commission_prefers_bps_and_flags_disagreement_with_the_legacy_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(700), &mut stats),
+            Some(7)
+        );
+        assert_eq!(stats.disagree, 1);
+        assert_eq!(stats.from_bps, 1);
+        assert_eq!(stats.from_commission, 0);
+
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(300), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.disagree, 1);
+    }
+
+    #[test]
+    fn commission_does_not_flag_a_fractional_bps_matching_its_projected_percent() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(240), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.disagree, 0);
+    }
+
+    #[test]
+    fn commission_treats_zero_as_resolved_not_missing() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(0), None, &mut stats),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(0), &mut stats),
+            Some(0)
+        );
+        assert_eq!(stats.unresolved, 0);
+    }
+
+    #[test]
+    fn commission_is_unresolved_when_the_rpc_serves_neither_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(resolve_commission_percent(None, None, &mut stats), None);
+        assert_eq!(stats.unresolved, 1);
+    }
+
+    #[test]
+    fn inflation_reward_deserializes_the_post_simd_0291_payload() {
+        let reward: RpcInflationRewardExt = serde_json::from_str(
+            r#"{"amount":591366523,"commission":null,"commissionBps":300,"effectiveSlot":434592000,"epoch":1005,"postBalance":10012207545}"#,
+        )
+        .unwrap();
+        assert_eq!(reward.commission, None);
+        assert_eq!(reward.commission_bps, Some(300));
+
+        let legacy: RpcInflationRewardExt = serde_json::from_str(
+            r#"{"amount":530714233,"commission":3,"effectiveSlot":432864000,"epoch":1001,"postBalance":7729378465}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.commission, Some(3));
+        assert_eq!(legacy.commission_bps, None);
+    }
 
     #[test]
     fn plausible_node_versions() {
