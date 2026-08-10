@@ -47,7 +47,6 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     query_incident_free: Option<bool>,
     query_verified: Option<bool>,
-    /// Validators whose bond can back a PSR downtime claim, as reported by validator-bonds. A presence check, not a sufficiency check — see the `protected` field.
     query_protected: Option<bool>,
     query_flagged: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to

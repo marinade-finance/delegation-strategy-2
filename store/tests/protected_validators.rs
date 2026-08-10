@@ -39,12 +39,12 @@ async fn the_endpoints_list_is_passed_through_intact() {
 }
 
 #[tokio::test]
-async fn an_empty_validator_list_is_rejected() {
+async fn an_empty_validator_list_is_reported_as_an_answer() {
     let base = protected_stub(r#"{"protected_validators":[]}"#).await;
 
-    let err = load_protected_validators(&base).await.unwrap_err();
-    assert!(
-        err.to_string().contains("empty validator list"),
-        "accepting it would report every validator unprotected: {err}"
+    assert_eq!(
+        load_protected_validators(&base).await.unwrap(),
+        HashSet::new(),
+        "an empty list is a successful answer; only the caller decides whether to act on it"
     );
 }

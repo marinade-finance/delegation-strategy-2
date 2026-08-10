@@ -818,14 +818,7 @@ where
         "{flag} endpoint returned {}",
         resp.status()
     );
-    let listed: HashSet<String> = vote_accounts(resp.json::<T>().await?).into_iter().collect();
-    // An empty list would clear the flag on every validator, so treat it as an upstream fault.
-    anyhow::ensure!(
-        !listed.is_empty(),
-        "{flag} endpoint returned an empty validator list"
-    );
-
-    Ok(listed)
+    Ok(vote_accounts(resp.json::<T>().await?).into_iter().collect())
 }
 
 /// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, and the validator-bonds flags the caller resolved.
