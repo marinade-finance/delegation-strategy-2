@@ -26,6 +26,8 @@ pub struct ResponseValidators {
     validators_aggregated: Vec<ValidatorsAggregated>,
     /// Number of validators matching the query and filters, before `offset`/`limit`.
     total_count: usize,
+    /// When validator-bonds last answered for the `verified`/`protected` flags. Older than a few minutes means the flags are being reused because that API is failing.
+    bond_flags_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -329,6 +331,13 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
+    let bond_flags_updated_at = context
+        .read()
+        .await
+        .cache
+        .bond_flags_updated_at()
+        .map(DateTime::<Utc>::from);
+
     Ok(match validators {
         Ok((validators, total_count)) => {
             let validators_aggregated = store::utils::aggregate_validators(&validators);
@@ -337,6 +346,7 @@ pub async fn handler(
                     validators,
                     validators_aggregated,
                     total_count,
+                    bond_flags_updated_at,
                 }),
                 StatusCode::OK,
             )

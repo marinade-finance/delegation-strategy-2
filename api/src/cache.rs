@@ -33,11 +33,12 @@ pub struct CachedMultiRunScores {
     pub scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
 }
 
-/// One validator-bonds flag list plus how many refreshes in a row have fallen back to it.
+/// One validator-bonds flag list, how many refreshes in a row fell back to it, and when upstream last answered.
 #[derive(Default, Clone)]
 pub struct CachedFlag {
     pub vote_accounts: HashSet<String>,
     pub consecutive_fallbacks: u32,
+    pub last_success: Option<SystemTime>,
 }
 
 #[derive(Default, Clone)]
@@ -119,6 +120,13 @@ impl Cache {
         self.validators.clone()
     }
 
+    // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
+    pub fn bond_flags_updated_at(&self) -> Option<SystemTime> {
+        let verified = self.bond_flags.verified.last_success?;
+        let protected = self.bond_flags.protected.last_success?;
+        Some(verified.min(protected))
+    }
+
     pub fn get_commissions(&self, vote_account: &String) -> Option<Vec<CommissionRecord>> {
         self.commissions.get(vote_account).cloned()
     }
@@ -189,29 +197,40 @@ fn resolve_flag(
     fetched: anyhow::Result<HashSet<String>>,
     last: CachedFlag,
 ) -> anyhow::Result<CachedFlag> {
+    // An empty list is more often an upstream fault than the truth, so it is believed only once it
+    // survives the same bound a failure gets.
     let err = match fetched {
-        Ok(vote_accounts) => {
-            if vote_accounts.is_empty() {
-                error!(
-                    "The {flag} endpoint lists nobody, so the flag is cleared on every validator"
-                );
-            }
+        Ok(vote_accounts) if !vote_accounts.is_empty() => {
             return Ok(CachedFlag {
                 vote_accounts,
                 consecutive_fallbacks: 0,
-            });
+                last_success: Some(SystemTime::now()),
+            })
         }
-        Err(err) => err,
+        Ok(_) => None,
+        Err(err) => Some(err),
     };
 
     let consecutive_fallbacks = last.consecutive_fallbacks + 1;
     if last.vote_accounts.is_empty() || consecutive_fallbacks >= MAX_FLAG_FALLBACK_CYCLES {
-        return Err(err);
+        return match err {
+            None => Ok(CachedFlag {
+                vote_accounts: HashSet::new(),
+                consecutive_fallbacks: 0,
+                last_success: Some(SystemTime::now()),
+            }),
+            Some(err) => Err(err),
+        };
     }
 
-    error!(
-        "Failed to load {flag} validators, reusing the last known list ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
-    );
+    match &err {
+        None => error!(
+            "The {flag} endpoint lists nobody, holding the last known list until it repeats ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES})"
+        ),
+        Some(err) => error!(
+            "Failed to load {flag} validators, reusing the last known list ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
+        ),
+    }
     Ok(CachedFlag {
         consecutive_fallbacks,
         ..last
@@ -241,17 +260,14 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         )
     };
 
+    let (verified, protected) = tokio::join!(
+        store::utils::load_verified_validators(&bonds_url),
+        store::utils::load_protected_validators(&bonds_url),
+    );
+
     let bond_flags = CachedBondFlags {
-        verified: resolve_flag(
-            "verified",
-            store::utils::load_verified_validators(&bonds_url).await,
-            last_flags.verified,
-        )?,
-        protected: resolve_flag(
-            "protected",
-            store::utils::load_protected_validators(&bonds_url).await,
-            last_flags.protected,
-        )?,
+        verified: resolve_flag("verified", verified, last_flags.verified)?,
+        protected: resolve_flag("protected", protected, last_flags.protected)?,
     };
     context.write().await.cache.bond_flags = bond_flags.clone();
 
@@ -460,32 +476,92 @@ mod tests {
         CachedFlag {
             vote_accounts: vote_accounts.iter().map(|v| v.to_string()).collect(),
             consecutive_fallbacks,
+            last_success: None,
         }
     }
 
     #[test]
-    fn an_empty_upstream_answer_is_stored_rather_than_counted_as_a_fallback() {
-        let resolved =
-            resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 3)).unwrap();
+    fn a_successful_answer_stamps_the_fetch_time() {
+        let resolved = resolve_flag(
+            "protected",
+            Ok(HashSet::from(["voteTwo".to_string()])),
+            flag(&["voteOne"], 2),
+        )
+        .unwrap();
 
-        assert!(
-            resolved.vote_accounts.is_empty(),
-            "upstream saying nobody is protected has to reach the records"
+        assert_eq!(
+            resolved.vote_accounts,
+            HashSet::from(["voteTwo".to_string()])
         );
         assert_eq!(resolved.consecutive_fallbacks, 0);
+        assert!(
+            resolved.last_success.is_some(),
+            "consumers read this to tell a reused list from a fresh one"
+        );
     }
 
     #[test]
-    fn a_fetch_failure_reuses_the_last_known_list_and_counts_it() {
+    fn an_empty_answer_holds_the_last_known_list_until_it_repeats() {
+        let resolved =
+            resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1)).unwrap();
+
+        assert_eq!(
+            resolved.vote_accounts,
+            flag(&["voteOne"], 0).vote_accounts,
+            "one empty answer is more likely an upstream fault than the truth"
+        );
+        assert_eq!(resolved.consecutive_fallbacks, 2);
+    }
+
+    #[test]
+    fn an_empty_answer_that_survives_the_bound_becomes_the_answer() {
+        let resolved = resolve_flag(
+            "protected",
+            Ok(HashSet::new()),
+            flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
+        )
+        .unwrap();
+
+        assert!(
+            resolved.vote_accounts.is_empty(),
+            "upstream saying nobody is protected has to reach the records eventually"
+        );
+        assert_eq!(resolved.consecutive_fallbacks, 0);
+        assert!(resolved.last_success.is_some());
+    }
+
+    #[test]
+    fn an_empty_answer_on_a_cold_start_is_taken_at_face_value() {
+        let resolved =
+            resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default()).unwrap();
+
+        assert!(
+            resolved.vote_accounts.is_empty(),
+            "there is no list to protect, and refusing would strand every cached endpoint"
+        );
+        assert!(resolved.last_success.is_some());
+    }
+
+    #[test]
+    fn a_fetch_failure_reuses_the_last_known_list_and_keeps_its_fetch_time() {
+        let fetched_at = SystemTime::now();
         let resolved = resolve_flag(
             "protected",
             Err(anyhow::anyhow!("bonds api down")),
-            flag(&["voteOne"], 1),
+            CachedFlag {
+                last_success: Some(fetched_at),
+                ..flag(&["voteOne"], 1)
+            },
         )
         .unwrap();
 
         assert_eq!(resolved.vote_accounts, flag(&["voteOne"], 0).vote_accounts);
         assert_eq!(resolved.consecutive_fallbacks, 2);
+        assert_eq!(
+            resolved.last_success,
+            Some(fetched_at),
+            "a reused list has to keep reporting when upstream last answered"
+        );
     }
 
     #[test]
