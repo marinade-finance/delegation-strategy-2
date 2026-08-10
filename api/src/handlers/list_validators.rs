@@ -50,7 +50,7 @@ pub struct QueryParams {
     /// Evaluated over the last 90 epochs of incidents, regardless of `epochs` and `query_from_date`.
     query_incident_free: Option<bool>,
     /// Minimum downtime in seconds for a `DOWN` interval to count as an incident for `query_incident_free`. Shorter intervals are restart noise. Ignored unless `query_incident_free` is set, and never filters the returned `incidents` array.
-    min_downtime_seconds: Option<u64>,
+    min_incident_downtime_seconds: Option<u64>,
     query_verified: Option<bool>,
     query_protected: Option<bool>,
     query_flagged: Option<bool>,
@@ -93,7 +93,7 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
-    pub min_downtime_seconds: Option<u64>,
+    pub min_incident_downtime_seconds: Option<u64>,
     pub query_verified: Option<bool>,
     pub query_protected: Option<bool>,
     pub query_flagged: Option<bool>,
@@ -268,12 +268,12 @@ pub fn filter_validators(
     }
 
     if let Some(query_incident_free) = config.query_incident_free {
-        let min_downtime = config.min_downtime_seconds.unwrap_or(0);
+        let min_incident_downtime = config.min_incident_downtime_seconds.unwrap_or(0);
         validators.retain(|_, v| {
             let has_incident = v
                 .incidents
                 .iter()
-                .any(|i| i.downtime_seconds >= min_downtime);
+                .any(|i| i.downtime_seconds >= min_incident_downtime);
             has_incident != query_incident_free
         });
     }
@@ -330,7 +330,7 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
-        min_downtime_seconds: query_params.min_downtime_seconds,
+        min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
         query_verified: query_params.query_verified,
         query_protected: query_params.query_protected,
         query_flagged: query_params.query_flagged,
@@ -513,7 +513,7 @@ mod tests {
             query_with_names: None,
             query_sfdp: None,
             query_incident_free: None,
-            min_downtime_seconds: None,
+            min_incident_downtime_seconds: None,
             query_verified: None,
             query_protected: None,
             query_flagged: None,
@@ -666,7 +666,7 @@ mod tests {
         ]);
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
-            min_downtime_seconds: Some(180),
+            min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert_eq!(
@@ -680,7 +680,7 @@ mod tests {
         let validators = map(vec![validator_with_incidents("mixed", &[10, 600])]);
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
-            min_downtime_seconds: Some(180),
+            min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert!(filter_validators(validators, &config).is_empty());
@@ -695,7 +695,7 @@ mod tests {
         ]);
         let config = GetValidatorsConfig {
             query_incident_free: Some(false),
-            min_downtime_seconds: Some(180),
+            min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert_eq!(
@@ -705,13 +705,13 @@ mod tests {
     }
 
     #[test]
-    fn min_downtime_alone_filters_nothing() {
+    fn min_incident_downtime_alone_filters_nothing() {
         let validators = map(vec![
             validator_with_incidents("blip", &[179]),
             validator_with_incidents("outage", &[180]),
         ]);
         let config = GetValidatorsConfig {
-            min_downtime_seconds: Some(180),
+            min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert_eq!(filter_validators(validators, &config).len(), 2);
