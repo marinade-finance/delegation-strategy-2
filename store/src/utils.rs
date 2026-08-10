@@ -798,6 +798,41 @@ pub async fn load_protected_validators(base: &str) -> anyhow::Result<HashSet<Str
     .await
 }
 
+#[derive(serde::Deserialize)]
+struct LatestValidatorApyRecord {
+    apy: f64,
+}
+
+// `what` names the upstream in the status error; it is the only part of this that differs per caller.
+async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> anyhow::Result<T> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()?;
+    let resp = client.get(url).send().await?;
+    anyhow::ensure!(
+        resp.status().is_success(),
+        "{what} returned {}",
+        resp.status()
+    );
+    Ok(resp.json::<T>().await?)
+}
+
+// `base` is the apy-api base URL; the rolling window is fixed by that endpoint, so it is deliberately not a parameter here.
+pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String, f64>> {
+    let url = format!(
+        "{}/v1/rolling-apy/validator/latest/all",
+        base.trim_end_matches('/')
+    );
+    Ok(fetch_json::<HashMap<String, LatestValidatorApyRecord>>(
+        &url,
+        "latest validator net APY endpoint",
+    )
+    .await?
+    .into_iter()
+    .map(|(vote_account, record)| (vote_account, record.apy))
+    .collect())
+}
+
 // `base` is the validator-bonds API base URL; `/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
@@ -809,23 +844,16 @@ where
     F: FnOnce(T) -> Vec<String>,
 {
     let url = format!("{}/validators/{flag}", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
-        .build()?;
-    let resp = client.get(&url).send().await?;
-    anyhow::ensure!(
-        resp.status().is_success(),
-        "{flag} endpoint returned {}",
-        resp.status()
-    );
-    Ok(vote_accounts(resp.json::<T>().await?).into_iter().collect())
+    let resp = fetch_json::<T>(&url, &format!("{flag} endpoint")).await?;
+    Ok(vote_accounts(resp).into_iter().collect())
 }
 
-/// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, and the validator-bonds flags the caller resolved.
+/// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, the apy-api net APY, and the validator-bonds flags the caller resolved.
 #[derive(Default)]
 pub struct ValidatorOverlays {
     pub unique_delegators: HashMap<String, u64>,
     pub take_rates: HashMap<String, f64>,
+    pub net_apy: HashMap<String, f64>,
     pub verified: HashSet<String>,
     pub protected: HashSet<String>,
 }
@@ -1054,6 +1082,7 @@ pub async fn load_validators(
                     avg_apy: None,
                     unique_delegators: None,
                     avg_take_rate: None,
+                    net_apy: None,
                     incidents: Vec::new(),
                     verified: false,
                     protected: false,
@@ -1201,6 +1230,11 @@ pub async fn load_validators(
     log::info!("Updating take rates...");
     for (vote_account, record) in records.iter_mut() {
         record.avg_take_rate = overlays.take_rates.get(vote_account).copied();
+    }
+
+    log::info!("Updating net APY...");
+    for (vote_account, record) in records.iter_mut() {
+        record.net_apy = overlays.net_apy.get(vote_account).copied();
     }
 
     log::info!("Records prepared...");

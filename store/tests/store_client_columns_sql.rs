@@ -410,6 +410,7 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
     let overlays = ValidatorOverlays {
         verified: HashSet::from(["voteReported".to_string()]),
         protected: HashSet::from(["voteRegistered".to_string()]),
+        net_apy: HashMap::from([("voteRegistered".to_string(), 0.0712389)]),
         ..Default::default()
     };
     let validators = load_validators(&client, unreachable_scoring_url, 1, 1, &overlays)
@@ -429,6 +430,17 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
         "the two flags are stamped independently"
     );
     assert!(!validators.get("voteRegistered").unwrap().verified);
+
+    assert_eq!(
+        validators.get("voteRegistered").unwrap().net_apy,
+        Some(0.0712389),
+        "the apy-api value must reach the record unrounded"
+    );
+    assert_eq!(
+        validators.get("voteReported").unwrap().net_apy,
+        None,
+        "a vote account apy-api has no value for stays null instead of sorting as zero-ish data"
+    );
 
     for (vote_account, expected) in [
         ("voteRegistered", "Frankendancer + JitoBAM"),

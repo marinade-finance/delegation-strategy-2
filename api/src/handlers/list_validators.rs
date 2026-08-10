@@ -28,6 +28,8 @@ pub struct ResponseValidators {
     total_count: usize,
     /// When validator-bonds last answered for the `verified`/`protected` flags. Older than a few minutes means the flags are being reused because that API is failing.
     bond_flags_updated_at: Option<DateTime<Utc>>,
+    /// When apy-api last answered for `net_apy`. Older than a few minutes means those values are being reused because that API is failing.
+    net_apy_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -67,6 +69,8 @@ pub enum OrderField {
     Credits,
     MarinadeScore,
     Apy,
+    /// Orders by the MEV-inclusive `net_apy`, which is what the validators list renders; `Apy` orders by the inflation-only `avg_apy`.
+    NetApy,
     Commission,
     Uptime,
     TakeRate,
@@ -172,6 +176,14 @@ fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) 
         }
         OrderField::Apy => Box::new(|a: &ValidatorRecord| {
             Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
+        }),
+        // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
+        // collapses hundreds of validators into one bucket and makes the column look unsorted.
+        // Saturating up is safe because apy-api derives this as `ratio^n - 1` from a positive ratio, so an unrepresentable value is always the high end.
+        OrderField::NetApy => Box::new(|a: &ValidatorRecord| {
+            a.net_apy
+                .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
+                .unwrap_or(Decimal::ZERO)
         }),
         OrderField::Commission => {
             Box::new(|a: &ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100)))
@@ -343,12 +355,13 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
-    let bond_flags_updated_at = context
-        .read()
-        .await
-        .cache
-        .bond_flags_updated_at()
-        .map(DateTime::<Utc>::from);
+    let (bond_flags_updated_at, net_apy_updated_at) = {
+        let cache = &context.read().await.cache;
+        (
+            cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
+            cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+        )
+    };
 
     Ok(match validators {
         Ok((validators, total_count)) => {
@@ -359,6 +372,7 @@ pub async fn handler(
                     validators_aggregated,
                     total_count,
                     bond_flags_updated_at,
+                    net_apy_updated_at,
                 }),
                 StatusCode::OK,
             )
@@ -492,6 +506,7 @@ mod tests {
             avg_apy: None,
             unique_delegators: None,
             avg_take_rate: None,
+            net_apy: None,
             incidents: Vec::new(),
             verified: false,
             protected: false,
@@ -738,5 +753,95 @@ mod tests {
         sort_validators(&mut validators, OrderField::Stake, &OrderDirection::DESC);
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["bbb", "aaa"]);
+    }
+
+    fn validator_with_net_apy(vote_account: &str, net_apy: Option<f64>) -> ValidatorRecord {
+        ValidatorRecord {
+            net_apy,
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    #[test]
+    fn sort_by_net_apy_separates_values_differing_below_four_decimals() {
+        // Both values round to the same 4-decimal bucket, and the higher one is alphabetically last,
+        // so rounding would hand back the reverse order instead of ordering by the real value.
+        assert_eq!(
+            to_fixed_for_sort(0.0712389),
+            to_fixed_for_sort(0.0712312),
+            "the values have to share a rounding bucket for this test to be about rounding"
+        );
+        let mut validators = vec![
+            validator_with_net_apy("aaa", Some(0.0712312)),
+            validator_with_net_apy("zzz", Some(0.0712389)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["zzz", "aaa"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_orders_ascending_and_descending() {
+        let ordered = |direction| {
+            let mut validators = vec![
+                validator_with_net_apy("mid", Some(0.07)),
+                validator_with_net_apy("high", Some(0.09)),
+                validator_with_net_apy("low", Some(0.05)),
+            ];
+            sort_validators(&mut validators, OrderField::NetApy, &direction);
+            validators
+                .iter()
+                .map(|v| v.vote_account.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ordered(OrderDirection::DESC), vec!["high", "mid", "low"]);
+        assert_eq!(ordered(OrderDirection::ASC), vec!["low", "mid", "high"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_puts_validators_without_a_value_last_when_descending() {
+        let mut validators = vec![
+            validator_with_net_apy("unknown", None),
+            validator_with_net_apy("known", Some(0.07)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["known", "unknown"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_ranks_a_value_too_large_for_decimal_above_the_ordinary_ones() {
+        // apy-api drops only non-finite points, so an extreme bump can still serve a value that
+        // Decimal cannot hold; it must not land in the same bucket as a validator with no value.
+        assert!(
+            Decimal::from_f64_retain(1e30).is_none(),
+            "the value has to exceed Decimal's range for this test to be about saturation"
+        );
+        let mut validators = vec![
+            validator_with_net_apy("ordinary", Some(0.07)),
+            validator_with_net_apy("absurd", Some(1e30)),
+            validator_with_net_apy("unknown", None),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["absurd", "ordinary", "unknown"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_is_independent_of_the_inflation_only_apy() {
+        // avg_apy is inflation-only and orders differently; ordering by NetApy must ignore it.
+        let mut validators = vec![
+            ValidatorRecord {
+                avg_apy: Some(0.08),
+                ..validator_with_net_apy("lowNet", Some(0.05))
+            },
+            ValidatorRecord {
+                avg_apy: Some(0.04),
+                ..validator_with_net_apy("highNet", Some(0.11))
+            },
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["highNet", "lowNet"]);
     }
 }

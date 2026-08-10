@@ -9,6 +9,7 @@ pub struct Context {
     pub blacklist_path: String,
     pub scoring_url: String,
     pub validator_bonds_api_url: String,
+    pub apy_api_url: String,
     pub cache: Cache,
 }
 
@@ -19,6 +20,7 @@ impl Context {
         blacklist_path: String,
         scoring_url: String,
         validator_bonds_api_url: String,
+        apy_api_url: String,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             psql_client,
@@ -26,6 +28,7 @@ impl Context {
             blacklist_path,
             scoring_url,
             validator_bonds_api_url,
+            apy_api_url,
             cache: Cache::new(),
         })
     }
