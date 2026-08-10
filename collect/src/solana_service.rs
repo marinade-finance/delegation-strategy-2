@@ -803,20 +803,22 @@ fn fetch_stake_accounts_on_page(
 
     let self_stakes = retry_blocking(
         || {
-            rpc_client.get_program_accounts_with_config(
-                &stake::program::ID,
-                RpcProgramAccountsConfig {
-                    filters: Some(filters.clone()),
-                    account_config: RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        commitment: Some(rpc_client.commitment()),
-                        data_slice: None,
-                        min_context_slot: None,
+            rpc_client
+                .get_program_accounts_with_config(
+                    &stake::program::ID,
+                    RpcProgramAccountsConfig {
+                        filters: Some(filters.clone()),
+                        account_config: RpcAccountInfoConfig {
+                            encoding: Some(UiAccountEncoding::Base64),
+                            commitment: Some(rpc_client.commitment()),
+                            data_slice: None,
+                            min_context_slot: None,
+                        },
+                        with_context: None,
+                        sort_results: None,
                     },
-                    with_context: None,
-                    sort_results: None,
-                },
-            )
+                )
+                .map_err(Box::new)
         },
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {

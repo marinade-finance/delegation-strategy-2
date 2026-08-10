@@ -193,26 +193,28 @@ fn fetch_program_accounts_with_retry(
     let account_size = jito_account_type.account_size();
     retry_blocking(
         || {
-            client.get_program_accounts_with_config(
-                &program_id,
-                RpcProgramAccountsConfig {
-                    filters: Some(vec![
-                        RpcFilterType::DataSize(account_size.try_into().unwrap()),
-                        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                            byte_pos,
-                            epoch.to_le_bytes().to_vec(),
-                        )),
-                    ]),
-                    account_config: RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        data_slice: None,
-                        commitment: None,
-                        min_context_slot: None,
+            client
+                .get_program_accounts_with_config(
+                    &program_id,
+                    RpcProgramAccountsConfig {
+                        filters: Some(vec![
+                            RpcFilterType::DataSize(account_size.try_into().unwrap()),
+                            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                                byte_pos,
+                                epoch.to_le_bytes().to_vec(),
+                            )),
+                        ]),
+                        account_config: RpcAccountInfoConfig {
+                            encoding: Some(UiAccountEncoding::Base64),
+                            data_slice: None,
+                            commitment: None,
+                            min_context_slot: None,
+                        },
+                        with_context: None,
+                        sort_results: None,
                     },
-                    with_context: None,
-                    sort_results: None,
-                },
-            )
+                )
+                .map_err(Box::new)
         },
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
@@ -225,7 +227,7 @@ fn fetch_program_accounts_with_retry(
         },
     )
     .map_err(|e| {
-        anyhow::Error::new(e).context(format!(
+        anyhow::Error::new(*e).context(format!(
             "Failed to fetch program accounts for program_id: {program_id} at index {byte_pos}"
         ))
     })

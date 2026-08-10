@@ -1,13 +1,15 @@
 use crate::context::WrappedContext;
 use log::{error, info};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
     ValidatorScoreRecord, VersionRecord,
 };
 use tokio::time::{sleep, Duration, Instant};
+
+use store::utils::ValidatorOverlays;
 
 pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
@@ -31,8 +33,23 @@ pub struct CachedMultiRunScores {
     pub scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
 }
 
+/// One validator-bonds flag list, how many refreshes in a row fell back to it, and when upstream last answered.
+#[derive(Default, Clone)]
+pub struct CachedFlag {
+    pub vote_accounts: HashSet<String>,
+    pub consecutive_fallbacks: u32,
+    pub last_success: Option<SystemTime>,
+}
+
+#[derive(Default, Clone)]
+pub struct CachedBondFlags {
+    pub verified: CachedFlag,
+    pub protected: CachedFlag,
+}
+
 #[derive(Default)]
 pub struct Cache {
+    pub bond_flags: CachedBondFlags,
     pub validators: CachedValidators,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
@@ -103,6 +120,13 @@ impl Cache {
         self.validators.clone()
     }
 
+    // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
+    pub fn bond_flags_updated_at(&self) -> Option<SystemTime> {
+        let verified = self.bond_flags.verified.last_success?;
+        let protected = self.bond_flags.protected.last_success?;
+        Some(verified.min(protected))
+    }
+
     pub fn get_commissions(&self, vote_account: &String) -> Option<Vec<CommissionRecord>> {
         self.commissions.get(vote_account).cloned()
     }
@@ -165,6 +189,54 @@ impl Cache {
     }
 }
 
+/// Bounded so a permanently broken bonds API surfaces as an outage instead of flags frozen forever.
+const MAX_FLAG_FALLBACK_CYCLES: u32 = 6;
+
+fn resolve_flag(
+    flag: &str,
+    fetched: anyhow::Result<HashSet<String>>,
+    last: CachedFlag,
+) -> anyhow::Result<CachedFlag> {
+    // An empty list is more often an upstream fault than the truth, so it is believed only once it
+    // survives the same bound a failure gets.
+    let err = match fetched {
+        Ok(vote_accounts) if !vote_accounts.is_empty() => {
+            return Ok(CachedFlag {
+                vote_accounts,
+                consecutive_fallbacks: 0,
+                last_success: Some(SystemTime::now()),
+            })
+        }
+        Ok(_) => None,
+        Err(err) => Some(err),
+    };
+
+    let consecutive_fallbacks = last.consecutive_fallbacks + 1;
+    if last.vote_accounts.is_empty() || consecutive_fallbacks >= MAX_FLAG_FALLBACK_CYCLES {
+        return match err {
+            None => Ok(CachedFlag {
+                vote_accounts: HashSet::new(),
+                consecutive_fallbacks: 0,
+                last_success: Some(SystemTime::now()),
+            }),
+            Some(err) => Err(err),
+        };
+    }
+
+    match &err {
+        None => error!(
+            "The {flag} endpoint lists nobody, holding the last known list until it repeats ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES})"
+        ),
+        Some(err) => error!(
+            "Failed to load {flag} validators, reusing the last known list ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
+        ),
+    }
+    Ok(CachedFlag {
+        consecutive_fallbacks,
+        ..last
+    })
+}
+
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
@@ -178,14 +250,40 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .map(|c| (c.unique_delegators.clone(), c.take_rates.clone()))
         .unwrap_or_default();
 
+    // Scoped so the guard is released before the awaits below, not held to the end of the call.
+    let (scoring_url, bonds_url, last_flags) = {
+        let ctx = context.read().await;
+        (
+            ctx.scoring_url.clone(),
+            ctx.validator_bonds_api_url.clone(),
+            ctx.cache.bond_flags.clone(),
+        )
+    };
+
+    let (verified, protected) = tokio::join!(
+        store::utils::load_verified_validators(&bonds_url),
+        store::utils::load_protected_validators(&bonds_url),
+    );
+
+    let bond_flags = CachedBondFlags {
+        verified: resolve_flag("verified", verified, last_flags.verified)?,
+        protected: resolve_flag("protected", protected, last_flags.protected)?,
+    };
+    context.write().await.cache.bond_flags = bond_flags.clone();
+
+    let overlays = ValidatorOverlays {
+        unique_delegators,
+        take_rates,
+        verified: bond_flags.verified.vote_accounts,
+        protected: bond_flags.protected.vote_accounts,
+    };
+
     let validators = store::utils::load_validators(
         &context.read().await.psql_client,
-        context.read().await.scoring_url.clone(),
-        context.read().await.validator_bonds_api_url.clone(),
+        scoring_url,
         DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
-        &unique_delegators,
-        &take_rates,
+        &overlays,
     )
     .await?;
 
@@ -368,4 +466,127 @@ pub fn spawn_cache_warmer(context: WrappedContext) {
             sleep(Duration::from_secs(run_every.as_secs() - sleep_seconds)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flag(vote_accounts: &[&str], consecutive_fallbacks: u32) -> CachedFlag {
+        CachedFlag {
+            vote_accounts: vote_accounts.iter().map(|v| v.to_string()).collect(),
+            consecutive_fallbacks,
+            last_success: None,
+        }
+    }
+
+    #[test]
+    fn a_successful_answer_stamps_the_fetch_time() {
+        let resolved = resolve_flag(
+            "protected",
+            Ok(HashSet::from(["voteTwo".to_string()])),
+            flag(&["voteOne"], 2),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.vote_accounts,
+            HashSet::from(["voteTwo".to_string()])
+        );
+        assert_eq!(resolved.consecutive_fallbacks, 0);
+        assert!(
+            resolved.last_success.is_some(),
+            "consumers read this to tell a reused list from a fresh one"
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_holds_the_last_known_list_until_it_repeats() {
+        let resolved =
+            resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1)).unwrap();
+
+        assert_eq!(
+            resolved.vote_accounts,
+            flag(&["voteOne"], 0).vote_accounts,
+            "one empty answer is more likely an upstream fault than the truth"
+        );
+        assert_eq!(resolved.consecutive_fallbacks, 2);
+    }
+
+    #[test]
+    fn an_empty_answer_that_survives_the_bound_becomes_the_answer() {
+        let resolved = resolve_flag(
+            "protected",
+            Ok(HashSet::new()),
+            flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
+        )
+        .unwrap();
+
+        assert!(
+            resolved.vote_accounts.is_empty(),
+            "upstream saying nobody is protected has to reach the records eventually"
+        );
+        assert_eq!(resolved.consecutive_fallbacks, 0);
+        assert!(resolved.last_success.is_some());
+    }
+
+    #[test]
+    fn an_empty_answer_on_a_cold_start_is_taken_at_face_value() {
+        let resolved =
+            resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default()).unwrap();
+
+        assert!(
+            resolved.vote_accounts.is_empty(),
+            "there is no list to protect, and refusing would strand every cached endpoint"
+        );
+        assert!(resolved.last_success.is_some());
+    }
+
+    #[test]
+    fn a_fetch_failure_reuses_the_last_known_list_and_keeps_its_fetch_time() {
+        let fetched_at = SystemTime::now();
+        let resolved = resolve_flag(
+            "protected",
+            Err(anyhow::anyhow!("bonds api down")),
+            CachedFlag {
+                last_success: Some(fetched_at),
+                ..flag(&["voteOne"], 1)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.vote_accounts, flag(&["voteOne"], 0).vote_accounts);
+        assert_eq!(resolved.consecutive_fallbacks, 2);
+        assert_eq!(
+            resolved.last_success,
+            Some(fetched_at),
+            "a reused list has to keep reporting when upstream last answered"
+        );
+    }
+
+    #[test]
+    fn a_fetch_failure_with_nothing_to_reuse_propagates() {
+        assert!(
+            resolve_flag(
+                "protected",
+                Err(anyhow::anyhow!("bonds api down")),
+                CachedFlag::default(),
+            )
+            .is_err(),
+            "a cold process has no list to fall back to"
+        );
+    }
+
+    #[test]
+    fn the_fallback_is_bounded() {
+        assert!(
+            resolve_flag(
+                "protected",
+                Err(anyhow::anyhow!("bonds api down")),
+                flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
+            )
+            .is_err(),
+            "a permanently broken upstream has to surface instead of freezing the list"
+        );
+    }
 }

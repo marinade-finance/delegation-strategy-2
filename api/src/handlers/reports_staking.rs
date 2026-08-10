@@ -66,8 +66,7 @@ async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<Staki
                 let current_epoch_stats = validator
                     .epoch_stats
                     .iter()
-                    .filter(|validator| validator.epoch == last_epoch)
-                    .next_back();
+                    .rfind(|validator| validator.epoch == last_epoch);
                 match current_epoch_stats {
                     Some(current_epoch_stats) => records.push(StakingChange {
                         identity: validator.identity.clone(),
