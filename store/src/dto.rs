@@ -335,7 +335,7 @@ pub struct ValidatorRecord {
     pub incidents: Vec<IncidentRecord>,
     #[serde(default)]
     pub verified: bool,
-    /// Listed by the validator-bonds `/validators/protected` endpoint, which owns the rule and is the place to read it. A presence check, not a sufficiency check: never compared against the stake routed to this validator, and true for either staker population without saying which.
+    /// As listed by the validator-bonds `/validators/protected` endpoint, which owns the rule.
     #[serde(default)]
     pub protected: bool,
 }
