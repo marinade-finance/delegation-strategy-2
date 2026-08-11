@@ -196,16 +196,16 @@ fn resolve_flag(
     flag: &str,
     fetched: anyhow::Result<HashSet<String>>,
     last: CachedFlag,
-) -> anyhow::Result<CachedFlag> {
+) -> CachedFlag {
     // An empty list is more often an upstream fault than the truth, so it is believed only once it
     // survives the same bound a failure gets.
     let err = match fetched {
         Ok(vote_accounts) if !vote_accounts.is_empty() => {
-            return Ok(CachedFlag {
+            return CachedFlag {
                 vote_accounts,
                 consecutive_fallbacks: 0,
                 last_success: Some(SystemTime::now()),
-            })
+            }
         }
         Ok(_) => None,
         Err(err) => Some(err),
@@ -214,12 +214,18 @@ fn resolve_flag(
     let consecutive_fallbacks = last.consecutive_fallbacks + 1;
     if last.vote_accounts.is_empty() || consecutive_fallbacks >= MAX_FLAG_FALLBACK_CYCLES {
         return match err {
-            None => Ok(CachedFlag {
+            None => CachedFlag {
                 vote_accounts: HashSet::new(),
                 consecutive_fallbacks: 0,
                 last_success: Some(SystemTime::now()),
-            }),
-            Some(err) => Err(err),
+            },
+            Some(err) => {
+                error!("Failed to load {flag} validators, reporting the flags as unknown: {err}");
+                // A default's `last_success: None` is what surfaces the outage on the response, as
+                // a null bond_flags_updated_at. Failing here instead would strand the whole
+                // validators load, which readiness gates on.
+                CachedFlag::default()
+            }
         };
     }
 
@@ -231,10 +237,10 @@ fn resolve_flag(
             "Failed to load {flag} validators, reusing the last known list ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
         ),
     }
-    Ok(CachedFlag {
+    CachedFlag {
         consecutive_fallbacks,
         ..last
-    })
+    }
 }
 
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
@@ -266,8 +272,8 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     );
 
     let bond_flags = CachedBondFlags {
-        verified: resolve_flag("verified", verified, last_flags.verified)?,
-        protected: resolve_flag("protected", protected, last_flags.protected)?,
+        verified: resolve_flag("verified", verified, last_flags.verified),
+        protected: resolve_flag("protected", protected, last_flags.protected),
     };
     context.write().await.cache.bond_flags = bond_flags.clone();
 
@@ -486,8 +492,7 @@ mod tests {
             "protected",
             Ok(HashSet::from(["voteTwo".to_string()])),
             flag(&["voteOne"], 2),
-        )
-        .unwrap();
+        );
 
         assert_eq!(
             resolved.vote_accounts,
@@ -502,8 +507,7 @@ mod tests {
 
     #[test]
     fn an_empty_answer_holds_the_last_known_list_until_it_repeats() {
-        let resolved =
-            resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1)).unwrap();
+        let resolved = resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1));
 
         assert_eq!(
             resolved.vote_accounts,
@@ -519,8 +523,7 @@ mod tests {
             "protected",
             Ok(HashSet::new()),
             flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
-        )
-        .unwrap();
+        );
 
         assert!(
             resolved.vote_accounts.is_empty(),
@@ -532,8 +535,7 @@ mod tests {
 
     #[test]
     fn an_empty_answer_on_a_cold_start_is_taken_at_face_value() {
-        let resolved =
-            resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default()).unwrap();
+        let resolved = resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default());
 
         assert!(
             resolved.vote_accounts.is_empty(),
@@ -552,8 +554,7 @@ mod tests {
                 last_success: Some(fetched_at),
                 ..flag(&["voteOne"], 1)
             },
-        )
-        .unwrap();
+        );
 
         assert_eq!(resolved.vote_accounts, flag(&["voteOne"], 0).vote_accounts);
         assert_eq!(resolved.consecutive_fallbacks, 2);
@@ -565,28 +566,35 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_failure_with_nothing_to_reuse_propagates() {
+    fn a_fetch_failure_with_nothing_to_reuse_reports_unknown() {
+        let resolved = resolve_flag(
+            "protected",
+            Err(anyhow::anyhow!("bonds api down")),
+            CachedFlag::default(),
+        );
+
+        assert!(resolved.vote_accounts.is_empty());
         assert!(
-            resolve_flag(
-                "protected",
-                Err(anyhow::anyhow!("bonds api down")),
-                CachedFlag::default(),
-            )
-            .is_err(),
-            "a cold process has no list to fall back to"
+            resolved.last_success.is_none(),
+            "a cold process has no list to fall back to, and must not claim upstream answered"
         );
     }
 
     #[test]
     fn the_fallback_is_bounded() {
+        let resolved = resolve_flag(
+            "protected",
+            Err(anyhow::anyhow!("bonds api down")),
+            flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
+        );
+
         assert!(
-            resolve_flag(
-                "protected",
-                Err(anyhow::anyhow!("bonds api down")),
-                flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
-            )
-            .is_err(),
+            resolved.vote_accounts.is_empty(),
             "a permanently broken upstream has to surface instead of freezing the list"
+        );
+        assert!(
+            resolved.last_success.is_none(),
+            "dropping the list without dropping its fetch time would read as a fresh empty list"
         );
     }
 }
