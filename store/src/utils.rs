@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::join;
 use tokio::sync::Semaphore;
-use tokio_postgres::{types::ToSql, Client};
+use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
@@ -73,6 +73,10 @@ impl<'a> InsertQueryCombiner<'a> {
     }
 
     pub async fn execute(&self, client: &mut Client) -> anyhow::Result<Option<u64>> {
+        self.execute_in(&*client).await
+    }
+
+    pub async fn execute_in(&self, client: &impl GenericClient) -> anyhow::Result<Option<u64>> {
         if self.insertions == 0 {
             return Ok(None);
         }
@@ -1840,7 +1844,10 @@ pub async fn store_scoring(
     component_weights: Vec<f64>,
     scores: Vec<ValidatorScoringCsvRow>,
 ) -> anyhow::Result<()> {
-    let scoring_run_result = psql_client
+    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
+    let tx = psql_client.transaction().await?;
+
+    let scoring_run_result = tx
         .query_one(
             "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
             VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
@@ -1936,8 +1943,10 @@ pub async fn store_scoring(
             ];
             query.add(&mut params);
         }
-        query.execute(psql_client).await?;
+        query.execute_in(&tx).await?;
     }
+
+    tx.commit().await?;
 
     Ok(())
 }

@@ -221,9 +221,7 @@ fn resolve_flag(
             },
             Some(err) => {
                 error!("Failed to load {flag} validators, reporting the flags as unknown: {err}");
-                // A default's `last_success: None` is what surfaces the outage on the response, as
-                // a null bond_flags_updated_at. Failing here instead would strand the whole
-                // validators load, which readiness gates on.
+                // Erroring instead would strand the validators load, which readiness gates on.
                 CachedFlag::default()
             }
         };
@@ -275,13 +273,11 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         verified: resolve_flag("verified", verified, last_flags.verified),
         protected: resolve_flag("protected", protected, last_flags.protected),
     };
-    context.write().await.cache.bond_flags = bond_flags.clone();
-
     let overlays = ValidatorOverlays {
         unique_delegators,
         take_rates,
-        verified: bond_flags.verified.vote_accounts,
-        protected: bond_flags.protected.vote_accounts,
+        verified: bond_flags.verified.vote_accounts.clone(),
+        protected: bond_flags.protected.vote_accounts.clone(),
     };
 
     let validators = store::utils::load_validators(
@@ -293,17 +289,19 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
+    let validators_len = validators.len();
     {
+        // Flags publish with the records they stamped, so their timestamp cannot outrun them.
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
         }
-        ctx.cache.validators.clone_from(&validators);
+        ctx.cache.bond_flags = bond_flags;
+        ctx.cache.validators = validators;
     }
 
     info!(
-        "Loaded {} validators to cache in {} ms",
-        validators.len(),
+        "Loaded {validators_len} validators to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -316,15 +314,10 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
         store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context
-        .write()
-        .await
-        .cache
-        .commissions
-        .clone_from(&commissions);
+    let commissions_len = commissions.len();
+    context.write().await.cache.commissions = commissions;
     info!(
-        "Loaded {} commissions to cache in {} ms",
-        commissions.len(),
+        "Loaded {commissions_len} commissions to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -337,10 +330,10 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
         store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context.write().await.cache.versions.clone_from(&versions);
+    let versions_len = versions.len();
+    context.write().await.cache.versions = versions;
     info!(
-        "Loaded {} versions to cache in {} ms",
-        versions.len(),
+        "Loaded {versions_len} versions to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -352,10 +345,10 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     let uptimes =
         store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
 
-    context.write().await.cache.uptimes.clone_from(&uptimes);
+    let uptimes_len = uptimes.len();
+    context.write().await.cache.uptimes = uptimes;
     info!(
-        "Loaded {} uptimes to cache in {} ms",
-        uptimes.len(),
+        "Loaded {uptimes_len} uptimes to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -382,6 +375,22 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
 
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+    let scoring_run_id = last_scoring_run.as_ref().map(|run| run.scoring_run_id);
+    let cached_scoring_run_id = context
+        .read()
+        .await
+        .cache
+        .validators_single_run_scores
+        .scoring_run
+        .as_ref()
+        .map(|run| run.scoring_run_id);
+
+    // The id is a max over the whole table, so a run backfilling an older epoch bumps it too.
+    if scoring_run_id.is_some() && scoring_run_id == cached_scoring_run_id {
+        info!("Scoring run unchanged, keeping the cached scores");
+        return Ok(());
+    }
+
     let scores = match &last_scoring_run {
         Some(scoring_run) => {
             store::utils::load_scores(
@@ -395,39 +404,26 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     let multi_run_scores =
         store::scoring::load_all_scores(&context.read().await.psql_client).await?;
 
-    let last_scoring_run =
-        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
-
     let multi_run_scoring_runs =
         store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
 
     let scores_len = scores.len();
     let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_single_run_scores
-        .clone_from(&CachedSingleRunScores {
-            scoring_run: last_scoring_run,
-            scores,
-        });
+    context.write().await.cache.validators_single_run_scores = CachedSingleRunScores {
+        scoring_run: last_scoring_run,
+        scores,
+    };
     info!(
         "Loaded {} single run scores to cache in {} ms",
         scores_len,
         warmup_timer.elapsed().as_millis()
     );
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_multi_run_scores
-        .clone_from(&CachedMultiRunScores {
-            scoring_runs: Some(multi_run_scoring_runs),
-            scores: multi_run_scores,
-        });
+    context.write().await.cache.validators_multi_run_scores = CachedMultiRunScores {
+        scoring_runs: Some(multi_run_scoring_runs),
+        scores: multi_run_scores,
+    };
     info!(
         "Loaded {} multiple run scores to cache in {} ms",
         multi_run_scores_len,
