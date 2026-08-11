@@ -208,16 +208,16 @@ fn resolve_flag(
     flag: &str,
     fetched: anyhow::Result<HashSet<String>>,
     last: CachedFlag,
-) -> anyhow::Result<CachedFlag> {
+) -> CachedFlag {
     // An empty list is more often an upstream fault than the truth, so it is believed only once it
     // survives the same bound a failure gets.
     let err = match fetched {
         Ok(vote_accounts) if !vote_accounts.is_empty() => {
-            return Ok(CachedFlag {
+            return CachedFlag {
                 vote_accounts,
                 consecutive_fallbacks: 0,
                 last_success: Some(SystemTime::now()),
-            })
+            }
         }
         Ok(_) => None,
         Err(err) => Some(err),
@@ -226,12 +226,16 @@ fn resolve_flag(
     let consecutive_fallbacks = last.consecutive_fallbacks + 1;
     if last.vote_accounts.is_empty() || consecutive_fallbacks >= MAX_FLAG_FALLBACK_CYCLES {
         return match err {
-            None => Ok(CachedFlag {
+            None => CachedFlag {
                 vote_accounts: HashSet::new(),
                 consecutive_fallbacks: 0,
                 last_success: Some(SystemTime::now()),
-            }),
-            Some(err) => Err(err),
+            },
+            Some(err) => {
+                error!("Failed to load {flag} validators, reporting the flags as unknown: {err}");
+                // Erroring instead would strand the validators load, which readiness gates on.
+                CachedFlag::default()
+            }
         };
     }
 
@@ -243,16 +247,16 @@ fn resolve_flag(
             "Failed to load {flag} validators, reusing the last known list ({consecutive_fallbacks}/{MAX_FLAG_FALLBACK_CYCLES}): {err}"
         ),
     }
-    Ok(CachedFlag {
+    CachedFlag {
         consecutive_fallbacks,
         ..last
-    })
+    }
 }
 
 /// Bounded by age, not by a fallback count like the flags: this moves once per epoch, so reuse stays accurate until three days clear a real epoch.
 const MAX_NET_APY_REUSE: Duration = Duration::from_secs(3 * 24 * 3600);
 
-/// Never errors, unlike `resolve_flag`: a broken apy-api must not stop the validators cache refreshing, so it degrades to reusing and then to serving nothing.
+/// A broken apy-api must not stop the validators cache refreshing, so it degrades to reusing and then to serving nothing.
 fn resolve_net_apy(
     fetched: anyhow::Result<HashMap<String, f64>>,
     last: CachedNetApy,
@@ -312,19 +316,17 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     );
 
     let bond_flags = CachedBondFlags {
-        verified: resolve_flag("verified", verified, last_flags.verified)?,
-        protected: resolve_flag("protected", protected, last_flags.protected)?,
+        verified: resolve_flag("verified", verified, last_flags.verified),
+        protected: resolve_flag("protected", protected, last_flags.protected),
     };
-    context.write().await.cache.bond_flags = bond_flags.clone();
-
     let net_apy = resolve_net_apy(net_apy, last_net_apy);
 
     let overlays = ValidatorOverlays {
         unique_delegators,
         take_rates,
         net_apy: net_apy.values.clone(),
-        verified: bond_flags.verified.vote_accounts,
-        protected: bond_flags.protected.vote_accounts,
+        verified: bond_flags.verified.vote_accounts.clone(),
+        protected: bond_flags.protected.vote_accounts.clone(),
     };
 
     let validators = store::utils::load_validators(
@@ -336,19 +338,20 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // net_apy commits with the records carrying it, so its timestamp cannot outrun what is served.
+    let validators_len = validators.len();
     {
+        // Flags and net APY publish with the records they stamped, so their timestamps cannot outrun them.
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
         }
+        ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
-        ctx.cache.validators.clone_from(&validators);
+        ctx.cache.validators = validators;
     }
 
     info!(
-        "Loaded {} validators to cache in {} ms",
-        validators.len(),
+        "Loaded {validators_len} validators to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -361,15 +364,10 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
         store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context
-        .write()
-        .await
-        .cache
-        .commissions
-        .clone_from(&commissions);
+    let commissions_len = commissions.len();
+    context.write().await.cache.commissions = commissions;
     info!(
-        "Loaded {} commissions to cache in {} ms",
-        commissions.len(),
+        "Loaded {commissions_len} commissions to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -382,10 +380,10 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
         store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
             .await?;
 
-    context.write().await.cache.versions.clone_from(&versions);
+    let versions_len = versions.len();
+    context.write().await.cache.versions = versions;
     info!(
-        "Loaded {} versions to cache in {} ms",
-        versions.len(),
+        "Loaded {versions_len} versions to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -397,10 +395,10 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     let uptimes =
         store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
 
-    context.write().await.cache.uptimes.clone_from(&uptimes);
+    let uptimes_len = uptimes.len();
+    context.write().await.cache.uptimes = uptimes;
     info!(
-        "Loaded {} uptimes to cache in {} ms",
-        uptimes.len(),
+        "Loaded {uptimes_len} uptimes to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -427,6 +425,22 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
 
     let last_scoring_run =
         store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+    let scoring_run_id = last_scoring_run.as_ref().map(|run| run.scoring_run_id);
+    let cached_scoring_run_id = context
+        .read()
+        .await
+        .cache
+        .validators_single_run_scores
+        .scoring_run
+        .as_ref()
+        .map(|run| run.scoring_run_id);
+
+    // The id is a max over the whole table, so a run backfilling an older epoch bumps it too.
+    if scoring_run_id.is_some() && scoring_run_id == cached_scoring_run_id {
+        info!("Scoring run unchanged, keeping the cached scores");
+        return Ok(());
+    }
+
     let scores = match &last_scoring_run {
         Some(scoring_run) => {
             store::utils::load_scores(
@@ -440,39 +454,26 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     let multi_run_scores =
         store::scoring::load_all_scores(&context.read().await.psql_client).await?;
 
-    let last_scoring_run =
-        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
-
     let multi_run_scoring_runs =
         store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
 
     let scores_len = scores.len();
     let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_single_run_scores
-        .clone_from(&CachedSingleRunScores {
-            scoring_run: last_scoring_run,
-            scores,
-        });
+    context.write().await.cache.validators_single_run_scores = CachedSingleRunScores {
+        scoring_run: last_scoring_run,
+        scores,
+    };
     info!(
         "Loaded {} single run scores to cache in {} ms",
         scores_len,
         warmup_timer.elapsed().as_millis()
     );
 
-    context
-        .write()
-        .await
-        .cache
-        .validators_multi_run_scores
-        .clone_from(&CachedMultiRunScores {
-            scoring_runs: Some(multi_run_scoring_runs),
-            scores: multi_run_scores,
-        });
+    context.write().await.cache.validators_multi_run_scores = CachedMultiRunScores {
+        scoring_runs: Some(multi_run_scoring_runs),
+        scores: multi_run_scores,
+    };
     info!(
         "Loaded {} multiple run scores to cache in {} ms",
         multi_run_scores_len,
@@ -537,8 +538,7 @@ mod tests {
             "protected",
             Ok(HashSet::from(["voteTwo".to_string()])),
             flag(&["voteOne"], 2),
-        )
-        .unwrap();
+        );
 
         assert_eq!(
             resolved.vote_accounts,
@@ -553,8 +553,7 @@ mod tests {
 
     #[test]
     fn an_empty_answer_holds_the_last_known_list_until_it_repeats() {
-        let resolved =
-            resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1)).unwrap();
+        let resolved = resolve_flag("protected", Ok(HashSet::new()), flag(&["voteOne"], 1));
 
         assert_eq!(
             resolved.vote_accounts,
@@ -570,8 +569,7 @@ mod tests {
             "protected",
             Ok(HashSet::new()),
             flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
-        )
-        .unwrap();
+        );
 
         assert!(
             resolved.vote_accounts.is_empty(),
@@ -583,8 +581,7 @@ mod tests {
 
     #[test]
     fn an_empty_answer_on_a_cold_start_is_taken_at_face_value() {
-        let resolved =
-            resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default()).unwrap();
+        let resolved = resolve_flag("protected", Ok(HashSet::new()), CachedFlag::default());
 
         assert!(
             resolved.vote_accounts.is_empty(),
@@ -603,8 +600,7 @@ mod tests {
                 last_success: Some(fetched_at),
                 ..flag(&["voteOne"], 1)
             },
-        )
-        .unwrap();
+        );
 
         assert_eq!(resolved.vote_accounts, flag(&["voteOne"], 0).vote_accounts);
         assert_eq!(resolved.consecutive_fallbacks, 2);
@@ -616,28 +612,35 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_failure_with_nothing_to_reuse_propagates() {
+    fn a_fetch_failure_with_nothing_to_reuse_reports_unknown() {
+        let resolved = resolve_flag(
+            "protected",
+            Err(anyhow::anyhow!("bonds api down")),
+            CachedFlag::default(),
+        );
+
+        assert!(resolved.vote_accounts.is_empty());
         assert!(
-            resolve_flag(
-                "protected",
-                Err(anyhow::anyhow!("bonds api down")),
-                CachedFlag::default(),
-            )
-            .is_err(),
-            "a cold process has no list to fall back to"
+            resolved.last_success.is_none(),
+            "a cold process has no list to fall back to, and must not claim upstream answered"
         );
     }
 
     #[test]
     fn the_fallback_is_bounded() {
+        let resolved = resolve_flag(
+            "protected",
+            Err(anyhow::anyhow!("bonds api down")),
+            flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
+        );
+
         assert!(
-            resolve_flag(
-                "protected",
-                Err(anyhow::anyhow!("bonds api down")),
-                flag(&["voteOne"], MAX_FLAG_FALLBACK_CYCLES - 1),
-            )
-            .is_err(),
+            resolved.vote_accounts.is_empty(),
             "a permanently broken upstream has to surface instead of freezing the list"
+        );
+        assert!(
+            resolved.last_success.is_none(),
+            "dropping the list without dropping its fetch time would read as a fresh empty list"
         );
     }
 
