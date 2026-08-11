@@ -47,9 +47,17 @@ pub struct CachedBondFlags {
     pub protected: CachedFlag,
 }
 
+/// Latest net APY per vote account as apy-api served it, and when it last answered.
+#[derive(Default, Clone)]
+pub struct CachedNetApy {
+    pub values: HashMap<String, f64>,
+    pub last_success: Option<SystemTime>,
+}
+
 #[derive(Default)]
 pub struct Cache {
     pub bond_flags: CachedBondFlags,
+    pub net_apy: CachedNetApy,
     pub validators: CachedValidators,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
@@ -125,6 +133,10 @@ impl Cache {
         let verified = self.bond_flags.verified.last_success?;
         let protected = self.bond_flags.protected.last_success?;
         Some(verified.min(protected))
+    }
+
+    pub fn net_apy_updated_at(&self) -> Option<SystemTime> {
+        self.net_apy.last_success
     }
 
     pub fn get_commissions(&self, vote_account: &String) -> Option<Vec<CommissionRecord>> {
@@ -241,6 +253,37 @@ fn resolve_flag(
     }
 }
 
+/// Bounded by age, not by a fallback count like the flags: this moves once per epoch, so reuse stays accurate until three days clear a real epoch.
+const MAX_NET_APY_REUSE: Duration = Duration::from_secs(3 * 24 * 3600);
+
+/// A broken apy-api must not stop the validators cache refreshing, so it degrades to reusing and then to serving nothing.
+fn resolve_net_apy(
+    fetched: anyhow::Result<HashMap<String, f64>>,
+    last: CachedNetApy,
+) -> CachedNetApy {
+    let reason = match fetched {
+        Ok(values) if !values.is_empty() => {
+            return CachedNetApy {
+                values,
+                last_success: Some(SystemTime::now()),
+            }
+        }
+        Ok(_) => "apy-api lists no validator net APY".to_string(),
+        Err(err) => format!("Failed to load validator net APY: {err}"),
+    };
+
+    if last
+        .last_success
+        .is_some_and(|at| at.elapsed().is_ok_and(|age| age > MAX_NET_APY_REUSE))
+    {
+        error!("{reason}; the last known values outlived the epoch they describe, serving none");
+        return CachedNetApy::default();
+    }
+
+    error!("{reason}; reusing the last known values");
+    last
+}
+
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
@@ -255,27 +298,33 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .unwrap_or_default();
 
     // Scoped so the guard is released before the awaits below, not held to the end of the call.
-    let (scoring_url, bonds_url, last_flags) = {
+    let (scoring_url, bonds_url, apy_url, last_flags, last_net_apy) = {
         let ctx = context.read().await;
         (
             ctx.scoring_url.clone(),
             ctx.validator_bonds_api_url.clone(),
+            ctx.apy_api_url.clone(),
             ctx.cache.bond_flags.clone(),
+            ctx.cache.net_apy.clone(),
         )
     };
 
-    let (verified, protected) = tokio::join!(
+    let (verified, protected, net_apy) = tokio::join!(
         store::utils::load_verified_validators(&bonds_url),
         store::utils::load_protected_validators(&bonds_url),
+        store::utils::load_validator_net_apy(&apy_url),
     );
 
     let bond_flags = CachedBondFlags {
         verified: resolve_flag("verified", verified, last_flags.verified),
         protected: resolve_flag("protected", protected, last_flags.protected),
     };
+    let net_apy = resolve_net_apy(net_apy, last_net_apy);
+
     let overlays = ValidatorOverlays {
         unique_delegators,
         take_rates,
+        net_apy: net_apy.values.clone(),
         verified: bond_flags.verified.vote_accounts.clone(),
         protected: bond_flags.protected.vote_accounts.clone(),
     };
@@ -291,12 +340,13 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
 
     let validators_len = validators.len();
     {
-        // Flags publish with the records they stamped, so their timestamp cannot outrun them.
+        // Flags and net APY publish with the records they stamped, so their timestamps cannot outrun them.
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
         }
         ctx.cache.bond_flags = bond_flags;
+        ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
     }
 
@@ -592,5 +642,117 @@ mod tests {
             resolved.last_success.is_none(),
             "dropping the list without dropping its fetch time would read as a fresh empty list"
         );
+    }
+
+    fn net_apy(values: &[(&str, f64)], fetched_at: Option<SystemTime>) -> CachedNetApy {
+        CachedNetApy {
+            values: values
+                .iter()
+                .map(|(vote_account, apy)| (vote_account.to_string(), *apy))
+                .collect(),
+            last_success: fetched_at,
+        }
+    }
+
+    #[test]
+    fn a_successful_net_apy_answer_replaces_the_values_and_stamps_the_fetch_time() {
+        let resolved = resolve_net_apy(
+            Ok(HashMap::from([("voteTwo".to_string(), 0.09)])),
+            net_apy(&[("voteOne", 0.07)], Some(SystemTime::now())),
+        );
+
+        assert_eq!(
+            resolved.values,
+            HashMap::from([("voteTwo".to_string(), 0.09)])
+        );
+        assert!(
+            resolved.last_success.is_some(),
+            "consumers read this to tell a reused map from a fresh one"
+        );
+    }
+
+    #[test]
+    fn an_empty_net_apy_answer_reuses_the_last_known_values() {
+        let fetched_at = SystemTime::now();
+        let resolved = resolve_net_apy(
+            Ok(HashMap::new()),
+            net_apy(&[("voteOne", 0.07)], Some(fetched_at)),
+        );
+
+        assert_eq!(
+            resolved.values,
+            HashMap::from([("voteOne".to_string(), 0.07)]),
+            "apy-api knowing nobody is more likely an upstream fault than the truth"
+        );
+        assert_eq!(
+            resolved.last_success,
+            Some(fetched_at),
+            "a reused map has to keep reporting when upstream last answered"
+        );
+    }
+
+    #[test]
+    fn a_net_apy_fetch_failure_reuses_the_last_known_values_and_keeps_its_fetch_time() {
+        let fetched_at = SystemTime::now();
+        let resolved = resolve_net_apy(
+            Err(anyhow::anyhow!("apy api down")),
+            net_apy(&[("voteOne", 0.07)], Some(fetched_at)),
+        );
+
+        assert_eq!(
+            resolved.values,
+            HashMap::from([("voteOne".to_string(), 0.07)])
+        );
+        assert_eq!(resolved.last_success, Some(fetched_at));
+    }
+
+    #[test]
+    fn a_net_apy_fetch_failure_on_a_cold_start_serves_no_values_instead_of_failing() {
+        let resolved = resolve_net_apy(
+            Err(anyhow::anyhow!("apy api down")),
+            CachedNetApy::default(),
+        );
+
+        assert!(resolved.values.is_empty());
+        assert_eq!(
+            resolved.last_success, None,
+            "a cold process must report null rather than a fetch time it never had"
+        );
+    }
+
+    #[test]
+    fn net_apy_values_that_outlived_the_reuse_bound_are_dropped() {
+        let resolved = resolve_net_apy(
+            Err(anyhow::anyhow!("apy api down")),
+            net_apy(
+                &[("voteOne", 0.07)],
+                Some(SystemTime::now() - MAX_NET_APY_REUSE - Duration::from_secs(60)),
+            ),
+        );
+
+        assert!(
+            resolved.values.is_empty(),
+            "a permanently broken apy-api has to stop looking like current data"
+        );
+        assert_eq!(
+            resolved.last_success, None,
+            "with nothing served there is no fetch time to report"
+        );
+    }
+
+    #[test]
+    fn net_apy_values_inside_the_reuse_bound_survive_the_outage() {
+        let fetched_at = SystemTime::now() - MAX_NET_APY_REUSE + Duration::from_secs(60);
+        let resolved = resolve_net_apy(
+            Err(anyhow::anyhow!("apy api down")),
+            net_apy(&[("voteOne", 0.07)], Some(fetched_at)),
+        );
+
+        assert_eq!(
+            resolved.values,
+            HashMap::from([("voteOne".to_string(), 0.07)]),
+            "the rolling APY still describes the epoch it was computed for"
+        );
+        assert_eq!(resolved.last_success, Some(fetched_at));
     }
 }
