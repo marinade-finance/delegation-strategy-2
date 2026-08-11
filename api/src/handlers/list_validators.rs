@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::context::WrappedContext;
@@ -106,11 +107,24 @@ pub struct GetValidatorsConfig {
     pub epochs: usize,
 }
 
+// One guard for the records and the timestamps: read apart, a warm landing in between makes the timestamps describe values this response does not carry.
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
-) -> anyhow::Result<(Vec<ValidatorRecord>, usize)> {
-    let validators = context.read().await.cache.get_validators();
+) -> anyhow::Result<(
+    Vec<ValidatorRecord>,
+    usize,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+)> {
+    let (validators, bond_flags_updated_at, net_apy_updated_at) = {
+        let cache = &context.read().await.cache;
+        (
+            cache.get_validators(),
+            cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
+            cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+        )
+    };
 
     let mut validators = filter_validators(validators, &config);
     let total_count = validators.len();
@@ -147,7 +161,7 @@ pub async fn get_validators(
         })
         .collect();
 
-    Ok((page, total_count))
+    Ok((page, total_count, bond_flags_updated_at, net_apy_updated_at))
 }
 
 // Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
@@ -159,23 +173,32 @@ fn sort_validators(
 ) {
     let field_extractor = get_field_extractor(order_field);
     validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
-        let ord = match order_direction {
-            OrderDirection::ASC => field_extractor(a).cmp(&field_extractor(b)),
-            OrderDirection::DESC => field_extractor(b).cmp(&field_extractor(a)),
+        // A missing value is not a zero one, so it stays last whichever way the present ones go.
+        let ord = match (field_extractor(a), field_extractor(b)) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => match order_direction {
+                OrderDirection::ASC => x.cmp(&y),
+                OrderDirection::DESC => y.cmp(&x),
+            },
         };
         ord.then_with(|| a.vote_account.cmp(&b.vote_account))
     });
 }
 
-fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) -> Decimal> {
+// None means the record has no value for the field, not that it has a zero one.
+type FieldExtractor = Box<dyn Fn(&ValidatorRecord) -> Option<Decimal>>;
+
+fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        OrderField::Stake => Box::new(|a: &ValidatorRecord| a.activated_stake),
-        OrderField::Credits => Box::new(|a: &ValidatorRecord| Decimal::from(a.credits)),
-        OrderField::MarinadeScore => {
-            Box::new(|a: &ValidatorRecord| Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))
-        }
+        OrderField::Stake => Box::new(|a: &ValidatorRecord| Some(a.activated_stake)),
+        OrderField::Credits => Box::new(|a: &ValidatorRecord| Some(Decimal::from(a.credits))),
+        OrderField::MarinadeScore => Box::new(|a: &ValidatorRecord| {
+            Some(Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))
+        }),
         OrderField::Apy => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0)))
+            Some(Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0))))
         }),
         // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
         // collapses hundreds of validators into one bucket and makes the column look unsorted.
@@ -183,16 +206,19 @@ fn get_field_extractor(order_field: OrderField) -> Box<dyn Fn(&ValidatorRecord) 
         OrderField::NetApy => Box::new(|a: &ValidatorRecord| {
             a.net_apy
                 .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
-                .unwrap_or(Decimal::ZERO)
         }),
-        OrderField::Commission => {
-            Box::new(|a: &ValidatorRecord| Decimal::from(a.commission_max_observed.unwrap_or(100)))
-        }
+        OrderField::Commission => Box::new(|a: &ValidatorRecord| {
+            Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
+        }),
         OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_uptime_pct.unwrap_or(0.0)))
+            Some(Decimal::from(to_fixed_for_sort(
+                a.avg_uptime_pct.unwrap_or(0.0),
+            )))
         }),
         OrderField::TakeRate => Box::new(|a: &ValidatorRecord| {
-            Decimal::from(to_fixed_for_sort(a.avg_take_rate.unwrap_or(0.0)))
+            Some(Decimal::from(to_fixed_for_sort(
+                a.avg_take_rate.unwrap_or(0.0),
+            )))
         }),
     }
 }
@@ -355,16 +381,8 @@ pub async fn handler(
 
     let validators = get_validators(context.clone(), config).await;
 
-    let (bond_flags_updated_at, net_apy_updated_at) = {
-        let cache = &context.read().await.cache;
-        (
-            cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
-            cache.net_apy_updated_at().map(DateTime::<Utc>::from),
-        )
-    };
-
     Ok(match validators {
-        Ok((validators, total_count)) => {
+        Ok((validators, total_count, bond_flags_updated_at, net_apy_updated_at)) => {
             let validators_aggregated = store::utils::aggregate_validators(&validators);
             warp::reply::with_status(
                 json(&ResponseValidators {
@@ -807,6 +825,37 @@ mod tests {
         sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["known", "unknown"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_puts_validators_without_a_value_last_when_ascending() {
+        let mut validators = vec![
+            validator_with_net_apy("unknown", None),
+            validator_with_net_apy("known", Some(0.07)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["known", "unknown"],
+            "no value must not read as the lowest APY"
+        );
+    }
+
+    #[test]
+    fn sort_by_net_apy_ranks_a_genuine_zero_above_no_value_when_ascending() {
+        // The no-value one is alphabetically first, so a collision would hand back the tiebreak order and the assert would not be about the collision at all.
+        let mut validators = vec![
+            validator_with_net_apy("aaaUnknown", None),
+            validator_with_net_apy("zzzZero", Some(0.0)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["zzzZero", "aaaUnknown"],
+            "apy-api serves 0.0 for a full-commission validator and omits one with no comparable rate"
+        );
     }
 
     #[test]
