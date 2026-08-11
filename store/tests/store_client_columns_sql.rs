@@ -4,14 +4,12 @@ use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use store::dto::UNKNOWN_CLIENT_NAME;
-use store::utils::{load_validators, load_versions};
+use store::utils::{load_validators, load_versions, ValidatorOverlays};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
@@ -376,29 +374,6 @@ async fn load_versions_serves_unknown_when_no_client_name_is_stored() {
         .unwrap();
 }
 
-// `load_validators` aborts if the validator-bonds API is unreachable, so it must be answered here.
-async fn verified_validators_stub() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut stream = BufReader::new(socket);
-        let mut request_line = Vec::new();
-        stream.read_until(b'\n', &mut request_line).await.unwrap();
-        assert!(
-            String::from_utf8_lossy(&request_line).contains("/validators/verified"),
-            "the stub answers the verified-validators endpoint only"
-        );
-        let body = r#"{"verified_validators":[]}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-    });
-    format!("http://127.0.0.1:{port}")
-}
-
 // `load_validators` derives the label independently of `load_versions` — record and epoch stats.
 #[tokio::test]
 async fn load_validators_labels_the_record_and_its_epoch_stats() {
@@ -432,17 +407,40 @@ async fn load_validators_labels_the_record_and_its_epoch_stats() {
         .unwrap();
 
     let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
-    let validators = load_validators(
-        &client,
-        unreachable_scoring_url,
-        verified_validators_stub().await,
-        1,
-        1,
-        &HashMap::new(),
-        &HashMap::new(),
-    )
-    .await
-    .unwrap();
+    let overlays = ValidatorOverlays {
+        verified: HashSet::from(["voteReported".to_string()]),
+        protected: HashSet::from(["voteRegistered".to_string()]),
+        net_apy: HashMap::from([("voteRegistered".to_string(), 0.0712389)]),
+        ..Default::default()
+    };
+    let validators = load_validators(&client, unreachable_scoring_url, 1, 1, &overlays)
+        .await
+        .unwrap();
+
+    assert!(
+        validators.get("voteRegistered").unwrap().protected,
+        "a vote account the caller resolved as protected must be flagged"
+    );
+    assert!(
+        !validators.get("voteReported").unwrap().protected,
+        "one it did not must not be"
+    );
+    assert!(
+        validators.get("voteReported").unwrap().verified,
+        "the two flags are stamped independently"
+    );
+    assert!(!validators.get("voteRegistered").unwrap().verified);
+
+    assert_eq!(
+        validators.get("voteRegistered").unwrap().net_apy,
+        Some(0.0712389),
+        "the apy-api value must reach the record unrounded"
+    );
+    assert_eq!(
+        validators.get("voteReported").unwrap().net_apy,
+        None,
+        "a vote account apy-api has no value for stays null instead of sorting as zero-ish data"
+    );
 
     for (vote_account, expected) in [
         ("voteRegistered", "Frankendancer + JitoBAM"),

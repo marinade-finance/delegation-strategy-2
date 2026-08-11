@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::join;
 use tokio::sync::Semaphore;
-use tokio_postgres::{types::ToSql, Client};
+use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
@@ -74,6 +74,10 @@ impl<'a> InsertQueryCombiner<'a> {
     }
 
     pub async fn execute(&self, client: &mut Client) -> anyhow::Result<Option<u64>> {
+        self.execute_in(&*client).await
+    }
+
+    pub async fn execute_in(&self, client: &impl GenericClient) -> anyhow::Result<Option<u64>> {
         if self.insertions == 0 {
             return Ok(None);
         }
@@ -783,34 +787,91 @@ struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
 }
 
-// `base` is the validator-bonds API base URL; the verified path is appended here.
+#[derive(serde::Deserialize)]
+struct ProtectedValidatorsResponse {
+    protected_validators: Vec<String>,
+}
+
 pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
-    let url = format!("{}/validators/verified", base.trim_end_matches('/'));
+    load_validator_flag(base, "verified", |resp: VerifiedValidatorsResponse| {
+        resp.verified_validators
+    })
+    .await
+}
+
+pub async fn load_protected_validators(base: &str) -> anyhow::Result<HashSet<String>> {
+    load_validator_flag(base, "protected", |resp: ProtectedValidatorsResponse| {
+        resp.protected_validators
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct LatestValidatorApyRecord {
+    apy: f64,
+}
+
+// `what` names the upstream in the status error; it is the only part of this that differs per caller.
+async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> anyhow::Result<T> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
         .build()?;
-    let resp = client.get(&url).send().await?;
+    let resp = client.get(url).send().await?;
     anyhow::ensure!(
         resp.status().is_success(),
-        "verified endpoint returned {}",
+        "{what} returned {}",
         resp.status()
     );
-    Ok(resp
-        .json::<VerifiedValidatorsResponse>()
-        .await?
-        .verified_validators
-        .into_iter()
-        .collect())
+    Ok(resp.json::<T>().await?)
+}
+
+// `base` is the apy-api base URL; the rolling window is fixed by that endpoint, so it is deliberately not a parameter here.
+pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String, f64>> {
+    let url = format!(
+        "{}/v1/rolling-apy/validator/latest/all",
+        base.trim_end_matches('/')
+    );
+    Ok(fetch_json::<HashMap<String, LatestValidatorApyRecord>>(
+        &url,
+        "latest validator net APY endpoint",
+    )
+    .await?
+    .into_iter()
+    .map(|(vote_account, record)| (vote_account, record.apy))
+    .collect())
+}
+
+// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
+async fn load_validator_flag<T, F>(
+    base: &str,
+    flag: &str,
+    vote_accounts: F,
+) -> anyhow::Result<HashSet<String>>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce(T) -> Vec<String>,
+{
+    let url = format!("{}/v1/validators/{flag}", base.trim_end_matches('/'));
+    let resp = fetch_json::<T>(&url, &format!("{flag} endpoint")).await?;
+    Ok(vote_accounts(resp).into_iter().collect())
+}
+
+/// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, the apy-api net APY, and the validator-bonds flags the caller resolved.
+#[derive(Default)]
+pub struct ValidatorOverlays {
+    pub unique_delegators: HashMap<String, u64>,
+    pub take_rates: HashMap<String, f64>,
+    pub net_apy: HashMap<String, f64>,
+    pub verified: HashSet<String>,
+    pub protected: HashSet<String>,
 }
 
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
-    validator_bonds_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
-    unique_delegators: &HashMap<String, u64>,
-    take_rates: &HashMap<String, f64>,
+    overlays: &ValidatorOverlays,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1029,8 +1090,10 @@ pub async fn load_validators(
                     avg_apy: None,
                     unique_delegators: None,
                     avg_take_rate: None,
+                    net_apy: None,
                     incidents: Vec::new(),
                     verified: false,
+                    protected: false,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -1157,7 +1220,7 @@ pub async fn load_validators(
 
     log::info!("Updating unique delegators...");
     for (vote_account, record) in records.iter_mut() {
-        record.unique_delegators = unique_delegators.get(vote_account).copied();
+        record.unique_delegators = overlays.unique_delegators.get(vote_account).copied();
     }
 
     log::info!("Updating incidents...");
@@ -1166,20 +1229,20 @@ pub async fn load_validators(
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
 
-    log::info!("Updating verified flag...");
-    let verified = load_verified_validators(&validator_bonds_api_url)
-        .await
-        .map_err(|err| {
-            log::error!("Failed to load verified validators, keeping previous cache intact: {err}");
-            err
-        })?;
+    log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
-        record.verified = verified.contains(vote_account);
+        record.verified = overlays.verified.contains(vote_account);
+        record.protected = overlays.protected.contains(vote_account);
     }
 
     log::info!("Updating take rates...");
     for (vote_account, record) in records.iter_mut() {
-        record.avg_take_rate = take_rates.get(vote_account).copied();
+        record.avg_take_rate = overlays.take_rates.get(vote_account).copied();
+    }
+
+    log::info!("Updating net APY...");
+    for (vote_account, record) in records.iter_mut() {
+        record.net_apy = overlays.net_apy.get(vote_account).copied();
     }
 
     log::info!("Records prepared...");
@@ -1725,7 +1788,7 @@ pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAgg
         })
         .collect();
 
-    agg.sort_by(|a, b| b.epoch.cmp(&a.epoch));
+    agg.sort_by_key(|a| std::cmp::Reverse(a.epoch));
 
     agg
 }
@@ -1819,7 +1882,10 @@ pub async fn store_scoring(
     component_weights: Vec<f64>,
     scores: Vec<ValidatorScoringCsvRow>,
 ) -> anyhow::Result<()> {
-    let scoring_run_result = psql_client
+    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
+    let tx = psql_client.transaction().await?;
+
+    let scoring_run_result = tx
         .query_one(
             "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
             VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
@@ -1915,8 +1981,10 @@ pub async fn store_scoring(
             ];
             query.add(&mut params);
         }
-        query.execute(psql_client).await?;
+        query.execute_in(&tx).await?;
     }
+
+    tx.commit().await?;
 
     Ok(())
 }

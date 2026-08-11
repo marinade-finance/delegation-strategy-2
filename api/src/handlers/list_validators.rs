@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::context::WrappedContext;
@@ -26,6 +27,10 @@ pub struct ResponseValidators {
     validators_aggregated: Vec<ValidatorsAggregated>,
     /// Number of validators matching the query and filters, before `offset`/`limit`.
     total_count: usize,
+    /// When validator-bonds last answered for the `verified`/`protected` flags. Older than a few minutes means the flags are being reused because that API is failing.
+    bond_flags_updated_at: Option<DateTime<Utc>>,
+    /// When apy-api last answered for `net_apy`. Older than a few minutes means those values are being reused because that API is failing.
+    net_apy_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -45,8 +50,12 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
+    /// Evaluated over the last 90 epochs of incidents, regardless of `epochs` and `query_from_date`.
     query_incident_free: Option<bool>,
+    /// Minimum downtime in seconds for a `DOWN` interval to count as an incident for `query_incident_free`. Shorter intervals are restart noise. Ignored unless `query_incident_free` is set, and never filters the returned `incidents` array.
+    min_incident_downtime_seconds: Option<u64>,
     query_verified: Option<bool>,
+    query_protected: Option<bool>,
     query_flagged: Option<bool>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
@@ -61,6 +70,8 @@ pub enum OrderField {
     Credits,
     MarinadeScore,
     Apy,
+    /// Orders by the MEV-inclusive `net_apy`, which is what the validators list renders; `Apy` orders by the inflation-only `avg_apy`.
+    NetApy,
     Commission,
     Uptime,
     TakeRate,
@@ -87,18 +98,33 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub min_incident_downtime_seconds: Option<u64>,
     pub query_verified: Option<bool>,
+    pub query_protected: Option<bool>,
     pub query_flagged: Option<bool>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
 }
 
+// One guard for the records and the timestamps: read apart, a warm landing in between makes the timestamps describe values this response does not carry.
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
-) -> anyhow::Result<(Vec<ValidatorRecord>, usize)> {
-    let validators = context.read().await.cache.get_validators();
+) -> anyhow::Result<(
+    Vec<ValidatorRecord>,
+    usize,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+)> {
+    let (validators, bond_flags_updated_at, net_apy_updated_at) = {
+        let cache = &context.read().await.cache;
+        (
+            cache.get_validators(),
+            cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
+            cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+        )
+    };
 
     let mut validators = filter_validators(validators, &config);
     let total_count = validators.len();
@@ -135,7 +161,7 @@ pub async fn get_validators(
         })
         .collect();
 
-    Ok((page, total_count))
+    Ok((page, total_count, bond_flags_updated_at, net_apy_updated_at))
 }
 
 // Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
@@ -146,14 +172,22 @@ fn sort_validators(
     order_direction: &OrderDirection,
 ) {
     let field_extractor = get_field_extractor(order_field);
-    let descending = matches!(order_direction, OrderDirection::DESC);
-    // Missing sinks last in both directions: it must not read as a genuine value at either extreme.
-    validators.sort_by_cached_key(|validator| {
-        let key = field_extractor(validator).map(|value| if descending { -value } else { value });
-        (key.is_none(), key, validator.vote_account.clone())
+    validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
+        // A missing value is not a zero one, so it stays last whichever way the present ones go.
+        let ord = match (field_extractor(a), field_extractor(b)) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => match order_direction {
+                OrderDirection::ASC => x.cmp(&y),
+                OrderDirection::DESC => y.cmp(&x),
+            },
+        };
+        ord.then_with(|| a.vote_account.cmp(&b.vote_account))
     });
 }
 
+// None means the record has no value for the field, not that it has a zero one.
 type FieldExtractor = fn(&ValidatorRecord) -> Option<Decimal>;
 
 // Commission and Uptime keep worst-case sentinels: for those two unknown means risk, not no-data.
@@ -167,6 +201,13 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::Apy => {
             |a: &ValidatorRecord| a.avg_apy.and_then(to_fixed_for_sort).map(Decimal::from)
         }
+        // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
+        // collapses hundreds of validators into one bucket and makes the column look unsorted.
+        // Saturating up is safe because apy-api derives this as `ratio^n - 1` from a positive ratio, so an unrepresentable value is always the high end.
+        OrderField::NetApy => |a: &ValidatorRecord| {
+            a.net_apy
+                .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
+        },
         OrderField::Commission => {
             |a: &ValidatorRecord| Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
         }
@@ -266,11 +307,22 @@ pub fn filter_validators(
     }
 
     if let Some(query_incident_free) = config.query_incident_free {
-        validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
+        let min_incident_downtime = config.min_incident_downtime_seconds.unwrap_or(0);
+        validators.retain(|_, v| {
+            let has_incident = v
+                .incidents
+                .iter()
+                .any(|i| i.downtime_seconds >= min_incident_downtime);
+            has_incident != query_incident_free
+        });
     }
 
     if let Some(query_verified) = config.query_verified {
         validators.retain(|_, v| v.verified == query_verified);
+    }
+
+    if let Some(query_protected) = config.query_protected {
+        validators.retain(|_, v| v.protected == query_protected);
     }
 
     if let Some(query_flagged) = config.query_flagged {
@@ -317,7 +369,9 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
         query_verified: query_params.query_verified,
+        query_protected: query_params.query_protected,
         query_flagged: query_params.query_flagged,
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
@@ -329,13 +383,15 @@ pub async fn handler(
     let validators = get_validators(context.clone(), config).await;
 
     Ok(match validators {
-        Ok((validators, total_count)) => {
+        Ok((validators, total_count, bond_flags_updated_at, net_apy_updated_at)) => {
             let validators_aggregated = store::utils::aggregate_validators(&validators);
             warp::reply::with_status(
                 json(&ResponseValidators {
                     validators,
                     validators_aggregated,
                     total_count,
+                    bond_flags_updated_at,
+                    net_apy_updated_at,
                 }),
                 StatusCode::OK,
             )
@@ -351,7 +407,7 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
 
     fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
@@ -469,8 +525,10 @@ mod tests {
             avg_apy: None,
             unique_delegators: None,
             avg_take_rate: None,
+            net_apy: None,
             incidents: Vec::new(),
             verified: false,
+            protected: false,
         }
     }
 
@@ -489,7 +547,9 @@ mod tests {
             query_with_names: None,
             query_sfdp: None,
             query_incident_free: None,
+            min_incident_downtime_seconds: None,
             query_verified: None,
+            query_protected: None,
             query_flagged: None,
             search_properties: None,
             query_from_date: None,
@@ -550,6 +610,147 @@ mod tests {
         assert_eq!(filter_validators(validators, &config()).len(), 2);
     }
 
+    fn protected_validator(vote_account: &str) -> ValidatorRecord {
+        ValidatorRecord {
+            protected: true,
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    #[test]
+    fn query_protected_true_keeps_only_protected_validators() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_protected: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["bonded".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_protected_false_keeps_only_unprotected_validators() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_protected: Some(false),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["unbonded".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_protected_none_keeps_all() {
+        let validators = map(vec![
+            protected_validator("bonded"),
+            validator("unbonded", 100, vec![]),
+        ]);
+        assert_eq!(filter_validators(validators, &config()).len(), 2);
+    }
+
+    // load_incidents derives downtime_seconds as EXTRACT(epoch FROM end_at - start_at).
+    fn incident(downtime_seconds: u64) -> IncidentRecord {
+        let end_at = Utc::now();
+        IncidentRecord {
+            epoch: 100,
+            start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
+            end_at,
+            downtime_seconds,
+        }
+    }
+
+    fn validator_with_incidents(vote_account: &str, downtimes: &[u64]) -> ValidatorRecord {
+        ValidatorRecord {
+            incidents: downtimes.iter().copied().map(incident).collect(),
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    #[test]
+    fn incident_free_without_floor_counts_every_incident() {
+        let validators = map(vec![
+            validator_with_incidents("blip", &[1]),
+            validator_with_incidents("clean", &[]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["clean".to_string()]
+        );
+    }
+
+    #[test]
+    fn incident_free_ignores_downtime_below_the_floor() {
+        let validators = map(vec![
+            validator_with_incidents("blip", &[179]),
+            validator_with_incidents("outage", &[180]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_downtime_seconds: Some(180),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["blip".to_string()]
+        );
+    }
+
+    #[test]
+    fn incident_free_looks_at_every_incident_not_just_the_first() {
+        let validators = map(vec![validator_with_incidents("mixed", &[10, 600])]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_downtime_seconds: Some(180),
+            ..config()
+        };
+        assert!(filter_validators(validators, &config).is_empty());
+    }
+
+    #[test]
+    fn incident_free_false_keeps_only_validators_over_the_floor() {
+        let validators = map(vec![
+            validator_with_incidents("blip", &[179]),
+            validator_with_incidents("outage", &[180]),
+            validator_with_incidents("clean", &[]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(false),
+            min_incident_downtime_seconds: Some(180),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["outage".to_string()]
+        );
+    }
+
+    #[test]
+    fn min_incident_downtime_alone_filters_nothing() {
+        let validators = map(vec![
+            validator_with_incidents("blip", &[179]),
+            validator_with_incidents("outage", &[180]),
+        ]);
+        let config = GetValidatorsConfig {
+            min_incident_downtime_seconds: Some(180),
+            ..config()
+        };
+        assert_eq!(filter_validators(validators, &config).len(), 2);
+    }
+
     #[test]
     fn sort_tiebreaks_on_vote_account_ascending() {
         // Equal stake: order must fall back to vote_account ascending regardless of direction.
@@ -589,6 +790,13 @@ mod tests {
                 r.avg_take_rate = v
             }),
         ]
+    }
+
+    fn validator_with_net_apy(vote_account: &str, net_apy: Option<f64>) -> ValidatorRecord {
+        ValidatorRecord {
+            net_apy,
+            ..validator(vote_account, 100, vec![])
+        }
     }
 
     #[test]
@@ -668,5 +876,119 @@ mod tests {
             let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
             assert_eq!(order, vec!["zzz_zero", "aaa_degenerate"], "{degenerate}");
         }
+    }
+
+    #[test]
+    fn sort_by_net_apy_separates_values_differing_below_four_decimals() {
+        // Both values round to the same 4-decimal bucket, and the higher one is alphabetically last,
+        // so rounding would hand back the reverse order instead of ordering by the real value.
+        assert_eq!(
+            to_fixed_for_sort(0.0712389),
+            to_fixed_for_sort(0.0712312),
+            "the values have to share a rounding bucket for this test to be about rounding"
+        );
+        let mut validators = vec![
+            validator_with_net_apy("aaa", Some(0.0712312)),
+            validator_with_net_apy("zzz", Some(0.0712389)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["zzz", "aaa"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_orders_ascending_and_descending() {
+        let ordered = |direction| {
+            let mut validators = vec![
+                validator_with_net_apy("mid", Some(0.07)),
+                validator_with_net_apy("high", Some(0.09)),
+                validator_with_net_apy("low", Some(0.05)),
+            ];
+            sort_validators(&mut validators, OrderField::NetApy, &direction);
+            validators
+                .iter()
+                .map(|v| v.vote_account.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ordered(OrderDirection::DESC), vec!["high", "mid", "low"]);
+        assert_eq!(ordered(OrderDirection::ASC), vec!["low", "mid", "high"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_puts_validators_without_a_value_last_when_descending() {
+        let mut validators = vec![
+            validator_with_net_apy("unknown", None),
+            validator_with_net_apy("known", Some(0.07)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["known", "unknown"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_puts_validators_without_a_value_last_when_ascending() {
+        let mut validators = vec![
+            validator_with_net_apy("unknown", None),
+            validator_with_net_apy("known", Some(0.07)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["known", "unknown"],
+            "no value must not read as the lowest APY"
+        );
+    }
+
+    #[test]
+    fn sort_by_net_apy_ranks_a_genuine_zero_above_no_value_when_ascending() {
+        // The no-value one is alphabetically first, so a collision would hand back the tiebreak order and the assert would not be about the collision at all.
+        let mut validators = vec![
+            validator_with_net_apy("aaaUnknown", None),
+            validator_with_net_apy("zzzZero", Some(0.0)),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["zzzZero", "aaaUnknown"],
+            "apy-api serves 0.0 for a full-commission validator and omits one with no comparable rate"
+        );
+    }
+
+    #[test]
+    fn sort_by_net_apy_ranks_a_value_too_large_for_decimal_above_the_ordinary_ones() {
+        // apy-api drops only non-finite points, so an extreme bump can still serve a value that
+        // Decimal cannot hold; it must not land in the same bucket as a validator with no value.
+        assert!(
+            Decimal::from_f64_retain(1e30).is_none(),
+            "the value has to exceed Decimal's range for this test to be about saturation"
+        );
+        let mut validators = vec![
+            validator_with_net_apy("ordinary", Some(0.07)),
+            validator_with_net_apy("absurd", Some(1e30)),
+            validator_with_net_apy("unknown", None),
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["absurd", "ordinary", "unknown"]);
+    }
+
+    #[test]
+    fn sort_by_net_apy_is_independent_of_the_inflation_only_apy() {
+        // avg_apy is inflation-only and orders differently; ordering by NetApy must ignore it.
+        let mut validators = vec![
+            ValidatorRecord {
+                avg_apy: Some(0.08),
+                ..validator_with_net_apy("lowNet", Some(0.05))
+            },
+            ValidatorRecord {
+                avg_apy: Some(0.04),
+                ..validator_with_net_apy("highNet", Some(0.11))
+            },
+        ];
+        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["highNet", "lowNet"]);
     }
 }
