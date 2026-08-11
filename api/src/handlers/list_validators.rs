@@ -991,4 +991,69 @@ mod tests {
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["highNet", "lowNet"]);
     }
+
+    fn validator_with_epoch_apy(vote_account: &str, apy: Option<f64>) -> ValidatorRecord {
+        ValidatorRecord {
+            epoch_stats: vec![ValidatorEpochStats {
+                apy,
+                ..epoch_stat(100, 100)
+            }],
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    fn apy_ranks(validators: Vec<ValidatorRecord>) -> Vec<(String, Option<usize>)> {
+        let mut by_vote_account: HashMap<_, _> = validators
+            .into_iter()
+            .map(|v| (v.vote_account.clone(), v))
+            .collect();
+        store::utils::update_validators_ranks(
+            &mut by_vote_account,
+            |a: &ValidatorEpochStats| a.apy.and_then(to_fixed_for_sort),
+            |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
+        );
+        let mut ranks: Vec<_> = by_vote_account
+            .into_iter()
+            .map(|(vote_account, v)| (vote_account, v.epoch_stats[0].rank_apy))
+            .collect();
+        ranks.sort();
+        ranks
+    }
+
+    #[test]
+    fn ranks_leave_a_validator_without_a_value_unranked() {
+        assert_eq!(
+            apy_ranks(vec![
+                validator_with_epoch_apy("aTop", Some(0.09)),
+                validator_with_epoch_apy("bTie", Some(0.07)),
+                validator_with_epoch_apy("cTie", Some(0.07)),
+                validator_with_epoch_apy("dMissing", None),
+            ]),
+            vec![
+                ("aTop".to_string(), Some(1)),
+                ("bTie".to_string(), Some(3)),
+                ("cTie".to_string(), Some(3)),
+                ("dMissing".to_string(), None),
+            ],
+            "a rank states where a validator placed, so having no value must read as no rank"
+        );
+    }
+
+    #[test]
+    fn ranks_do_not_tie_a_genuine_zero_with_a_validator_without_a_value() {
+        // Missing folded onto 0 before, so a full-commission validator shared its rank with rows
+        // that were never measured; excluding them is what frees the rank the zero deserves.
+        assert_eq!(
+            apy_ranks(vec![
+                validator_with_epoch_apy("aTop", Some(0.09)),
+                validator_with_epoch_apy("bZero", Some(0.0)),
+                validator_with_epoch_apy("cMissing", None),
+            ]),
+            vec![
+                ("aTop".to_string(), Some(1)),
+                ("bZero".to_string(), Some(2)),
+                ("cMissing".to_string(), None),
+            ]
+        );
+    }
 }
