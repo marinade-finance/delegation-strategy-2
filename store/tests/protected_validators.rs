@@ -14,7 +14,7 @@ async fn protected_stub(body: &'static str) -> String {
             stream.read_until(b'\n', &mut request_line).await.unwrap();
             let request_line = String::from_utf8_lossy(&request_line).to_string();
             assert!(
-                request_line.contains("/validators/protected"),
+                request_line.contains("/v1/validators/protected"),
                 "the stub answers the protected-validators endpoint only: {request_line}"
             );
             let response = format!(

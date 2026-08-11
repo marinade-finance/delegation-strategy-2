@@ -798,7 +798,7 @@ pub async fn load_protected_validators(base: &str) -> anyhow::Result<HashSet<Str
     .await
 }
 
-// `base` is the validator-bonds API base URL; `/validators/{flag}` is appended here.
+// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
     flag: &str,
@@ -808,7 +808,7 @@ where
     T: serde::de::DeserializeOwned,
     F: FnOnce(T) -> Vec<String>,
 {
-    let url = format!("{}/validators/{flag}", base.trim_end_matches('/'));
+    let url = format!("{}/v1/validators/{flag}", base.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
         .build()?;
