@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use collect::solana_service::ClientId;
+use collect::solana_service::{resolve_client_id, ClientId};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
@@ -13,13 +13,37 @@ use std::collections::HashMap;
 /// Served instead of null so every consumer has a client name to render.
 pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
 
-// Derived on read: the label follows client_id, falling back to the reported name, so a stored column would be a fourth copy to backfill on every mapping change.
-pub fn client_label(client_id: Option<u16>, reported_name: Option<&str>) -> String {
-    client_id
-        .and_then(|id| ClientId::Registered(id).label())
-        .or(reported_name)
+// Re-resolved because the stored id is registry-only: without this a client-ids.csv row added later reclassifies nothing already collected.
+pub fn effective_client_id(client_id: Option<u16>, client_id_raw: Option<&str>) -> Option<u16> {
+    client_id.or_else(|| resolve_client_id(client_id_raw).number())
+}
+
+// Gated on both halves of the registry — the CSV names and the vendored groupings — so an id in one but not the other cannot read as half-classified.
+fn classified(client_id: Option<u16>) -> Option<ClientId> {
+    let client = ClientId::Registered(client_id?);
+    (client.name().is_some() && client.label().is_some()).then_some(client)
+}
+
+pub fn client_name(client_id: Option<u16>) -> String {
+    classified(client_id)
+        .and_then(|client| client.name())
         .unwrap_or(UNKNOWN_CLIENT_NAME)
         .to_string()
+}
+
+pub fn client_label(client_id: Option<u16>) -> String {
+    classified(client_id)
+        .and_then(|client| client.label())
+        .unwrap_or(UNKNOWN_CLIENT_NAME)
+        .to_string()
+}
+
+pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.vendor().map(str::to_string))
+}
+
+pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.lineage().map(str::to_string))
 }
 
 pub struct ValidatorJitoMEVInfo {
@@ -115,9 +139,6 @@ pub struct Validator {
     pub commission_effective: Option<i32>,
     pub version: Option<String>,
     pub client_id: Option<i32>,
-    pub client_name: Option<String>,
-    pub client_vendor: Option<String>,
-    pub client_lineage: Option<String>,
     pub client_id_raw: Option<String>,
     pub feature_set: Option<i64>,
     pub shred_version: Option<i32>,
@@ -179,9 +200,6 @@ impl Validator {
             commission_effective: None,
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
-            client_name: v.performance.client_name.clone(),
-            client_vendor: v.performance.client_vendor.clone(),
-            client_lineage: v.performance.client_lineage.clone(),
             client_id_raw: v.performance.client_id_raw.clone(),
             feature_set: v.performance.feature_set.map(|f| f as i64),
             shred_version: v.performance.shred_version.map(|s| s as i32),
@@ -227,9 +245,9 @@ pub struct ValidatorEpochStats {
     pub dc_country: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
     pub client_name: String,
-    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
     pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
@@ -300,9 +318,9 @@ pub struct ValidatorRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
     pub client_name: String,
-    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
     pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
@@ -400,9 +418,9 @@ pub struct VersionRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display, never null. Resolved in this order: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`; then whatever the node reported, for a client the registry does not know; then `Unknown`, for a node reporting no client at all.
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
     pub client_name: String,
-    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. Falls back to `client_name` for a client the registry does not know.
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
     pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,

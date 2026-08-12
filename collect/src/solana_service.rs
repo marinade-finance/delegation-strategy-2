@@ -152,15 +152,6 @@ pub fn resolve_client_id(client_id: Option<&str>) -> ClientId {
     }
 }
 
-// The frontend renders this single field, so it stays populated even for ids our registry predates.
-fn client_display_name(resolved: ClientId, raw: Option<&str>) -> Option<String> {
-    resolved.name().map(str::to_string).or_else(|| {
-        raw.map(str::trim)
-            .filter(|raw| !raw.is_empty())
-            .map(str::to_string)
-    })
-}
-
 impl ClientId {
     // Registry-only: an id we cannot classify must not vary with the answering RPC's rendering.
     pub fn number(&self) -> Option<u16> {
@@ -243,9 +234,6 @@ pub struct NodeContact {
     pub gossip_port: Option<u16>,
     pub version: Option<String>,
     pub client_id: Option<u16>,
-    pub client_name: Option<String>,
-    pub client_vendor: Option<&'static str>,
-    pub client_lineage: Option<&'static str>,
     pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
@@ -314,8 +302,6 @@ pub fn get_cluster_nodes_info(
                 .or_default() += 1;
         }
 
-        let client_name = client_display_name(resolved, node.client_id.as_deref());
-
         out.insert(
             node.pubkey.clone(),
             NodeContact {
@@ -323,9 +309,6 @@ pub fn get_cluster_nodes_info(
                 gossip_port,
                 version,
                 client_id: resolved.number(),
-                client_name,
-                client_vendor: resolved.vendor(),
-                client_lineage: resolved.lineage(),
                 client_id_raw: node.client_id,
                 feature_set: node.feature_set,
                 shred_version: node.shred_version,
@@ -1108,23 +1091,6 @@ mod tests {
             resolve_client_id(Some("JitoLabs")).name(),
             Some("Jito Labs")
         );
-    }
-
-    #[test]
-    fn display_name_never_drops_a_client_the_node_reported() {
-        let display = |raw| client_display_name(resolve_client_id(raw), raw);
-        assert_eq!(display(Some("Unknown(8)")), Some("Rakurai".to_string()));
-        assert_eq!(display(Some("AgaveBam")), Some("Agave Bam".to_string()));
-        assert_eq!(
-            display(Some("Unknown(86)")),
-            Some("Unknown(86)".to_string())
-        );
-        assert_eq!(
-            display(Some("brand-new/1.0")),
-            Some("brand-new/1.0".to_string())
-        );
-        assert_eq!(display(Some("   ")), None);
-        assert_eq!(display(None), None);
     }
 
     #[test]
