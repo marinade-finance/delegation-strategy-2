@@ -1,4 +1,4 @@
-use crate::validators_jito::MILLISECONDS_PER_SLOT;
+use collect::common::measure_milliseconds_per_slot;
 use log::info;
 use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
@@ -68,11 +68,16 @@ pub async fn check_block_rewards(
                     // this is a preliminary check as the real collection may happen only when Google stakes-etl job loaded data to BQ
                     Ok(true)
                 } else {
-                    info!(
-                        "To execute required to wait at epoch {current_epoch} for slot index {}, approximately {} seconds",
-                        params.slot_offset_wait - current_slot_index,
-                        (params.slot_offset_wait - current_slot_index) * MILLISECONDS_PER_SLOT / 1000u64
-                    );
+                    let slots_to_wait = params.slot_offset_wait - current_slot_index;
+                    match measure_milliseconds_per_slot(rpc_client, &current_epoch_data)? {
+                        Some(ms_per_slot) => info!(
+                            "To execute required to wait at epoch {current_epoch} for {slots_to_wait} slots, approximately {} seconds",
+                            slots_to_wait * ms_per_slot / 1000u64
+                        ),
+                        None => info!(
+                            "To execute required to wait at epoch {current_epoch} for {slots_to_wait} slots"
+                        ),
+                    }
                     Ok(false)
                 };
             }

@@ -46,7 +46,8 @@ pub async fn create_epoch_record(
             transaction_count,
             supply,
             inflation,
-            inflation_taper
+            inflation_taper,
+            slots_per_year
         ) SELECT
             $1,
             COALESCE(previous_epoch.end_at, epoch_cluster_info.start_at) start_at,
@@ -54,7 +55,8 @@ pub async fn create_epoch_record(
             transaction_count,
             $2,
             $3,
-            $4
+            $4,
+            $5
         FROM epoch_cluster_info, previous_epoch
     ",
             &[
@@ -62,6 +64,7 @@ pub async fn create_epoch_record(
                 &Decimal::from(cluster_inflation.sol_total_supply),
                 &cluster_inflation.inflation,
                 &cluster_inflation.inflation_taper,
+                &cluster_inflation.slots_per_year,
             ],
         )
         .await?;

@@ -25,10 +25,8 @@ use tokio_postgres::{types::ToSql, Client, GenericClient};
 pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 
 const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
-const IDEAL_SLOT_DURATION_MS: u64 = 400;
-const SLOTS_IN_EPOCH: u64 = 432000;
-const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
-const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
+/// Unchanged by SIMD-0525, which shortens slots and leaves the epoch's slot count alone.
+pub const SLOTS_IN_EPOCH: u64 = 432000;
 const SCORING_SCRAPER_WORKERS: usize = 10;
 /// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
 /// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
@@ -156,6 +154,7 @@ struct InflationApyCalculator {
     supply: u64,
     duration: u64,
     inflation: f64,
+    slots_per_year: f64,
     total_weighted_credits: u128,
 }
 impl InflationApyCalculator {
@@ -168,11 +167,14 @@ impl InflationApyCalculator {
         let staker_share = 1.0 - commission;
         let actual_epochs_per_year = SECONDS_IN_YEAR / self.duration as f64;
 
+        // Nominal, not measured: it converts annual issuance into what the protocol mints per epoch.
+        let nominal_epochs_per_year = self.slots_per_year / SLOTS_IN_EPOCH as f64;
+
         let cluster_rewards_per_year = self.supply as f64 * self.inflation;
-        let cluster_rewards_per_ideal_epoch = cluster_rewards_per_year / IDEAL_EPOCHS_PER_YEAR;
+        let cluster_rewards_per_nominal_epoch = cluster_rewards_per_year / nominal_epochs_per_year;
 
         let stake_fraction_per_epoch =
-            staker_share * cluster_rewards_per_ideal_epoch * credits as f64
+            staker_share * cluster_rewards_per_nominal_epoch * credits as f64
                 / self.total_weighted_credits as f64;
 
         let apr = stake_fraction_per_epoch * actual_epochs_per_year;
@@ -191,6 +193,7 @@ async fn get_apy_calculators(
                     (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER AS duration,
                     supply,
                     inflation,
+                    slots_per_year,
                     SUM(validators.credits * validators.activated_stake) total_weighted_credits
                 FROM
                 epochs
@@ -208,6 +211,7 @@ async fn get_apy_calculators(
                 supply: row.get::<_, Decimal>("supply").try_into()?,
                 duration: row.get::<_, i32>("duration").try_into()?,
                 inflation: row.get("inflation"),
+                slots_per_year: row.get("slots_per_year"),
                 total_weighted_credits: row
                     .get::<_, Decimal>("total_weighted_credits")
                     .try_into()?,
@@ -2075,5 +2079,73 @@ mod tests {
         assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
         assert_eq!(to_fixed_for_sort(f64::MAX), None);
         assert_eq!(to_fixed_for_sort(1e30), None);
+    }
+
+    const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
+    const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
+
+    const CREDITS: u64 = 400_000;
+
+    /// Mainnet-scale: 600M SOL supply, ~400k credits per validator, ~400M SOL staked cluster-wide.
+    fn calculator(slots_per_year: f64) -> InflationApyCalculator {
+        InflationApyCalculator {
+            supply: 600_000_000_000_000_000,
+            duration: 182_400,
+            inflation: 0.043,
+            slots_per_year,
+            total_weighted_credits: 160_000_000_000_000_000_000_000,
+        }
+    }
+
+    /// Relative, because these quantities span 1e-2 to 1e15 and a fixed epsilon fits neither end.
+    fn assert_close(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() / right.abs() < 1e-12,
+            "{left} != {right}"
+        );
+    }
+
+    fn rate_per_epoch(calculator: &InflationApyCalculator) -> f64 {
+        let (apr, _) = calculator.estimate_yields(CREDITS, 5);
+        apr / (SECONDS_IN_YEAR / calculator.duration as f64)
+    }
+
+    #[test]
+    fn per_epoch_issuance_tracks_the_protocol_slot_time() {
+        let baseline = calculator(BASELINE_SLOTS_PER_YEAR);
+        let stage_1 = calculator(SLOTS_PER_YEAR_350MS);
+        let (_, apy_baseline) = baseline.estimate_yields(CREDITS, 5);
+        let (_, apy_350) = stage_1.estimate_yields(CREDITS, 5);
+
+        // Guards the fixture: an implausible one overflows to inf, where every ratio below matches.
+        assert!((0.03..0.12).contains(&apy_baseline), "{apy_baseline}");
+
+        // Shorter slots mint proportionally less per epoch, so the rate scales by exactly 350/400.
+        assert_close(
+            rate_per_epoch(&stage_1) / rate_per_epoch(&baseline),
+            350.0 / 400.0,
+        );
+
+        let epochs_per_year = SECONDS_IN_YEAR / stage_1.duration as f64;
+        assert_close(
+            1.0 + apy_350,
+            (1.0 + rate_per_epoch(&stage_1)).powf(epochs_per_year),
+        );
+        assert!(apy_350 < apy_baseline);
+    }
+
+    #[test]
+    fn measured_epoch_length_does_not_move_per_epoch_issuance() {
+        let short = InflationApyCalculator {
+            duration: 151_200,
+            ..calculator(BASELINE_SLOTS_PER_YEAR)
+        };
+        let long = InflationApyCalculator {
+            duration: 182_400,
+            ..calculator(BASELINE_SLOTS_PER_YEAR)
+        };
+
+        // Only the compounding exponent may depend on the measured epoch, never the minted amount.
+        assert_close(rate_per_epoch(&short), rate_per_epoch(&long));
     }
 }

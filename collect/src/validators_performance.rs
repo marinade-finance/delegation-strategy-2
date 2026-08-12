@@ -1,4 +1,5 @@
 use crate::common::*;
+use crate::slot_params::get_slots_per_year;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use log::{info, warn};
@@ -43,6 +44,7 @@ pub struct ClusterInflation {
     pub sol_total_supply: u64,
     pub inflation: f64,
     pub inflation_taper: f64,
+    pub slots_per_year: f64,
 }
 
 // Snapshots predating the numeric client_id hold the rendered string, and store reads them back post-deploy.
@@ -230,11 +232,13 @@ pub fn collect_validators_performance_info(
         let sol_total_supply = client.supply()?.value.total;
         let inflation = client.get_inflation_rate()?.total;
         let inflation_taper = client.get_inflation_governor()?.taper;
+        let slots_per_year = get_slots_per_year(&client, epoch)?;
 
         Some(ClusterInflation {
             sol_total_supply,
             inflation,
             inflation_taper,
+            slots_per_year,
         })
     } else {
         None

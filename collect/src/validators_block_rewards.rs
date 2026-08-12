@@ -48,14 +48,14 @@ pub struct BlockRewardsParams {
     #[structopt(
         long = "max-data-delay-hours",
         env = "MAX_DATA_DELAY_HOURS",
-        help = "Fail instead of skipping when block rewards data is still missing this many hours after the target epoch ended (approximate; assumes ~400ms slots). 0 disables the check. Ignored when --epoch is set (backfill).",
+        help = "Fail instead of skipping when block rewards data is still missing this many hours after the target epoch ended. 0 disables the check. Ignored when --epoch is set (backfill).",
         default_value = "12"
     )]
     max_data_delay_hours: u64,
 }
 
 const DATA_VERSION: u16 = 1;
-const MILLISECONDS_PER_HOUR: u64 = 3_600_000;
+const SECONDS_PER_HOUR: u64 = 3_600;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidatorsBlockRewardsSnapshot {
@@ -175,10 +175,9 @@ pub fn collect_validator_block_rewards_info(
                 rewards_params.loading_limit,
             );
         } else {
-            let hours_since_epoch_end = current_epoch_info
-                .slot_index
-                .saturating_mul(MILLISECONDS_PER_SLOT)
-                / MILLISECONDS_PER_HOUR;
+            // The target epoch ended when the current one started.
+            let hours_since_epoch_end =
+                seconds_since_epoch_start(&client, &current_epoch_info)? / SECONDS_PER_HOUR;
             if rewards_params.max_data_delay_hours > 0
                 && hours_since_epoch_end >= rewards_params.max_data_delay_hours
             {

@@ -1,3 +1,4 @@
+use crate::utils::SLOTS_IN_EPOCH;
 use crate::validators_block_rewards::VALIDATORS_BLOCK_REWARDS_TABLE;
 use rust_decimal::Decimal;
 use tokio_postgres::Client;
@@ -72,8 +73,11 @@ pub async fn get_estimated_inflation_rewards(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<(u64, f64)>> {
+    let query = format!(
+        "SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount FROM epochs ORDER BY epoch DESC LIMIT $1"
+    );
     let rows = psql_client
-        .query("SELECT epoch, supply * inflation / 1e9 / (365.25 / 2) AS amount FROM epochs ORDER BY epoch DESC LIMIT $1", &[&i64::try_from(epochs)?])
+        .query(&query, &[&i64::try_from(epochs)?])
         .await?;
 
     Ok(rows
@@ -82,6 +86,29 @@ pub async fn get_estimated_inflation_rewards(
             (
                 row.get::<_, Decimal>("epoch").try_into().unwrap(),
                 row.get::<_, f64>("amount"),
+            )
+        })
+        .collect())
+}
+
+/// Provenance for `rewards_inflation_est`, so a rerun under a later slot-time regime stays interpretable.
+pub async fn get_slots_per_year(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<Vec<(u64, f64)>> {
+    let rows = psql_client
+        .query(
+            "SELECT epoch, slots_per_year FROM epochs ORDER BY epoch DESC LIMIT $1",
+            &[&i64::try_from(epochs)?],
+        )
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, Decimal>("epoch").try_into().unwrap(),
+                row.get::<_, f64>("slots_per_year"),
             )
         })
         .collect())

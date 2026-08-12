@@ -510,67 +510,6 @@ fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> 
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-pub fn get_apy(
-    rpc_client: &RpcClient,
-    vote_accounts: &RpcVoteAccountStatus,
-    credits: &HashMap<String, u64>,
-) -> anyhow::Result<HashMap<String, f64>> {
-    info!("Calculating APY");
-    let inflation = rpc_client.get_inflation_rate()?.total;
-    let inflation_taper = rpc_client.get_inflation_governor()?.taper;
-
-    let epochs_in_year = 160; // @todo fix
-
-    let activated_stake: HashMap<_, _> = vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.activated_stake))
-        .collect();
-
-    let commission: HashMap<_, _> = vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.commission))
-        .collect();
-
-    let total_activated_stake = activated_stake.values().sum::<u64>();
-
-    let points: HashMap<_, _> = activated_stake
-        .iter()
-        .filter_map(|(node, stake)| {
-            credits
-                .get(node)
-                .map(|credits| (node.clone(), *credits as u128 * *stake as u128))
-        })
-        .collect();
-
-    let total_points = points.values().sum::<u128>();
-
-    let mut total_rewards = 0.0;
-    for epoch in 1..epochs_in_year + 1 {
-        let tapered_inflation =
-            inflation * (1.0 - inflation_taper).powf(epoch as f64 / epochs_in_year as f64);
-        total_rewards += tapered_inflation / epochs_in_year as f64 * total_activated_stake as f64;
-    }
-
-    let mut apy = HashMap::new();
-    for (node, points) in points.iter() {
-        if let (Some(stake), Some(commission)) = (activated_stake.get(node), commission.get(node)) {
-            let node_staker_rewards = (1.0 - *commission as f64 / 100.0) * *points as f64
-                / total_points as f64
-                * total_rewards;
-            apy.insert(
-                node.clone(),
-                (*stake as f64 + node_staker_rewards) / *stake as f64 - 1.0,
-            );
-        }
-    }
-
-    Ok(apy)
-}
-
 // Relies on vote account layout and needs updating in case the authorized withdrawer position would change
 pub fn get_withdraw_authorities(
     rpc_client: &RpcClient,

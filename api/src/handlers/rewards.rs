@@ -4,6 +4,7 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::rewards::{
     get_block_rewards, get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards,
+    get_slots_per_year,
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -16,6 +17,8 @@ pub struct ResponseRewards {
     rewards_jito_priority: Vec<(u64, f64)>,
     /// block production rewards based on signature count and priority fees
     rewards_block: Vec<(u64, f64)>,
+    /// nominal slots per year in force in each epoch, the divisor behind rewards_inflation_est
+    slots_per_year: Vec<(u64, f64)>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -43,11 +46,12 @@ pub async fn handler(
 
     let context_guard = context.read().await;
     let psql_client = &context_guard.psql_client;
-    let (inflation_result, mev_result, jito_result, block_result) = tokio::join!(
+    let (inflation_result, mev_result, jito_result, block_result, slots_per_year_result) = tokio::join!(
         get_estimated_inflation_rewards(psql_client, epochs),
         get_mev_rewards(psql_client, epochs),
         get_jito_priority_rewards(psql_client, epochs),
         get_block_rewards(psql_client, epochs),
+        get_slots_per_year(psql_client, epochs),
     );
 
     let rewards_inflation_est = match inflation_result {
@@ -92,12 +96,24 @@ pub async fn handler(
         }
     };
 
+    let slots_per_year = match slots_per_year_result {
+        Ok(r) => r,
+        Err(err) => {
+            error!("Failed to fetch slots per year: {err}");
+            return Ok(response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch slots per year!".into(),
+            ));
+        }
+    };
+
     Ok(warp::reply::with_status(
         json(&ResponseRewards {
             rewards_mev,
             rewards_inflation_est,
             rewards_jito_priority,
             rewards_block,
+            slots_per_year,
         }),
         StatusCode::OK,
     ))
