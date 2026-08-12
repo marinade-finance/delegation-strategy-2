@@ -1,9 +1,10 @@
 use crate::dto::{
-    client_label, BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats,
-    CommissionRecord, DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord,
-    ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    client_label, client_lineage, client_name, client_vendor, effective_client_id,
+    BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
+    DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
+    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
-    ValidatorsAggregated, VersionRecord, UNKNOWN_CLIENT_NAME,
+    ValidatorsAggregated, VersionRecord,
 };
 use chrono::{DateTime, Utc};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
@@ -321,7 +322,7 @@ pub async fn load_versions(
             "
             WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, version, client_id, client_name, client_vendor, client_lineage, client_id_raw, feature_set, shred_version, epoch, created_at
+                vote_account, version, client_id, client_id_raw, feature_set, shred_version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -330,9 +331,11 @@ pub async fn load_versions(
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
-        let client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
-        let client_name = row.get::<_, Option<String>>("client_name");
-        let label = client_label(client_id, client_name.as_deref());
+        let client_id_raw: Option<String> = row.get("client_id_raw");
+        let client_id = effective_client_id(
+            row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+            client_id_raw.as_deref(),
+        );
         let versions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
@@ -340,11 +343,11 @@ pub async fn load_versions(
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
             client_id,
-            client_name: client_name.unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
-            client_label: label,
-            client_vendor: row.get("client_vendor"),
-            client_lineage: row.get("client_lineage"),
-            client_id_raw: row.get("client_id_raw"),
+            client_name: client_name(client_id),
+            client_label: client_label(client_id),
+            client_vendor: client_vendor(client_id),
+            client_lineage: client_lineage(client_id),
+            client_id_raw,
             feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
             shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
             created_at: row.get("created_at"),
@@ -924,9 +927,6 @@ pub async fn load_validators(
                 mev.mev_commission AS mev_commission_bps,
                 jpf.validator_commission AS priority_commission_bps,
                 client_id,
-                client_name,
-                client_vendor,
-                client_lineage,
                 client_id_raw,
                 feature_set,
                 shred_version,
@@ -1023,9 +1023,11 @@ pub async fn load_validators(
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
-            let client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
-            let client_name = row.get::<_, Option<String>>("client_name");
-            let label = client_label(client_id, client_name.as_deref());
+            let client_id_raw: Option<String> = row.get("client_id_raw");
+            let client_id = effective_client_id(
+                row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+                client_id_raw.as_deref(),
+            );
 
             let record = records
                 .entry(vote_account.clone())
@@ -1059,13 +1061,11 @@ pub async fn load_validators(
                     commission_aggregated: None,
                     version: row.get("version"),
                     client_id,
-                    client_name: client_name
-                        .clone()
-                        .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
-                    client_label: label.clone(),
-                    client_vendor: row.get("client_vendor"),
-                    client_lineage: row.get("client_lineage"),
-                    client_id_raw: row.get("client_id_raw"),
+                    client_name: client_name(client_id),
+                    client_label: client_label(client_id),
+                    client_vendor: client_vendor(client_id),
+                    client_lineage: client_lineage(client_id),
+                    client_id_raw: client_id_raw.clone(),
                     feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                     shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                     gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1146,11 +1146,11 @@ pub async fn load_validators(
                 dc_city: row.get::<_, Option<String>>("dc_city"),
                 dc_country: row.get::<_, Option<String>>("dc_country"),
                 client_id,
-                client_name: client_name.unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string()),
-                client_label: label,
-                client_vendor: row.get("client_vendor"),
-                client_lineage: row.get("client_lineage"),
-                client_id_raw: row.get("client_id_raw"),
+                client_name: client_name(client_id),
+                client_label: client_label(client_id),
+                client_vendor: client_vendor(client_id),
+                client_lineage: client_lineage(client_id),
+                client_id_raw,
                 feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                 shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                 gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1685,42 +1685,93 @@ async fn load_stake_distribution(
     Ok(distributions)
 }
 
+// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
+const CLIENT_ID_GROUPING: &str = "COALESCE(client_id::TEXT, client_id_raw, '')";
+const UNKNOWN_CLIENT_GROUP: &str = "unknown";
+
+fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
+    map(effective_client_id(key.parse().ok(), Some(key)))
+        .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
+}
+
+// SQL groups one row per client id, but several ids share a vendor.
+fn fold_distribution(
+    distributions: &[StakeDistribution],
+    map: fn(Option<u16>) -> Option<String>,
+) -> Vec<StakeDistribution> {
+    distributions
+        .iter()
+        .map(|distribution| {
+            let mut stake_by: HashMap<String, u64> = Default::default();
+            let mut count_by: HashMap<String, u64> = Default::default();
+            for (key, stake) in distribution.stake_by.iter() {
+                let folded = grouped_by(key, map);
+                *stake_by.entry(folded.clone()).or_default() += stake;
+                *count_by.entry(folded).or_default() +=
+                    distribution.count_by.get(key).copied().unwrap_or_default();
+            }
+            let share_by = stake_by
+                .iter()
+                .map(|(key, stake)| {
+                    let share = if distribution.total_stake > 0 {
+                        *stake as f64 / distribution.total_stake as f64
+                    } else {
+                        0.0
+                    };
+                    (key.clone(), share)
+                })
+                .collect();
+            StakeDistribution {
+                epoch: distribution.epoch,
+                total_stake: distribution.total_stake,
+                stake_by,
+                share_by,
+                count_by,
+            }
+        })
+        .collect()
+}
+
+fn client_diversity_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientDiversityStats> {
+    fold_distribution(by_client_id, client_vendor)
+        .into_iter()
+        .map(|distribution| ClientDiversityStats {
+            epoch: distribution.epoch,
+            total_activated_stake: distribution.total_stake,
+            client_stake: distribution.stake_by,
+            client_share: distribution.share_by,
+            client_validator_count: distribution.count_by,
+        })
+        .collect()
+}
+
+fn client_lineage_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientLineageStats> {
+    fold_distribution(by_client_id, client_lineage)
+        .into_iter()
+        .map(|distribution| ClientLineageStats {
+            epoch: distribution.epoch,
+            total_activated_stake: distribution.total_stake,
+            lineage_stake: distribution.stake_by,
+            lineage_share: distribution.share_by,
+            lineage_validator_count: distribution.count_by,
+        })
+        .collect()
+}
+
 pub async fn load_client_diversity_stats(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientDiversityStats>> {
-    Ok(
-        load_stake_distribution(psql_client, epochs, "COALESCE(client_vendor, 'unknown')")
-            .await?
-            .into_iter()
-            .map(|distribution| ClientDiversityStats {
-                epoch: distribution.epoch,
-                total_activated_stake: distribution.total_stake,
-                client_stake: distribution.stake_by,
-                client_share: distribution.share_by,
-                client_validator_count: distribution.count_by,
-            })
-            .collect(),
-    )
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    Ok(client_diversity_stats(&by_client_id))
 }
 
 pub async fn load_client_lineage_stats(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientLineageStats>> {
-    Ok(
-        load_stake_distribution(psql_client, epochs, "COALESCE(client_lineage, 'unknown')")
-            .await?
-            .into_iter()
-            .map(|distribution| ClientLineageStats {
-                epoch: distribution.epoch,
-                total_activated_stake: distribution.total_stake,
-                lineage_stake: distribution.stake_by,
-                lineage_share: distribution.share_by,
-                lineage_validator_count: distribution.count_by,
-            })
-            .collect(),
-    )
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    Ok(client_lineage_stats(&by_client_id))
 }
 
 pub async fn load_feature_set_stats(
@@ -1745,11 +1796,13 @@ pub async fn load_feature_set_stats(
 }
 
 pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
+    // Vendor and lineage are two folds of one per-client-id distribution, not two queries.
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
     Ok(ClusterStats {
         block_production_stats: load_block_production_stats(psql_client, epochs).await?,
         dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
-        client_diversity_stats: load_client_diversity_stats(psql_client, epochs).await?,
-        client_lineage_stats: load_client_lineage_stats(psql_client, epochs).await?,
+        client_diversity_stats: client_diversity_stats(&by_client_id),
+        client_lineage_stats: client_lineage_stats(&by_client_id),
         feature_set_stats: load_feature_set_stats(psql_client, epochs).await?,
     })
 }
@@ -1808,7 +1861,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null and epoch <= $2))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null and epoch <= $2))[1] as last_client_lineage from versions group by vote_account)
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -1821,8 +1874,8 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    coalesce((array_agg(agg_versions.last_client_vendor))[1], 'unknown') AS last_client_vendor,
-                    coalesce((array_agg(agg_versions.last_client_lineage))[1], 'unknown') AS last_client_lineage
+                    (array_agg(agg_versions.last_client_id))[1] AS last_client_id,
+                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw
                 FROM
                     validators
                     LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
@@ -1840,6 +1893,13 @@ pub async fn load_validators_aggregated_flat(
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
     for row in rows.iter() {
+        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
+        let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
+        let last_client_id = effective_client_id(
+            row.get::<_, Option<i32>>("last_client_id")
+                .map(|n| n as u16),
+            last_client_id_raw.as_deref(),
+        );
         validators.push(ValidatorAggregatedFlat {
             vote_account: row.get("vote_account"),
             minimum_stake: row.get("minimum_stake"),
@@ -1852,8 +1912,10 @@ pub async fn load_validators_aggregated_flat(
             dc_aso: row.get("dc_aso"),
             marinade_stake: row.get("marinade_stake"),
             version: row.get("last_version"),
-            client_vendor: row.get("last_client_vendor"),
-            client_lineage: row.get("last_client_lineage"),
+            client_vendor: client_vendor(last_client_id)
+                .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
+            client_lineage: client_lineage(last_client_id)
+                .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
         });
     }
 

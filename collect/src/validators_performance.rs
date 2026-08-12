@@ -73,12 +73,6 @@ pub struct ValidatorPerformance {
     #[serde(default, deserialize_with = "deserialize_client_id")]
     pub client_id: Option<u16>,
     #[serde(default)]
-    pub client_name: Option<String>,
-    #[serde(default)]
-    pub client_vendor: Option<String>,
-    #[serde(default)]
-    pub client_lineage: Option<String>,
-    #[serde(default)]
     pub client_id_raw: Option<String>,
     #[serde(default)]
     pub feature_set: Option<u32>,
@@ -146,9 +140,6 @@ pub fn validators_performance(
                 commission: vote_account.commission,
                 version: node.and_then(|n| n.version.clone()),
                 client_id: node.and_then(|n| n.client_id),
-                client_name: node.and_then(|n| n.client_name.clone()),
-                client_vendor: node.and_then(|n| n.client_vendor.map(str::to_string)),
-                client_lineage: node.and_then(|n| n.client_lineage.map(str::to_string)),
                 client_id_raw: node.and_then(|n| n.client_id_raw.clone()),
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),

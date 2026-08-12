@@ -90,9 +90,6 @@ pub async fn store_validators(
             updated_at = u.updated_at,
             info_icon_url = u.info_icon_url,
             client_id = CASE WHEN u.client_id_raw IS NOT NULL THEN u.client_id ELSE validators.client_id END,
-            client_name = COALESCE(u.client_name, validators.client_name),
-            client_vendor = CASE WHEN u.client_id_raw IS NOT NULL THEN u.client_vendor ELSE validators.client_vendor END,
-            client_lineage = CASE WHEN u.client_id_raw IS NOT NULL THEN u.client_lineage ELSE validators.client_lineage END,
             client_id_raw = COALESCE(u.client_id_raw, validators.client_id_raw),
             feature_set = u.feature_set,
             shred_version = u.shred_version,
@@ -134,9 +131,6 @@ pub async fn store_validators(
                 updated_at,
                 info_icon_url,
                 client_id,
-                client_name,
-                client_vendor,
-                client_lineage,
                 client_id_raw,
                 feature_set,
                 shred_version,
@@ -184,9 +178,6 @@ pub async fn store_validators(
                     &snapshot_created_at,
                     &v.info_icon_url,
                     &v.client_id,
-                    &v.client_name,
-                    &v.client_vendor,
-                    &v.client_lineage,
                     &v.client_id_raw,
                     &v.feature_set,
                     &v.shred_version,
@@ -217,15 +208,12 @@ pub async fn store_validators(
                         (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                         (30, "TEXT".into()),                     // icon_url
                         (31, "INTEGER".into()),                  // client_id
-                        (32, "TEXT".into()),                     // client_name
-                        (33, "TEXT".into()),                     // client_vendor
-                        (34, "TEXT".into()),                     // client_lineage
-                        (35, "TEXT".into()),                     // client_id_raw
-                        (36, "BIGINT".into()),                   // feature_set
-                        (37, "INTEGER".into()),                  // shred_version
-                        (38, "INTEGER".into()),                  // gossip_port
-                        (39, "BOOL".into()),                     // rpc_public
-                        (40, "BOOL".into()),                     // pubsub_public
+                        (32, "TEXT".into()),                     // client_id_raw
+                        (33, "BIGINT".into()),                   // feature_set
+                        (34, "INTEGER".into()),                  // shred_version
+                        (35, "INTEGER".into()),                  // gossip_port
+                        (36, "BOOL".into()),                     // rpc_public
+                        (37, "BOOL".into()),                     // pubsub_public
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -286,9 +274,6 @@ pub async fn store_validators(
         updated_at,
         info_icon_url,
         client_id,
-        client_name,
-        client_vendor,
-        client_lineage,
         client_id_raw,
         feature_set,
         shred_version,
@@ -342,9 +327,6 @@ pub async fn store_validators(
                 &snapshot_created_at,
                 &v.info_icon_url,
                 &v.client_id,
-                &v.client_name,
-                &v.client_vendor,
-                &v.client_lineage,
                 &v.client_id_raw,
                 &v.feature_set,
                 &v.shred_version,
