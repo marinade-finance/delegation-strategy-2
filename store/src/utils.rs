@@ -43,9 +43,10 @@ pub fn to_fixed(a: f64, decimals: i32) -> u64 {
     (a * 10f64.powi(decimals)).round() as u64
 }
 
-// Non-finite and negative inputs would saturate to 0 on the u64 cast and read as a genuine zero.
+// Guarding the scaled value, not the input: the multiplication is what overflows, and the u64 cast then saturates to either end and reads as a genuine rank.
 pub fn to_fixed_for_sort(a: f64) -> Option<u64> {
-    (a.is_finite() && a >= 0.0).then(|| to_fixed(a, 4))
+    let scaled = (a * 10f64.powi(4)).round();
+    (scaled >= 0.0 && scaled < u64::MAX as f64).then_some(scaled as u64)
 }
 
 impl<'a> InsertQueryCombiner<'a> {
@@ -2004,7 +2005,13 @@ mod tests {
     fn to_fixed_for_sort_rejects_values_that_would_saturate_to_zero() {
         assert_eq!(to_fixed_for_sort(-0.01), None);
         assert_eq!(to_fixed_for_sort(f64::NAN), None);
-        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
         assert_eq!(to_fixed_for_sort(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_max() {
+        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
+        assert_eq!(to_fixed_for_sort(f64::MAX), None);
+        assert_eq!(to_fixed_for_sort(1e30), None);
     }
 }

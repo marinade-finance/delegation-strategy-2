@@ -48,11 +48,11 @@ pub struct ScoreBreakdown {
     pub ui_id: String,
 }
 
-// total_cmp, not to_fixed_for_sort: the latter's None for a non-finite score sorts ahead of every Some and would be handed back as the minimum.
+// Not to_fixed_for_sort: it also rejects negatives, and dropping a real one would report a minimum higher than the truth. Non-finite scores serialize to null, so they are dropped instead of compared.
 pub fn min_eligible_algo_score(scores: &HashMap<String, ValidatorScoreRecord>) -> Option<f64> {
     scores
         .values()
-        .filter(|score| score.target_stake_algo > 0)
+        .filter(|score| score.target_stake_algo > 0 && score.score.is_finite())
         .map(|score| score.score)
         .min_by(f64::total_cmp)
 }
@@ -213,14 +213,26 @@ mod tests {
 
     #[test]
     fn min_eligible_algo_score_is_not_won_by_a_non_finite_score() {
-        // The scoring CSV parses "1e400" to infinity, which used to saturate to u64::MAX and now yields None.
+        // The scoring CSV parses "1e400" to infinity and "NaN" to NaN, and total_cmp orders -inf and -NaN below every real score.
+        for corrupt in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -f64::NAN] {
+            assert_eq!(
+                min_eligible_algo_score(&scores(vec![
+                    ("aaa", 5.0, 100),
+                    ("bbb", corrupt, 100),
+                    ("ccc", 9.0, 100),
+                ])),
+                Some(5.0),
+                "{corrupt}"
+            );
+        }
+    }
+
+    #[test]
+    fn min_eligible_algo_score_keeps_a_genuine_negative_score() {
+        // Nothing constrains scores to be non-negative, so dropping one would claim a cutoff the run never had.
         assert_eq!(
-            min_eligible_algo_score(&scores(vec![
-                ("aaa", 5.0, 100),
-                ("bbb", f64::INFINITY, 100),
-                ("ccc", 9.0, 100),
-            ])),
-            Some(5.0)
+            min_eligible_algo_score(&scores(vec![("aaa", 5.0, 100), ("bbb", -3.0, 100)])),
+            Some(-3.0)
         );
     }
 }
