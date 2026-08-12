@@ -3,8 +3,8 @@ use crate::metrics;
 use crate::{context::WrappedContext, utils::response_error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use store::dto::{ScoringRunRecord, ValidatorScoreRecord};
-use store::utils::to_fixed_for_sort;
 use utoipa::IntoParams;
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -46,6 +46,15 @@ pub struct ScoreBreakdown {
     pub created_at: DateTime<Utc>,
     pub epoch: i32,
     pub ui_id: String,
+}
+
+// Not to_fixed_for_sort: it also rejects negatives, and dropping a real one would report a minimum higher than the truth. Non-finite scores serialize to null, so they are dropped instead of compared.
+pub fn min_eligible_algo_score(scores: &HashMap<String, ValidatorScoreRecord>) -> Option<f64> {
+    scores
+        .values()
+        .filter(|score| score.target_stake_algo > 0 && score.score.is_finite())
+        .map(|score| score.score)
+        .min_by(f64::total_cmp)
 }
 
 #[utoipa::path(
@@ -121,11 +130,7 @@ pub async fn handler(
         }
     };
 
-    let min_score_eligible_algo = scores
-        .iter()
-        .filter(|(_, score)| score.target_stake_algo > 0)
-        .map(|(_, ValidatorScoreRecord { score, .. })| *score)
-        .min_by(|a, b| to_fixed_for_sort(*a).cmp(&to_fixed_for_sort(*b)));
+    let min_score_eligible_algo = min_eligible_algo_score(&scores);
 
     #[allow(deprecated)]
     let score_breakdown = ScoreBreakdown {
@@ -158,4 +163,76 @@ pub async fn handler(
         json(&ResponseScoreBreakdown { score_breakdown }),
         StatusCode::OK,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scores(records: Vec<(&str, f64, u64)>) -> HashMap<String, ValidatorScoreRecord> {
+        records
+            .into_iter()
+            .map(|(vote_account, score, target_stake_algo)| {
+                (
+                    vote_account.to_string(),
+                    ValidatorScoreRecord {
+                        vote_account: vote_account.to_string(),
+                        score,
+                        target_stake_algo,
+                        rank: 1,
+                        vemnde_votes: 0,
+                        msol_votes: 0,
+                        ui_hints: vec![],
+                        component_scores: vec![],
+                        component_ranks: vec![],
+                        component_values: vec![],
+                        eligible_stake_algo: true,
+                        eligible_stake_vemnde: true,
+                        eligible_stake_msol: true,
+                        target_stake_vemnde: 0,
+                        target_stake_msol: 0,
+                        scoring_run_id: 1,
+                        created_at: Utc::now(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn min_eligible_algo_score_skips_validators_without_algo_stake() {
+        assert_eq!(
+            min_eligible_algo_score(&scores(vec![("aaa", 1.0, 0), ("bbb", 5.0, 100)])),
+            Some(5.0)
+        );
+        assert_eq!(
+            min_eligible_algo_score(&scores(vec![("aaa", 1.0, 0)])),
+            None
+        );
+    }
+
+    #[test]
+    fn min_eligible_algo_score_is_not_won_by_a_non_finite_score() {
+        // The scoring CSV parses "1e400" to infinity and "NaN" to NaN, and total_cmp orders -inf and -NaN below every real score.
+        for corrupt in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -f64::NAN] {
+            assert_eq!(
+                min_eligible_algo_score(&scores(vec![
+                    ("aaa", 5.0, 100),
+                    ("bbb", corrupt, 100),
+                    ("ccc", 9.0, 100),
+                ])),
+                Some(5.0),
+                "{corrupt}"
+            );
+        }
+    }
+
+    #[test]
+    fn min_eligible_algo_score_keeps_a_genuine_negative_score() {
+        // Nothing constrains scores to be non-negative, so dropping one would claim a cutoff the run never had.
+        assert_eq!(
+            min_eligible_algo_score(&scores(vec![("aaa", 5.0, 100), ("bbb", -3.0, 100)])),
+            Some(-3.0)
+        );
+    }
 }
