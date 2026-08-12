@@ -126,10 +126,10 @@ pub async fn get_validators(
         )
     };
 
-    let mut validators = filter_validators(validators, &config);
+    let validators = filter_validators(validators, &config);
     let total_count = validators.len();
 
-    sort_validators(&mut validators, config.order_field, &config.order_direction);
+    let validators = sort_validators(validators, config.order_field, &config.order_direction);
     let max_epoch = validators
         .iter()
         .flat_map(|validator| &validator.epoch_stats)
@@ -167,59 +167,66 @@ pub async fn get_validators(
 // Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
 // on every cache refresh and makes offset pages overlap or skip rows.
 fn sort_validators(
-    validators: &mut [ValidatorRecord],
+    validators: Vec<ValidatorRecord>,
     order_field: OrderField,
     order_direction: &OrderDirection,
-) {
+) -> Vec<ValidatorRecord> {
     let field_extractor = get_field_extractor(order_field);
-    validators.sort_by(|a: &ValidatorRecord, b: &ValidatorRecord| {
+    // Keyed up front: sort_by would otherwise re-extract on both sides of every one of n·log n comparisons.
+    let mut keyed: Vec<(Option<Decimal>, ValidatorRecord)> = validators
+        .into_iter()
+        .map(|validator| (field_extractor(&validator), validator))
+        .collect();
+    keyed.sort_by(|(a_key, a), (b_key, b)| {
         // A missing value is not a zero one, so it stays last whichever way the present ones go.
-        let ord = match (field_extractor(a), field_extractor(b)) {
+        let ord = match (a_key, b_key) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
             (Some(x), Some(y)) => match order_direction {
-                OrderDirection::ASC => x.cmp(&y),
-                OrderDirection::DESC => y.cmp(&x),
+                OrderDirection::ASC => x.cmp(y),
+                OrderDirection::DESC => y.cmp(x),
             },
         };
         ord.then_with(|| a.vote_account.cmp(&b.vote_account))
     });
+    keyed.into_iter().map(|(_, validator)| validator).collect()
 }
 
 // None means the record has no value for the field, not that it has a zero one.
-type FieldExtractor = Box<dyn Fn(&ValidatorRecord) -> Option<Decimal>>;
+type FieldExtractor = fn(&ValidatorRecord) -> Option<Decimal>;
 
+// Commission and Uptime keep worst-case sentinels: for those two unknown means risk, not no-data.
 fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        OrderField::Stake => Box::new(|a: &ValidatorRecord| Some(a.activated_stake)),
-        OrderField::Credits => Box::new(|a: &ValidatorRecord| Some(Decimal::from(a.credits))),
-        OrderField::MarinadeScore => Box::new(|a: &ValidatorRecord| {
-            Some(Decimal::from(to_fixed_for_sort(a.score.unwrap_or(0.0))))
-        }),
-        OrderField::Apy => Box::new(|a: &ValidatorRecord| {
-            Some(Decimal::from(to_fixed_for_sort(a.avg_apy.unwrap_or(0.0))))
-        }),
+        OrderField::Stake => |a: &ValidatorRecord| Some(a.activated_stake),
+        OrderField::Credits => |a: &ValidatorRecord| Some(Decimal::from(a.credits)),
+        OrderField::MarinadeScore => {
+            |a: &ValidatorRecord| a.score.and_then(to_fixed_for_sort).map(Decimal::from)
+        }
+        OrderField::Apy => {
+            |a: &ValidatorRecord| a.avg_apy.and_then(to_fixed_for_sort).map(Decimal::from)
+        }
         // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
         // collapses hundreds of validators into one bucket and makes the column look unsorted.
         // Saturating up is safe because apy-api derives this as `ratio^n - 1` from a positive ratio, so an unrepresentable value is always the high end.
-        OrderField::NetApy => Box::new(|a: &ValidatorRecord| {
+        OrderField::NetApy => |a: &ValidatorRecord| {
             a.net_apy
                 .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
-        }),
-        OrderField::Commission => Box::new(|a: &ValidatorRecord| {
-            Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
-        }),
-        OrderField::Uptime => Box::new(|a: &ValidatorRecord| {
-            Some(Decimal::from(to_fixed_for_sort(
-                a.avg_uptime_pct.unwrap_or(0.0),
-            )))
-        }),
-        OrderField::TakeRate => Box::new(|a: &ValidatorRecord| {
-            Some(Decimal::from(to_fixed_for_sort(
-                a.avg_take_rate.unwrap_or(0.0),
-            )))
-        }),
+        },
+        OrderField::Commission => {
+            |a: &ValidatorRecord| Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
+        }
+        OrderField::Uptime => |a: &ValidatorRecord| {
+            Some(Decimal::from(
+                a.avg_uptime_pct.and_then(to_fixed_for_sort).unwrap_or(0),
+            ))
+        },
+        OrderField::TakeRate => |a: &ValidatorRecord| {
+            a.avg_take_rate
+                .and_then(to_fixed_for_sort)
+                .map(Decimal::from)
+        },
     }
 }
 
@@ -754,12 +761,15 @@ mod tests {
     fn sort_tiebreaks_on_vote_account_ascending() {
         // Equal stake: order must fall back to vote_account ascending regardless of direction.
         for direction in [OrderDirection::ASC, OrderDirection::DESC] {
-            let mut validators = vec![
-                validator("ccc", 100, vec![]),
-                validator("aaa", 100, vec![]),
-                validator("bbb", 100, vec![]),
-            ];
-            sort_validators(&mut validators, OrderField::Stake, &direction);
+            let validators = sort_validators(
+                vec![
+                    validator("ccc", 100, vec![]),
+                    validator("aaa", 100, vec![]),
+                    validator("bbb", 100, vec![]),
+                ],
+                OrderField::Stake,
+                &direction,
+            );
             let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
             assert_eq!(order, vec!["aaa", "bbb", "ccc"], "direction {direction:?}");
         }
@@ -767,16 +777,124 @@ mod tests {
 
     #[test]
     fn sort_orders_by_field_before_tiebreak() {
-        let mut validators = vec![validator("aaa", 50, vec![]), validator("bbb", 100, vec![])];
-        sort_validators(&mut validators, OrderField::Stake, &OrderDirection::DESC);
+        let validators = sort_validators(
+            vec![validator("aaa", 50, vec![]), validator("bbb", 100, vec![])],
+            OrderField::Stake,
+            &OrderDirection::DESC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["bbb", "aaa"]);
+    }
+
+    type FieldSetter = fn(&mut ValidatorRecord, Option<f64>);
+
+    fn with_field(vote_account: &str, set: FieldSetter, value: Option<f64>) -> ValidatorRecord {
+        let mut record = validator(vote_account, 100, vec![]);
+        set(&mut record, value);
+        record
+    }
+
+    fn sinking_fields() -> Vec<(&'static str, OrderField, FieldSetter)> {
+        vec![
+            ("score", OrderField::MarinadeScore, |r, v| r.score = v),
+            ("apy", OrderField::Apy, |r, v| r.avg_apy = v),
+            ("take_rate", OrderField::TakeRate, |r, v| {
+                r.avg_take_rate = v
+            }),
+        ]
     }
 
     fn validator_with_net_apy(vote_account: &str, net_apy: Option<f64>) -> ValidatorRecord {
         ValidatorRecord {
             net_apy,
             ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    #[test]
+    fn sort_sinks_missing_values_in_both_directions() {
+        for direction in [OrderDirection::ASC, OrderDirection::DESC] {
+            for (label, field, set) in sinking_fields() {
+                let validators = sort_validators(
+                    vec![
+                        with_field("aaa_missing", set, None),
+                        with_field("bbb_zero", set, Some(0.0)),
+                        with_field("ccc_high", set, Some(0.05)),
+                    ],
+                    field,
+                    &direction,
+                );
+                let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+                let expected = match direction {
+                    OrderDirection::ASC => vec!["bbb_zero", "ccc_high", "aaa_missing"],
+                    OrderDirection::DESC => vec!["ccc_high", "bbb_zero", "aaa_missing"],
+                };
+                assert_eq!(order, expected, "{label} / {direction:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sort_keeps_missing_distinct_from_zero() {
+        // Missing used to fold onto 0.0, so an ascending sort opened with rows that have no value.
+        for (label, field, set) in sinking_fields() {
+            let validators = sort_validators(
+                vec![
+                    with_field("aaa_missing", set, None),
+                    with_field("zzz_zero", set, Some(0.0)),
+                ],
+                field,
+                &OrderDirection::ASC,
+            );
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["zzz_zero", "aaa_missing"], "{label}");
+        }
+    }
+
+    #[test]
+    fn sort_ranks_unknown_commission_as_max() {
+        let mut validators = vec![
+            validator("aaa_unknown", 100, vec![]),
+            validator("bbb_low", 100, vec![]),
+            validator("ccc_max", 100, vec![]),
+        ];
+        validators[1].commission_max_observed = Some(5);
+        validators[2].commission_max_observed = Some(100);
+        let validators = sort_validators(validators, OrderField::Commission, &OrderDirection::DESC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["aaa_unknown", "ccc_max", "bbb_low"]);
+    }
+
+    #[test]
+    fn sort_ranks_unknown_uptime_as_zero() {
+        let set: FieldSetter = |r, v| r.avg_uptime_pct = v;
+        let validators = sort_validators(
+            vec![
+                with_field("aaa_unknown", set, None),
+                with_field("bbb_zero", set, Some(0.0)),
+                with_field("ccc_high", set, Some(0.99)),
+            ],
+            OrderField::Uptime,
+            &OrderDirection::ASC,
+        );
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["aaa_unknown", "bbb_zero", "ccc_high"]);
+    }
+
+    #[test]
+    fn sort_sinks_negative_and_non_finite_values() {
+        let set: FieldSetter = |r, v| r.avg_take_rate = v;
+        for degenerate in [-0.01, f64::NAN, f64::INFINITY] {
+            let validators = sort_validators(
+                vec![
+                    with_field("aaa_degenerate", set, Some(degenerate)),
+                    with_field("zzz_zero", set, Some(0.0)),
+                ],
+                OrderField::TakeRate,
+                &OrderDirection::ASC,
+            );
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["zzz_zero", "aaa_degenerate"], "{degenerate}");
         }
     }
 
@@ -789,11 +907,14 @@ mod tests {
             to_fixed_for_sort(0.0712312),
             "the values have to share a rounding bucket for this test to be about rounding"
         );
-        let mut validators = vec![
-            validator_with_net_apy("aaa", Some(0.0712312)),
-            validator_with_net_apy("zzz", Some(0.0712389)),
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let validators = sort_validators(
+            vec![
+                validator_with_net_apy("aaa", Some(0.0712312)),
+                validator_with_net_apy("zzz", Some(0.0712389)),
+            ],
+            OrderField::NetApy,
+            &OrderDirection::DESC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["zzz", "aaa"]);
     }
@@ -801,16 +922,18 @@ mod tests {
     #[test]
     fn sort_by_net_apy_orders_ascending_and_descending() {
         let ordered = |direction| {
-            let mut validators = vec![
-                validator_with_net_apy("mid", Some(0.07)),
-                validator_with_net_apy("high", Some(0.09)),
-                validator_with_net_apy("low", Some(0.05)),
-            ];
-            sort_validators(&mut validators, OrderField::NetApy, &direction);
-            validators
-                .iter()
-                .map(|v| v.vote_account.clone())
-                .collect::<Vec<_>>()
+            sort_validators(
+                vec![
+                    validator_with_net_apy("mid", Some(0.07)),
+                    validator_with_net_apy("high", Some(0.09)),
+                    validator_with_net_apy("low", Some(0.05)),
+                ],
+                OrderField::NetApy,
+                &direction,
+            )
+            .iter()
+            .map(|v| v.vote_account.clone())
+            .collect::<Vec<_>>()
         };
         assert_eq!(ordered(OrderDirection::DESC), vec!["high", "mid", "low"]);
         assert_eq!(ordered(OrderDirection::ASC), vec!["low", "mid", "high"]);
@@ -818,22 +941,28 @@ mod tests {
 
     #[test]
     fn sort_by_net_apy_puts_validators_without_a_value_last_when_descending() {
-        let mut validators = vec![
-            validator_with_net_apy("unknown", None),
-            validator_with_net_apy("known", Some(0.07)),
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let validators = sort_validators(
+            vec![
+                validator_with_net_apy("unknown", None),
+                validator_with_net_apy("known", Some(0.07)),
+            ],
+            OrderField::NetApy,
+            &OrderDirection::DESC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["known", "unknown"]);
     }
 
     #[test]
     fn sort_by_net_apy_puts_validators_without_a_value_last_when_ascending() {
-        let mut validators = vec![
-            validator_with_net_apy("unknown", None),
-            validator_with_net_apy("known", Some(0.07)),
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let validators = sort_validators(
+            vec![
+                validator_with_net_apy("unknown", None),
+                validator_with_net_apy("known", Some(0.07)),
+            ],
+            OrderField::NetApy,
+            &OrderDirection::ASC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(
             order,
@@ -845,11 +974,14 @@ mod tests {
     #[test]
     fn sort_by_net_apy_ranks_a_genuine_zero_above_no_value_when_ascending() {
         // The no-value one is alphabetically first, so a collision would hand back the tiebreak order and the assert would not be about the collision at all.
-        let mut validators = vec![
-            validator_with_net_apy("aaaUnknown", None),
-            validator_with_net_apy("zzzZero", Some(0.0)),
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::ASC);
+        let validators = sort_validators(
+            vec![
+                validator_with_net_apy("aaaUnknown", None),
+                validator_with_net_apy("zzzZero", Some(0.0)),
+            ],
+            OrderField::NetApy,
+            &OrderDirection::ASC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(
             order,
@@ -866,12 +998,15 @@ mod tests {
             Decimal::from_f64_retain(1e30).is_none(),
             "the value has to exceed Decimal's range for this test to be about saturation"
         );
-        let mut validators = vec![
-            validator_with_net_apy("ordinary", Some(0.07)),
-            validator_with_net_apy("absurd", Some(1e30)),
-            validator_with_net_apy("unknown", None),
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let validators = sort_validators(
+            vec![
+                validator_with_net_apy("ordinary", Some(0.07)),
+                validator_with_net_apy("absurd", Some(1e30)),
+                validator_with_net_apy("unknown", None),
+            ],
+            OrderField::NetApy,
+            &OrderDirection::DESC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["absurd", "ordinary", "unknown"]);
     }
@@ -879,18 +1014,85 @@ mod tests {
     #[test]
     fn sort_by_net_apy_is_independent_of_the_inflation_only_apy() {
         // avg_apy is inflation-only and orders differently; ordering by NetApy must ignore it.
-        let mut validators = vec![
-            ValidatorRecord {
-                avg_apy: Some(0.08),
-                ..validator_with_net_apy("lowNet", Some(0.05))
-            },
-            ValidatorRecord {
-                avg_apy: Some(0.04),
-                ..validator_with_net_apy("highNet", Some(0.11))
-            },
-        ];
-        sort_validators(&mut validators, OrderField::NetApy, &OrderDirection::DESC);
+        let validators = sort_validators(
+            vec![
+                ValidatorRecord {
+                    avg_apy: Some(0.08),
+                    ..validator_with_net_apy("lowNet", Some(0.05))
+                },
+                ValidatorRecord {
+                    avg_apy: Some(0.04),
+                    ..validator_with_net_apy("highNet", Some(0.11))
+                },
+            ],
+            OrderField::NetApy,
+            &OrderDirection::DESC,
+        );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["highNet", "lowNet"]);
+    }
+
+    fn validator_with_epoch_apy(vote_account: &str, apy: Option<f64>) -> ValidatorRecord {
+        ValidatorRecord {
+            epoch_stats: vec![ValidatorEpochStats {
+                apy,
+                ..epoch_stat(100, 100)
+            }],
+            ..validator(vote_account, 100, vec![])
+        }
+    }
+
+    fn apy_ranks(validators: Vec<ValidatorRecord>) -> Vec<(String, Option<usize>)> {
+        let mut by_vote_account: HashMap<_, _> = validators
+            .into_iter()
+            .map(|v| (v.vote_account.clone(), v))
+            .collect();
+        store::utils::update_validators_ranks(
+            &mut by_vote_account,
+            |a: &ValidatorEpochStats| a.apy.and_then(to_fixed_for_sort),
+            |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
+        );
+        let mut ranks: Vec<_> = by_vote_account
+            .into_iter()
+            .map(|(vote_account, v)| (vote_account, v.epoch_stats[0].rank_apy))
+            .collect();
+        ranks.sort();
+        ranks
+    }
+
+    #[test]
+    fn ranks_leave_a_validator_without_a_value_unranked() {
+        assert_eq!(
+            apy_ranks(vec![
+                validator_with_epoch_apy("aTop", Some(0.09)),
+                validator_with_epoch_apy("bTie", Some(0.07)),
+                validator_with_epoch_apy("cTie", Some(0.07)),
+                validator_with_epoch_apy("dMissing", None),
+            ]),
+            vec![
+                ("aTop".to_string(), Some(1)),
+                ("bTie".to_string(), Some(3)),
+                ("cTie".to_string(), Some(3)),
+                ("dMissing".to_string(), None),
+            ],
+            "a rank states where a validator placed, so having no value must read as no rank"
+        );
+    }
+
+    #[test]
+    fn ranks_do_not_tie_a_genuine_zero_with_a_validator_without_a_value() {
+        // Excluding never-measured rows is what frees the rank a genuine zero deserves.
+        assert_eq!(
+            apy_ranks(vec![
+                validator_with_epoch_apy("aTop", Some(0.09)),
+                validator_with_epoch_apy("bZero", Some(0.0)),
+                validator_with_epoch_apy("cMissing", None),
+            ]),
+            vec![
+                ("aTop".to_string(), Some(1)),
+                ("bZero".to_string(), Some(2)),
+                ("cMissing".to_string(), None),
+            ]
+        );
     }
 }

@@ -8,12 +8,11 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use store::dto::{ScoringRunRecord, ValidatorScoreRecord};
-use store::utils::to_fixed_for_sort;
 use utoipa::IntoParams;
 use warp::reply::{Json, WithStatus};
 use warp::{http::StatusCode, reply::json, Reply};
 
-use super::validator_score_breakdown::ScoreBreakdown;
+use super::validator_score_breakdown::{min_eligible_algo_score, ScoreBreakdown};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseScoreBreakdowns {
@@ -153,11 +152,7 @@ fn compute_runs_min_elig_scores(
             }
         }
 
-        let min_score_eligible_algo = scoring_run_scores
-            .iter()
-            .filter(|(_, score)| score.target_stake_algo > 0)
-            .map(|(_, score)| score.score)
-            .min_by(|a, b| to_fixed_for_sort(*a).cmp(&to_fixed_for_sort(*b)));
+        let min_score_eligible_algo = min_eligible_algo_score(&scoring_run_scores);
 
         runs_min_elig_scores
             .entry(scoring_run.scoring_run_id)

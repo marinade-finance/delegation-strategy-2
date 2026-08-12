@@ -43,8 +43,10 @@ pub fn to_fixed(a: f64, decimals: i32) -> u64 {
     (a * 10f64.powi(decimals)).round() as u64
 }
 
-pub fn to_fixed_for_sort(a: f64) -> u64 {
-    to_fixed(a, 4)
+// Guarding the scaled value, not the input: the multiplication is what overflows, and the u64 cast then saturates to either end and reads as a genuine rank.
+pub fn to_fixed_for_sort(a: f64) -> Option<u64> {
+    let scaled = (a * 10f64.powi(4)).round();
+    (scaled >= 0.0 && scaled < u64::MAX as f64).then_some(scaled as u64)
 }
 
 impl<'a> InsertQueryCombiner<'a> {
@@ -555,9 +557,10 @@ pub fn update_validators_with_avgs(
     }
 }
 
+// Validators without a value stay unranked; ranking them as 0 would contradict the list sort.
 pub fn update_validators_ranks<T>(
     validators: &mut HashMap<String, ValidatorRecord>,
-    field_extractor: fn(&ValidatorEpochStats) -> T,
+    field_extractor: fn(&ValidatorEpochStats) -> Option<T>,
     rank_updater: fn(&mut ValidatorEpochStats, usize) -> (),
 ) where
     T: Ord,
@@ -565,10 +568,12 @@ pub fn update_validators_ranks<T>(
     let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
     for (vote_account, record) in validators.iter() {
         for validator_epoch_stats in record.epoch_stats.iter() {
-            stats_by_epoch
-                .entry(validator_epoch_stats.epoch)
-                .or_default()
-                .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
+            if let Some(value) = field_extractor(validator_epoch_stats) {
+                stats_by_epoch
+                    .entry(validator_epoch_stats.epoch)
+                    .or_default()
+                    .push((vote_account.clone(), value));
+            }
         }
     }
 
@@ -1199,17 +1204,17 @@ pub async fn load_validators(
     log::info!("Updating ranks...");
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.activated_stake,
+        |a: &ValidatorEpochStats| Some(a.activated_stake),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_activated_stake = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| to_fixed_for_sort(a.score.unwrap_or(0.0)),
+        |a: &ValidatorEpochStats| a.score.and_then(to_fixed_for_sort),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_score = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| to_fixed_for_sort(a.apy.unwrap_or(0.0)),
+        |a: &ValidatorEpochStats| a.apy.and_then(to_fixed_for_sort),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;
@@ -1983,4 +1988,30 @@ pub async fn store_scoring(
     tx.commit().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_fixed_for_sort_scales_usable_values() {
+        assert_eq!(to_fixed_for_sort(0.0), Some(0));
+        assert_eq!(to_fixed_for_sort(0.05), Some(500));
+        assert_eq!(to_fixed_for_sort(1.0), Some(10_000));
+    }
+
+    #[test]
+    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_zero() {
+        assert_eq!(to_fixed_for_sort(-0.01), None);
+        assert_eq!(to_fixed_for_sort(f64::NAN), None);
+        assert_eq!(to_fixed_for_sort(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_max() {
+        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
+        assert_eq!(to_fixed_for_sort(f64::MAX), None);
+        assert_eq!(to_fixed_for_sort(1e30), None);
+    }
 }
