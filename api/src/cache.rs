@@ -12,7 +12,7 @@ use store::dto::{
     ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
     ValidatorScoreRecord, VersionRecord,
 };
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 use store::utils::ValidatorOverlays;
 
@@ -20,6 +20,8 @@ pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
 const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
+// A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
+const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
 const WARM_STEPS: usize = 6;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
@@ -360,12 +362,12 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // A freshly bootstrapped environment has no validators yet and must still be able to reach ready.
+    // The DB, not the cache, tells a fresh environment from lost data: a cold cache is empty either way.
     if validators.is_empty() {
-        let populated = !context.read().await.cache.validators.is_empty();
+        let has_rows = store::utils::has_validators(&context.read().await.psql_client).await?;
         anyhow::ensure!(
-            !populated,
-            "no validators loaded, keeping previous cache intact"
+            !has_rows,
+            "validators table has rows but none loaded, keeping the cache untouched"
         );
         warn!("No validators in DB, caching an empty set");
     }
@@ -492,20 +494,23 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     let scores_len = scores.len();
     let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
 
-    context.write().await.cache.validators_single_run_scores = CachedSingleRunScores {
-        scoring_run: last_scoring_run,
-        scores,
-    };
+    // One guard for both: the step is cancellable at every await, and a torn publish would mix two runs.
+    {
+        let mut ctx = context.write().await;
+        ctx.cache.validators_single_run_scores = CachedSingleRunScores {
+            scoring_run: last_scoring_run,
+            scores,
+        };
+        ctx.cache.validators_multi_run_scores = CachedMultiRunScores {
+            scoring_runs: Some(multi_run_scoring_runs),
+            scores: multi_run_scores,
+        };
+    }
     info!(
         "Loaded {} single run scores to cache in {} ms",
         scores_len,
         warmup_timer.elapsed().as_millis()
     );
-
-    context.write().await.cache.validators_multi_run_scores = CachedMultiRunScores {
-        scoring_runs: Some(multi_run_scoring_runs),
-        scores: multi_run_scores,
-    };
     info!(
         "Loaded {} multiple run scores to cache in {} ms",
         multi_run_scores_len,
@@ -524,7 +529,7 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("versions", |c| Box::pin(warm_versions_cache(c))),
         ("commissions", |c| Box::pin(warm_commissions_cache(c))),
         ("uptimes", |c| Box::pin(warm_uptimes_cache(c))),
-        ("cluster stats", |c| Box::pin(warm_cluster_stats_cache(c))),
+        ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
     ]
 }
@@ -542,6 +547,15 @@ fn seconds_until_next_window() -> u64 {
     CACHE_WARMUP_TIME_S - now.as_secs() % CACHE_WARMUP_TIME_S
 }
 
+// Zero, not absent: an unregistered series makes a cache that never loaded invisible to a staleness alert.
+fn init_success_metrics(steps: &[WarmStep]) {
+    for (name, _) in steps {
+        metrics::CACHE_LAST_SUCCESS_SECONDS
+            .with_label_values(&[name])
+            .set(0);
+    }
+}
+
 fn record_success(name: &str) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     metrics::CACHE_LAST_SUCCESS_SECONDS
@@ -554,12 +568,13 @@ async fn warm_pending(context: &WrappedContext, steps: &[WarmStep], pending: &mu
         if !pending[index] {
             continue;
         }
-        match warm(context).await {
-            Ok(()) => {
+        match timeout(Duration::from_secs(WARM_STEP_TIMEOUT_S), warm(context)).await {
+            Ok(Ok(())) => {
                 pending[index] = false;
                 record_success(name);
             }
-            Err(err) => error!("Failed to update the {name}: {err}"),
+            Ok(Err(err)) => error!("Failed to update the {name}: {err}"),
+            Err(_) => error!("Gave up on the {name} after {WARM_STEP_TIMEOUT_S} s"),
         }
     }
 }
@@ -568,6 +583,7 @@ pub fn spawn_cache_warmer(context: WrappedContext, ready: ReadyFlag) {
     tokio::spawn(async move {
         let warmer = tokio::spawn(async move {
             let steps = warm_steps();
+            init_success_metrics(&steps);
             let mut pending = [true; WARM_STEPS];
             let mut retry_s = CACHE_RETRY_TIME_S;
 
@@ -875,6 +891,29 @@ mod tests {
             names.len(),
             "duplicate step name in {names:?}"
         );
+        for name in &names {
+            assert!(
+                !name.contains(char::is_whitespace),
+                "step name {name:?} is a Prometheus label value, so a selector has to be able to quote it"
+            );
+        }
+    }
+
+    #[test]
+    fn every_cache_reports_a_last_success_before_any_step_runs() {
+        let steps = warm_steps();
+        init_success_metrics(&steps);
+
+        for (name, _) in &steps {
+            assert_eq!(
+                metrics::CACHE_LAST_SUCCESS_SECONDS
+                    .get_metric_with_label_values(&[name])
+                    .unwrap()
+                    .get(),
+                0,
+                "a cache that never loaded has to be stale to an alert, not missing from it"
+            );
+        }
     }
 
     #[test]
