@@ -52,7 +52,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// Evaluated over the last 90 epochs of incidents, regardless of `epochs` and `query_from_date`.
     query_incident_free: Option<bool>,
-    /// Minimum downtime in seconds for a `DOWN` interval to count as an incident for `query_incident_free`. Shorter intervals are restart noise. Ignored unless `query_incident_free` is set, and never filters the returned `incidents` array.
+    /// Minimum downtime in seconds for a `DOWN` interval to count as an incident. Shorter intervals are restart noise. Drops them from the returned `incidents` array, and `query_incident_free` is evaluated over what remains.
     min_incident_downtime_seconds: Option<u64>,
     query_verified: Option<bool>,
     query_protected: Option<bool>,
@@ -312,15 +312,15 @@ pub fn filter_validators(
         validators.retain(|_, v| (v.score.unwrap_or(0.0) > 0.0) == query_score);
     }
 
+    if let Some(min_incident_downtime) = config.min_incident_downtime_seconds {
+        for v in validators.values_mut() {
+            v.incidents
+                .retain(|i| i.downtime_seconds >= min_incident_downtime);
+        }
+    }
+
     if let Some(query_incident_free) = config.query_incident_free {
-        let min_incident_downtime = config.min_incident_downtime_seconds.unwrap_or(0);
-        validators.retain(|_, v| {
-            let has_incident = v
-                .incidents
-                .iter()
-                .any(|i| i.downtime_seconds >= min_incident_downtime);
-            has_incident != query_incident_free
-        });
+        validators.retain(|_, v| v.incidents.is_empty() == query_incident_free);
     }
 
     if let Some(query_verified) = config.query_verified {
@@ -744,17 +744,62 @@ mod tests {
         );
     }
 
+    fn downtimes(validators: Vec<ValidatorRecord>) -> Vec<(String, Vec<u64>)> {
+        let mut validators = validators;
+        validators.sort_by(|a, b| a.vote_account.cmp(&b.vote_account));
+        validators
+            .into_iter()
+            .map(|v| {
+                (
+                    v.vote_account,
+                    v.incidents.iter().map(|i| i.downtime_seconds).collect(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn min_incident_downtime_alone_filters_nothing() {
+    fn min_incident_downtime_alone_keeps_every_validator_but_prunes_incidents() {
         let validators = map(vec![
             validator_with_incidents("blip", &[179]),
+            validator_with_incidents("mixed", &[10, 600]),
             validator_with_incidents("outage", &[180]),
         ]);
         let config = GetValidatorsConfig {
             min_incident_downtime_seconds: Some(180),
             ..config()
         };
-        assert_eq!(filter_validators(validators, &config).len(), 2);
+        assert_eq!(
+            downtimes(filter_validators(validators, &config)),
+            vec![
+                ("blip".to_string(), vec![]),
+                ("mixed".to_string(), vec![600]),
+                ("outage".to_string(), vec![180]),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_floor_the_incidents_array_is_untouched() {
+        let validators = map(vec![validator_with_incidents("mixed", &[10, 600])]);
+        assert_eq!(
+            downtimes(filter_validators(validators, &config())),
+            vec![("mixed".to_string(), vec![10, 600])]
+        );
+    }
+
+    #[test]
+    fn incident_free_false_returns_only_incidents_over_the_floor() {
+        let validators = map(vec![validator_with_incidents("mixed", &[10, 600])]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(false),
+            min_incident_downtime_seconds: Some(180),
+            ..config()
+        };
+        assert_eq!(
+            downtimes(filter_validators(validators, &config)),
+            vec![("mixed".to_string(), vec![600])]
+        );
     }
 
     #[test]
