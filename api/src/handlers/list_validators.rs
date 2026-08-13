@@ -206,9 +206,12 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::MarinadeScore => {
             |a: &ValidatorRecord| a.score.and_then(to_fixed_for_sort).map(Decimal::from)
         }
-        OrderField::Apy => {
-            |a: &ValidatorRecord| a.avg_apy.and_then(to_fixed_for_sort).map(Decimal::from)
-        }
+        // Shares NetApy's `ratio^n - 1` derivation but is computed here instead of served by apy-api, so an unrepresentable value sinks rather than being crowned.
+        OrderField::Apy => |a: &ValidatorRecord| {
+            a.avg_apy
+                .filter(|apy| *apy >= 0.0)
+                .and_then(Decimal::from_f64_retain)
+        },
         // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
         // collapses hundreds of validators into one bucket and makes the column look unsorted.
         // Saturating up is safe because apy-api derives this as `ratio^n - 1` from a positive ratio, so an unrepresentable value is always the high end.
@@ -818,6 +821,21 @@ mod tests {
         ]
     }
 
+    // Fields keyed through Decimal::from_f64_retain rather than to_fixed_for_sort, so they share a degenerate-value and a sub-bucket contract.
+    fn precise_fraction_fields() -> Vec<(&'static str, OrderField, FieldSetter)> {
+        vec![
+            ("apy", OrderField::Apy, |r, v| r.avg_apy = v),
+            ("take_rate", OrderField::TakeRate, |r, v| {
+                r.avg_take_rate = v
+            }),
+            (
+                "expected_take_rate",
+                OrderField::ExpectedTakeRate,
+                |r, v| r.expected_take_rate = v,
+            ),
+        ]
+    }
+
     #[test]
     fn sort_orders_the_two_take_rates_independently() {
         // Measured and expected disagree by design, so one must not be sorting by the other.
@@ -920,24 +938,29 @@ mod tests {
 
     #[test]
     fn sort_sinks_negative_and_non_finite_values() {
-        let set: FieldSetter = |r, v| r.avg_take_rate = v;
         for degenerate in [-0.01, f64::NAN, f64::INFINITY] {
-            let validators = sort_validators(
-                vec![
-                    with_field("aaa_degenerate", set, Some(degenerate)),
-                    with_field("zzz_zero", set, Some(0.0)),
-                ],
-                OrderField::TakeRate,
-                &OrderDirection::ASC,
-            );
-            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
-            assert_eq!(order, vec!["zzz_zero", "aaa_degenerate"], "{degenerate}");
+            for (label, field, set) in precise_fraction_fields() {
+                let validators = sort_validators(
+                    vec![
+                        with_field("aaa_degenerate", set, Some(degenerate)),
+                        with_field("zzz_zero", set, Some(0.0)),
+                    ],
+                    field,
+                    &OrderDirection::ASC,
+                );
+                let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+                assert_eq!(
+                    order,
+                    vec!["zzz_zero", "aaa_degenerate"],
+                    "{label} / {degenerate}"
+                );
+            }
         }
     }
 
     #[test]
-    fn sort_separates_take_rates_differing_below_four_decimals() {
-        // Mainnet's actual collision: 5% inflation commission with 0 bps MEV against the same with 10 bps.
+    fn sort_separates_fraction_fields_differing_below_four_decimals() {
+        // Mainnet's actual take-rate collision: 5% inflation commission with 0 bps MEV against the same with 10 bps.
         const LOWER: f64 = 0.13635962633635962;
         const HIGHER: f64 = 0.13638048552938048;
         assert_eq!(
@@ -945,17 +968,7 @@ mod tests {
             to_fixed_for_sort(HIGHER),
             "the values have to share a rounding bucket for this test to be about rounding"
         );
-        let fields: [(&str, OrderField, FieldSetter); 2] = [
-            ("take_rate", OrderField::TakeRate, |r, v| {
-                r.avg_take_rate = v
-            }),
-            (
-                "expected_take_rate",
-                OrderField::ExpectedTakeRate,
-                |r, v| r.expected_take_rate = v,
-            ),
-        ];
-        for (label, field, set) in fields {
+        for (label, field, set) in precise_fraction_fields() {
             let validators = sort_validators(
                 vec![
                     with_field("aaa_lower", set, Some(LOWER)),
@@ -1120,7 +1133,7 @@ mod tests {
             .collect();
         store::utils::update_validators_ranks(
             &mut by_vote_account,
-            |a: &ValidatorEpochStats| a.apy.and_then(to_fixed_for_sort),
+            |a: &ValidatorEpochStats| a.apy.and_then(Decimal::from_f64_retain),
             |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
         );
         let mut ranks: Vec<_> = by_vote_account
@@ -1147,6 +1160,26 @@ mod tests {
                 ("dMissing".to_string(), None),
             ],
             "a rank states where a validator placed, so having no value must read as no rank"
+        );
+    }
+
+    #[test]
+    fn ranks_separate_apys_differing_below_four_decimals() {
+        assert_eq!(
+            to_fixed_for_sort(0.0712312),
+            to_fixed_for_sort(0.0712389),
+            "the values have to share a rounding bucket for this test to be about rounding"
+        );
+        assert_eq!(
+            apy_ranks(vec![
+                validator_with_epoch_apy("aLower", Some(0.0712312)),
+                validator_with_epoch_apy("bHigher", Some(0.0712389)),
+            ]),
+            vec![
+                ("aLower".to_string(), Some(2)),
+                ("bHigher".to_string(), Some(1)),
+            ],
+            "rounding used to hand both validators the same rank"
         );
     }
 

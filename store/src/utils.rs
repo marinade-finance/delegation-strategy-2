@@ -1296,12 +1296,12 @@ pub async fn load_validators(
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.score.and_then(to_fixed_for_sort),
+        |a: &ValidatorEpochStats| a.score.and_then(Decimal::from_f64_retain),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_score = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.apy.and_then(to_fixed_for_sort),
+        |a: &ValidatorEpochStats| a.apy.and_then(Decimal::from_f64_retain),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;
