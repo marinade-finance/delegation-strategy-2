@@ -1,5 +1,7 @@
 use crate::common::*;
-use crate::slot_params::{baseline_slots_per_year, get_slots_per_year, SLOTS_IN_EPOCH};
+use crate::slot_params::{
+    baseline_slots_per_year, get_slot_params, nearest_slot_time_ms, SLOTS_IN_EPOCH,
+};
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use anyhow::Context;
@@ -8,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
 use solana_sdk::clock::Epoch;
+use solana_sdk::epoch_info::EpochInfo;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use structopt::StructOpt;
@@ -99,6 +102,25 @@ pub struct ValidatorsPerformanceSnapshot {
     pub cluster_inflation: Option<ClusterInflation>,
     pub validators: HashMap<String, ValidatorPerformance>,
     pub rewards: Option<HashMap<String, ValidatorRewards>>,
+}
+
+/// A mistyped gate pubkey reads exactly like "not activated", and only the clock can tell them apart.
+fn warn_on_slot_time_divergence(
+    client: &RpcClient,
+    current_epoch_info: &EpochInfo,
+) -> anyhow::Result<()> {
+    let Some(measured_ms) = measure_milliseconds_per_slot(client, current_epoch_info)? else {
+        return Ok(());
+    };
+    let nominal_ms = get_slot_params(client, current_epoch_info.epoch)?.slot_time_ms;
+    let nearest_ms = nearest_slot_time_ms(measured_ms);
+    if nearest_ms != nominal_ms {
+        warn!(
+            "Epoch {} runs at a measured {measured_ms}ms/slot, nearest the {nearest_ms}ms row, but {nominal_ms}ms was selected. Check the slot time gate pubkeys.",
+            current_epoch_info.epoch
+        );
+    }
+    Ok(())
 }
 
 /// RPC answers for the current epoch; a backfilled one was minted at an earlier point on agave's taper curve.
@@ -284,9 +306,12 @@ pub fn collect_validators_performance_info(
         None
     };
 
-    let slots_per_year = get_slots_per_year(&client, epoch)?;
+    let slots_per_year = get_slot_params(&client, epoch)?.slots_per_year;
 
     let cluster_inflation = if performance_params.with_rewards {
+        if let Err(err) = warn_on_slot_time_divergence(&client, &current_epoch_info) {
+            warn!("Could not cross-check the nominal slot time against the clock: {err}");
+        }
         Some(cluster_inflation_at_epoch(&client, epoch, slots_per_year)?)
     } else {
         None

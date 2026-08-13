@@ -45,9 +45,9 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
 ];
 
 #[derive(Clone, Copy, Debug)]
-struct SlotParams {
-    slot_time_ms: u64,
-    slots_per_year: f64,
+pub struct SlotParams {
+    pub slot_time_ms: u64,
+    pub slots_per_year: f64,
 }
 
 /// Reachable only from snapshots that predate the gate read, which are all pre-SIMD-0525 epochs.
@@ -56,7 +56,7 @@ pub fn baseline_slots_per_year() -> f64 {
 }
 
 /// Per epoch, never live: agave computes inflation piecewise, so today's regime must not reach a past epoch.
-pub fn get_slots_per_year(client: &RpcClient, epoch: Epoch) -> anyhow::Result<f64> {
+pub fn get_slot_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<SlotParams> {
     let gate_ids: Vec<Pubkey> = SLOT_TIME_GATES.iter().map(|(id, _)| *id).collect();
     let epoch_schedule = client.get_epoch_schedule()?;
     let accounts = client.get_multiple_accounts(&gate_ids)?;
@@ -94,7 +94,17 @@ pub fn get_slots_per_year(client: &RpcClient, epoch: Epoch) -> anyhow::Result<f6
         "Epoch {epoch} slot params: {}ms, {} slots/year",
         params.slot_time_ms, params.slots_per_year
     );
-    Ok(params.slots_per_year)
+    Ok(params)
+}
+
+/// Measured slot time sits ~5% above nominal because skipped slots still count, so only the nearest row can judge it.
+pub fn nearest_slot_time_ms(measured_ms: u64) -> u64 {
+    SLOT_TIME_GATES
+        .iter()
+        .map(|(_, params)| params.slot_time_ms)
+        .chain([BASELINE_SLOT_PARAMS.slot_time_ms])
+        .min_by_key(|row| row.abs_diff(measured_ms))
+        .unwrap_or(BASELINE_SLOT_PARAMS.slot_time_ms)
 }
 
 // SIMD-0525: a gate active in epoch E first applies at the first slot of E+1 (agave `feature_effective_slot`).
@@ -178,6 +188,20 @@ mod tests {
         let activations = [(GATE_350MS, Some(20)), (GATE_200MS, Some(10))];
         assert_eq!(select_slot_params(&activations, 15).slot_time_ms, 200);
         assert_eq!(select_slot_params(&activations, 25).slot_time_ms, 200);
+    }
+
+    #[test]
+    fn measured_slot_time_maps_to_the_row_it_belongs_to() {
+        // Mainnet measures 407-422ms against a 400ms nominal today, and would measure ~368 at stage 1.
+        assert_eq!(nearest_slot_time_ms(420), 400);
+        assert_eq!(nearest_slot_time_ms(368), 350);
+        assert_eq!(nearest_slot_time_ms(210), 200);
+    }
+
+    #[test]
+    fn the_midpoint_between_two_rows_decides_which_one_is_nearer() {
+        assert_eq!(nearest_slot_time_ms(376), 400);
+        assert_eq!(nearest_slot_time_ms(374), 350);
     }
 
     #[test]
