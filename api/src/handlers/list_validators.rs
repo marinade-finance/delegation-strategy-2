@@ -75,6 +75,8 @@ pub enum OrderField {
     Commission,
     Uptime,
     TakeRate,
+    /// Orders by the commission-derived `expected_take_rate`; `TakeRate` orders by the measured `avg_take_rate`.
+    ExpectedTakeRate,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::ToSchema)]
@@ -222,10 +224,16 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
                 a.avg_uptime_pct.and_then(to_fixed_for_sort).unwrap_or(0),
             ))
         },
+        // Same fraction-rounding trap as NetApy, but a degenerate value sinks here rather than saturating up: a take rate has no natural high end to saturate towards.
         OrderField::TakeRate => |a: &ValidatorRecord| {
             a.avg_take_rate
-                .and_then(to_fixed_for_sort)
-                .map(Decimal::from)
+                .filter(|rate| *rate >= 0.0)
+                .and_then(Decimal::from_f64_retain)
+        },
+        OrderField::ExpectedTakeRate => |a: &ValidatorRecord| {
+            a.expected_take_rate
+                .filter(|rate| *rate >= 0.0)
+                .and_then(Decimal::from_f64_retain)
         },
     }
 }
@@ -531,6 +539,7 @@ mod tests {
             avg_apy: None,
             unique_delegators: None,
             avg_take_rate: None,
+            expected_take_rate: None,
             net_apy: None,
             incidents: Vec::new(),
             verified: false,
@@ -801,7 +810,35 @@ mod tests {
             ("take_rate", OrderField::TakeRate, |r, v| {
                 r.avg_take_rate = v
             }),
+            (
+                "expected_take_rate",
+                OrderField::ExpectedTakeRate,
+                |r, v| r.expected_take_rate = v,
+            ),
         ]
+    }
+
+    #[test]
+    fn sort_orders_the_two_take_rates_independently() {
+        // Measured and expected disagree by design, so one must not be sorting by the other.
+        let validators = sort_validators(
+            vec![
+                ValidatorRecord {
+                    avg_take_rate: Some(0.0),
+                    expected_take_rate: Some(0.06),
+                    ..validator("aaa_idle", 100, vec![])
+                },
+                ValidatorRecord {
+                    avg_take_rate: Some(0.05),
+                    expected_take_rate: Some(0.05),
+                    ..validator("bbb_busy", 100, vec![])
+                },
+            ],
+            OrderField::ExpectedTakeRate,
+            &OrderDirection::ASC,
+        );
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["bbb_busy", "aaa_idle"]);
     }
 
     fn validator_with_net_apy(vote_account: &str, net_apy: Option<f64>) -> ValidatorRecord {
@@ -895,6 +932,40 @@ mod tests {
             );
             let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
             assert_eq!(order, vec!["zzz_zero", "aaa_degenerate"], "{degenerate}");
+        }
+    }
+
+    #[test]
+    fn sort_separates_take_rates_differing_below_four_decimals() {
+        // Mainnet's actual collision: 5% inflation commission with 0 bps MEV against the same with 10 bps.
+        const LOWER: f64 = 0.13635962633635962;
+        const HIGHER: f64 = 0.13638048552938048;
+        assert_eq!(
+            to_fixed_for_sort(LOWER),
+            to_fixed_for_sort(HIGHER),
+            "the values have to share a rounding bucket for this test to be about rounding"
+        );
+        let fields: [(&str, OrderField, FieldSetter); 2] = [
+            ("take_rate", OrderField::TakeRate, |r, v| {
+                r.avg_take_rate = v
+            }),
+            (
+                "expected_take_rate",
+                OrderField::ExpectedTakeRate,
+                |r, v| r.expected_take_rate = v,
+            ),
+        ];
+        for (label, field, set) in fields {
+            let validators = sort_validators(
+                vec![
+                    with_field("aaa_lower", set, Some(LOWER)),
+                    with_field("zzz_higher", set, Some(HIGHER)),
+                ],
+                field,
+                &OrderDirection::DESC,
+            );
+            let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+            assert_eq!(order, vec!["zzz_higher", "aaa_lower"], "{label}");
         }
     }
 

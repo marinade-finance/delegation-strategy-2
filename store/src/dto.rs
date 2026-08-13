@@ -350,6 +350,8 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
+    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. Null for a validator whose advertised commission is unknown.
+    pub expected_take_rate: Option<f64>,
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,

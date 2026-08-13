@@ -6,6 +6,7 @@ use crate::dto::{
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord,
 };
+use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -221,6 +222,10 @@ async fn get_apy_calculators(
 /// Window (in epochs) over which per-validator downtime incidents are collected for the
 /// `incidents` field on `/validators`.
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+
+/// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
+/// with no distribution account written, short enough that a long-departed validator reads as absent.
+const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
 /// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
@@ -689,11 +694,28 @@ async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Optio
     }
 }
 
+/// Cluster-wide split of the window's rewards across the three components, as fractions of the
+/// total pot. Each counts both sides, so a validator choosing to share its block rewards moves
+/// lamports between the sides without moving the weight every validator's take rate is scaled by.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct RewardMixShares {
+    pub inflation: f64,
+    pub mev: f64,
+    pub block: f64,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct TakeRates {
+    pub measured: HashMap<String, f64>,
+    pub shares: Option<RewardMixShares>,
+}
+
 /// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
 /// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
 /// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
 /// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
-pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
+/// Also returns the cluster reward mix, which the same scan already has to compute.
+pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -714,13 +736,20 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
     };
 
     let query = format!(
-        "SELECT vote_account, CAST(take_rate AS STRING) AS take_rate FROM (
+        "SELECT
+            vote_account,
+            CAST(take_rate AS STRING) AS take_rate,
+            CAST(inflation_share AS STRING) AS inflation_share,
+            CAST(mev_share AS STRING) AS mev_share,
+            CAST(block_share AS STRING) AS block_share
+        FROM (
             WITH stakers AS (
                 SELECT
                     stakes.vote_account AS vote_account,
                     stakes.epoch AS epoch,
                     SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
-                    SUM(COALESCE(mev.amount, 0)) AS staker_mev
+                    SUM(COALESCE(mev.amount, 0)) AS staker_mev,
+                    SUM(COALESCE(prio.amount, 0)) AS staker_blocks
                 FROM `{ds}.stakes` stakes
                 LEFT JOIN `{ds}.rewards_inflation` inflation
                     ON stakes.stake_account = inflation.stake_account
@@ -728,40 +757,58 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
                 LEFT JOIN `{ds}.rewards_mev` mev
                     ON stakes.stake_account = mev.stake_account
                     AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
+                -- rewards_validators_blocks is gross, so what Jito's PriorityFeeDistribution passed through has to come off the validator's keep rather than add to the pot.
+                LEFT JOIN `{ds}.rewards_jito_priority_fee` prio
+                    ON stakes.stake_account = prio.stake_account
+                    AND stakes.epoch = prio.epoch AND prio.epoch >= {min_epoch}
                 WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
                 GROUP BY stakes.vote_account, stakes.epoch
+            ),
+            per_validator AS (
+                SELECT
+                    stakers.vote_account AS vote_account,
+                    SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_total,
+                    SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_total,
+                    SUM(COALESCE(vb.amount, 0)) AS block_total,
+                    -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
+                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
+                        + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_total
+                FROM stakers
+                -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_inflation`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vi
+                    ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_mev`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vm
+                    ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_blocks`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vb
+                    ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
+                GROUP BY stakers.vote_account
             )
             SELECT
-                stakers.vote_account AS vote_account,
-                SAFE_DIVIDE(
-                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0)),
-                    SUM(staker_inflation + staker_mev
-                        + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
-                ) AS take_rate
-            FROM stakers
-            -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_inflation`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vi
-                ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_mev`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vm
-                ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
-            LEFT JOIN (
-                SELECT vote_account, epoch, SUM(amount) AS amount
-                FROM `{ds}.rewards_validators_blocks`
-                WHERE epoch >= {min_epoch}
-                GROUP BY vote_account, epoch
-            ) vb
-                ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
-            GROUP BY stakers.vote_account
+                vote_account,
+                SAFE_DIVIDE(validator_total, inflation_total + mev_total + block_total) AS take_rate,
+                -- Windowed over the already-grouped rows, so the cluster mix costs no extra scan.
+                SAFE_DIVIDE(SUM(inflation_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS inflation_share,
+                SAFE_DIVIDE(SUM(mev_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS mev_share,
+                SAFE_DIVIDE(SUM(block_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS block_share
+            FROM per_validator
         )
         WHERE take_rate IS NOT NULL"
     );
@@ -776,14 +823,53 @@ pub async fn load_take_rates() -> anyhow::Result<HashMap<String, f64>> {
         .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
         .await?;
 
-    let mut records: HashMap<String, f64> = Default::default();
+    let mut measured: HashMap<String, f64> = Default::default();
+    // Identical on every row by construction, so the last one read is the cluster mix.
+    let mut shares = None;
     while let Some(row) = iter.next().await? {
         let vote_account = row.column::<String>(0)?;
         let take_rate_str = row.column::<String>(1)?;
-        records.insert(vote_account, take_rate_str.parse()?);
+        measured.insert(vote_account, take_rate_str.parse()?);
+        shares = match (
+            row.column::<Option<String>>(2)?,
+            row.column::<Option<String>>(3)?,
+            row.column::<Option<String>>(4)?,
+        ) {
+            (Some(inflation), Some(mev), Some(block)) => Some(RewardMixShares {
+                inflation: inflation.parse()?,
+                mev: mev.parse()?,
+                block: block.parse()?,
+            }),
+            _ => shares,
+        };
     }
 
-    Ok(records)
+    Ok(TakeRates { measured, shares })
+}
+
+/// What the validator's own fee settings imply it keeps, weighted by the cluster reward mix.
+/// Renormalized over the components it actually earns: a validator not running Jito receives no MEV
+/// at all, so crediting it a 0% MEV commission would dilute the rate it takes on what it does earn.
+/// None when the inflation commission is unknown, which is the one component no validator can opt out of.
+pub fn expected_take_rate(
+    shares: RewardMixShares,
+    inflation_commission_pct: Option<i32>,
+    mev_commission_bps: Option<i32>,
+    priority_commission_bps: Option<i32>,
+) -> Option<f64> {
+    let mut weighted = (f64::from(inflation_commission_pct?) / 100.0) * shares.inflation;
+    let mut weight = shares.inflation;
+
+    if let Some(bps) = mev_commission_bps {
+        weighted += (f64::from(bps) / 10_000.0) * shares.mev;
+        weight += shares.mev;
+    }
+    // Block rewards are always earned, and absent a Jito PriorityFeeDistribution account none of them
+    // are shared: SIMD-0096 pays every priority fee to the block producer.
+    weighted += priority_commission_bps.map_or(1.0, |bps| f64::from(bps) / 10_000.0) * shares.block;
+    weight += shares.block;
+
+    (weight > 0.0).then_some(weighted / weight)
 }
 
 #[derive(serde::Deserialize)]
@@ -864,7 +950,7 @@ where
 #[derive(Default)]
 pub struct ValidatorOverlays {
     pub unique_delegators: HashMap<String, u64>,
-    pub take_rates: HashMap<String, f64>,
+    pub take_rates: TakeRates,
     pub net_apy: HashMap<String, f64>,
     pub verified: HashSet<String>,
     pub protected: HashSet<String>,
@@ -1091,6 +1177,7 @@ pub async fn load_validators(
                     avg_apy: None,
                     unique_delegators: None,
                     avg_take_rate: None,
+                    expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
                     verified: false,
@@ -1237,8 +1324,27 @@ pub async fn load_validators(
     }
 
     log::info!("Updating take rates...");
+    let mut mev_commissions: HashMap<String, i32> = Default::default();
+    let mut priority_commissions: HashMap<String, i32> = Default::default();
+    // get_last_jito_info keys on (vote_account, epoch): the two distribution accounts resolve their last epoch separately, splitting one validator across two records.
+    for jito in get_last_jito_info(psql_client, DEFAULT_JITO_COMMISSION_EPOCHS).await? {
+        if let Some(bps) = jito.mev_commission_bps {
+            mev_commissions.insert(jito.vote_account.clone(), bps);
+        }
+        if let Some(bps) = jito.priority_commission_bps {
+            priority_commissions.insert(jito.vote_account, bps);
+        }
+    }
     for (vote_account, record) in records.iter_mut() {
-        record.avg_take_rate = overlays.take_rates.get(vote_account).copied();
+        record.avg_take_rate = overlays.take_rates.measured.get(vote_account).copied();
+        record.expected_take_rate = overlays.take_rates.shares.and_then(|shares| {
+            expected_take_rate(
+                shares,
+                record.commission_advertised,
+                mev_commissions.get(vote_account).copied(),
+                priority_commissions.get(vote_account).copied(),
+            )
+        });
     }
 
     log::info!("Updating net APY...");
@@ -2084,5 +2190,81 @@ mod tests {
         assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
         assert_eq!(to_fixed_for_sort(f64::MAX), None);
         assert_eq!(to_fixed_for_sort(1e30), None);
+    }
+
+    // Roughly mainnet's mix at epoch 1015, so the numbers below read against something real.
+    const MIX: RewardMixShares = RewardMixShares {
+        inflation: 0.90,
+        mev: 0.044,
+        block: 0.056,
+    };
+
+    fn approx(actual: Option<f64>, expected: f64) {
+        let actual = actual.expect("expected a rate");
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_floors_at_the_block_share_for_a_zero_fee_validator() {
+        // HelixNode's shape: 0% inflation, 0% MEV, no priority-fee account. It measures ~5.6%.
+        approx(expected_take_rate(MIX, Some(0), Some(0), None), MIX.block);
+    }
+
+    #[test]
+    fn expected_take_rate_reaches_one_when_every_component_is_fully_taken() {
+        approx(
+            expected_take_rate(MIX, Some(100), Some(10_000), Some(10_000)),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_weights_each_commission_by_its_component() {
+        approx(
+            expected_take_rate(MIX, Some(5), Some(1_000), None),
+            0.05 * MIX.inflation + 0.1 * MIX.mev + MIX.block,
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_drops_below_the_floor_when_block_rewards_are_shared() {
+        // The two validators on Jito's PriorityFeeDistribution at 0 bps keep none of their priority fees.
+        approx(expected_take_rate(MIX, Some(0), Some(0), Some(0)), 0.0);
+    }
+
+    #[test]
+    fn expected_take_rate_renormalizes_when_the_validator_earns_no_mev() {
+        // Without Jito there is no MEV to take a cut of, so the MEV weight must leave the denominator
+        // rather than count as a 0% commission and dilute the rate.
+        let no_jito = expected_take_rate(MIX, Some(10), None, None);
+        approx(
+            no_jito,
+            (0.1 * MIX.inflation + MIX.block) / (MIX.inflation + MIX.block),
+        );
+
+        let diluted = 0.1 * MIX.inflation + MIX.block;
+        assert!(
+            no_jito.unwrap() > diluted,
+            "renormalizing must read higher than crediting a 0% MEV commission"
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_is_unknown_without_an_inflation_commission() {
+        // Inflation rewards are earned by every validator, so a missing commission cannot renormalize away the way a missing MEV one does.
+        assert_eq!(expected_take_rate(MIX, None, Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn expected_take_rate_needs_at_least_one_component_to_weigh() {
+        let empty = RewardMixShares {
+            inflation: 0.0,
+            mev: 0.0,
+            block: 0.0,
+        };
+        assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
     }
 }
