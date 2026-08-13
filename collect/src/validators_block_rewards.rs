@@ -176,8 +176,13 @@ pub fn collect_validator_block_rewards_info(
             );
         } else {
             // The target epoch ended when the current one started.
-            let hours_since_epoch_end =
-                seconds_since_epoch_start(&client, &current_epoch_info)? / SECONDS_PER_HOUR;
+            let hours_since_epoch_end = seconds_since_epoch_start(&client, &current_epoch_info)
+                .map(|seconds| seconds / SECONDS_PER_HOUR)
+                // This branch exists to be lenient; an unmeasurable clock must not escalate it.
+                .unwrap_or_else(|err| {
+                    warn!("Cannot measure time since the epoch started: {err}");
+                    0
+                });
             if rewards_params.max_data_delay_hours > 0
                 && hours_since_epoch_end >= rewards_params.max_data_delay_hours
             {

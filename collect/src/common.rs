@@ -38,21 +38,50 @@ where
     make_call()
 }
 
+struct EpochClock {
+    seconds_since_epoch_start: u64,
+    milliseconds_per_slot: Option<u64>,
+}
+
+/// Anchored on a block the node still holds: `getBlocks` answers from the pruned ledger's start instead of failing.
+fn epoch_clock(rpc_client: &RpcClient, epoch_info: &EpochInfo) -> anyhow::Result<EpochClock> {
+    let first_slot = epoch_info
+        .absolute_slot
+        .saturating_sub(epoch_info.slot_index);
+    let anchor = first_slot.max(rpc_client.get_first_available_block()?);
+    // The anchor slot may be skipped, and `get_block_time` only answers for produced blocks.
+    let anchor_block = *rpc_client
+        .get_blocks_with_limit(anchor, 1)?
+        .first()
+        .context("No block produced yet since the epoch start")?;
+    let elapsed = chrono::Utc::now().timestamp() - rpc_client.get_block_time(anchor_block)?;
+    let elapsed_seconds =
+        u64::try_from(elapsed).context("Anchor block is timestamped in the future")?;
+    let measured_slots = epoch_info.absolute_slot.saturating_sub(anchor_block);
+    let milliseconds_per_slot = milliseconds_per_slot(elapsed_seconds, measured_slots);
+
+    let seconds_since_epoch_start = if anchor == first_slot {
+        elapsed_seconds
+    } else {
+        // Slot time only ever changes on an epoch boundary, so a rate measured inside the epoch is its own.
+        let rate = milliseconds_per_slot.context(
+            "Ledger is pruned past the epoch start and the retained window is too short to measure",
+        )?;
+        seconds_from_rate(epoch_info.slot_index, rate)
+    };
+
+    Ok(EpochClock {
+        seconds_since_epoch_start,
+        milliseconds_per_slot,
+    })
+}
+
 /// From block time, not slot counts: SIMD-0525 makes any slot-count arithmetic drift against the clock.
 pub fn seconds_since_epoch_start(
     rpc_client: &RpcClient,
     epoch_info: &EpochInfo,
 ) -> anyhow::Result<u64> {
-    let first_slot = epoch_info
-        .absolute_slot
-        .saturating_sub(epoch_info.slot_index);
-    // The epoch's first slot may be skipped, and `get_block_time` only answers for produced blocks.
-    let first_block = *rpc_client
-        .get_blocks_with_limit(first_slot, 1)?
-        .first()
-        .context("No block produced yet in the current epoch")?;
-    let elapsed = chrono::Utc::now().timestamp() - rpc_client.get_block_time(first_block)?;
-    u64::try_from(elapsed).context("Epoch's first block is timestamped in the future")
+    Ok(epoch_clock(rpc_client, epoch_info)?.seconds_since_epoch_start)
 }
 
 /// `None` means unmeasurable, never "assume 400ms" — a stale nominal is what SIMD-0525 invalidates.
@@ -60,22 +89,22 @@ pub fn measure_milliseconds_per_slot(
     rpc_client: &RpcClient,
     epoch_info: &EpochInfo,
 ) -> anyhow::Result<Option<u64>> {
-    // Repeats the check below only to skip two RPC round trips that could not produce an answer.
+    // Repeats the check below only to skip three RPC round trips that could not produce an answer.
     if epoch_info.slot_index < MIN_SLOTS_TO_MEASURE {
         return Ok(None);
     }
-    let elapsed_seconds = seconds_since_epoch_start(rpc_client, epoch_info)?;
-    Ok(milliseconds_per_slot(
-        elapsed_seconds,
-        epoch_info.slot_index,
-    ))
+    Ok(epoch_clock(rpc_client, epoch_info)?.milliseconds_per_slot)
 }
 
-fn milliseconds_per_slot(elapsed_seconds: u64, slot_index: u64) -> Option<u64> {
-    if slot_index < MIN_SLOTS_TO_MEASURE {
+fn milliseconds_per_slot(elapsed_seconds: u64, measured_slots: u64) -> Option<u64> {
+    if measured_slots < MIN_SLOTS_TO_MEASURE {
         return None;
     }
-    Some(elapsed_seconds * 1000 / slot_index)
+    Some(elapsed_seconds * 1000 / measured_slots)
+}
+
+fn seconds_from_rate(slot_index: u64, milliseconds_per_slot: u64) -> u64 {
+    slot_index * milliseconds_per_slot / 1000
 }
 
 pub struct QuadraticBackoffStrategy;
@@ -110,9 +139,26 @@ mod tests {
     }
 
     #[test]
-    fn too_young_an_epoch_is_not_measured() {
+    fn too_short_a_window_is_not_measured() {
         assert_eq!(milliseconds_per_slot(0, 0), None);
         assert_eq!(milliseconds_per_slot(300, MIN_SLOTS_TO_MEASURE - 1), None);
         assert!(milliseconds_per_slot(400, MIN_SLOTS_TO_MEASURE).is_some());
+    }
+
+    #[test]
+    fn a_pruned_ledger_reconstructs_the_same_elapsed_time() {
+        // Half the epoch retained: the rate measured over it must rebuild the full elapsed wall clock.
+        let retained_slots = SLOTS_IN_EPOCH / 2;
+        let rate = milliseconds_per_slot(86_400, retained_slots).unwrap();
+        assert_eq!(rate, 400);
+        assert_eq!(seconds_from_rate(SLOTS_IN_EPOCH, rate), 172_800);
+    }
+
+    #[test]
+    fn the_pruned_branch_reports_equal_hours_at_any_slot_time() {
+        let at_400ms = seconds_from_rate(108_000, milliseconds_per_slot(21_600, 54_000).unwrap());
+        let at_350ms = seconds_from_rate(123_440, milliseconds_per_slot(21_602, 61_720).unwrap());
+        assert_eq!(at_400ms / 3_600, 12);
+        assert_eq!(at_350ms / 3_600, 12);
     }
 }

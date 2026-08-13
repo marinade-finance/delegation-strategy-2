@@ -20,6 +20,7 @@ pub async fn create_epoch_record(
     psql_client: &Client,
     epoch: u64,
     cluster_inflation: ClusterInflation,
+    slots_per_year: f64,
 ) -> anyhow::Result<()> {
     psql_client
         .execute(
@@ -64,7 +65,7 @@ pub async fn create_epoch_record(
                 &Decimal::from(cluster_inflation.sol_total_supply),
                 &cluster_inflation.inflation,
                 &cluster_inflation.inflation_taper,
-                &cluster_inflation.slots_per_year,
+                &slots_per_year,
             ],
         )
         .await?;
@@ -165,6 +166,7 @@ pub async fn close_epoch(
         psql_client,
         snapshot.epoch,
         snapshot.cluster_inflation.unwrap(),
+        snapshot.slots_per_year,
     )
     .await?;
 

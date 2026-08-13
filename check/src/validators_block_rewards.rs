@@ -69,7 +69,10 @@ pub async fn check_block_rewards(
                     Ok(true)
                 } else {
                     let slots_to_wait = params.slot_offset_wait - current_slot_index;
-                    match measure_milliseconds_per_slot(rpc_client, &current_epoch_data)? {
+                    // An unavailable ETA must not turn "not yet" into a failed check.
+                    match measure_milliseconds_per_slot(rpc_client, &current_epoch_data)
+                        .unwrap_or_default()
+                    {
                         Some(ms_per_slot) => info!(
                             "To execute required to wait at epoch {current_epoch} for {slots_to_wait} slots, approximately {} seconds",
                             slots_to_wait * ms_per_slot / 1000u64

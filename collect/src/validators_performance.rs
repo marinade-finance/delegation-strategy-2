@@ -1,7 +1,8 @@
 use crate::common::*;
-use crate::slot_params::get_slots_per_year;
+use crate::slot_params::{baseline_slots_per_year, get_slots_per_year, SLOTS_IN_EPOCH};
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
+use anyhow::Context;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -44,7 +45,6 @@ pub struct ClusterInflation {
     pub sol_total_supply: u64,
     pub inflation: f64,
     pub inflation_taper: f64,
-    pub slots_per_year: f64,
 }
 
 // Snapshots predating the numeric client_id hold the rendered string, and store reads them back post-deploy.
@@ -93,9 +93,65 @@ pub struct ValidatorsPerformanceSnapshot {
     pub epoch_slot: u64,
     pub transaction_count: u64,
     pub created_at: String,
+    // Snapshots predating the gate read describe epochs that provably ran at the baseline slot time.
+    #[serde(default = "baseline_slots_per_year")]
+    pub slots_per_year: f64,
     pub cluster_inflation: Option<ClusterInflation>,
     pub validators: HashMap<String, ValidatorPerformance>,
     pub rewards: Option<HashMap<String, ValidatorRewards>>,
+}
+
+/// RPC answers for the current epoch; a backfilled one was minted at an earlier point on agave's taper curve.
+fn cluster_inflation_at_epoch(
+    client: &RpcClient,
+    epoch: Epoch,
+    slots_per_year: f64,
+) -> anyhow::Result<ClusterInflation> {
+    let rate = client.get_inflation_rate()?;
+    let governor = client.get_inflation_governor()?;
+    let epochs_behind = rate.epoch.checked_sub(epoch).with_context(|| {
+        format!(
+            "Epoch {epoch} is ahead of the cluster's current epoch {}",
+            rate.epoch
+        )
+    })?;
+
+    let (inflation, sol_total_supply) = inflation_and_supply_at(
+        rate.total,
+        client.supply()?.value.total,
+        governor.taper,
+        governor.terminal,
+        slots_per_year / SLOTS_IN_EPOCH as f64,
+        epochs_behind,
+    );
+
+    Ok(ClusterInflation {
+        sol_total_supply,
+        inflation,
+        inflation_taper: governor.taper,
+    })
+}
+
+fn inflation_and_supply_at(
+    inflation_now: f64,
+    supply_now: u64,
+    taper: f64,
+    terminal: f64,
+    nominal_epochs_per_year: f64,
+    epochs_behind: u64,
+) -> (f64, u64) {
+    if epochs_behind == 0 {
+        return (inflation_now, supply_now);
+    }
+    // Agave's curve is `initial * (1 - taper)^year` until it bottoms out at `terminal`, where it stops moving.
+    let inflation = if inflation_now <= terminal {
+        inflation_now
+    } else {
+        inflation_now * (1.0 - taper).powf(-(epochs_behind as f64) / nominal_epochs_per_year)
+    };
+    let minted_since = (1.0 + inflation_now / nominal_epochs_per_year).powi(epochs_behind as i32);
+
+    (inflation, (supply_now as f64 / minted_since) as u64)
 }
 
 pub fn validators_performance(
@@ -228,18 +284,10 @@ pub fn collect_validators_performance_info(
         None
     };
 
-    let cluster_inflation = if performance_params.with_rewards {
-        let sol_total_supply = client.supply()?.value.total;
-        let inflation = client.get_inflation_rate()?.total;
-        let inflation_taper = client.get_inflation_governor()?.taper;
-        let slots_per_year = get_slots_per_year(&client, epoch)?;
+    let slots_per_year = get_slots_per_year(&client, epoch)?;
 
-        Some(ClusterInflation {
-            sol_total_supply,
-            inflation,
-            inflation_taper,
-            slots_per_year,
-        })
+    let cluster_inflation = if performance_params.with_rewards {
+        Some(cluster_inflation_at_epoch(&client, epoch, slots_per_year)?)
     } else {
         None
     };
@@ -251,6 +299,7 @@ pub fn collect_validators_performance_info(
             epoch_slot: current_epoch_info.slot_index,
             transaction_count: current_epoch_info.transaction_count.unwrap(),
             created_at: created_at.to_string(),
+            slots_per_year,
             cluster_inflation,
             validators,
             rewards,
@@ -258,4 +307,62 @@ pub fn collect_validators_performance_info(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TAPER: f64 = 0.15;
+    const TERMINAL: f64 = 0.015;
+    const NOMINAL_EPOCHS_PER_YEAR: f64 = 182.6211;
+    const SUPPLY: u64 = 600_000_000_000_000_000;
+    const INFLATION: f64 = 0.043;
+
+    #[test]
+    fn the_current_epoch_needs_no_correction() {
+        let (inflation, supply) = inflation_and_supply_at(
+            INFLATION,
+            SUPPLY,
+            TAPER,
+            TERMINAL,
+            NOMINAL_EPOCHS_PER_YEAR,
+            0,
+        );
+        assert_eq!(inflation, INFLATION);
+        assert_eq!(supply, SUPPLY);
+    }
+
+    #[test]
+    fn a_backfilled_epoch_was_minted_at_a_higher_rate_on_a_smaller_supply() {
+        let (inflation, supply) = inflation_and_supply_at(
+            INFLATION,
+            SUPPLY,
+            TAPER,
+            TERMINAL,
+            NOMINAL_EPOCHS_PER_YEAR,
+            1,
+        );
+        let expected_inflation = INFLATION * (1.0 - TAPER).powf(-1.0 / NOMINAL_EPOCHS_PER_YEAR);
+        assert!((inflation - expected_inflation).abs() / expected_inflation < 1e-12);
+        assert!(inflation > INFLATION);
+
+        let expected_supply = SUPPLY as f64 / (1.0 + INFLATION / NOMINAL_EPOCHS_PER_YEAR);
+        assert!((supply as f64 - expected_supply).abs() / expected_supply < 1e-12);
+        assert!(supply < SUPPLY);
+    }
+
+    #[test]
+    fn a_rate_already_at_the_terminal_does_not_move() {
+        let (inflation, supply) = inflation_and_supply_at(
+            TERMINAL,
+            SUPPLY,
+            TAPER,
+            TERMINAL,
+            NOMINAL_EPOCHS_PER_YEAR,
+            3,
+        );
+        assert_eq!(inflation, TERMINAL);
+        assert!(supply < SUPPLY);
+    }
 }

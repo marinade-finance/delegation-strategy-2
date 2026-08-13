@@ -82,7 +82,8 @@ pub async fn check_jito(
             {
                 let target_slot_index = sql_slot_index + params.execution_interval_slots;
                 let slots_to_wait = target_slot_index - current_slot_index;
-                match measure_milliseconds_per_slot(rpc_client, &epoch_data)? {
+                // An unavailable ETA must not turn "not yet" into a failed check.
+                match measure_milliseconds_per_slot(rpc_client, &epoch_data).unwrap_or_default() {
                     Some(ms_per_slot) => info!(
                         "To execute required to wait at epoch {current_epoch} for slot index {target_slot_index}, approximately {} seconds",
                         slots_to_wait * Decimal::from(ms_per_slot) / Decimal::from(1000)

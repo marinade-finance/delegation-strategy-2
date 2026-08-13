@@ -24,9 +24,9 @@ use tokio_postgres::{types::ToSql, Client, GenericClient};
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 
-const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
-/// Unchanged by SIMD-0525, which shortens slots and leaves the epoch's slot count alone.
-pub const SLOTS_IN_EPOCH: u64 = 432000;
+/// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
+const SECONDS_IN_YEAR: f64 = 31556925.9936;
+pub use collect::slot_params::SLOTS_IN_EPOCH;
 const SCORING_SCRAPER_WORKERS: usize = 10;
 /// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
 /// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.

@@ -69,12 +69,13 @@ pub async fn get_jito_priority_rewards(
     get_jito_rewards_by_table(psql_client, "jito_priority_fee", epochs, 1).await
 }
 
+/// Each estimate carries the nominal it was divided by, from one scan, so the two can never disagree.
 pub async fn get_estimated_inflation_rewards(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64)>> {
+) -> anyhow::Result<Vec<(u64, f64, f64)>> {
     let query = format!(
-        "SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount FROM epochs ORDER BY epoch DESC LIMIT $1"
+        "SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount, slots_per_year FROM epochs ORDER BY epoch DESC LIMIT $1"
     );
     let rows = psql_client
         .query(&query, &[&i64::try_from(epochs)?])
@@ -86,32 +87,34 @@ pub async fn get_estimated_inflation_rewards(
             (
                 row.get::<_, Decimal>("epoch").try_into().unwrap(),
                 row.get::<_, f64>("amount"),
+                row.get::<_, f64>("slots_per_year"),
             )
         })
         .collect())
 }
 
-/// Provenance for `rewards_inflation_est`, so a rerun under a later slot-time regime stays interpretable.
-pub async fn get_slots_per_year(
+/// The running epoch has no `epochs` row yet, so `cluster_info` is the only record of its regime.
+pub async fn get_running_epoch_slots_per_year(
     psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    let rows = psql_client
-        .query(
-            "SELECT epoch, slots_per_year FROM epochs ORDER BY epoch DESC LIMIT $1",
-            &[&i64::try_from(epochs)?],
+) -> anyhow::Result<Option<(u64, f64)>> {
+    let row = psql_client
+        .query_opt(
+            "
+        SELECT epoch, slots_per_year FROM cluster_info
+        WHERE slots_per_year IS NOT NULL
+          AND epoch > COALESCE((SELECT MAX(epoch) FROM epochs), 0)
+        ORDER BY epoch DESC, epoch_slot DESC LIMIT 1
+    ",
+            &[],
         )
         .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get::<_, f64>("slots_per_year"),
-            )
-        })
-        .collect())
+    Ok(row.map(|row| {
+        (
+            row.get::<_, Decimal>("epoch").try_into().unwrap(),
+            row.get::<_, f64>("slots_per_year"),
+        )
+    }))
 }
 
 pub async fn get_block_rewards(
