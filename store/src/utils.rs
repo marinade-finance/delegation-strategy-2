@@ -1454,6 +1454,15 @@ pub async fn load_scores(
     Ok(records)
 }
 
+/// Whether the table holds any row at all, regardless of epoch — `load_validators` filters by the latest `cluster_info` epoch and cannot answer this.
+pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
+    let row = psql_client
+        .query_one("SELECT EXISTS(SELECT 1 FROM validators) AS has_rows", &[])
+        .await?;
+
+    Ok(row.get("has_rows"))
+}
+
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client
         .query_opt(
