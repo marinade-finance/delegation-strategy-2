@@ -1,4 +1,4 @@
-use log::info;
+use log::{debug, info};
 use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
 use structopt::StructOpt;
@@ -83,7 +83,10 @@ pub async fn check_jito(
                 let target_slot_index = sql_slot_index + params.execution_interval_slots;
                 let slots_to_wait = target_slot_index - current_slot_index;
                 // An unavailable ETA must not turn "not yet" into a failed check.
-                match measure_milliseconds_per_slot(rpc_client, &epoch_data).unwrap_or_default() {
+                match measure_milliseconds_per_slot(rpc_client, &epoch_data).unwrap_or_else(|err| {
+                    debug!("Cannot measure the slot time for the ETA: {err}");
+                    None
+                }) {
                     Some(ms_per_slot) => info!(
                         "To execute required to wait at epoch {current_epoch} for slot index {target_slot_index}, approximately {} seconds",
                         slots_to_wait * Decimal::from(ms_per_slot) / Decimal::from(1000)

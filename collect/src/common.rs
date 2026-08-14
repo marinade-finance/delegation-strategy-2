@@ -7,6 +7,9 @@ use structopt::StructOpt;
 /// Below this the epoch is too young to measure against block time's one-second granularity.
 const MIN_SLOTS_TO_MEASURE: u64 = 1000;
 
+/// Skew between the container clock and the cluster's block time is a fixed offset, so only a long window dilutes it.
+const MIN_SECONDS_TO_MEASURE: u64 = 600;
+
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
     #[structopt(short = "u", long = "url", env = "RPC_URL")]
@@ -89,7 +92,7 @@ pub fn measure_milliseconds_per_slot(
     rpc_client: &RpcClient,
     epoch_info: &EpochInfo,
 ) -> anyhow::Result<Option<u64>> {
-    // Repeats the check below only to skip three RPC round trips that could not produce an answer.
+    // A cheap lower bound on the check below, only to skip three RPC round trips that cannot produce an answer.
     if epoch_info.slot_index < MIN_SLOTS_TO_MEASURE {
         return Ok(None);
     }
@@ -97,7 +100,7 @@ pub fn measure_milliseconds_per_slot(
 }
 
 fn milliseconds_per_slot(elapsed_seconds: u64, measured_slots: u64) -> Option<u64> {
-    if measured_slots < MIN_SLOTS_TO_MEASURE {
+    if measured_slots < MIN_SLOTS_TO_MEASURE || elapsed_seconds < MIN_SECONDS_TO_MEASURE {
         return None;
     }
     Some(elapsed_seconds * 1000 / measured_slots)
@@ -142,7 +145,17 @@ mod tests {
     fn too_short_a_window_is_not_measured() {
         assert_eq!(milliseconds_per_slot(0, 0), None);
         assert_eq!(milliseconds_per_slot(300, MIN_SLOTS_TO_MEASURE - 1), None);
-        assert!(milliseconds_per_slot(400, MIN_SLOTS_TO_MEASURE).is_some());
+        assert!(milliseconds_per_slot(MIN_SECONDS_TO_MEASURE, MIN_SLOTS_TO_MEASURE).is_some());
+    }
+
+    #[test]
+    fn enough_slots_is_not_enough_when_they_span_too_little_wall_clock() {
+        // 1000 slots is 400s at the baseline and 200s at 200ms - both too short for the clock skew to average out.
+        assert_eq!(
+            milliseconds_per_slot(MIN_SECONDS_TO_MEASURE - 1, MIN_SLOTS_TO_MEASURE),
+            None
+        );
+        assert_eq!(milliseconds_per_slot(400, MIN_SLOTS_TO_MEASURE), None);
     }
 
     #[test]

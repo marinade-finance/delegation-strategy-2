@@ -176,25 +176,30 @@ pub fn collect_validator_block_rewards_info(
             );
         } else {
             // The target epoch ended when the current one started.
-            let hours_since_epoch_end = seconds_since_epoch_start(&client, &current_epoch_info)
-                .map(|seconds| seconds / SECONDS_PER_HOUR)
-                // This branch exists to be lenient; an unmeasurable clock must not escalate it.
-                .unwrap_or_else(|err| {
-                    warn!("Cannot measure time since the epoch started: {err}");
-                    0
-                });
+            let hours_since_epoch_end =
+                match seconds_since_epoch_start(&client, &current_epoch_info) {
+                    Ok(seconds) => Some(seconds / SECONDS_PER_HOUR),
+                    // This branch exists to be lenient; an unmeasurable clock must not escalate it.
+                    Err(err) => {
+                        warn!("Cannot measure time since the epoch started: {err}");
+                        None
+                    }
+                };
+            let since_epoch_end = hours_since_epoch_end
+                .map_or_else(|| "unknown".to_string(), |hours| format!("~{hours}h"));
             if rewards_params.max_data_delay_hours > 0
-                && hours_since_epoch_end >= rewards_params.max_data_delay_hours
+                && hours_since_epoch_end
+                    .is_some_and(|hours| hours >= rewards_params.max_data_delay_hours)
             {
                 anyhow::bail!(
-                    "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit): BigQuery returned {} rows (loading limit {}) ~{hours_since_epoch_end}h after the epoch ended (threshold {}h). Upstream stakes-etl load is overdue.",
+                    "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit): BigQuery returned {} rows (loading limit {}) {since_epoch_end} after the epoch ended (threshold {}h). Upstream stakes-etl load is overdue.",
                     block_rewards.len(),
                     rewards_params.loading_limit,
                     rewards_params.max_data_delay_hours,
                 );
             }
             warn!(
-                "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit, ~{hours_since_epoch_end}h after epoch end). May not be available yet; will retry next run. BigQuery returned {} rows (loading limit {}).",
+                "Insufficient block rewards data for epoch {looking_at_epoch} (rows <= loading limit, {since_epoch_end} after epoch end). May not be available yet; will retry next run. BigQuery returned {} rows (loading limit {}).",
                 block_rewards.len(),
                 rewards_params.loading_limit,
             );

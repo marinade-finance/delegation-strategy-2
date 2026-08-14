@@ -1,5 +1,5 @@
 use collect::common::measure_milliseconds_per_slot;
-use log::info;
+use log::{debug, info};
 use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
 use structopt::StructOpt;
@@ -71,7 +71,10 @@ pub async fn check_block_rewards(
                     let slots_to_wait = params.slot_offset_wait - current_slot_index;
                     // An unavailable ETA must not turn "not yet" into a failed check.
                     match measure_milliseconds_per_slot(rpc_client, &current_epoch_data)
-                        .unwrap_or_default()
+                        .unwrap_or_else(|err| {
+                            debug!("Cannot measure the slot time for the ETA: {err}");
+                            None
+                        })
                     {
                         Some(ms_per_slot) => info!(
                             "To execute required to wait at epoch {current_epoch} for {slots_to_wait} slots, approximately {} seconds",
