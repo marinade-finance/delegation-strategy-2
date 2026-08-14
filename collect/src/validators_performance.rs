@@ -142,6 +142,7 @@ fn cluster_inflation_at_epoch(
         rate.total,
         client.supply()?.value.total,
         governor.taper,
+        governor.initial,
         governor.terminal,
         slots_per_year / SLOTS_IN_EPOCH as f64,
         epochs_behind,
@@ -158,6 +159,7 @@ fn inflation_and_supply_at(
     inflation_now: f64,
     supply_now: u64,
     taper: f64,
+    initial: f64,
     terminal: f64,
     nominal_epochs_per_year: f64,
     epochs_behind: u64,
@@ -165,11 +167,13 @@ fn inflation_and_supply_at(
     if epochs_behind == 0 {
         return (inflation_now, supply_now);
     }
-    // Agave's curve is `initial * (1 - taper)^year` until it bottoms out at `terminal`, where it stops moving.
+    // Agave's curve is `max(initial * (1 - taper)^year, terminal)` and year never goes below zero,
+    // so walking it backwards is bounded by `initial` at one end and pinned by `terminal` at the other.
     let inflation = if inflation_now <= terminal {
         inflation_now
     } else {
-        inflation_now * (1.0 - taper).powf(-(epochs_behind as f64) / nominal_epochs_per_year)
+        (inflation_now * (1.0 - taper).powf(-(epochs_behind as f64) / nominal_epochs_per_year))
+            .min(initial)
     };
     let minted_since = (1.0 + inflation_now / nominal_epochs_per_year).powi(epochs_behind as i32);
 
@@ -339,35 +343,34 @@ mod tests {
     use super::*;
 
     const TAPER: f64 = 0.15;
+    const INITIAL: f64 = 0.08;
     const TERMINAL: f64 = 0.015;
     const NOMINAL_EPOCHS_PER_YEAR: f64 = 182.6211;
     const SUPPLY: u64 = 600_000_000_000_000_000;
     const INFLATION: f64 = 0.043;
 
-    #[test]
-    fn the_current_epoch_needs_no_correction() {
-        let (inflation, supply) = inflation_and_supply_at(
-            INFLATION,
+    fn at_epochs_behind(inflation_now: f64, epochs_behind: u64) -> (f64, u64) {
+        inflation_and_supply_at(
+            inflation_now,
             SUPPLY,
             TAPER,
+            INITIAL,
             TERMINAL,
             NOMINAL_EPOCHS_PER_YEAR,
-            0,
-        );
+            epochs_behind,
+        )
+    }
+
+    #[test]
+    fn the_current_epoch_needs_no_correction() {
+        let (inflation, supply) = at_epochs_behind(INFLATION, 0);
         assert_eq!(inflation, INFLATION);
         assert_eq!(supply, SUPPLY);
     }
 
     #[test]
     fn a_backfilled_epoch_was_minted_at_a_higher_rate_on_a_smaller_supply() {
-        let (inflation, supply) = inflation_and_supply_at(
-            INFLATION,
-            SUPPLY,
-            TAPER,
-            TERMINAL,
-            NOMINAL_EPOCHS_PER_YEAR,
-            1,
-        );
+        let (inflation, supply) = at_epochs_behind(INFLATION, 1);
         let expected_inflation = INFLATION * (1.0 - TAPER).powf(-1.0 / NOMINAL_EPOCHS_PER_YEAR);
         assert!((inflation - expected_inflation).abs() / expected_inflation < 1e-12);
         assert!(inflation > INFLATION);
@@ -379,15 +382,15 @@ mod tests {
 
     #[test]
     fn a_rate_already_at_the_terminal_does_not_move() {
-        let (inflation, supply) = inflation_and_supply_at(
-            TERMINAL,
-            SUPPLY,
-            TAPER,
-            TERMINAL,
-            NOMINAL_EPOCHS_PER_YEAR,
-            3,
-        );
+        let (inflation, supply) = at_epochs_behind(TERMINAL, 3);
         assert_eq!(inflation, TERMINAL);
         assert!(supply < SUPPLY);
+    }
+
+    #[test]
+    fn a_deep_backfill_cannot_exceed_the_rate_the_curve_started_at() {
+        // ~11 years back, where the unbounded curve would read 25% - a rate the cluster never had.
+        let (inflation, _) = at_epochs_behind(INFLATION, 2_000);
+        assert_eq!(inflation, INITIAL);
     }
 }
