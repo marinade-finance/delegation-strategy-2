@@ -1301,7 +1301,11 @@ pub async fn load_validators(
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.apy.and_then(Decimal::from_f64_retain),
+        |a: &ValidatorEpochStats| {
+            a.apy
+                .filter(|apy| *apy >= 0.0)
+                .and_then(Decimal::from_f64_retain)
+        },
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;

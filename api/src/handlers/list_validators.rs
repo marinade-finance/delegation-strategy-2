@@ -1133,7 +1133,11 @@ mod tests {
             .collect();
         store::utils::update_validators_ranks(
             &mut by_vote_account,
-            |a: &ValidatorEpochStats| a.apy.and_then(Decimal::from_f64_retain),
+            |a: &ValidatorEpochStats| {
+                a.apy
+                    .filter(|apy| *apy >= 0.0)
+                    .and_then(Decimal::from_f64_retain)
+            },
             |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
         );
         let mut ranks: Vec<_> = by_vote_account
