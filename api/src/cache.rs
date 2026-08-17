@@ -14,7 +14,7 @@ use store::dto::{
 };
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-use store::utils::ValidatorOverlays;
+use store::utils::{TakeRates, ValidatorOverlays};
 
 pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
@@ -96,7 +96,7 @@ impl ReadyFlag {
 pub struct PerEpochCache {
     pub epoch: u64,
     pub unique_delegators: HashMap<String, u64>,
-    pub take_rates: HashMap<String, f64>,
+    pub take_rates: TakeRates,
 }
 
 impl PerEpochCache {

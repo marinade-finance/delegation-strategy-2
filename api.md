@@ -8,7 +8,7 @@ Query parameters:
 - `query_marinade_score` - Optional, if set, filters validators based on them having a positive score from Marinade.
 - `query_marinade_stake` - Optional, if set, filters validators based on them having stake from Marinade.
 - `query_with_names` - Optional, if set, filters validators based on them having/not having `info_name`.
-- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MndeVotes`.
+- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MarinadeScore`, `Apy`, `NetApy`, `Commission`, `Uptime`, `TakeRate`, `ExpectedTakeRate`.
 - `order_direction` - Default `DESC`, possible values: `ASC`, `DESC`.
 - `offset` - Default `0`.
 - `limit` - Default `100`.
