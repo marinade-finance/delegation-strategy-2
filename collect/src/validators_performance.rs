@@ -1,6 +1,7 @@
 use crate::common::*;
 use crate::slot_params::{
-    baseline_slots_per_year, get_slot_params, nearest_slot_time_ms, SLOTS_IN_EPOCH,
+    baseline_slots_per_year, get_slot_time_activations, nearest_slot_time_ms, select_slot_params,
+    SlotParams, SLOTS_IN_EPOCH,
 };
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
@@ -108,11 +109,13 @@ pub struct ValidatorsPerformanceSnapshot {
 fn warn_on_slot_time_divergence(
     client: &RpcClient,
     current_epoch_info: &EpochInfo,
+    activations: &[(SlotParams, Option<Epoch>)],
 ) -> anyhow::Result<()> {
     let Some(measured_ms) = measure_milliseconds_per_slot(client, current_epoch_info)? else {
         return Ok(());
     };
-    let nominal_ms = get_slot_params(client, current_epoch_info.epoch)?.slot_time_ms;
+    // The current epoch's nominal, not the collected epoch's: the measurement is of the epoch running now.
+    let nominal_ms = select_slot_params(activations, current_epoch_info.epoch).slot_time_ms;
     let nearest_ms = nearest_slot_time_ms(measured_ms);
     if nearest_ms != nominal_ms {
         warn!(
@@ -315,15 +318,24 @@ pub fn collect_validators_performance_info(
         None
     };
 
-    let slots_per_year = get_slot_params(&client, epoch)?.slots_per_year;
+    let activations = get_slot_time_activations(&client)?;
+    let slot_params = select_slot_params(&activations, epoch);
+    info!(
+        "Epoch {epoch} slot params: {}ms, {} slots/year",
+        slot_params.slot_time_ms, slot_params.slots_per_year
+    );
 
     // Every run persists slots_per_year, so the only detector of a mistyped gate must not sit behind --with-rewards.
-    if let Err(err) = warn_on_slot_time_divergence(&client, &current_epoch_info) {
+    if let Err(err) = warn_on_slot_time_divergence(&client, &current_epoch_info, &activations) {
         warn!("Could not cross-check the nominal slot time against the clock: {err}");
     }
 
     let cluster_inflation = if performance_params.with_rewards {
-        Some(cluster_inflation_at_epoch(&client, epoch, slots_per_year)?)
+        Some(cluster_inflation_at_epoch(
+            &client,
+            epoch,
+            slot_params.slots_per_year,
+        )?)
     } else {
         None
     };
@@ -335,7 +347,7 @@ pub fn collect_validators_performance_info(
             epoch_slot: current_epoch_info.slot_index,
             transaction_count: current_epoch_info.transaction_count.unwrap(),
             created_at: created_at.to_string(),
-            slots_per_year,
+            slots_per_year: slot_params.slots_per_year,
             cluster_inflation,
             validators,
             rewards,

@@ -1,4 +1,4 @@
-use log::info;
+use log::{debug, info};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
@@ -55,19 +55,22 @@ pub fn baseline_slots_per_year() -> f64 {
     BASELINE_SLOT_PARAMS.slots_per_year
 }
 
-/// Per epoch, never live: agave computes inflation piecewise, so today's regime must not reach a past epoch.
-pub fn get_slot_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<SlotParams> {
+/// Read once per run and selected from repeatedly: the gate state is the same for every epoch asked about.
+pub fn get_slot_time_activations(
+    client: &RpcClient,
+) -> anyhow::Result<Vec<(SlotParams, Option<Epoch>)>> {
     let gate_ids: Vec<Pubkey> = SLOT_TIME_GATES.iter().map(|(id, _)| *id).collect();
     let epoch_schedule = client.get_epoch_schedule()?;
     let accounts = client.get_multiple_accounts(&gate_ids)?;
 
     let mut activations = Vec::with_capacity(SLOT_TIME_GATES.len());
+    // Runs every minute, so only an activation earns an info line; the unactivated steady state is noise.
     for ((gate_id, gate_params), account) in SLOT_TIME_GATES.iter().zip(accounts) {
         let slot_time_ms = gate_params.slot_time_ms;
         let activation_epoch = match account {
             // A gate nobody has requested yet has no account at all; that is "not activated", not a failure.
             None => {
-                info!("Slot time gate {gate_id} ({slot_time_ms}ms): no account on chain");
+                debug!("Slot time gate {gate_id} ({slot_time_ms}ms): no account on chain");
                 None
             }
             Some(account) => {
@@ -80,7 +83,7 @@ pub fn get_slot_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<SlotP
                         Some(activation_epoch)
                     }
                     None => {
-                        info!("Slot time gate {gate_id} ({slot_time_ms}ms): account exists, not activated");
+                        debug!("Slot time gate {gate_id} ({slot_time_ms}ms): account exists, not activated");
                         None
                     }
                 }
@@ -89,12 +92,7 @@ pub fn get_slot_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<SlotP
         activations.push((*gate_params, activation_epoch));
     }
 
-    let params = select_slot_params(&activations, epoch);
-    info!(
-        "Epoch {epoch} slot params: {}ms, {} slots/year",
-        params.slot_time_ms, params.slots_per_year
-    );
-    Ok(params)
+    Ok(activations)
 }
 
 /// Measured slot time sits ~5% above nominal because skipped slots still count, so only the nearest row can judge it.
@@ -108,7 +106,7 @@ pub fn nearest_slot_time_ms(measured_ms: u64) -> u64 {
 }
 
 // SIMD-0525: a gate active in epoch E first applies at the first slot of E+1 (agave `feature_effective_slot`).
-fn select_slot_params(activations: &[(SlotParams, Option<Epoch>)], epoch: Epoch) -> SlotParams {
+pub fn select_slot_params(activations: &[(SlotParams, Option<Epoch>)], epoch: Epoch) -> SlotParams {
     let mut params = BASELINE_SLOT_PARAMS;
     for (gate_params, activation_epoch) in activations {
         let Some(activation_epoch) = activation_epoch else {
