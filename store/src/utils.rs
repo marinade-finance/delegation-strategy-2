@@ -872,6 +872,14 @@ pub fn expected_take_rate(
     (weight > 0.0).then_some(weighted / weight)
 }
 
+/// The higher of the last closed epoch's observed ceiling and what is advertised now: a validator moving its commission inside an epoch advertises the low end, so a rise counts at once while a cut waits for the epoch to close.
+pub fn worst_known_commission(
+    commission_max_observed: Option<i32>,
+    commission_advertised: Option<i32>,
+) -> Option<i32> {
+    commission_max_observed.max(commission_advertised)
+}
+
 #[derive(serde::Deserialize)]
 struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
@@ -1188,6 +1196,15 @@ pub async fn load_validators(
                     rugged_commission_occurrences: 0,
                 });
 
+            // Gating all three on max_observed keeps them from one row, the newest closed epoch; commission_advertised deliberately stays on the open epoch that seeded the record.
+            if record.commission_max_observed.is_none() {
+                record.commission_max_observed =
+                    row.get::<_, Option<i32>>("commission_max_observed");
+                record.commission_min_observed =
+                    row.get::<_, Option<i32>>("commission_min_observed");
+                record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
+            }
+
             let rug_info = ruggers.get(&vote_account);
             if let Some(rugger_info) = rug_info {
                 record.rugged_commission = true;
@@ -1344,7 +1361,10 @@ pub async fn load_validators(
         record.expected_take_rate = overlays.take_rates.shares.and_then(|shares| {
             expected_take_rate(
                 shares,
-                record.commission_advertised,
+                worst_known_commission(
+                    record.commission_max_observed,
+                    record.commission_advertised,
+                ),
                 mev_commissions.get(vote_account).copied(),
                 priority_commissions.get(vote_account).copied(),
             )
@@ -2270,5 +2290,46 @@ mod tests {
             block: 0.0,
         };
         assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
+    }
+
+    #[test]
+    fn worst_known_commission_prefers_an_observed_ceiling_over_a_lower_advertised_rate() {
+        // Majestysol's shape: advertises 0 early in the epoch, observed at 100 when rewards are paid.
+        assert_eq!(worst_known_commission(Some(100), Some(0)), Some(100));
+    }
+
+    #[test]
+    fn worst_known_commission_takes_a_rise_without_waiting_for_the_epoch_to_close() {
+        assert_eq!(worst_known_commission(Some(5), Some(10)), Some(10));
+    }
+
+    #[test]
+    fn worst_known_commission_accepts_either_side_alone() {
+        assert_eq!(worst_known_commission(None, Some(5)), Some(5));
+        assert_eq!(worst_known_commission(Some(7), None), Some(7));
+    }
+
+    #[test]
+    fn worst_known_commission_is_unknown_only_when_neither_side_is_known() {
+        assert_eq!(worst_known_commission(None, None), None);
+    }
+
+    #[test]
+    fn expected_take_rate_does_not_read_at_the_floor_for_a_commission_gamer() {
+        let gamer = worst_known_commission(Some(100), Some(0));
+        let genuinely_free = worst_known_commission(Some(0), Some(0));
+        approx(
+            expected_take_rate(MIX, gamer, Some(0), None),
+            MIX.inflation + MIX.block,
+        );
+        approx(
+            expected_take_rate(MIX, genuinely_free, Some(0), None),
+            MIX.block,
+        );
+        assert_ne!(
+            expected_take_rate(MIX, gamer, Some(0), None),
+            expected_take_rate(MIX, genuinely_free, Some(0), None),
+            "trusting the advertised rate is what used to tie these two together"
+        );
     }
 }

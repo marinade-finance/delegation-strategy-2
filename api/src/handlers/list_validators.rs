@@ -10,7 +10,7 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorRecord, ValidatorsAggregated},
-    utils::to_fixed_for_sort,
+    utils::{to_fixed_for_sort, worst_known_commission},
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -219,9 +219,13 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
             a.net_apy
                 .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
         },
-        OrderField::Commission => {
-            |a: &ValidatorRecord| Some(Decimal::from(a.commission_max_observed.unwrap_or(100)))
-        }
+        // Same input as expected_take_rate: sorting on the closed-epoch ceiling alone would rank a validator that already declared a raise this epoch among the cheaper ones.
+        OrderField::Commission => |a: &ValidatorRecord| {
+            Some(Decimal::from(
+                worst_known_commission(a.commission_max_observed, a.commission_advertised)
+                    .unwrap_or(100),
+            ))
+        },
         OrderField::Uptime => |a: &ValidatorRecord| {
             Some(Decimal::from(
                 a.avg_uptime_pct.and_then(to_fixed_for_sort).unwrap_or(0),
@@ -918,6 +922,25 @@ mod tests {
         let validators = sort_validators(validators, OrderField::Commission, &OrderDirection::DESC);
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["aaa_unknown", "ccc_max", "bbb_low"]);
+    }
+
+    #[test]
+    fn sort_ranks_a_declared_raise_above_a_validator_genuinely_charging_the_old_rate() {
+        let mut validators = vec![
+            validator("aaa_raised", 100, vec![]),
+            validator("bbb_low", 100, vec![]),
+        ];
+        validators[0].commission_max_observed = Some(5);
+        validators[0].commission_advertised = Some(10);
+        validators[1].commission_max_observed = Some(5);
+        validators[1].commission_advertised = Some(5);
+        let validators = sort_validators(validators, OrderField::Commission, &OrderDirection::ASC);
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(
+            order,
+            vec!["bbb_low", "aaa_raised"],
+            "reading commission_max_observed alone is what used to tie a raise to the old rate"
+        );
     }
 
     #[test]
