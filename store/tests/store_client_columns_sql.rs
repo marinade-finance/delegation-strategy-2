@@ -1,13 +1,13 @@
 mod common;
 
-use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
-use common::{migrated_client, skip_without_database};
+use common::{
+    migrated_client, skip_without_database, store_snapshot, validator_snapshot, write_yaml,
+};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use store::dto::UNKNOWN_CLIENT_NAME;
 use store::utils::{load_validators, load_versions, ValidatorOverlays};
-use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
 use tokio_postgres::Client;
@@ -59,48 +59,10 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
     }
 }
 
-fn write_yaml(name: &str, contents: &str) -> String {
-    let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
-    std::fs::write(&path, contents).unwrap();
-    path.to_str().unwrap().to_string()
-}
-
 async fn run_store_validators(client: &mut Client, name: &str, fields: &ClientFields) {
-    let snapshot = Snapshot {
-        epoch: EPOCH,
-        created_at: "2026-07-31T00:00:00Z".into(),
-        validators: vec![ValidatorSnapshot {
-            identity: IDENTITY.into(),
-            vote_account: VOTE_ACCOUNT.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
-            data_center: None,
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: performance(fields),
-        }],
-    };
-    let path = write_yaml(name, &serde_yaml::to_string(&snapshot).unwrap());
-    store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+    let mut snapshot = validator_snapshot(EPOCH, IDENTITY, VOTE_ACCOUNT);
+    snapshot.validators[0].performance = performance(fields);
+    store_snapshot(client, name, &snapshot).await;
 }
 
 async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFields) {

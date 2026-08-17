@@ -133,6 +133,8 @@ pub struct Validator {
     pub dc_city: Option<String>,
     pub dc_asn: Option<i32>,
     pub dc_aso: Option<String>,
+    // Whether the whois lookup answered at all, which no single dc_ column can express: every field of a resolved answer is independently optional.
+    pub dc_resolved: bool,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
@@ -193,6 +195,7 @@ impl Validator {
             dc_city: city,
             dc_asn: asn.map(|asn| asn as i32),
             dc_aso: aso,
+            dc_resolved: v.data_center.is_some(),
 
             commission_max_observed: None,
             commission_min_observed: None,

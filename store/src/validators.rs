@@ -65,15 +65,15 @@ pub async fn store_validators(
             info_url = u.info_url,
             info_keybase = u.info_keybase,
             node_ip = u.node_ip,
-            -- get_data_centers swallows a per-IP whois failure, so a NULL here is an unresolved lookup, never an absent data center
-            dc_coordinates_lat = COALESCE(u.dc_coordinates_lat, validators.dc_coordinates_lat),
-            dc_coordinates_lon = COALESCE(u.dc_coordinates_lon, validators.dc_coordinates_lon),
-            dc_continent = COALESCE(u.dc_continent, validators.dc_continent),
-            dc_country_iso = COALESCE(u.dc_country_iso, validators.dc_country_iso),
-            dc_country = COALESCE(u.dc_country, validators.dc_country),
-            dc_city = COALESCE(u.dc_city, validators.dc_city),
-            dc_asn = COALESCE(u.dc_asn, validators.dc_asn),
-            dc_aso = COALESCE(u.dc_aso, validators.dc_aso),
+            -- get_data_centers swallows a per-IP whois failure, so only an unresolved lookup on an unchanged IP may keep what is stored; a resolved answer replaces all eight together, since mixing its nulls with the previous data center invents a location nothing observed
+            dc_coordinates_lat = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_coordinates_lat ELSE validators.dc_coordinates_lat END,
+            dc_coordinates_lon = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_coordinates_lon ELSE validators.dc_coordinates_lon END,
+            dc_continent = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_continent ELSE validators.dc_continent END,
+            dc_country_iso = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_country_iso ELSE validators.dc_country_iso END,
+            dc_country = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_country ELSE validators.dc_country END,
+            dc_city = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_city ELSE validators.dc_city END,
+            dc_asn = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_asn ELSE validators.dc_asn END,
+            dc_aso = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_aso ELSE validators.dc_aso END,
             commission_advertised = u.commission_advertised,
             version = COALESCE(u.version, validators.version),
             activated_stake = u.activated_stake,
@@ -137,7 +137,8 @@ pub async fn store_validators(
                 shred_version,
                 gossip_port,
                 rpc_public,
-                pubsub_public
+                pubsub_public,
+                dc_resolved
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -185,6 +186,7 @@ pub async fn store_validators(
                     &v.gossip_port,
                     &v.rpc_public,
                     &v.pubsub_public,
+                    &v.dc_resolved,
                 ];
                 query.add(
                     &mut params,
@@ -215,6 +217,7 @@ pub async fn store_validators(
                         (35, "INTEGER".into()),                  // gossip_port
                         (36, "BOOL".into()),                     // rpc_public
                         (37, "BOOL".into()),                     // pubsub_public
+                        (38, "BOOL".into()),                     // dc_resolved
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());

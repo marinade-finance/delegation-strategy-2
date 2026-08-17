@@ -1,10 +1,7 @@
 mod common;
 
-use collect::validators::{Snapshot, ValidatorDataCenter, ValidatorSnapshot};
-use collect::validators_performance::ValidatorPerformance;
-use common::{migrated_client, skip_without_database};
-use store::validators::{store_validators, StoreValidatorsParams};
-use structopt::StructOpt;
+use collect::validators::{Snapshot, ValidatorDataCenter};
+use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
@@ -32,59 +29,11 @@ fn expected(aso: &str, country: &str, asn: i32, city: &str) -> StoredDataCenter 
     )
 }
 
-async fn run_store_validators(
-    client: &mut Client,
-    name: &str,
-    data_center: Option<ValidatorDataCenter>,
-) {
-    let snapshot = Snapshot {
-        epoch: EPOCH,
-        created_at: "2026-08-17T00:00:00Z".into(),
-        validators: vec![ValidatorSnapshot {
-            identity: IDENTITY.into(),
-            vote_account: VOTE_ACCOUNT.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
-            data_center,
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: ValidatorPerformance {
-                commission: 7,
-                version: Some("2.0.0".into()),
-                client_id: None,
-                client_id_raw: None,
-                feature_set: None,
-                shred_version: None,
-                credits: 10,
-                leader_slots: 100,
-                blocks_produced: 100,
-                skip_rate: 0f64,
-                delinquent: false,
-            },
-        }],
-    };
-    let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
-    std::fs::write(&path, serde_yaml::to_string(&snapshot).unwrap()).unwrap();
-    store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", path.to_str().unwrap()]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+fn snapshot(node_ip: Option<&str>, data_center: Option<ValidatorDataCenter>) -> Snapshot {
+    let mut snapshot = validator_snapshot(EPOCH, IDENTITY, VOTE_ACCOUNT);
+    snapshot.validators[0].node_ip = node_ip.map(Into::into);
+    snapshot.validators[0].data_center = data_center;
+    snapshot
 }
 
 async fn stored_data_center(client: &Client) -> StoredDataCenter {
@@ -105,7 +54,7 @@ async fn stored_data_center(client: &Client) -> StoredDataCenter {
 }
 
 // The collector runs hourly against one row per epoch, and get_data_centers reports a whois failure
-// as an absent data center, so without COALESCE the last run of the epoch decides these columns.
+// as an absent data center, so without the guard the last run of the epoch decides these columns.
 #[tokio::test]
 async fn store_validators_keeps_the_data_center_an_unresolved_run_cannot_report() {
     let schema = "ds_test_store_validators_data_center";
@@ -114,15 +63,12 @@ async fn store_validators_keeps_the_data_center_an_unresolved_run_cannot_report(
     }
     let mut client = migrated_client(schema).await.unwrap();
 
-    run_store_validators(
+    let hetzner = || resolved_data_center("Hetzner", "Germany", 24940, "Nuremberg");
+
+    store_snapshot(
         &mut client,
         "dc-insert",
-        Some(resolved_data_center(
-            "Hetzner",
-            "Germany",
-            24940,
-            "Nuremberg",
-        )),
+        &snapshot(Some("A"), Some(hetzner())),
     )
     .await;
     assert_eq!(
@@ -131,23 +77,121 @@ async fn store_validators_keeps_the_data_center_an_unresolved_run_cannot_report(
         "INSERT path"
     );
 
-    run_store_validators(&mut client, "dc-unresolved", None).await;
+    store_snapshot(&mut client, "dc-unresolved", &snapshot(Some("A"), None)).await;
     assert_eq!(
         stored_data_center(&client).await,
         expected("Hetzner", "Germany", 24940, "Nuremberg"),
         "an unresolved whois lookup must not blank the epoch's known data center"
     );
 
-    run_store_validators(
+    store_snapshot(
         &mut client,
         "dc-moved",
-        Some(resolved_data_center("OVH", "France", 16276, "Roubaix")),
+        &snapshot(
+            Some("A"),
+            Some(resolved_data_center("OVH", "France", 16276, "Roubaix")),
+        ),
     )
     .await;
     assert_eq!(
         stored_data_center(&client).await,
         expected("OVH", "France", 16276, "Roubaix"),
         "a resolved lookup must still replace the stored data center"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// Every field of IpInfo is independently optional, so a lookup can answer for the network and stay
+// silent on the city. Carrying the previous city across would place the new ASO in the old town.
+#[tokio::test]
+async fn store_validators_does_not_complete_a_partial_answer_from_the_previous_data_center() {
+    let schema = "ds_test_store_validators_data_center_partial";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-partial-seed",
+        &snapshot(
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+
+    let network_only = ValidatorDataCenter {
+        country: Some("France".into()),
+        asn: Some(16276),
+        aso: Some("OVH".into()),
+        city: None,
+        ..Default::default()
+    };
+    store_snapshot(
+        &mut client,
+        "dc-partial",
+        &snapshot(Some("A"), Some(network_only)),
+    )
+    .await;
+
+    assert_eq!(
+        stored_data_center(&client).await,
+        (
+            Some("OVH".to_string()),
+            Some("France".to_string()),
+            Some(16276),
+            None
+        ),
+        "a resolved answer replaces all eight columns together; keeping Nuremberg would put OVH in a German city"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// node_ip is assigned unconditionally, so preserving the location across an IP change would pair the
+// new address with the data center of the old one until some later lookup happens to succeed.
+#[tokio::test]
+async fn store_validators_drops_the_data_center_when_the_node_ip_changes() {
+    let schema = "ds_test_store_validators_data_center_moved_ip";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-ip-seed",
+        &snapshot(
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+
+    store_snapshot(&mut client, "dc-ip-moved", &snapshot(Some("B"), None)).await;
+
+    assert_eq!(
+        stored_data_center(&client).await,
+        (None, None, None, None),
+        "an unresolved lookup for a new IP must not inherit the previous address's data center"
     );
 
     client
