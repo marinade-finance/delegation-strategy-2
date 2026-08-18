@@ -217,7 +217,8 @@ fn reference_epoch(
 
 type ReferenceStake = HashMap<FoldedKey, Decimal>;
 
-/// Stake per group as it stood in `epoch`, bucketed by that epoch's own client and provider values.
+/// Stake per group as it stood in `epoch`, over every validator the cache holds and not only those
+/// eligible today, bucketed by that epoch's own client and provider values.
 /// `None` when that epoch classified nothing; client ids reach back only to epoch 1011.
 fn stake_by_key_at(
     validators: &[&ValidatorRecord],
@@ -243,12 +244,32 @@ pub fn aggregate_groups(
     validators: &HashMap<String, ValidatorRecord>,
     kind: GroupKind,
 ) -> ValidatorGroups {
-    let eligible = eligible(validators);
-    let Some(epochs) = epochs(&eligible, Utc::now()) else {
+    let Some(population) = Population::new(validators) else {
         return Default::default();
     };
 
-    aggregate_kind(&eligible, kind, &epochs)
+    aggregate_kind(&population, kind)
+}
+
+/// Groups are built from `eligible`; the delta baselines are measured over `all`, so stake that has
+/// since left the eligible set still shows as a loss.
+struct Population<'a> {
+    eligible: Vec<&'a ValidatorRecord>,
+    all: Vec<&'a ValidatorRecord>,
+    epochs: Epochs,
+}
+
+impl<'a> Population<'a> {
+    fn new(validators: &'a HashMap<String, ValidatorRecord>) -> Option<Self> {
+        let eligible = eligible(validators);
+        let epochs = epochs(&eligible, Utc::now())?;
+
+        Some(Self {
+            eligible,
+            all: validators.values().collect(),
+            epochs,
+        })
+    }
 }
 
 /// The population `/validators` serves, judged against the newest epoch the whole cache reports.
@@ -266,29 +287,23 @@ struct KeyedGroups {
     groups: ValidatorGroups,
 }
 
-fn aggregate_kind(
-    validators: &[&ValidatorRecord],
-    kind: GroupKind,
-    epochs: &Epochs,
-) -> ValidatorGroups {
-    aggregate_keyed(validators, kind, epochs).groups
+fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
+    aggregate_keyed(population, kind).groups
 }
 
-fn aggregate_keyed(
-    validators: &[&ValidatorRecord],
-    kind: GroupKind,
-    epochs: &Epochs,
-) -> KeyedGroups {
-    let current_epoch = epochs.current;
-    let stake_short = epochs
+fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
+    let current_epoch = population.epochs.current;
+    let stake_short = population
+        .epochs
         .delta_7d
-        .and_then(|epoch| stake_by_key_at(validators, epoch, kind));
-    let stake_long = epochs
+        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
+    let stake_long = population
+        .epochs
         .delta_30d
-        .and_then(|epoch| stake_by_key_at(validators, epoch, kind));
+        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
 
     let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
-    for validator in validators {
+    for validator in &population.eligible {
         let Some(stats) = validator
             .epoch_stats
             .iter()
@@ -340,10 +355,11 @@ fn aggregate_keyed(
     }
 }
 
-fn aggregate_client_tree(validators: &[&ValidatorRecord], epochs: &Epochs) -> ValidatorGroupTree {
-    let clients = aggregate_keyed(validators, GroupKind::ClientLineage, epochs);
-    let block_engines = aggregate_keyed(validators, GroupKind::ClientLabel, epochs);
-    let engines_by_client = block_engines_by_client(validators, epochs.current);
+fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
+    let clients = aggregate_keyed(population, GroupKind::ClientLineage);
+    let block_engines = aggregate_keyed(population, GroupKind::ClientLabel);
+    let engines_by_client =
+        block_engines_by_client(&population.eligible, population.epochs.current);
 
     let nodes = clients
         .rows
@@ -393,14 +409,13 @@ fn block_engines_by_client(
 }
 
 pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroupings {
-    let eligible = eligible(validators);
-    let Some(epochs) = epochs(&eligible, Utc::now()) else {
+    let Some(population) = Population::new(validators) else {
         return Default::default();
     };
 
     ValidatorGroupings {
-        clients: aggregate_client_tree(&eligible, &epochs),
-        providers: aggregate_kind(&eligible, GroupKind::ProviderAso, &epochs),
+        clients: aggregate_client_tree(&population),
+        providers: aggregate_kind(&population, GroupKind::ProviderAso),
     }
 }
 
@@ -741,6 +756,33 @@ mod tests {
         let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
         assert_eq!(keys(&groups), vec!["Agave".to_string()]);
         assert_eq!(groups.total_activated_stake, Decimal::from(100));
+    }
+
+    #[test]
+    fn a_member_that_dropped_out_of_the_eligible_set_shows_as_a_loss() {
+        let validators = validators(vec![
+            Member::new(
+                "stayed",
+                epochs_spanning_both_windows(300, 300, 300, AGAVE, AGAVE),
+            ),
+            // Stopped voting and unstaked after epoch 96, so `/validators` no longer serves it.
+            Member::new(
+                "left",
+                vec![
+                    (CURRENT_EPOCH, 0, AGAVE, None),
+                    (PREVIOUS_EPOCH, 0, AGAVE, None),
+                    (96, 700, AGAVE, None),
+                    (85, 700, AGAVE, None),
+                ],
+            ),
+        ]);
+
+        let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
+        let agave = group(&groups, "Agave");
+        assert_eq!(agave.validator_count, 1);
+        assert_eq!(agave.total_stake, Decimal::from(300));
+        assert_eq!(agave.stake_delta_7d, Some(Decimal::from(-700)));
+        assert_eq!(agave.stake_delta_30d, Some(Decimal::from(-700)));
     }
 
     #[test]
