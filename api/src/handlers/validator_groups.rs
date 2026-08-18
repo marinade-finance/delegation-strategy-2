@@ -506,6 +506,109 @@ mod tests {
     }
 
     #[test]
+    fn every_sort_column_reads_its_own_field() {
+        let rows = vec![
+            ValidatorGroupRecord {
+                total_stake: Decimal::from(900),
+                ..group("stake", 100)
+            },
+            ValidatorGroupRecord {
+                stake_delta_7d: Some(Decimal::from(900)),
+                ..group("delta7d", 100)
+            },
+            ValidatorGroupRecord {
+                stake_delta_30d: Some(Decimal::from(900)),
+                ..group("delta30d", 100)
+            },
+            ValidatorGroupRecord {
+                net_apy: Some(0.9),
+                ..group("netApy", 100)
+            },
+            ValidatorGroupRecord {
+                take_rate: Some(0.9),
+                ..group("takeRate", 100)
+            },
+            ValidatorGroupRecord {
+                validator_count: 900,
+                ..group("validators", 100)
+            },
+            ValidatorGroupRecord {
+                delegator_count: Some(900),
+                ..group("delegators", 100)
+            },
+        ];
+
+        for (order_field, leader) in [
+            (GroupOrderField::Stake, "stake"),
+            (GroupOrderField::StakeDelta7d, "delta7d"),
+            (GroupOrderField::StakeDelta30d, "delta30d"),
+            (GroupOrderField::NetApy, "netApy"),
+            (GroupOrderField::TakeRate, "takeRate"),
+            (GroupOrderField::Validators, "validators"),
+            (GroupOrderField::Delegators, "delegators"),
+        ] {
+            let page = page_groups(
+                groups(rows.clone()),
+                &GetGroupsConfig {
+                    order_field,
+                    ..config()
+                },
+            );
+            assert_eq!(
+                keys(&page).first(),
+                Some(&leader.to_string()),
+                "{order_field:?} must lead with the row holding that field"
+            );
+        }
+    }
+
+    fn providers() -> ValidatorGroups {
+        groups(vec![
+            group("Hetzner Online GmbH", 300),
+            group("Latitude.sh", 200),
+            group("TeraSwitch Networks Inc.", 100),
+        ])
+    }
+
+    #[test]
+    fn a_query_cuts_the_rows_and_the_count_but_not_the_totals() {
+        let page = page_groups(
+            providers(),
+            &GetGroupsConfig {
+                query: Some("HETZ".to_string()),
+                ..config()
+            },
+        );
+        assert_eq!(keys(&page), named(&["Hetzner Online GmbH"]));
+        assert_eq!(page.total_count, 1);
+        assert_eq!(
+            page.total_activated_stake,
+            Decimal::from(600),
+            "the stake total describes the whole set, not the match"
+        );
+    }
+
+    #[test]
+    fn a_query_of_only_whitespace_serves_every_row() {
+        let page = page_groups(
+            providers(),
+            &GetGroupsConfig {
+                query: Some("  ".to_string()),
+                ..config()
+            },
+        );
+        assert_eq!(page.total_count, 3);
+        assert_eq!(
+            keys(&page),
+            named(&[
+                "Hetzner Online GmbH",
+                "Latitude.sh",
+                "TeraSwitch Networks Inc."
+            ])
+        );
+    }
+
+    #[test]
     fn paging_cuts_the_page_but_not_the_count() {
         let all = groups(vec![
             group("a", 500),
