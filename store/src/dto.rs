@@ -227,7 +227,7 @@ impl Validator {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
@@ -283,7 +283,7 @@ pub struct ValidatorEpochStats {
     pub rank_apy: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -543,6 +543,43 @@ pub struct FeatureSetStats {
     pub feature_set_stake: HashMap<String, u64>,
     pub feature_set_share: HashMap<String, f64>,
     pub feature_set_validator_count: HashMap<String, u64>,
+}
+
+/// One hosting provider or one validator client, aggregated over every validator running it in the
+/// last epoch.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupRecord {
+    /// Name of the group or `Unknown`
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+    pub stake_delta_7d: Option<Decimal>,
+    pub stake_delta_30d: Option<Decimal>,
+    pub net_apy: Option<f64>,
+    pub take_rate: Option<f64>,
+    pub delegator_count: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroups {
+    pub groups: Vec<ValidatorGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
+/// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the variants of it validators run.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupNode {
+    pub group: ValidatorGroupRecord,
+    pub children: Vec<ValidatorGroupRecord>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupTree {
+    pub nodes: Vec<ValidatorGroupNode>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

@@ -1,9 +1,10 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
-    validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    unstake_hints, uptimes, validator_groups, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
+    versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -25,6 +26,8 @@ use utoipa::OpenApi;
         schemas(config::ResponseConfig),
         schemas(config::StakeDelegationAuthorityRecord),
         schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
+        schemas(list_clients::ResponseClients),
+        schemas(list_providers::ResponseProviders),
         schemas(list_validators::OrderDirection),
         schemas(list_validators::OrderField),
         schemas(list_validators::ResponseValidators),
@@ -50,6 +53,8 @@ use utoipa::OpenApi;
         schemas(store::dto::SettlementRecord),
         schemas(store::dto::PerformanceRecord),
         schemas(store::dto::ValidatorEpochStats),
+        schemas(store::dto::ValidatorGroupNode),
+        schemas(store::dto::ValidatorGroupRecord),
         schemas(store::dto::ValidatorRecord),
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),
@@ -63,6 +68,7 @@ use utoipa::OpenApi;
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
         schemas(events::ResponseEvents),
+        schemas(validator_groups::GroupOrderField),
         schemas(validator_score_breakdown::ResponseScoreBreakdown),
         schemas(validator_score_breakdown::ScoreBreakdown),
         schemas(validator_score_breakdowns::ResponseScoreBreakdowns),
@@ -76,6 +82,8 @@ use utoipa::OpenApi;
     paths(
         admin_score_upload::handler,
         cluster_stats::handler,
+        list_clients::handler,
+        list_providers::handler,
         commissions::handler,
         config::handler,
         docs::handler,

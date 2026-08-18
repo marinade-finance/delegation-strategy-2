@@ -1926,6 +1926,48 @@ pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Re
     })
 }
 
+const MIN_REQUIRED_EPOCHS_IN_THE_PAST: u64 = 1;
+const MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE: u64 = 1;
+
+/// Whether a validator is one the API should return at all: present in the last two epochs, and voting or
+/// holding stake in them.
+pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bool {
+    let min_required_epoch = last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_IN_THE_PAST);
+    let credits_or_stake_from =
+        last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE);
+
+    let has_min_epoch_stats = (min_required_epoch..=last_epoch).all(|epoch| {
+        validator
+            .epoch_stats
+            .iter()
+            .any(|epoch_stat| epoch_stat.epoch == epoch)
+    });
+    if !has_min_epoch_stats {
+        return false;
+    }
+
+    (credits_or_stake_from..=last_epoch).all(|epoch| {
+        validator
+            .epoch_stats
+            .iter()
+            .find(|&epoch_stat| epoch_stat.epoch == epoch)
+            .is_some_and(|epoch_stat| {
+                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
+            })
+    })
+}
+
+/// The newest epoch any validator reports, which every eligibility check is relative to.
+pub fn last_reported_epoch<'a>(
+    validators: impl IntoIterator<Item = &'a ValidatorRecord>,
+) -> Option<u64> {
+    validators
+        .into_iter()
+        .flat_map(|validator| &validator.epoch_stats)
+        .map(|epoch_stat| epoch_stat.epoch)
+        .max()
+}
+
 pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAggregated> {
     let mut epochs: HashSet<_> = Default::default();
     let mut epochs_start_dates: HashMap<u64, DateTime<Utc>> = Default::default();
