@@ -59,7 +59,7 @@ pub struct Params {
     #[structopt(
         long = "blacklist-url",
         env = "BLACKLIST_URL",
-        default_value = "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/master/blacklist.csv"
+        default_value = "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/main/blacklist.csv"
     )]
     blacklist_url: String,
 
@@ -89,19 +89,28 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // One client with a bounded connect + total timeout, shared by the startup
+    // fetch and the refresh loop: a hung upstream must never stall startup before
+    // the port binds, nor wedge a refresh iteration.
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
     // Blacklist lives in ds-sam-pipeline; pull it to the local cache path before
     // serving, then refresh hourly. Fail loud if the first fetch fails — scoring
     // must never run against a missing blacklist (that would blacklist nobody).
-    fetch_blacklist(&params.blacklist_url, &params.blacklist_path)
+    fetch_blacklist(&http_client, &params.blacklist_url, &params.blacklist_path)
         .await
         .map_err(|err| anyhow::anyhow!("Initial blacklist fetch failed: {err}"))?;
     {
+        let client = http_client.clone();
         let url = params.blacklist_url.clone();
         let path = params.blacklist_path.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                if let Err(err) = fetch_blacklist(&url, &path).await {
+                if let Err(err) = fetch_blacklist(&client, &url, &path).await {
                     error!("Blacklist refresh failed (keeping previous copy): {err}");
                 }
             }
@@ -355,16 +364,40 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+// The blacklist is a committed base of 524 rows plus scraped additions, so a
+// valid fetch is always well over this floor. A body below it is empty/HTML/
+// truncated and must never overwrite the last-good copy — an empty blacklist
+// would blacklist nobody.
+const MIN_BLACKLIST_ROWS: usize = 50;
+
 // Fetch the blacklist CSV and write it atomically to `path` (temp + rename), so a
 // concurrent reader never sees a half file and a failed fetch leaves the last
-// good copy in place.
-async fn fetch_blacklist(url: &str, path: &str) -> anyhow::Result<()> {
-    let body = reqwest::get(url).await?.error_for_status()?.text().await?;
+// good copy in place. The body is validated BEFORE the rename, so a 200 carrying
+// an empty/HTML/truncated payload returns Err with the previous file untouched:
+// startup fails loud, the refresh loop logs loud and keeps serving the old copy.
+async fn fetch_blacklist(client: &reqwest::Client, url: &str, path: &str) -> anyhow::Result<()> {
+    let body = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    let mut lines = body.lines();
+    if lines.next() != Some("vote_account,code") {
+        anyhow::bail!("blacklist header missing/invalid (expected 'vote_account,code')");
+    }
+    let rows = lines.filter(|l| !l.trim().is_empty()).count();
+    if rows < MIN_BLACKLIST_ROWS {
+        anyhow::bail!("blacklist has only {rows} rows (minimum {MIN_BLACKLIST_ROWS})");
+    }
+
     let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
+    tokio::fs::write(&tmp, body.as_bytes()).await?;
+    tokio::fs::rename(&tmp, path).await?;
     info!(
-        "Fetched blacklist from {url} -> {path} ({} bytes)",
+        "Fetched blacklist from {url} -> {path} ({} bytes, {rows} rows)",
         body.len()
     );
     Ok(())

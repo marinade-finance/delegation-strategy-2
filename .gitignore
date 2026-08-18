@@ -8,8 +8,5 @@ target
 node_modules/
 pnpm-lock.yaml
 
-# Local, ephemeral working dirs
-.diary/
-.ship/
-specs/
+# Runtime cache of the blacklist fetched from ds-sam-pipeline
 blacklist.cache.csv
