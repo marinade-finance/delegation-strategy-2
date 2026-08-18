@@ -17,6 +17,7 @@ pub struct StoreValidatorsParams {
 }
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
+const DATA_CENTER_CARRY_EPOCHS: u64 = 10;
 
 pub async fn store_validators(
     params: StoreValidatorsParams,
@@ -235,6 +236,7 @@ pub async fn store_validators(
         .filter(|(vote_account, _validator)| !updated_vote_accounts.contains(vote_account))
         .collect();
     let mut insertions = 0;
+    let mut unresolved_insertions: Vec<String> = Default::default();
 
     for chunk in validators.chunks(DEFAULT_CHUNK_SIZE) {
         let mut query = InsertQueryCombiner::new(
@@ -339,10 +341,67 @@ pub async fn store_validators(
                 &v.pubsub_public,
             ];
             query.add(&mut params);
+            if !v.dc_resolved {
+                unresolved_insertions.push(vote_account.clone());
+            }
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
         info!("Stored {insertions} new validator records");
     }
+
+    if !unresolved_insertions.is_empty() {
+        carry_previous_data_centers(psql_client, &snapshot_epoch, &unresolved_insertions).await?;
+    }
+
+    Ok(())
+}
+
+// The INSERT branch has no row for the epoch to preserve, so without this an unresolved lookup on the epoch's first store drops a location the previous epoch knew, and every later unresolved run keeps that gap; matching node_ip is what stops a node that moved from inheriting the old address's data center.
+async fn carry_previous_data_centers(
+    psql_client: &Client,
+    epoch: &Decimal,
+    vote_accounts: &[String],
+) -> anyhow::Result<()> {
+    let carry_window = Decimal::from(DATA_CENTER_CARRY_EPOCHS);
+    let carried = psql_client
+        .execute(
+            "
+        UPDATE validators
+        SET
+            dc_coordinates_lat = previous.dc_coordinates_lat,
+            dc_coordinates_lon = previous.dc_coordinates_lon,
+            dc_continent = previous.dc_continent,
+            dc_country_iso = previous.dc_country_iso,
+            dc_country = previous.dc_country,
+            dc_city = previous.dc_city,
+            dc_asn = previous.dc_asn,
+            dc_aso = previous.dc_aso
+        FROM (
+            SELECT DISTINCT ON (vote_account)
+                vote_account,
+                node_ip,
+                dc_coordinates_lat,
+                dc_coordinates_lon,
+                dc_continent,
+                dc_country_iso,
+                dc_country,
+                dc_city,
+                dc_asn,
+                dc_aso
+            FROM validators
+            -- Bounded because an unbounded epoch < $1 sequentially scans the whole table for a boundary-wide failure, and a location last seen further back than this is no longer good evidence of where the node is now; skipping rows that carry no location at all is what lets the carry step over an epoch some earlier gap left empty instead of propagating that gap forward.
+            WHERE epoch < $1 AND epoch >= $1 - $3 AND vote_account = ANY($2)
+                AND num_nonnulls(dc_coordinates_lat, dc_coordinates_lon, dc_continent, dc_country_iso, dc_country, dc_city, dc_asn, dc_aso) > 0
+            ORDER BY vote_account, epoch DESC
+        ) previous
+        WHERE validators.vote_account = previous.vote_account
+            AND validators.epoch = $1
+            AND validators.node_ip IS NOT DISTINCT FROM previous.node_ip
+    ",
+            &[epoch, &vote_accounts, &carry_window],
+        )
+        .await?;
+    info!("Carried a previously known data center for {carried} validators");
 
     Ok(())
 }

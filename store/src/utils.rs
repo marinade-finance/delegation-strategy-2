@@ -1070,6 +1070,7 @@ pub async fn load_validators(
     let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
         log::info!("Aggregating validator records...");
         let mut records: HashMap<_, _> = Default::default();
+        let mut seeding_epochs: HashMap<String, u64> = Default::default();
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1200,8 +1201,9 @@ pub async fn load_validators(
                     rugged_commission_occurrences: 0,
                 });
 
-            // Gating all three on max_observed keeps them from one row, the newest closed epoch; commission_advertised deliberately stays on the open epoch that seeded the record.
-            if record.commission_max_observed.is_none() {
+            let seeding_epoch = *seeding_epochs.entry(vote_account.clone()).or_insert(epoch);
+            // Gating all three on max_observed keeps them from one row; stopping one epoch below the record's own is what makes that row the newest closed epoch rather than whichever older row still happens to have the column. commission_advertised deliberately stays on the open epoch that seeded the record.
+            if record.commission_max_observed.is_none() && epoch + 1 >= seeding_epoch {
                 record.commission_max_observed =
                     row.get::<_, Option<i32>>("commission_max_observed");
                 record.commission_min_observed =
