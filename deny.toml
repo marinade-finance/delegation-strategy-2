@@ -44,6 +44,14 @@ ignore = [
   # 0.102.x is pulled via gcp-bigquery-client -> yup-oauth2 -> rustls 0.22.
   # Revisit when gcp-bigquery-client moves to a rustls 0.23 release.
   "RUSTSEC-2026-0049",
+  # h2 unbounded empty DATA frames — queued without limit, so an unread stream
+  # can grow memory or panic on overflow. Low severity, DoS only. The advisory
+  # patches ">= 0.4.16" and nothing in the 0.3 line: 0.4.x is updated to 0.4.16
+  # here, but h2 0.3.26 stays, reached through hyper 0.14 from warp 0.3 (the API
+  # server, the one side that actually accepts frames) and from reqwest 0.11 /
+  # solana-client 2.2. Getting off it means a hyper 1.x server for warp and
+  # reqwest 0.11 -> 0.12, which waits on the Solana client crates.
+  "RUSTSEC-2026-0258",
   # Unmaintained crates pinned deep in the Solana validator stack
   # (solana-runtime / solana-ledger / solana-storage-bigtable), reached via
   # the snapshot-parser git dep, plus the reqwest 0.11 / gcp-bigquery-client
