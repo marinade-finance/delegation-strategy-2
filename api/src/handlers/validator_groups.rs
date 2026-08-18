@@ -1,6 +1,4 @@
-use crate::context::WrappedContext;
 use crate::handlers::list_validators::OrderDirection;
-use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -216,26 +214,6 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         total_activated_stake,
         current_epoch,
     }
-}
-
-pub async fn read_client_groups(
-    context: &WrappedContext,
-) -> (ValidatorGroupTree, Option<DateTime<Utc>>) {
-    let cache = &context.read().await.cache;
-    (
-        cache.get_client_groups(),
-        cache.net_apy_updated_at().map(DateTime::<Utc>::from),
-    )
-}
-
-pub async fn read_provider_groups(
-    context: &WrappedContext,
-) -> (ValidatorGroups, Option<DateTime<Utc>>) {
-    let cache = &context.read().await.cache;
-    (
-        cache.get_provider_groups(),
-        cache.net_apy_updated_at().map(DateTime::<Utc>::from),
-    )
 }
 
 #[cfg(test)]

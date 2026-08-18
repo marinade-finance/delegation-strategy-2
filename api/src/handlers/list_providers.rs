@@ -1,8 +1,8 @@
 use crate::context::WrappedContext;
 use crate::handlers::list_validators::OrderDirection;
 use crate::handlers::validator_groups::{
-    page_groups, read_provider_groups, GetGroupsConfig, GroupOrderField, DEFAULT_LIMIT,
-    DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
+    page_groups, GetGroupsConfig, GroupOrderField, DEFAULT_LIMIT, DEFAULT_ORDER_DIRECTION,
+    DEFAULT_ORDER_FIELD,
 };
 use crate::metrics;
 use chrono::{DateTime, Utc};
@@ -65,7 +65,13 @@ pub async fn handler(
 
     log::info!("Query providers {config:?}");
 
-    let (groups, net_apy_updated_at) = read_provider_groups(&context).await;
+    let (groups, net_apy_updated_at) = {
+        let cache = &context.read().await.cache;
+        (
+            cache.get_provider_groups(),
+            cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+        )
+    };
     let page = page_groups(groups, &config);
 
     Ok(warp::reply::with_status(
