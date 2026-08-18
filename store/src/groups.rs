@@ -8,11 +8,11 @@ use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 /// Windows the groups' stake deltas describe.
-pub const DELTA_SHORT_DAYS: i64 = 7;
-pub const DELTA_LONG_DAYS: i64 = 30;
+const DELTA_SHORT_DAYS: i64 = 7;
+const DELTA_LONG_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GroupKind {
+enum GroupKind {
     /// The client with the block engine it runs, `Agave + Jito`.
     ClientLabel,
     /// The client alone, `Agave`. The parent level of the client tree.
@@ -174,7 +174,7 @@ fn weighted(weighted_sum: f64, weight: f64) -> Option<f64> {
     (weight > 0.0).then(|| weighted_sum / weight)
 }
 
-pub struct Epochs {
+struct Epochs {
     current: u64,
     delta_7d: Option<u64>,
     delta_30d: Option<u64>,
@@ -240,7 +240,9 @@ fn stake_by_key_at(
         .then_some(stake_by_key)
 }
 
-pub fn aggregate_groups(
+/// One grouping on its own, which only the tests read; `aggregate_all` is what the cache warms.
+#[cfg(test)]
+fn aggregate_groups(
     validators: &HashMap<String, ValidatorRecord>,
     kind: GroupKind,
 ) -> ValidatorGroups {
