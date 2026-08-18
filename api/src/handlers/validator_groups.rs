@@ -11,8 +11,6 @@ pub const DEFAULT_LIMIT: usize = 100;
 pub const DEFAULT_ORDER_FIELD: GroupOrderField = GroupOrderField::Stake;
 pub const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 
-/// Named apart from `list_validators::OrderField`: both are documented in one OpenAPI component
-/// namespace, and a shared name makes one silently overwrite the other.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, utoipa::ToSchema)]
 pub enum GroupOrderField {
     Name,
@@ -34,7 +32,6 @@ pub struct GetGroupsConfig {
     pub query: Option<String>,
 }
 
-/// One page of groups plus how many matched before it was cut.
 #[derive(Debug)]
 pub struct GroupsPage {
     pub groups: Vec<ValidatorGroupRecord>,
@@ -44,15 +41,10 @@ pub struct GroupsPage {
     pub current_epoch: Option<u64>,
 }
 
-/// A group's sort value for the ordered column, or `None` where it has none.
 type FieldExtractor = fn(&ValidatorGroupRecord) -> Option<Decimal>;
 
-// Rates and shares are keyed through `from_f64_retain` rather than rounded: rounding a
-// fraction-valued rate to a few decimals is what collapses distinct groups into one bucket and makes
-// a sorted column look unsorted. A value too extreme for Decimal keys as `None` and sinks.
 fn field_extractor(order_field: GroupOrderField) -> FieldExtractor {
     match order_field {
-        // Name never reaches here; it orders on the key itself.
         GroupOrderField::Name => |_: &ValidatorGroupRecord| None,
         GroupOrderField::Stake => |group: &ValidatorGroupRecord| Some(group.total_stake),
         GroupOrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d,
@@ -79,8 +71,6 @@ fn directed(ordering: Ordering, order_direction: &OrderDirection) -> Ordering {
     }
 }
 
-/// Tiebroken on the key so groups sharing a value keep one order across cache refreshes — without it
-/// an `offset` page could repeat or skip a row the reader already saw.
 fn sort_groups(
     mut groups: Vec<ValidatorGroupRecord>,
     order_field: GroupOrderField,
@@ -100,14 +90,12 @@ fn sort_groups(
     }
 
     let extract = field_extractor(order_field);
-    // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
     let mut keyed: Vec<(Option<Decimal>, ValidatorGroupRecord)> = groups
         .into_iter()
         .map(|group| (extract(&group), group))
         .collect();
 
     keyed.sort_by(|(a_key, a), (b_key, b)| {
-        // A missing value is not a zero one, so it stays last whichever way the present ones go.
         let ordering = match (a_key, b_key) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,
@@ -144,9 +132,6 @@ fn search_term(config: &GetGroupsConfig) -> Option<String> {
         .filter(|query| !query.is_empty())
 }
 
-/// Filter, count, sort, page — in that order, so `total_count` describes the whole match and not the
-/// page. The stake denominator and the epochs stay as aggregated: they describe the network, not the
-/// rows that survived the filter.
 pub fn page_groups(groups: ValidatorGroups, config: &GetGroupsConfig) -> GroupsPage {
     let ValidatorGroups {
         groups,
@@ -170,17 +155,15 @@ pub fn page_groups(groups: ValidatorGroups, config: &GetGroupsConfig) -> GroupsP
     }
 }
 
-/// One page of the client tree.
 #[derive(Debug)]
 pub struct TreePage {
     pub nodes: Vec<ValidatorGroupNode>,
-    /// Number of clients matching the query, before `offset`/`limit`. Variants are never paged.
+    /// Number of clients matching the query, before `offset`/`limit`; block engines are never paged.
     pub total_count: usize,
     pub total_activated_stake: Decimal,
     pub current_epoch: Option<u64>,
 }
 
-/// A client survives the search when its own name matches or one of its child variants does.
 fn matches_query(node: &ValidatorGroupNode, query: &str) -> bool {
     let matches = |key: &str| key.to_lowercase().contains(query);
 
@@ -204,8 +187,6 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .collect();
     let total_count = matching.len();
 
-    // Clients are ordered through the same keyed sort as any flat group list, by sorting a list of
-    // the client rows and then putting each one's variants back.
     let mut children_by_key: HashMap<String, Vec<ValidatorGroupRecord>> = matching
         .iter()
         .map(|node| (node.group.key.clone(), node.children.clone()))
@@ -237,8 +218,6 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
     }
 }
 
-/// What the group endpoints read, as of the last cache refresh, with the timestamp of the net APY the
-/// rates are derived from — an old one means apy-api is failing and the rates are being reused.
 pub async fn read_client_groups(
     context: &WrappedContext,
 ) -> (ValidatorGroupTree, Option<DateTime<Utc>>) {
@@ -348,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sort_column_orders_the_clients_and_their_variants_alike() {
+    fn the_sort_column_orders_the_clients_and_their_block_engines_alike() {
         let page = page_tree(client_tree(), &config());
         assert_eq!(
             parent_keys(&page),
@@ -357,7 +336,7 @@ mod tests {
         assert_eq!(
             child_keys(&page, "Agave"),
             named(&["Agave + Jito", "Agave + Rakurai", "Agave"]),
-            "variants follow the same column as their clients"
+            "block engines follow the same column as their clients"
         );
 
         let page = page_tree(
@@ -374,7 +353,7 @@ mod tests {
         assert_eq!(
             child_keys(&page, "Agave"),
             named(&["Agave", "Agave + Rakurai", "Agave + Jito"]),
-            "reversing the sort reverses the variants too"
+            "reversing the sort reverses the block engines too"
         );
     }
 
@@ -399,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn a_search_matching_a_variant_keeps_its_client_and_all_its_variants() {
+    fn a_search_matching_a_block_engine_keeps_its_client_and_all_its_engines() {
         let page = page_tree(
             client_tree(),
             &GetGroupsConfig {
@@ -412,12 +391,12 @@ mod tests {
         assert_eq!(
             child_keys(&page, "Agave").len(),
             3,
-            "the row exists to show what the client is made of, so its variants stay whole"
+            "the row exists to show which block engines run the client"
         );
     }
 
     #[test]
-    fn paging_cuts_clients_and_never_their_variants() {
+    fn paging_cuts_clients_and_never_their_block_engines() {
         let page = page_tree(
             client_tree(),
             &GetGroupsConfig {
@@ -453,7 +432,7 @@ mod tests {
         assert_eq!(
             page.nodes[1].children.len(),
             1,
-            "its variants are still served, or their stake disappears from the table"
+            "its block engines are still served"
         );
     }
 

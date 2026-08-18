@@ -11,25 +11,19 @@ use std::collections::{HashMap, HashSet};
 pub const DELTA_SHORT_DAYS: i64 = 7;
 pub const DELTA_LONG_DAYS: i64 = 30;
 
-/// Which field of a validator names the group it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GroupKind {
-    /// The client variant a validator runs: the client plus its vendor's modification, `Agave + Jito`.
+    /// The client with the block engine it runs, `Agave + Jito`.
     ClientLabel,
-    /// The client a variant is built from, `Agave`. The parent level of the client tree.
+    /// The client alone, `Agave`. The parent level of the client tree.
     ClientLineage,
     /// The hosting organisation, `Hetzner`.
     ProviderAso,
 }
 
-/// Served as the key of the bucket holding validators whose value is unknown. The same word the API
-/// already serves for a client it cannot name, so a consumer renders one thing either way, and the
-/// bucket is a row like any other rather than a null every caller has to special-case.
+/// Key of the bucket holding validators whose value is unknown.
 pub const UNKNOWN_GROUP: &str = "Unknown";
 
-/// `None` for a value that names no group: empty, or one of the diagnostic placeholders an RPC
-/// renders for a client it cannot identify (`Unknown`, `Unknown(8)`). Those are not a group anyone
-/// ships, so they collapse into the one unclassified bucket instead of several fake ones.
 fn normalized(value: Option<String>) -> Option<String> {
     let value = value?;
     let value = value.trim();
@@ -55,26 +49,21 @@ fn is_unknown_placeholder(value: &str) -> bool {
     }
 }
 
-/// The client the node reported, for one the Solana Foundation registry does not know. Kept as its
-/// own group rather than folded into the unclassified bucket: a readable name is a real client that
-/// simply landed before our registry row did, and lumping it in hides stake behind `null`.
+/// The client the node reported, for one absent from client-ids.csv.
 fn reported_client(stats: &ValidatorEpochStats) -> Option<String> {
     normalized(stats.client_id_raw.clone())
 }
 
-/// The registry renders a client lowercase (`agave`), which reads wrong next to the variant labels it
-/// parents (`Agave + Jito`), so the parent row is served title-cased.
-fn as_lineage_name(lineage: String) -> String {
-    let mut characters = lineage.chars();
+/// The registry renders a client lowercase (`agave`); block engine labels are title-cased.
+fn as_client_name(client: String) -> String {
+    let mut characters = client.chars();
     match characters.next() {
         Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
-        None => lineage,
+        None => client,
     }
 }
 
 fn group_key(stats: &ValidatorEpochStats, kind: GroupKind) -> Option<String> {
-    // Re-resolved per epoch, so a group's key is derived the same way the record's own client
-    // fields are and the two can never disagree.
     let client_id = effective_client_id(stats.client_id, stats.client_id_raw.as_deref());
 
     match kind {
@@ -82,17 +71,11 @@ fn group_key(stats: &ValidatorEpochStats, kind: GroupKind) -> Option<String> {
         GroupKind::ClientLabel => {
             normalized(Some(client_label(client_id))).or_else(|| reported_client(stats))
         }
-        // No raw fallback: which client a variant the registry cannot name is built from is unknown,
-        // not whatever string the node happened to report. Such a variant still gets its own child row
-        // and lands under the unclassified parent.
-        GroupKind::ClientLineage => normalized(client_lineage(client_id)).map(as_lineage_name),
+        GroupKind::ClientLineage => normalized(client_lineage(client_id)).map(as_client_name),
     }
 }
 
-/// Case-folded group identity. The IP-geolocation source re-cases provider names between epochs
-/// (`RETN Limited` and `Retn Limited` are the same company, and nine such pairs appear in a single
-/// page of validators today), so folding is what stops one provider becoming two rows and its stake
-/// reading as a migration that never happened.
+/// Case-folded group identity; the geolocation source re-cases provider names between epochs.
 type FoldedKey = Option<String>;
 
 fn folded(key: &Option<String>) -> FoldedKey {
@@ -101,8 +84,6 @@ fn folded(key: &Option<String>) -> FoldedKey {
 
 #[derive(Default)]
 struct Accumulator {
-    /// Spellings seen for this group and the stake behind each, so the row can be served under the
-    /// one that most stake reports rather than whichever validator happened to be visited first.
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -138,7 +119,6 @@ impl Accumulator {
             *self.spellings.entry(key.clone()).or_default() += stats.activated_stake;
         }
 
-        // Rates are stake-weighted
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
         if let Some(net_apy) = validator.net_apy.filter(|apy| apy.is_finite()) {
@@ -151,8 +131,6 @@ impl Accumulator {
             self.take_rate_weight += weight;
         }
 
-        // `None` rather than 0 when nobody in the group reports a count, so a consumer renders the
-        // missing-data placeholder instead of claiming the group has no delegators.
         if let Some(unique_delegators) = validator.unique_delegators {
             self.delegator_count =
                 Some(self.delegator_count.unwrap_or_default() + unique_delegators);
@@ -196,8 +174,6 @@ fn weighted(weighted_sum: f64, weight: f64) -> Option<f64> {
     (weight > 0.0).then(|| weighted_sum / weight)
 }
 
-/// Which epochs the aggregation reads, resolved once: none of it depends on how validators are
-/// grouped, so every grouping shares one walk of the epoch stats rather than repeating three.
 pub struct Epochs {
     current: u64,
     delta_7d: Option<u64>,
@@ -225,8 +201,7 @@ fn epochs(validators: &[&ValidatorRecord], now: DateTime<Utc>) -> Option<Epochs>
     })
 }
 
-/// Newest epoch that had already ended `days` ago, or `None` when history does not reach that far
-/// back — a delta against the oldest epoch we happen to hold would describe an unknown window.
+/// Newest epoch that had already ended `days` ago; `None` when history does not reach back.
 fn reference_epoch(
     epoch_ends: &HashMap<u64, DateTime<Utc>>,
     now: DateTime<Utc>,
@@ -243,13 +218,7 @@ fn reference_epoch(
 type ReferenceStake = HashMap<FoldedKey, Decimal>;
 
 /// Stake per group as it stood in `epoch`, bucketed by that epoch's own client and provider values.
-/// This is what makes a delta describe adoption rather than membership: a validator that moved from
-/// Agave to Frankendancer counted towards Agave then and towards Frankendancer now, so the move
-/// shows as a loss on one and a gain on the other.
-///
-/// `None` when that epoch classified nothing — client ids only reach back to the epoch collection of
-/// them started, and against an epoch where every validator was unclassified every group would read
-/// as having appeared from nothing. Self-heals as history accumulates.
+/// `None` when that epoch classified nothing; client ids reach back only to epoch 1011.
 fn stake_by_key_at(
     validators: &[&ValidatorRecord],
     epoch: u64,
@@ -270,9 +239,6 @@ fn stake_by_key_at(
         .then_some(stake_by_key)
 }
 
-/// One row per client or per hosting provider, aggregated over the whole validator set as it stands
-/// in the last epoch. Rows come from that epoch alone, so a group nobody runs today has no row even
-/// if it held stake a month ago.
 pub fn aggregate_groups(
     validators: &HashMap<String, ValidatorRecord>,
     kind: GroupKind,
@@ -285,9 +251,7 @@ pub fn aggregate_groups(
     aggregate_kind(&eligible, kind, &epochs)
 }
 
-/// The validators every group is aggregated over: the same population the validator list serves, so a
-/// group's stake share is a share of a total a consumer can also read off `/validators`. Judged
-/// against the newest epoch the whole cache reports, exactly as the list judges it.
+/// The population `/validators` serves, judged against the newest epoch the whole cache reports.
 fn eligible(validators: &HashMap<String, ValidatorRecord>) -> Vec<&ValidatorRecord> {
     let last_epoch = last_reported_epoch(validators.values()).unwrap_or(0);
     validators
@@ -296,8 +260,7 @@ fn eligible(validators: &HashMap<String, ValidatorRecord>) -> Vec<&ValidatorReco
         .collect()
 }
 
-/// Rows with the folded key each was bucketed under, which is what joins the two levels of the client
-/// tree — the rendered key cannot do it, since two spellings and the unknown bucket all normalise.
+/// Rows with the folded key each was bucketed under; the client tree joins its two levels on it.
 struct KeyedGroups {
     rows: Vec<(FoldedKey, ValidatorGroupRecord)>,
     groups: ValidatorGroups,
@@ -359,8 +322,7 @@ fn aggregate_keyed(
         })
         .collect();
 
-    // Largest stake first, tiebroken on the key: HashMap iteration order changes on every cache
-    // refresh, and an unstable base order would make paged reads overlap or skip rows.
+    // HashMap iteration order changes on every cache refresh; paged reads need a total order.
     rows.sort_by(|(_, a), (_, b)| {
         b.total_stake
             .cmp(&a.total_stake)
@@ -378,63 +340,56 @@ fn aggregate_keyed(
     }
 }
 
-/// Clients as a two-level tree: one parent per client, its child variants underneath.
 fn aggregate_client_tree(validators: &[&ValidatorRecord], epochs: &Epochs) -> ValidatorGroupTree {
-    let lineages = aggregate_keyed(validators, GroupKind::ClientLineage, epochs);
-    let variants = aggregate_keyed(validators, GroupKind::ClientLabel, epochs);
-    let mut children_by_lineage = children_by_lineage(validators, epochs.current);
+    let clients = aggregate_keyed(validators, GroupKind::ClientLineage, epochs);
+    let block_engines = aggregate_keyed(validators, GroupKind::ClientLabel, epochs);
+    let mut engines_by_client = block_engines_by_client(validators, epochs.current);
 
-    let nodes = lineages
+    let nodes = clients
         .rows
         .into_iter()
-        .map(|(folded_lineage, lineage)| {
-            let children = children_by_lineage
-                .remove(&folded_lineage)
-                .unwrap_or_default();
+        .map(|(folded_client, client)| {
+            let engines = engines_by_client.remove(&folded_client).unwrap_or_default();
 
             ValidatorGroupNode {
-                children: variants
+                children: block_engines
                     .rows
                     .iter()
-                    .filter(|(folded_variant, _)| children.contains(folded_variant))
-                    .map(|(_, variant)| variant.clone())
+                    .filter(|(folded_engine, _)| engines.contains(folded_engine))
+                    .map(|(_, engine)| engine.clone())
                     .collect(),
-                group: lineage,
+                group: client,
             }
         })
         .collect();
 
     ValidatorGroupTree {
         nodes,
-        total_activated_stake: lineages.groups.total_activated_stake,
-        current_epoch: lineages.groups.current_epoch,
+        total_activated_stake: clients.groups.total_activated_stake,
+        current_epoch: clients.groups.current_epoch,
     }
 }
 
-/// Which variant labels sit under which client, read off the validators themselves rather than from a
-/// table of the registry's pairings: a variant only appears where stake actually runs it.
-fn children_by_lineage(
+fn block_engines_by_client(
     validators: &[&ValidatorRecord],
     current_epoch: u64,
 ) -> HashMap<FoldedKey, HashSet<FoldedKey>> {
-    let mut children: HashMap<FoldedKey, HashSet<FoldedKey>> = Default::default();
+    let mut engines: HashMap<FoldedKey, HashSet<FoldedKey>> = Default::default();
     for validator in validators {
         if let Some(stats) = validator
             .epoch_stats
             .iter()
             .find(|stats| stats.epoch == current_epoch)
         {
-            children
+            engines
                 .entry(folded(&group_key(stats, GroupKind::ClientLineage)))
                 .or_default()
                 .insert(folded(&group_key(stats, GroupKind::ClientLabel)));
         }
     }
-    children
+    engines
 }
 
-/// The client tree and the provider rows, sharing one epoch resolution since that part does not
-/// depend on how validators are grouped.
 pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroupings {
     let eligible = eligible(validators);
     let Some(epochs) = epochs(&eligible, Utc::now()) else {
@@ -447,7 +402,6 @@ pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> Validator
     }
 }
 
-/// Everything the group endpoints serve, aggregated once per cache refresh.
 #[derive(Default, Clone)]
 pub struct ValidatorGroupings {
     pub clients: ValidatorGroupTree,
@@ -464,14 +418,13 @@ mod tests {
         Utc::now() - Duration::seconds((last_epoch - epoch) as i64 * EPOCH_SECONDS)
     }
 
-    /// One epoch of a fixture validator: `(epoch, stake, client_id, dc_aso)`.
+    /// `(epoch, stake, client_id, dc_aso)`.
     type EpochSpec = (u64, i64, Option<u16>, Option<&'static str>);
 
     const CURRENT_EPOCH: u64 = 100;
     const PREVIOUS_EPOCH: u64 = 99;
 
-    /// The two epochs `is_eligible_validator` reads, both carrying the same stake and client. A
-    /// fixture has to state both or the validator is not one the API describes at all.
+    /// The two epochs `is_eligible_validator` reads, both carrying the same stake and client.
     fn last_two_epochs(
         stake: i64,
         client_id: Option<u16>,
@@ -561,8 +514,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no group for {key:?} in {:?}", keys(groups)))
     }
 
-    // client-ids.csv ids, labelled by `ClientId::groupings`: 3 is `Agave`, 2 `Frankendancer`,
-    // 6 `Agave + JitoBAM` — which is the agave lineage, like 3.
+    // client-ids.csv ids: 3 `Agave`, 2 `Frankendancer`, 6 `Agave + JitoBAM` (agave lineage, like 3).
     const AGAVE: Option<u16> = Some(3);
     const FRANKENDANCER: Option<u16> = Some(2);
     const JITO_BAM: Option<u16> = Some(6);
@@ -585,7 +537,7 @@ mod tests {
 
     #[test]
     fn unknown_placeholders_collapse_into_one_unclassified_bucket() {
-        // 65535 is not in the registry, so the label helpers answer `Unknown`.
+        // 65535 is absent from client-ids.csv.
         let unregistered = Some(65535);
         let validators = validators(vec![
             Member::new("blank", last_two_epochs(100, None, Some("   "))),
@@ -593,8 +545,8 @@ mod tests {
                 "unknown",
                 last_two_epochs(100, unregistered, Some("Unknown")),
             ),
-            // `Unknown(999)` is what an RPC renders for an id absent from its own table, and 999 is
-            // absent from ours too, so nothing about it names a client.
+            // `Unknown(999)`: what an RPC renders for an id absent from its table; 999 is absent
+            // from client-ids.csv too.
             Member {
                 client_id_raw: Some("Unknown(999)"),
                 ..Member::new("placeholder", last_two_epochs(100, None, Some("unknown")))
@@ -610,7 +562,7 @@ mod tests {
 
     #[test]
     fn a_client_the_registry_does_not_know_keeps_the_name_the_node_reported() {
-        // A name absent from client-ids.csv: the RPC could render it, our registry cannot place it.
+        // A name absent from client-ids.csv.
         let validators = validators(vec![Member {
             client_id_raw: Some("Sonic"),
             ..Member::new("reported", last_two_epochs(100, None, None))
@@ -791,8 +743,6 @@ mod tests {
 
     #[test]
     fn provider_names_differing_only_in_case_are_one_group() {
-        // The geolocation source re-cases names between epochs; two rows for one company would also
-        // split its stake and read as a migration.
         let validators = validators(vec![
             Member::new("shouty", last_two_epochs(300, AGAVE, Some("RETN Limited"))),
             Member::new("titled", last_two_epochs(100, AGAVE, Some("Retn Limited"))),
@@ -813,8 +763,7 @@ mod tests {
 
     #[test]
     fn no_delta_against_an_epoch_that_classified_nothing() {
-        // Client ids only reach back to the epoch collection started; before that every validator was
-        // unclassified, and every client would read as having appeared from nothing.
+        // Client ids reach back only to the epoch collection started.
         let validators = validators(vec![Member::new(
             "backfilled",
             vec![
@@ -829,7 +778,6 @@ mod tests {
         assert_eq!(group(&clients, "Agave").stake_delta_7d, None);
         assert_eq!(group(&clients, "Agave").stake_delta_30d, None);
 
-        // The provider view of the same epochs is classified throughout, so it still gets its deltas.
         let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
         assert_eq!(
             group(&providers, "Hetzner").stake_delta_7d,
@@ -839,8 +787,7 @@ mod tests {
 
     #[test]
     fn a_validator_the_list_does_not_serve_counts_nowhere() {
-        // Present in the last epoch but neither voting nor staked: `/validators` drops it, so a group
-        // must not count it either, or the shares describe a population no consumer can total.
+        // Present in the last epoch but neither voting nor staked: `/validators` drops it.
         let idle = Member::new("idle", last_two_epochs(0, FRANKENDANCER, Some("Latitude")));
         let validators = validators(vec![
             Member::new("live", last_two_epochs(700, AGAVE, Some("Hetzner"))),
@@ -863,7 +810,7 @@ mod tests {
 
     #[test]
     fn a_validator_with_no_stake_but_credits_still_counts() {
-        // The list keeps a voting validator with no stake, so the groups have to as well.
+        // `/validators` keeps a voting validator with no stake.
         let mut validators = validators(vec![
             Member::new("voting", last_two_epochs(0, AGAVE, Some("Hetzner"))),
             Member::new("staked", last_two_epochs(700, AGAVE, Some("Hetzner"))),
@@ -902,8 +849,6 @@ mod tests {
 
     #[test]
     fn aggregate_all_agrees_with_aggregating_one_kind() {
-        // Both entry points share one epoch resolution; a drift between them would serve one number
-        // on an endpoint and another to anything calling the aggregation directly.
         let validators = validators(vec![
             Member::new(
                 "one",
@@ -921,9 +866,9 @@ mod tests {
         assert_eq!(keys(&providers), keys(&all.providers));
         assert_eq!(providers.current_epoch, all.providers.current_epoch);
 
-        let lineages = aggregate_groups(&validators, GroupKind::ClientLineage);
+        let clients = aggregate_groups(&validators, GroupKind::ClientLineage);
         assert_eq!(
-            lineages
+            clients
                 .groups
                 .iter()
                 .map(|group| group.key.clone())
@@ -933,16 +878,16 @@ mod tests {
                 .iter()
                 .map(|node| node.group.key.clone())
                 .collect::<Vec<_>>(),
-            "the tree's parents are the lineage grouping"
+            "the tree's parents are the client grouping"
         );
         assert_eq!(
-            lineages.groups.first().map(|group| group.stake_delta_7d),
+            clients.groups.first().map(|group| group.stake_delta_7d),
             all.clients
                 .nodes
                 .first()
                 .map(|node| node.group.stake_delta_7d)
         );
-        assert_eq!(lineages.current_epoch, all.clients.current_epoch);
+        assert_eq!(clients.current_epoch, all.clients.current_epoch);
     }
 
     #[test]
@@ -978,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn variants_sit_under_the_client_they_are_built_from() {
+    fn block_engines_sit_under_the_client_they_run_with() {
         let validators = validators(vec![
             Member::new("plain", last_two_epochs(100, AGAVE, None)),
             Member::new("jito", last_two_epochs(400, Some(1), None)),
@@ -1011,7 +956,7 @@ mod tests {
                 "Agave + JitoBAM".to_string(),
                 "Agave".to_string()
             ],
-            "a variant with no vendor modification keys as the client itself"
+            "a client running no separate block engine keys as the client itself"
         );
         assert_eq!(
             child_keys(&tree.nodes[1]),
@@ -1020,9 +965,8 @@ mod tests {
     }
 
     #[test]
-    fn a_client_is_aggregated_over_its_own_validators_not_summed_from_its_variants() {
-        // Two variants of one client with different rates: the parent has to be the stake-weighted
-        // rate over both, which is not the mean of the two child rates.
+    fn a_client_is_aggregated_over_its_own_validators_not_summed_from_its_block_engines() {
+        // 0.10 on 900 stake and 0.02 on 100 weights to 0.092, not the 0.06 plain mean.
         let validators = validators(vec![
             Member {
                 net_apy: Some(0.10),
@@ -1045,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn a_variant_the_registry_cannot_place_lands_under_the_unclassified_parent() {
+    fn a_block_engine_the_registry_cannot_place_lands_under_the_unclassified_parent() {
         let validators = validators(vec![
             Member::new("known", last_two_epochs(900, AGAVE, None)),
             Member {
@@ -1063,7 +1007,7 @@ mod tests {
         assert_eq!(
             child_keys(unclassified),
             vec!["Sonic".to_string()],
-            "the variant keeps the name the node reported even though its client is unknown"
+            "the row keeps the name the node reported even though its client is unknown"
         );
     }
 
@@ -1082,9 +1026,8 @@ mod tests {
     }
 
     #[test]
-    fn a_variant_switch_inside_one_client_leaves_the_parent_delta_flat() {
-        // Agave + Jito -> Agave + JitoBAM is a variant change, not a client change: the children move,
-        // the client does not.
+    fn a_block_engine_switch_inside_one_client_leaves_the_parent_delta_flat() {
+        // Agave + Jito -> Agave + JitoBAM: same client, different block engine.
         let validators = validators(vec![Member::new(
             "switched",
             epochs_spanning_both_windows(500, 500, 500, JITO_BAM, Some(1)),
@@ -1101,7 +1044,7 @@ mod tests {
         assert_eq!(
             agave.children[0].stake_delta_7d,
             Some(Decimal::from(500)),
-            "the variant it moved to gained all of it"
+            "the block engine it moved to gained all of it"
         );
     }
 }

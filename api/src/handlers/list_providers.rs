@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 use store::dto::ValidatorGroupRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
-/// Groups by hosting organisation (`dc_aso`), not by physical data centre: the data resolves the
-/// operator and the city but never the building, and one operator routinely spans many cities.
+/// Groups by hosting organisation (`dc_aso`); the data never resolves the building.
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseProviders {
     providers: Vec<ValidatorGroupRecord>,

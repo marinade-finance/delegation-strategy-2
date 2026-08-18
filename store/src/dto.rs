@@ -568,7 +568,7 @@ pub struct ValidatorGroups {
     pub current_epoch: Option<u64>,
 }
 
-/// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the variants of it validators run.
+/// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the block engines it runs with.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorGroupNode {
     pub group: ValidatorGroupRecord,

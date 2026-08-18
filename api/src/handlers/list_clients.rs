@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use store::dto::ValidatorGroupNode;
 use warp::{http::StatusCode, reply::json, Reply};
 
-/// Clients as a two-level tree: one row per client.
+/// Clients as a two-level tree: one row per client, its block engines underneath.
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseClients {
     clients: Vec<ValidatorGroupNode>,
@@ -25,12 +25,12 @@ pub struct ResponseClients {
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
     /// Case-insensitive text search. A client is kept when its own name matches or one of its
-    /// variants does, and its child variants are then served whole.
+    /// block engines does, and its block engines are then served whole.
     query: Option<String>,
-    /// Orders the clients, and the variants inside each one by the same column.
+    /// Orders the clients, and the block engines inside each one by the same column.
     order_field: Option<GroupOrderField>,
     order_direction: Option<OrderDirection>,
-    /// Applies to the clients only; a client always arrives with all of its child variants.
+    /// Applies to the clients only; a client always arrives with all of its block engines.
     offset: Option<usize>,
     limit: Option<usize>,
 }
