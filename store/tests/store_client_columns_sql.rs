@@ -1,5 +1,6 @@
 mod common;
 
+use collect::slot_params::baseline_slots_per_year;
 use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use common::{migrated_client, skip_without_database};
@@ -111,6 +112,7 @@ async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFiel
         epoch_slot: 1,
         transaction_count: 1,
         created_at: "2026-07-31T00:00:00Z".into(),
+        slots_per_year: baseline_slots_per_year(),
         cluster_inflation: None,
         validators,
         rewards: None,

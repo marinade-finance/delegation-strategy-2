@@ -1341,6 +1341,7 @@ dependencies = [
  "solana-client",
  "solana-commitment-config",
  "solana-config-program",
+ "solana-feature-gate-interface",
  "solana-program",
  "solana-sdk",
  "solana-stake-interface",

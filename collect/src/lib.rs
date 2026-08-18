@@ -1,5 +1,6 @@
 pub mod common;
 pub mod marinade_service;
+pub mod slot_params;
 pub mod solana_service;
 pub mod validators;
 pub mod validators_block_rewards;

@@ -50,6 +50,7 @@ solana-stake-interface = { version = "1.2.1", features = ["serde"] }
 solana-account-decoder = "2.2.20"
 solana-config-program = "2.2.20"
 solana-commitment-config = "2.2.1"
+solana-feature-gate-interface = "2.2.2"
 anchor-lang = "^0.31.1"
 jito-tip-distribution = { git = "https://github.com/jito-foundation/jito-programs", rev = "8f55af0a9b31ac2192415b59ce2c47329ee255a2", features = ["no-entrypoint"] }
 jito-priority-fee-distribution = { git = "https://github.com/jito-foundation/jito-programs", rev = "8f55af0a9b31ac2192415b59ce2c47329ee255a2", features = ["no-entrypoint"] }
