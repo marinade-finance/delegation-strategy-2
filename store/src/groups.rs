@@ -402,10 +402,7 @@ fn aggregate_keyed(
     }
 }
 
-/// Clients as a two-level tree: one parent per client, its variants underneath.
-///
-/// Both levels are aggregated over the same validators, then joined by which client each variant is
-/// built from, so a parent is a genuine aggregate of the client rather than a sum of the child rows.
+/// Clients as a two-level tree: one parent per client, its child variants underneath.
 fn aggregate_client_tree(validators: &[&ValidatorRecord], epochs: &Epochs) -> ValidatorGroupTree {
     let lineages = aggregate_keyed(validators, GroupKind::ClientLineage, epochs);
     let variants = aggregate_keyed(validators, GroupKind::ClientLabel, epochs);

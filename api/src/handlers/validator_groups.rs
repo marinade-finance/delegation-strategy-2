@@ -171,17 +171,13 @@ pub struct TreePage {
     pub current_epoch: Option<u64>,
 }
 
-/// A client survives the search when its own name matches or one of its variants does — typing `jito`
-/// has to reach `Agave + Jito`, which lives under `Agave`. Its variants are then served whole: the
-/// point of the row is what the client is made of.
+/// A client survives the search when its own name matches or one of its child variants does.
 fn matches_query(node: &ValidatorGroupNode, query: &str) -> bool {
     let matches = |key: &str| key.to_lowercase().contains(query);
 
     matches(&node.group.key) || node.children.iter().any(|child| matches(&child.key))
 }
 
-/// Filter, count, sort, page the clients — and sort every surviving client's variants by the same
-/// column, so one click reorders the whole table rather than only its top level.
 pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage {
     let ValidatorGroupTree {
         nodes,
