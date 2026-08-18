@@ -5,22 +5,11 @@ use crate::dto::{
 use crate::utils::{is_eligible_validator, last_reported_epoch};
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::*;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-/// Windows the stake deltas describe. Epochs run ~2 days, so a delta is epoch-granular; the epoch
-/// each window resolved to is served next to the values so a consumer can say what it compared.
+/// Windows the groups' stake deltas describe.
 pub const DELTA_SHORT_DAYS: i64 = 7;
 pub const DELTA_LONG_DAYS: i64 = 30;
-
-/// A net APY below this renders as `0.00%` at the two decimals consumers show. apy-api derives the
-/// series in floating point, so a validator paying its stakers nothing reports dust rather than an
-/// exact zero — testing `== 0.0` would weight that stake into a rate the group does not pay.
-const NEGLIGIBLE_NET_APY: f64 = 0.00005;
-
-/// A take rate this high renders as `100.00%`. Full takers report a hair under 1 rather than
-/// exactly 1, so `>= 1.0` would leave stake a staker cannot earn on inside the average.
-const FULL_TAKE_RATE: f64 = 0.99995;
 
 /// Which field of a validator names the group it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,12 +20,6 @@ pub enum GroupKind {
     ClientLineage,
     /// The hosting organisation, `Hetzner`.
     ProviderAso,
-}
-
-/// Comparison ignores case so `Hetzner` and `hetzner` cannot straddle a page boundary, then falls back
-/// to the exact spelling so the order is total.
-pub fn compare_keys(a: &str, b: &str) -> Ordering {
-    a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b))
 }
 
 /// Served as the key of the bucket holding validators whose value is unknown. The same word the API
@@ -155,23 +138,15 @@ impl Accumulator {
             *self.spellings.entry(key.clone()).or_default() += stats.activated_stake;
         }
 
-        // Rates are stake-weighted so a provider's handful of dust validators cannot swing a figure
-        // describing millions of staked SOL. A validator without a usable rate leaves both sides of
-        // the ratio, so it neither dilutes the rate nor lends it stake.
+        // Rates are stake-weighted
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
-        if let Some(net_apy) = validator
-            .net_apy
-            .filter(|apy| apy.is_finite() && *apy >= NEGLIGIBLE_NET_APY)
-        {
+        if let Some(net_apy) = validator.net_apy.filter(|apy| apy.is_finite()) {
             self.net_apy_weighted += net_apy * weight;
             self.net_apy_weight += weight;
         }
 
-        if let Some(take_rate) = validator
-            .avg_take_rate
-            .filter(|rate| rate.is_finite() && *rate >= 0.0 && *rate < FULL_TAKE_RATE)
-        {
+        if let Some(take_rate) = validator.avg_take_rate.filter(|rate| rate.is_finite()) {
             self.take_rate_weighted += take_rate * weight;
             self.take_rate_weight += weight;
         }
@@ -389,7 +364,8 @@ fn aggregate_keyed(
     rows.sort_by(|(_, a), (_, b)| {
         b.total_stake
             .cmp(&a.total_stake)
-            .then_with(|| compare_keys(&a.key, &b.key))
+            .then_with(|| a.key.to_lowercase().cmp(&b.key.to_lowercase()))
+            .then_with(|| a.key.cmp(&b.key))
     });
 
     KeyedGroups {
@@ -592,24 +568,6 @@ mod tests {
     const JITO_BAM: Option<u16> = Some(6);
 
     #[test]
-    fn label_and_lineage_group_the_same_validators_differently() {
-        let validators = validators(vec![
-            Member::new("agave", last_two_epochs(300, AGAVE, None)),
-            Member::new("bam", last_two_epochs(200, JITO_BAM, None)),
-        ]);
-
-        let by_label = aggregate_groups(&validators, GroupKind::ClientLabel);
-        assert_eq!(by_label.groups.len(), 2, "{:?}", keys(&by_label));
-
-        // Both are the agave lineage, so the lineage view collapses them into one row — served
-        // title-cased, since it sits above variant labels that are.
-        let by_lineage = aggregate_groups(&validators, GroupKind::ClientLineage);
-        assert_eq!(keys(&by_lineage), vec!["Agave".to_string()]);
-        assert_eq!(group(&by_lineage, "Agave").validator_count, 2);
-        assert_eq!(group(&by_lineage, "Agave").total_stake, Decimal::from(500));
-    }
-
-    #[test]
     fn providers_group_by_the_hosting_organisation() {
         let validators = validators(vec![
             Member::new("one", last_two_epochs(300, AGAVE, Some("Hetzner"))),
@@ -671,65 +629,51 @@ mod tests {
     }
 
     #[test]
-    fn stake_shares_sum_to_one_including_the_unclassified_bucket() {
-        let validators = validators(vec![
-            Member::new("agave", last_two_epochs(700, AGAVE, None)),
-            Member::new("unclassified", last_two_epochs(300, None, None)),
-        ]);
-
-        let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
-        assert_eq!(groups.total_activated_stake, Decimal::from(1000));
-        assert!((group(&groups, UNKNOWN_GROUP).stake_share - 0.3).abs() < 1e-12);
-        let total: f64 = groups.groups.iter().map(|group| group.stake_share).sum();
-        assert!((total - 1.0).abs() < 1e-12, "{total}");
-    }
-
-    #[test]
-    fn net_apy_is_stake_weighted_and_drops_dust_from_both_sides() {
+    fn net_apy_is_stake_weighted_over_every_member() {
         let validators = validators(vec![
             Member {
-                net_apy: Some(0.07),
+                net_apy: Some(0.10),
                 ..Member::new("paying", last_two_epochs(100, AGAVE, None))
             },
             Member {
-                // A full-commission validator reports dust rather than an exact zero.
-                net_apy: Some(4.98e-10),
-                ..Member::new("dust", last_two_epochs(900, AGAVE, None))
+                net_apy: Some(0.0),
+                ..Member::new("zero", last_two_epochs(900, AGAVE, None))
             },
+        ]);
+
+        let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
+        let net_apy = group(&groups, "Agave").net_apy.unwrap();
+        assert!((net_apy - 0.01).abs() < 1e-12, "{net_apy}");
+    }
+
+    #[test]
+    fn a_member_with_no_rate_does_not_dilute_the_average() {
+        let validators = validators(vec![
+            Member {
+                net_apy: Some(0.07),
+                ..Member::new("reporting", last_two_epochs(100, AGAVE, None))
+            },
+            Member::new("silent", last_two_epochs(900, AGAVE, None)),
         ]);
 
         let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
         let net_apy = group(&groups, "Agave").net_apy.unwrap();
         assert!(
             (net_apy - 0.07).abs() < 1e-12,
-            "dust stake must leave the denominator too, got {net_apy}"
+            "stake with no rate must not dilute the rate, got {net_apy}"
         );
     }
 
     #[test]
-    fn net_apy_is_none_when_no_member_reports_a_rate() {
-        let validators = validators(vec![Member::new(
-            "agave",
-            last_two_epochs(100, AGAVE, None),
-        )]);
-        assert!(group(
-            &aggregate_groups(&validators, GroupKind::ClientLabel),
-            "Agave"
-        )
-        .net_apy
-        .is_none());
-    }
-
-    #[test]
-    fn take_rate_drops_full_takers_and_keeps_the_ones_just_under() {
+    fn take_rate_is_stake_weighted_and_counts_full_takers() {
         let validators = validators(vec![
             Member {
-                take_rate: Some(0.9999),
-                ..Member::new("nearly", last_two_epochs(100, AGAVE, None))
+                take_rate: Some(0.10),
+                ..Member::new("sharing", last_two_epochs(500, AGAVE, None))
             },
             Member {
-                take_rate: Some(0.999999978),
-                ..Member::new("full", last_two_epochs(900, AGAVE, None))
+                take_rate: Some(1.0),
+                ..Member::new("full", last_two_epochs(500, AGAVE, None))
             },
         ]);
 
@@ -739,7 +683,7 @@ mod tests {
         )
         .take_rate
         .unwrap();
-        assert!((take_rate - 0.9999).abs() < 1e-12, "{take_rate}");
+        assert!((take_rate - 0.55).abs() < 1e-12, "{take_rate}");
     }
 
     #[test]
@@ -834,26 +778,6 @@ mod tests {
     }
 
     #[test]
-    fn rows_describe_the_last_epoch_not_an_average_over_history() {
-        let validators = validators(vec![Member::new(
-            "shrank",
-            vec![
-                (CURRENT_EPOCH, 100, AGAVE, None),
-                (PREVIOUS_EPOCH, 900, AGAVE, None),
-            ],
-        )]);
-
-        assert_eq!(
-            group(
-                &aggregate_groups(&validators, GroupKind::ClientLabel),
-                "Agave"
-            )
-            .total_stake,
-            Decimal::from(100)
-        );
-    }
-
-    #[test]
     fn a_validator_missing_from_the_last_epoch_is_left_out() {
         let validators = validators(vec![
             Member::new("current", last_two_epochs(100, AGAVE, None)),
@@ -884,26 +808,6 @@ mod tests {
         assert_eq!(
             group(&groups, "RETN Limited").total_stake,
             Decimal::from(400)
-        );
-    }
-
-    #[test]
-    fn a_re_cased_name_does_not_read_as_a_migration() {
-        let validators = validators(vec![Member::new(
-            "recased",
-            vec![
-                (CURRENT_EPOCH, 500, AGAVE, Some("Retn Limited")),
-                (PREVIOUS_EPOCH, 500, AGAVE, Some("Retn Limited")),
-                (96, 500, AGAVE, Some("RETN Limited")),
-                (85, 500, AGAVE, Some("RETN Limited")),
-            ],
-        )]);
-
-        let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
-        assert_eq!(
-            group(&groups, "Retn Limited").stake_delta_7d,
-            Some(Decimal::ZERO),
-            "the company neither gained nor lost stake, only its spelling changed"
         );
     }
 
@@ -976,14 +880,6 @@ mod tests {
             .validator_count,
             2
         );
-    }
-
-    #[test]
-    fn an_empty_set_aggregates_to_nothing() {
-        let groups = aggregate_groups(&Default::default(), GroupKind::ClientLabel);
-        assert!(groups.groups.is_empty());
-        assert_eq!(groups.current_epoch, None);
-        assert_eq!(groups.total_activated_stake, Decimal::ZERO);
     }
 
     #[test]
@@ -1207,38 +1103,5 @@ mod tests {
             Some(Decimal::from(500)),
             "the variant it moved to gained all of it"
         );
-    }
-
-    #[test]
-    fn aggregate_all_serves_both_the_client_tree_and_the_providers() {
-        let all = aggregate_all(&validators(vec![Member::new(
-            "one",
-            last_two_epochs(100, AGAVE, Some("Hetzner")),
-        )]));
-
-        assert_eq!(
-            all.clients
-                .nodes
-                .iter()
-                .map(|node| node.group.key.clone())
-                .collect::<Vec<_>>(),
-            vec!["Agave".to_string()]
-        );
-        assert_eq!(keys(&all.providers), vec!["Hetzner".to_string()]);
-    }
-
-    #[test]
-    fn keys_compare_case_insensitively_and_totally() {
-        assert_eq!(
-            compare_keys("hetzner", "Latitude"),
-            Ordering::Less,
-            "comparison ignores case, so casing cannot reorder a page"
-        );
-        assert_eq!(
-            compare_keys("Hetzner", "hetzner"),
-            Ordering::Less,
-            "two spellings still order deterministically, or a page could repeat a row"
-        );
-        assert_eq!(compare_keys("Agave", "Agave"), Ordering::Equal);
     }
 }

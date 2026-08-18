@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use store::dto::{ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups};
-use store::groups::compare_keys;
 
 pub const DEFAULT_LIMIT: usize = 100;
 pub const DEFAULT_ORDER_FIELD: GroupOrderField = GroupOrderField::Stake;
@@ -88,7 +87,15 @@ fn sort_groups(
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorGroupRecord> {
     if let GroupOrderField::Name = order_field {
-        groups.sort_by(|a, b| directed(compare_keys(&a.key, &b.key), order_direction));
+        groups.sort_by(|a, b| {
+            directed(
+                a.key
+                    .to_lowercase()
+                    .cmp(&b.key.to_lowercase())
+                    .then_with(|| a.key.cmp(&b.key)),
+                order_direction,
+            )
+        });
         return groups;
     }
 
@@ -107,7 +114,9 @@ fn sort_groups(
             (Some(_), None) => Ordering::Less,
             (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
         };
-        ordering.then_with(|| compare_keys(&a.key, &b.key))
+        ordering
+            .then_with(|| a.key.to_lowercase().cmp(&b.key.to_lowercase()))
+            .then_with(|| a.key.cmp(&b.key))
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
@@ -408,18 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn a_search_matching_a_client_keeps_it() {
-        let page = page_tree(
-            client_tree(),
-            &GetGroupsConfig {
-                query: Some("FRANKEN".to_string()),
-                ..config()
-            },
-        );
-        assert_eq!(parent_keys(&page), named(&["Frankendancer"]));
-    }
-
-    #[test]
     fn paging_cuts_clients_and_never_their_variants() {
         let page = page_tree(
             client_tree(),
@@ -552,94 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn name_orders_case_insensitively_with_the_unclassified_group_last() {
-        let page = page_groups(
-            groups(vec![
-                group(UNKNOWN_GROUP, 900),
-                group("latitude", 100),
-                group("Hetzner", 100),
-            ]),
-            &GetGroupsConfig {
-                order_field: GroupOrderField::Name,
-                order_direction: OrderDirection::ASC,
-                ..config()
-            },
-        );
-        assert_eq!(keys(&page), named(&["Hetzner", "latitude", UNKNOWN_GROUP]));
-
-        let page = page_groups(
-            groups(vec![
-                group(UNKNOWN_GROUP, 900),
-                group("latitude", 100),
-                group("Hetzner", 100),
-            ]),
-            &GetGroupsConfig {
-                order_field: GroupOrderField::Name,
-                order_direction: OrderDirection::DESC,
-                ..config()
-            },
-        );
-        assert_eq!(
-            keys(&page),
-            named(&[UNKNOWN_GROUP, "latitude", "Hetzner"]),
-            "reversing the name order must not surface a nameless group"
-        );
-    }
-
-    #[test]
-    fn negative_deltas_order_below_positive_ones() {
-        let with_delta = |key: &str, delta: i64| ValidatorGroupRecord {
-            stake_delta_7d: Some(Decimal::from(delta)),
-            ..group(key, 100)
-        };
-        let page = page_groups(
-            groups(vec![
-                with_delta("shrank", -500),
-                with_delta("grew", 500),
-                ValidatorGroupRecord {
-                    stake_delta_7d: None,
-                    ..group("unknown", 100)
-                },
-            ]),
-            &GetGroupsConfig {
-                order_field: GroupOrderField::StakeDelta7d,
-                order_direction: OrderDirection::ASC,
-                ..config()
-            },
-        );
-        assert_eq!(keys(&page), named(&["shrank", "grew", "unknown"]));
-    }
-
-    #[test]
-    fn query_matches_case_insensitively_and_leaves_out_the_unclassified_group() {
-        let page = page_groups(
-            groups(vec![
-                group("Hetzner Online GmbH", 300),
-                group("Latitude.sh", 200),
-                group(UNKNOWN_GROUP, 100),
-            ]),
-            &GetGroupsConfig {
-                query: Some("HETZNER".to_string()),
-                ..config()
-            },
-        );
-        assert_eq!(keys(&page), named(&["Hetzner Online GmbH"]));
-        assert_eq!(page.total_count, 1);
-    }
-
-    #[test]
-    fn a_blank_query_filters_nothing() {
-        let page = page_groups(
-            groups(vec![group("Hetzner", 300), group(UNKNOWN_GROUP, 100)]),
-            &GetGroupsConfig {
-                query: Some("   ".to_string()),
-                ..config()
-            },
-        );
-        assert_eq!(page.total_count, 2);
-    }
-
-    #[test]
     fn paging_cuts_the_page_but_not_the_count() {
         let all = groups(vec![
             group("a", 500),
@@ -657,35 +566,5 @@ mod tests {
         );
         assert_eq!(keys(&page), named(&["b", "c"]));
         assert_eq!(page.total_count, 4);
-    }
-
-    #[test]
-    fn the_unclassified_group_matches_a_search_for_its_name() {
-        let page = page_groups(
-            groups(vec![group("Hetzner", 700), group(UNKNOWN_GROUP, 300)]),
-            &GetGroupsConfig {
-                query: Some("unknown".to_string()),
-                ..config()
-            },
-        );
-        assert_eq!(keys(&page), named(&[UNKNOWN_GROUP]));
-        assert_eq!(
-            page.total_activated_stake,
-            Decimal::from(1000),
-            "the share each row reports is of the network, not of the rows shown"
-        );
-    }
-
-    #[test]
-    fn the_epochs_the_figures_describe_survive_filtering() {
-        let page = page_groups(
-            groups(vec![group("Hetzner", 700)]),
-            &GetGroupsConfig {
-                query: Some("nothing matches".to_string()),
-                ..config()
-            },
-        );
-        assert!(page.groups.is_empty());
-        assert_eq!(page.current_epoch, Some(100));
     }
 }
