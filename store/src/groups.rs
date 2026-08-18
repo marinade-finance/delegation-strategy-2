@@ -343,19 +343,21 @@ fn aggregate_keyed(
 fn aggregate_client_tree(validators: &[&ValidatorRecord], epochs: &Epochs) -> ValidatorGroupTree {
     let clients = aggregate_keyed(validators, GroupKind::ClientLineage, epochs);
     let block_engines = aggregate_keyed(validators, GroupKind::ClientLabel, epochs);
-    let mut engines_by_client = block_engines_by_client(validators, epochs.current);
+    let engines_by_client = block_engines_by_client(validators, epochs.current);
 
     let nodes = clients
         .rows
         .into_iter()
         .map(|(folded_client, client)| {
-            let engines = engines_by_client.remove(&folded_client).unwrap_or_default();
+            let engines = engines_by_client.get(&folded_client);
 
             ValidatorGroupNode {
                 children: block_engines
                     .rows
                     .iter()
-                    .filter(|(folded_engine, _)| engines.contains(folded_engine))
+                    .filter(|(folded_engine, _)| {
+                        engines.is_some_and(|engines| engines.contains(folded_engine))
+                    })
                     .map(|(_, engine)| engine.clone())
                     .collect(),
                 group: client,
