@@ -54,6 +54,15 @@ pub struct Params {
     #[structopt(long = "blacklist-path")]
     blacklist_path: String,
 
+    // The blacklist's source of truth is ds-sam-pipeline; fetch it into
+    // blacklist-path at startup and on an interval instead of committing a copy.
+    #[structopt(
+        long = "blacklist-url",
+        env = "BLACKLIST_URL",
+        default_value = "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/master/blacklist.csv"
+    )]
+    blacklist_url: String,
+
     #[structopt(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
@@ -79,6 +88,25 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     });
+
+    // Blacklist lives in ds-sam-pipeline; pull it to the local cache path before
+    // serving, then refresh hourly. Fail loud if the first fetch fails — scoring
+    // must never run against a missing blacklist (that would blacklist nobody).
+    fetch_blacklist(&params.blacklist_url, &params.blacklist_path)
+        .await
+        .map_err(|err| anyhow::anyhow!("Initial blacklist fetch failed: {err}"))?;
+    {
+        let url = params.blacklist_url.clone();
+        let path = params.blacklist_path.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                if let Err(err) = fetch_blacklist(&url, &path).await {
+                    error!("Blacklist refresh failed (keeping previous copy): {err}");
+                }
+            }
+        });
+    }
 
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
@@ -324,6 +352,21 @@ async fn main() -> anyhow::Result<()> {
 
     warp::serve(routes).run(([0, 0, 0, 0], params.port)).await;
 
+    Ok(())
+}
+
+// Fetch the blacklist CSV and write it atomically to `path` (temp + rename), so a
+// concurrent reader never sees a half file and a failed fetch leaves the last
+// good copy in place.
+async fn fetch_blacklist(url: &str, path: &str) -> anyhow::Result<()> {
+    let body = reqwest::get(url).await?.error_for_status()?.text().await?;
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, body.as_bytes())?;
+    std::fs::rename(&tmp, path)?;
+    info!(
+        "Fetched blacklist from {url} -> {path} ({} bytes)",
+        body.len()
+    );
     Ok(())
 }
 

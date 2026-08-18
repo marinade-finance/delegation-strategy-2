@@ -7,3 +7,9 @@ target
 # JS stage lint
 node_modules/
 pnpm-lock.yaml
+
+# Local, ephemeral working dirs
+.diary/
+.ship/
+specs/
+blacklist.cache.csv

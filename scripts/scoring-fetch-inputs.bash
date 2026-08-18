@@ -35,7 +35,7 @@ curl -sfLS "https://validators-api.marinade.finance/validators/flat?last_epoch=$
 
 curl -sfLS "https://validators-api.marinade.finance/unstake-hints?epoch=$(( current_epoch ))" | jq > "$file_unstake_hints"
 
-curl -sfLS "https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/blacklist.csv" > "$file_blacklist"
+curl -sfLS "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/master/blacklist.csv" > "$file_blacklist"
 
 echo "vote_account" > "$file_validator_bonds" && curl -sfLS "https://validator-bonds-api.marinade.finance/bonds" | jq -r '.bonds[] | [.vote_account] | @csv' | tr -d '"' >> "$file_validator_bonds"
 
