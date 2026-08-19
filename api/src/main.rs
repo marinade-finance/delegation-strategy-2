@@ -1,3 +1,6 @@
+// warp `.or()` chains nest one type layer per route; the route list exceeds the default 128.
+#![recursion_limit = "256"]
+
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
