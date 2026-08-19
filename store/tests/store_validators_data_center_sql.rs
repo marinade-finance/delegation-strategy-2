@@ -8,6 +8,7 @@ use tokio_postgres::Client;
 const EPOCH: u64 = 1000;
 const NEXT_EPOCH: u64 = 1001;
 const THIRD_EPOCH: u64 = 1002;
+const EPOCH_AT_CARRY_WINDOW_EDGE: u64 = 1010;
 const EPOCH_BEYOND_CARRY_WINDOW: u64 = 1011;
 const VOTE_ACCOUNT: &str = "voteDataCenter";
 const IDENTITY: &str = "identityDataCenter";
@@ -374,8 +375,7 @@ async fn store_validators_does_not_complete_a_partial_answer_across_the_epoch_bo
         .unwrap();
 }
 
-// store_validators is not transactional, so a crash between the insert and the carry — or any epoch
-// stored before the carry existed — leaves an epoch with no location that must not block the next one.
+// An epoch can still end with nothing to carry, and that gap must not block the next one.
 #[tokio::test]
 async fn store_validators_carries_the_data_center_over_an_epoch_that_has_none() {
     let schema = "ds_test_store_validators_data_center_over_a_gap";
@@ -428,6 +428,167 @@ async fn store_validators_carries_the_data_center_over_an_epoch_that_has_none() 
         stored_data_center(&client, THIRD_EPOCH).await,
         expected("Hetzner", "Germany", 24940, "Nuremberg"),
         "an epoch left without a location must be stepped over, not propagated forward"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// store_validators is not transactional, so an epoch whose first store died between the insert and
+// the carry — or was written before the carry existed — must be repaired by a later run, since the
+// UPDATE branch preserves that emptiness for the rest of the epoch.
+#[tokio::test]
+async fn store_validators_repairs_an_epoch_left_without_a_data_center() {
+    let schema = "ds_test_store_validators_data_center_repair";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-repair-seed",
+        &snapshot(
+            EPOCH,
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+    store_snapshot(
+        &mut client,
+        "dc-repair-first",
+        &snapshot(NEXT_EPOCH, Some("A"), None),
+    )
+    .await;
+
+    client
+        .execute(
+            "UPDATE validators SET dc_coordinates_lat = NULL, dc_coordinates_lon = NULL,
+                dc_continent = NULL, dc_country_iso = NULL, dc_country = NULL, dc_city = NULL,
+                dc_asn = NULL, dc_aso = NULL
+             WHERE vote_account = $1 AND epoch = $2",
+            &[&VOTE_ACCOUNT, &Decimal::from(NEXT_EPOCH)],
+        )
+        .await
+        .unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-repair-second",
+        &snapshot(NEXT_EPOCH, Some("A"), None),
+    )
+    .await;
+
+    assert_eq!(
+        stored_data_center(&client, NEXT_EPOCH).await,
+        expected("Hetzner", "Germany", 24940, "Nuremberg"),
+        "a later run in the same epoch must fill a row the first store left empty"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// The repair reaches every unresolved account of the epoch, so only the emptiness of the target row
+// separates a gap worth filling from a location the UPDATE branch just preserved.
+#[tokio::test]
+async fn store_validators_does_not_repair_over_a_data_center_the_epoch_already_holds() {
+    let schema = "ds_test_store_validators_data_center_repair_guard";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-guard-seed",
+        &snapshot(
+            EPOCH,
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+    store_snapshot(
+        &mut client,
+        "dc-guard-moved",
+        &snapshot(
+            NEXT_EPOCH,
+            Some("A"),
+            Some(resolved_data_center("OVH", "France", 16276, "Roubaix")),
+        ),
+    )
+    .await;
+    store_snapshot(
+        &mut client,
+        "dc-guard-unresolved",
+        &snapshot(NEXT_EPOCH, Some("A"), None),
+    )
+    .await;
+
+    assert_eq!(
+        stored_data_center(&client, NEXT_EPOCH).await,
+        expected("OVH", "France", 16276, "Roubaix"),
+        "the epoch's own location must survive the repair, not fall back to the previous epoch"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// The bound is inclusive, so the oldest epoch it admits is the one an off-by-one would drop first.
+#[tokio::test]
+async fn store_validators_carries_a_data_center_at_the_edge_of_the_carry_window() {
+    let schema = "ds_test_store_validators_data_center_carry_window_edge";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-edge-seed",
+        &snapshot(
+            EPOCH,
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+
+    store_snapshot(
+        &mut client,
+        "dc-edge-far",
+        &snapshot(EPOCH_AT_CARRY_WINDOW_EDGE, Some("A"), None),
+    )
+    .await;
+
+    assert_eq!(
+        stored_data_center(&client, EPOCH_AT_CARRY_WINDOW_EDGE).await,
+        expected("Hetzner", "Germany", 24940, "Nuremberg"),
+        "a location exactly at the window edge must still carry"
     );
 
     client

@@ -41,6 +41,7 @@ pub async fn store_validators(
         .collect();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let mut updated_vote_accounts: HashSet<_> = Default::default();
+    let mut unresolved_vote_accounts: Vec<String> = Default::default();
 
     info!("Loaded the snapshot");
 
@@ -222,6 +223,9 @@ pub async fn store_validators(
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
+                if !v.dc_resolved {
+                    unresolved_vote_accounts.push(vote_account.to_string());
+                }
             }
         }
         query.execute(psql_client).await?;
@@ -236,7 +240,6 @@ pub async fn store_validators(
         .filter(|(vote_account, _validator)| !updated_vote_accounts.contains(vote_account))
         .collect();
     let mut insertions = 0;
-    let mut unresolved_insertions: Vec<String> = Default::default();
 
     for chunk in validators.chunks(DEFAULT_CHUNK_SIZE) {
         let mut query = InsertQueryCombiner::new(
@@ -342,21 +345,22 @@ pub async fn store_validators(
             ];
             query.add(&mut params);
             if !v.dc_resolved {
-                unresolved_insertions.push(vote_account.clone());
+                unresolved_vote_accounts.push(vote_account.clone());
             }
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
         info!("Stored {insertions} new validator records");
     }
 
-    if !unresolved_insertions.is_empty() {
-        carry_previous_data_centers(psql_client, &snapshot_epoch, &unresolved_insertions).await?;
+    if !unresolved_vote_accounts.is_empty() {
+        carry_previous_data_centers(psql_client, &snapshot_epoch, &unresolved_vote_accounts)
+            .await?;
     }
 
     Ok(())
 }
 
-// The INSERT branch has no row for the epoch to preserve, so without this an unresolved lookup on the epoch's first store drops a location the previous epoch knew, and every later unresolved run keeps that gap; matching node_ip is what stops a node that moved from inheriting the old address's data center.
+// Without this an unresolved lookup drops a location the previous epoch knew: the INSERT branch has no row for the epoch to preserve, and the UPDATE branch preserves whatever an interrupted earlier run left, so the gap would last the whole epoch; matching node_ip is what stops a node that moved from inheriting the old address's data center.
 async fn carry_previous_data_centers(
     psql_client: &Client,
     epoch: &Decimal,
@@ -397,6 +401,8 @@ async fn carry_previous_data_centers(
         WHERE validators.vote_account = previous.vote_account
             AND validators.epoch = $1
             AND validators.node_ip IS NOT DISTINCT FROM previous.node_ip
+            -- An unresolved UPDATE reaches here with whatever the epoch already holds, so restricting the carry to rows that hold nothing is what keeps it from undoing the preserve.
+            AND num_nonnulls(validators.dc_coordinates_lat, validators.dc_coordinates_lon, validators.dc_continent, validators.dc_country_iso, validators.dc_country, validators.dc_city, validators.dc_asn, validators.dc_aso) = 0
     ",
             &[epoch, &vote_accounts, &carry_window],
         )

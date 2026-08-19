@@ -49,8 +49,11 @@ ignore = [
   # patches ">= 0.4.16" and nothing in the 0.3 line: 0.4.x is updated to 0.4.16
   # here, but h2 0.3.26 stays, reached through hyper 0.14 from warp 0.3 (the API
   # server, the one side that actually accepts frames) and from reqwest 0.11 /
-  # solana-client 2.2. Getting off it means a hyper 1.x server for warp and
-  # reqwest 0.11 -> 0.12, which waits on the Solana client crates.
+  # solana-client 2.2. The two ends clear on different schedules. Clearing the
+  # client end waits on the Solana crates, which pin reqwest 0.11 themselves, so
+  # h2 0.3.26 stays in the tree until they move. Closing the exposed listener
+  # waits on nobody: warp 0.3 -> hyper 0.14 is our own pick, and moving the API
+  # to a hyper 1.x server is repo-local work.
   "RUSTSEC-2026-0258",
   # Unmaintained crates pinned deep in the Solana validator stack
   # (solana-runtime / solana-ledger / solana-storage-bigtable), reached via
