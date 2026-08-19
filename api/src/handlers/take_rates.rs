@@ -63,14 +63,11 @@ pub async fn handler(
                             .cloned()
                             .collect();
                     } else {
-                        let max_epoch = take_rates
-                            .iter()
-                            .max_by(|x, y| x.epoch.cmp(&y.epoch))
-                            .unwrap()
-                            .epoch;
+                        let max_epoch = take_rates.iter().map(|v| v.epoch).max().unwrap_or(0);
+                        let from_epoch = max_epoch.saturating_sub(DEFAULT_EPOCHS);
                         take_rates = take_rates
                             .iter()
-                            .filter(|v| v.epoch > max_epoch - DEFAULT_EPOCHS)
+                            .filter(|v| v.epoch > from_epoch)
                             .cloned()
                             .collect();
                     }
