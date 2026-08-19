@@ -91,7 +91,7 @@ struct Accumulator {
     net_apy_weight: f64,
     take_rate_weighted: f64,
     take_rate_weight: f64,
-    delegator_count: Option<u64>,
+    delegation_relationship_count: Option<u64>,
 }
 
 impl Accumulator {
@@ -131,9 +131,11 @@ impl Accumulator {
             self.take_rate_weight += weight;
         }
 
+        // Each member's own distinct count, so an authority delegating to several members of the
+        // group lands in the sum once per validator.
         if let Some(unique_delegators) = validator.unique_delegators {
-            self.delegator_count =
-                Some(self.delegator_count.unwrap_or_default() + unique_delegators);
+            self.delegation_relationship_count =
+                Some(self.delegation_relationship_count.unwrap_or_default() + unique_delegators);
         }
     }
 
@@ -165,7 +167,7 @@ impl Accumulator {
             stake_delta_30d: delta(stake_long),
             net_apy: weighted(self.net_apy_weighted, self.net_apy_weight),
             take_rate: weighted(self.take_rate_weighted, self.take_rate_weight),
-            delegator_count: self.delegator_count,
+            delegation_relationship_count: self.delegation_relationship_count,
         }
     }
 }
@@ -658,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn delegators_sum_and_stay_none_when_nobody_reports() {
+    fn delegation_relationships_sum_and_stay_none_when_nobody_reports() {
         let counted = validators(vec![
             Member {
                 unique_delegators: Some(12),
@@ -667,7 +669,8 @@ mod tests {
             Member::new("two", last_two_epochs(100, AGAVE, None)),
         ]);
         assert_eq!(
-            group(&aggregate_groups(&counted, GroupKind::ClientLabel), "Agave").delegator_count,
+            group(&aggregate_groups(&counted, GroupKind::ClientLabel), "Agave")
+                .delegation_relationship_count,
             Some(12)
         );
 
@@ -677,9 +680,9 @@ mod tests {
                 &aggregate_groups(&uncounted, GroupKind::ClientLabel),
                 "Agave"
             )
-            .delegator_count,
+            .delegation_relationship_count,
             None,
-            "no member reporting must not read as zero delegators"
+            "no member reporting must not read as zero"
         );
     }
 

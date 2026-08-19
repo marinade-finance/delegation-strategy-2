@@ -18,7 +18,7 @@ pub enum GroupOrderField {
     NetApy,
     TakeRate,
     Validators,
-    Delegators,
+    DelegationRelationships,
 }
 
 #[derive(Debug)]
@@ -56,8 +56,8 @@ fn field_extractor(order_field: GroupOrderField) -> FieldExtractor {
         GroupOrderField::Validators => {
             |group: &ValidatorGroupRecord| Some(Decimal::from(group.validator_count))
         }
-        GroupOrderField::Delegators => {
-            |group: &ValidatorGroupRecord| group.delegator_count.map(Decimal::from)
+        GroupOrderField::DelegationRelationships => {
+            |group: &ValidatorGroupRecord| group.delegation_relationship_count.map(Decimal::from)
         }
     }
 }
@@ -533,8 +533,8 @@ mod tests {
                 ..group("validators", 100)
             },
             ValidatorGroupRecord {
-                delegator_count: Some(900),
-                ..group("delegators", 100)
+                delegation_relationship_count: Some(900),
+                ..group("relationships", 100)
             },
         ];
 
@@ -545,7 +545,7 @@ mod tests {
             (GroupOrderField::NetApy, "netApy"),
             (GroupOrderField::TakeRate, "takeRate"),
             (GroupOrderField::Validators, "validators"),
-            (GroupOrderField::Delegators, "delegators"),
+            (GroupOrderField::DelegationRelationships, "relationships"),
         ] {
             let page = page_groups(
                 groups(rows.clone()),

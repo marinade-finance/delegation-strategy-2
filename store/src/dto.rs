@@ -560,7 +560,9 @@ pub struct ValidatorGroupRecord {
     pub stake_delta_30d: Option<Decimal>,
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
-    pub delegator_count: Option<u64>,
+    /// Stake authorities summed over the group's members, so one authority delegating to several of
+    /// them counts once per validator.
+    pub delegation_relationship_count: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
