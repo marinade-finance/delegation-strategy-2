@@ -381,7 +381,8 @@ async fn carry_previous_data_centers(
             dc_asn = previous.dc_asn,
             dc_aso = previous.dc_aso
         FROM (
-            SELECT DISTINCT ON (vote_account)
+            -- Keyed per address so a node returning to an earlier one reuses that address's own history: keyed by vote_account alone the newest row wins outright, and a different address there rejects the carry at the outer predicate while a matching older row goes unseen.
+            SELECT DISTINCT ON (vote_account, node_ip)
                 vote_account,
                 node_ip,
                 dc_coordinates_lat,
@@ -396,7 +397,7 @@ async fn carry_previous_data_centers(
             -- Bounded because an unbounded epoch < $1 sequentially scans the whole table for a boundary-wide failure, and a location last seen further back than this is no longer good evidence of where the node is now; skipping rows that carry no location at all is what lets the carry step over an epoch some earlier gap left empty instead of propagating that gap forward.
             WHERE epoch < $1 AND epoch >= $1 - $3 AND vote_account = ANY($2)
                 AND num_nonnulls(dc_coordinates_lat, dc_coordinates_lon, dc_continent, dc_country_iso, dc_country, dc_city, dc_asn, dc_aso) > 0
-            ORDER BY vote_account, epoch DESC
+            ORDER BY vote_account, node_ip, epoch DESC
         ) previous
         WHERE validators.vote_account = previous.vote_account
             AND validators.epoch = $1

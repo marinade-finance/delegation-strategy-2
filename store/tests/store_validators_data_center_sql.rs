@@ -318,6 +318,67 @@ async fn store_validators_does_not_carry_the_data_center_into_a_new_epoch_when_t
         .unwrap();
 }
 
+// A node that comes back to an address it held earlier must reuse that address's own history, which
+// the newest row alone cannot deliver once a different address holds it.
+#[tokio::test]
+async fn store_validators_carries_the_data_center_of_an_address_the_node_returns_to() {
+    let schema = "ds_test_store_validators_data_center_returning_ip";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store_snapshot(
+        &mut client,
+        "dc-return-seed",
+        &snapshot(
+            EPOCH,
+            Some("A"),
+            Some(resolved_data_center(
+                "Hetzner",
+                "Germany",
+                24940,
+                "Nuremberg",
+            )),
+        ),
+    )
+    .await;
+
+    store_snapshot(
+        &mut client,
+        "dc-return-moved",
+        &snapshot(
+            NEXT_EPOCH,
+            Some("B"),
+            Some(resolved_data_center("OVH", "France", 16276, "Roubaix")),
+        ),
+    )
+    .await;
+
+    store_snapshot(
+        &mut client,
+        "dc-return-back",
+        &snapshot(THIRD_EPOCH, Some("A"), None),
+    )
+    .await;
+
+    assert_eq!(
+        stored_data_center(&client, THIRD_EPOCH).await,
+        expected("Hetzner", "Germany", 24940, "Nuremberg"),
+        "the address the node returned to must carry the data center it was last resolved to"
+    );
+    assert_eq!(
+        stored_data_center(&client, NEXT_EPOCH).await,
+        expected("OVH", "France", 16276, "Roubaix"),
+        "the epoch the node spent on the other address must stay as it was"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
 // Same invariant as within an epoch: only an unresolved lookup may keep what came before, so a
 // resolved answer that is silent on the city must not have the previous epoch's city filled in.
 #[tokio::test]
