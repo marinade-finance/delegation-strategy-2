@@ -510,13 +510,11 @@ pub async fn load_take_rate_series(
         let take_rates = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> =
-            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
+        // Null until `store close-epoch` writes the `epochs` row, so the open epoch has no boundaries.
         take_rates.push(TakeRateRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
-            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
+            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
+            epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
             take_rate: row.get("take_rate"),
             created_at: row.get("created_at"),
         })

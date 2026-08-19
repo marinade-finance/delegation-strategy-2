@@ -55,7 +55,11 @@ pub async fn handler(
                     if let Some(query_from_date) = query_params.query_from_date {
                         take_rates = take_rates
                             .iter()
-                            .filter(|v| v.epoch_start_at > query_from_date)
+                            // Epochs with no boundaries yet can't be placed in the range.
+                            .filter(|v| {
+                                v.epoch_start_at
+                                    .is_some_and(|start_at| start_at > query_from_date)
+                            })
                             .cloned()
                             .collect();
                     } else {

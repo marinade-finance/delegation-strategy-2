@@ -432,9 +432,8 @@ pub struct CommissionRecord {
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct TakeRateRecord {
     pub epoch: u64,
-    pub epoch_start_at: DateTime<Utc>,
-    pub epoch_end_at: DateTime<Utc>,
-    // Realized validator take rate: validator_rewards / total_rewards for the epoch.
+    pub epoch_start_at: Option<DateTime<Utc>>,
+    pub epoch_end_at: Option<DateTime<Utc>>,
     pub take_rate: f64,
     pub created_at: DateTime<Utc>,
 }
