@@ -6,13 +6,13 @@ use bincode::deserialize;
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::ClientError,
     rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_config::{RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
     rpc_request::RpcRequest,
     rpc_response::RpcVoteAccountStatus,
@@ -152,21 +152,13 @@ pub fn resolve_client_id(client_id: Option<&str>) -> ClientId {
     }
 }
 
-// The frontend renders this single field, so it stays populated even for ids our registry predates.
-fn client_display_name(resolved: ClientId, raw: Option<&str>) -> Option<String> {
-    resolved.name().map(str::to_string).or_else(|| {
-        raw.map(str::trim)
-            .filter(|raw| !raw.is_empty())
-            .map(str::to_string)
-    })
-}
-
 impl ClientId {
+    // Registry-only: an id we cannot classify must not vary with the answering RPC's rendering.
     pub fn number(&self) -> Option<u16> {
-        match self {
-            ClientId::Registered(id) | ClientId::Unrecognized(Some(id)) => Some(*id),
-            _ => None,
-        }
+        let ClientId::Registered(id) = self else {
+            return None;
+        };
+        Some(*id)
     }
 
     pub fn name(&self) -> Option<&'static str> {
@@ -177,34 +169,42 @@ impl ClientId {
     }
 
     pub fn vendor(&self) -> Option<&'static str> {
-        self.groupings().map(|(vendor, _)| vendor)
+        self.groupings().map(|(vendor, _, _)| vendor)
     }
 
     pub fn lineage(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, lineage)| lineage)
+        self.groupings().map(|(_, lineage, _)| lineage)
     }
 
-    // Vendor is who ships the binary, lineage is which codebase it forks; the registry assigns a
-    // separate id per lineage variant of a vendor, so both are a function of the id alone.
-    fn groupings(&self) -> Option<(&'static str, &'static str)> {
+    pub fn label(&self) -> Option<&'static str> {
+        self.groupings().map(|(_, _, label)| label)
+    }
+
+    // Vendor is who ships the binary, lineage is which codebase it forks, label renders the pair for
+    // display; the registry assigns a separate id per lineage variant of a vendor, so all three are a
+    // function of the id alone.
+    fn groupings(&self) -> Option<(&'static str, &'static str, &'static str)> {
         let ClientId::Registered(id) = self else {
             return None;
         };
+        // Ids 2 and 5 carry no "+ Jito": the bundle tile is a config flag in the same binary, so gossip
+        // cannot tell a bundle-running node from a plain one, and neither claim is observable.
         Some(match id {
-            0 => ("solana-labs", "agave"),
-            1 => ("jito", "agave"),
-            2 => ("frankendancer", "frankendancer"),
-            3 => ("agave", "agave"),
-            4 => ("paladin", "agave"),
-            5 => ("firedancer", "firedancer"),
-            6 => ("bam", "agave"),
-            7 => ("sig", "sig"),
-            8 => ("rakurai", "agave"),
-            9 => ("harmonic", "firedancer"),
-            10 => ("harmonic", "agave"),
-            11 => ("harmonic", "frankendancer"),
-            12 => ("bam", "frankendancer"),
-            13 => ("raiku", "agave"),
+            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it labels bare like id 3.
+            0 => ("solana-labs", "agave", "Agave"),
+            1 => ("jito", "agave", "Agave + Jito"),
+            2 => ("frankendancer", "frankendancer", "Frankendancer"),
+            3 => ("agave", "agave", "Agave"),
+            4 => ("paladin", "agave", "Agave + Paladin"),
+            5 => ("firedancer", "firedancer", "Firedancer"),
+            6 => ("bam", "agave", "Agave + JitoBAM"),
+            7 => ("sig", "sig", "Sig"),
+            8 => ("rakurai", "agave", "Agave + Rakurai"),
+            9 => ("harmonic", "firedancer", "Firedancer + Harmonic"),
+            10 => ("harmonic", "agave", "Agave + Harmonic"),
+            11 => ("harmonic", "frankendancer", "Frankendancer + Harmonic"),
+            12 => ("bam", "frankendancer", "Frankendancer + JitoBAM"),
+            13 => ("raiku", "agave", "Agave + Raiku"),
             _ => return None,
         })
     }
@@ -234,9 +234,6 @@ pub struct NodeContact {
     pub gossip_port: Option<u16>,
     pub version: Option<String>,
     pub client_id: Option<u16>,
-    pub client_name: Option<String>,
-    pub client_vendor: Option<&'static str>,
-    pub client_lineage: Option<&'static str>,
     pub client_id_raw: Option<String>,
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
@@ -265,6 +262,9 @@ pub fn get_cluster_nodes_info(
     let raw: Vec<RpcContactInfoExt> = rpc_client.send(RpcRequest::GetClusterNodes, Value::Null)?;
 
     let mut out: HashMap<String, NodeContact> = HashMap::with_capacity(raw.len());
+    // Counted and reported once per run: a client the registry predates appears on every node
+    // running it, and a per-node warning at that volume is what got the previous one ignored.
+    let mut unclassified_renderings: HashMap<String, usize> = HashMap::new();
     for node in raw {
         let version = node.version.and_then(|v| {
             let version = v
@@ -295,16 +295,12 @@ pub fn get_cluster_nodes_info(
             .unwrap_or((None, None));
 
         let resolved = resolve_client_id(node.client_id.as_deref());
-        if let ClientId::Unrecognized(number) = resolved {
-            warn!(
-                "Node {} reports client id '{}' (number {:?}) missing from client-ids.csv",
-                node.pubkey,
-                node.client_id.as_deref().unwrap_or_default(),
-                number
-            );
+        if matches!(resolved, ClientId::Unrecognized(_)) {
+            let rendering = node.client_id.as_deref().unwrap_or_default().trim();
+            *unclassified_renderings
+                .entry(rendering.to_string())
+                .or_default() += 1;
         }
-
-        let client_name = client_display_name(resolved, node.client_id.as_deref());
 
         out.insert(
             node.pubkey.clone(),
@@ -313,9 +309,6 @@ pub fn get_cluster_nodes_info(
                 gossip_port,
                 version,
                 client_id: resolved.number(),
-                client_name,
-                client_vendor: resolved.vendor(),
-                client_lineage: resolved.lineage(),
                 client_id_raw: node.client_id,
                 feature_set: node.feature_set,
                 shred_version: node.shred_version,
@@ -324,7 +317,30 @@ pub fn get_cluster_nodes_info(
             },
         );
     }
+
+    if !unclassified_renderings.is_empty() {
+        warn!(
+            "Client ids missing from client-ids.csv, so these nodes stay unclassified: {}",
+            unclassified_clients_summary(&unclassified_renderings)
+        );
+    }
+
     Ok(out)
+}
+
+// Ordered by node count, so whichever client is worth adding to client-ids.csv first comes first.
+fn unclassified_clients_summary(renderings: &HashMap<String, usize>) -> String {
+    let mut renderings: Vec<_> = renderings.iter().collect();
+    renderings.sort_by(|(left_name, left_count), (right_name, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    renderings
+        .into_iter()
+        .map(|(rendering, count)| format!("{rendering} on {count} node(s)"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn parse_socket_addr(s: &str) -> Option<(String, u16)> {
@@ -494,67 +510,6 @@ fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> 
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-pub fn get_apy(
-    rpc_client: &RpcClient,
-    vote_accounts: &RpcVoteAccountStatus,
-    credits: &HashMap<String, u64>,
-) -> anyhow::Result<HashMap<String, f64>> {
-    info!("Calculating APY");
-    let inflation = rpc_client.get_inflation_rate()?.total;
-    let inflation_taper = rpc_client.get_inflation_governor()?.taper;
-
-    let epochs_in_year = 160; // @todo fix
-
-    let activated_stake: HashMap<_, _> = vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.activated_stake))
-        .collect();
-
-    let commission: HashMap<_, _> = vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .map(|v| (v.vote_pubkey.clone(), v.commission))
-        .collect();
-
-    let total_activated_stake = activated_stake.values().sum::<u64>();
-
-    let points: HashMap<_, _> = activated_stake
-        .iter()
-        .filter_map(|(node, stake)| {
-            credits
-                .get(node)
-                .map(|credits| (node.clone(), *credits as u128 * *stake as u128))
-        })
-        .collect();
-
-    let total_points = points.values().sum::<u128>();
-
-    let mut total_rewards = 0.0;
-    for epoch in 1..epochs_in_year + 1 {
-        let tapered_inflation =
-            inflation * (1.0 - inflation_taper).powf(epoch as f64 / epochs_in_year as f64);
-        total_rewards += tapered_inflation / epochs_in_year as f64 * total_activated_stake as f64;
-    }
-
-    let mut apy = HashMap::new();
-    for (node, points) in points.iter() {
-        if let (Some(stake), Some(commission)) = (activated_stake.get(node), commission.get(node)) {
-            let node_staker_rewards = (1.0 - *commission as f64 / 100.0) * *points as f64
-                / total_points as f64
-                * total_rewards;
-            apy.insert(
-                node.clone(),
-                (*stake as f64 + node_staker_rewards) / *stake as f64 - 1.0,
-            );
-        }
-    }
-
-    Ok(apy)
-}
-
 // Relies on vote account layout and needs updating in case the authorized withdrawer position would change
 pub fn get_withdraw_authorities(
     rpc_client: &RpcClient,
@@ -581,6 +536,61 @@ pub fn get_withdraw_authorities(
     Ok(withdraw_authorities)
 }
 
+// solana-client 2.2 RpcInflationReward predates commission_bps and would drop it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcInflationRewardExt {
+    #[allow(dead_code)]
+    epoch: Epoch,
+    #[allow(dead_code)]
+    amount: u64,
+    commission: Option<u8>,
+    commission_bps: Option<u16>,
+}
+
+#[derive(Debug, Default)]
+struct CommissionStats {
+    from_commission: usize,
+    from_bps: usize,
+    lossy: usize,
+    disagree: usize,
+    unresolved: usize,
+    no_reward: usize,
+}
+
+// Agave projects commissionBps onto the legacy percent this way; rounding down instead would let a
+// validator above the 10% eligibility cap read as exactly at it.
+fn bps_to_percent(bps: u16) -> u8 {
+    bps.min(10_000).div_ceil(100) as u8
+}
+
+fn resolve_commission_percent(
+    commission: Option<u8>,
+    commission_bps: Option<u16>,
+    stats: &mut CommissionStats,
+) -> Option<u8> {
+    // Basis points win: they are the finer-grained source, and `commission` is only ever a
+    // projection of them once SIMD-0291 is active.
+    if let Some(bps) = commission_bps {
+        if commission.is_some_and(|commission| bps_to_percent(bps) != commission) {
+            stats.disagree += 1;
+        }
+        if bps % 100 != 0 {
+            stats.lossy += 1;
+        }
+        stats.from_bps += 1;
+        return Some(bps_to_percent(bps));
+    }
+
+    if let Some(commission) = commission {
+        stats.from_commission += 1;
+        return Some(commission);
+    }
+
+    stats.unresolved += 1;
+    None
+}
+
 pub fn get_commission_from_inflation_rewards(
     rpc_client: &RpcClient,
     vote_accounts: &RpcVoteAccountStatus,
@@ -593,19 +603,57 @@ pub fn get_commission_from_inflation_rewards(
         .map(|v| Pubkey::from_str(&v.vote_pubkey).unwrap())
         .collect();
     let mut result: HashMap<String, u8> = Default::default();
+    let mut stats = CommissionStats::default();
     for vote_addresses_chunk in vote_addresses.chunks(100) {
-        let rewards = rpc_client.get_inflation_reward(vote_addresses_chunk, epoch)?;
+        let addresses: Vec<String> = vote_addresses_chunk
+            .iter()
+            .map(|address| address.to_string())
+            .collect();
+        let rewards: Vec<Option<RpcInflationRewardExt>> = rpc_client.send(
+            RpcRequest::GetInflationReward,
+            json!([
+                addresses,
+                RpcEpochConfig {
+                    epoch,
+                    commitment: Some(rpc_client.commitment()),
+                    min_context_slot: None,
+                }
+            ]),
+        )?;
         result.extend(vote_addresses_chunk.iter().zip(rewards).filter_map(
             |(vote_address, reward)| {
-                if let Some(reward) = reward {
-                    if let Some(commission) = reward.commission {
-                        return Some((vote_address.to_string(), commission));
-                    }
-                }
-
-                None
+                let Some(reward) = reward else {
+                    stats.no_reward += 1;
+                    return None;
+                };
+                let commission = resolve_commission_percent(
+                    reward.commission,
+                    reward.commission_bps,
+                    &mut stats,
+                )?;
+                Some((vote_address.to_string(), commission))
             },
         ));
+    }
+
+    if stats.lossy > 0 || stats.disagree > 0 {
+        warn!(
+            "Commission from inflation rewards: {} rounded to a whole percent, {} disagreed between commission and commissionBps",
+            stats.lossy, stats.disagree
+        );
+    }
+    let queried = vote_addresses.len();
+    info!(
+        "Resolved commission for {} of {} validators: {} from commission, {} from commissionBps, {} without a reward, {} unresolved",
+        result.len(),
+        queried,
+        stats.from_commission,
+        stats.from_bps,
+        stats.no_reward,
+        stats.unresolved
+    );
+    if result.len() * 2 < queried {
+        warn!("Resolved commission for fewer than half of the {queried} validators queried");
     }
 
     Ok(result)
@@ -677,20 +725,22 @@ fn fetch_stake_accounts_on_page(
 
     let self_stakes = retry_blocking(
         || {
-            rpc_client.get_program_accounts_with_config(
-                &stake::program::ID,
-                RpcProgramAccountsConfig {
-                    filters: Some(filters.clone()),
-                    account_config: RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        commitment: Some(rpc_client.commitment()),
-                        data_slice: None,
-                        min_context_slot: None,
+            rpc_client
+                .get_program_accounts_with_config(
+                    &stake::program::ID,
+                    RpcProgramAccountsConfig {
+                        filters: Some(filters.clone()),
+                        account_config: RpcAccountInfoConfig {
+                            encoding: Some(UiAccountEncoding::Base64),
+                            commitment: Some(rpc_client.commitment()),
+                            data_slice: None,
+                            min_context_slot: None,
+                        },
+                        with_context: None,
+                        sort_results: None,
                     },
-                    with_context: None,
-                    sort_results: None,
-                },
-            )
+                )
+                .map_err(Box::new)
         },
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
@@ -790,6 +840,142 @@ mod tests {
     use super::*;
 
     #[test]
+    fn commission_falls_back_to_the_legacy_percent_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(5), None, &mut stats),
+            Some(5)
+        );
+        assert_eq!(stats.from_commission, 1);
+        assert_eq!(stats.from_bps, 0);
+    }
+
+    #[test]
+    fn commission_falls_back_to_bps_once_percent_is_nulled() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(300), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.from_bps, 1);
+        assert_eq!(stats.lossy, 0);
+    }
+
+    #[test]
+    fn commission_rounds_bps_up_to_a_whole_percent_and_counts_it_lossy() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(250), &mut stats),
+            Some(3)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(249), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.lossy, 2);
+    }
+
+    #[test]
+    fn commission_just_over_the_eligibility_cap_does_not_round_down_onto_it() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(1000), &mut stats),
+            Some(10)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(1001), &mut stats),
+            Some(11)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(1049), &mut stats),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn commission_clamps_bps_beyond_the_full_percent_range() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(None, Some(10_000), &mut stats),
+            Some(100)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(25_600), &mut stats),
+            Some(100)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(u16::MAX), &mut stats),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn commission_prefers_bps_and_flags_disagreement_with_the_legacy_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(700), &mut stats),
+            Some(7)
+        );
+        assert_eq!(stats.disagree, 1);
+        assert_eq!(stats.from_bps, 1);
+        assert_eq!(stats.from_commission, 0);
+
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(300), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.disagree, 1);
+    }
+
+    #[test]
+    fn commission_does_not_flag_a_fractional_bps_matching_its_projected_percent() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(3), Some(240), &mut stats),
+            Some(3)
+        );
+        assert_eq!(stats.disagree, 0);
+    }
+
+    #[test]
+    fn commission_treats_zero_as_resolved_not_missing() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(
+            resolve_commission_percent(Some(0), None, &mut stats),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_commission_percent(None, Some(0), &mut stats),
+            Some(0)
+        );
+        assert_eq!(stats.unresolved, 0);
+    }
+
+    #[test]
+    fn commission_is_unresolved_when_the_rpc_serves_neither_field() {
+        let mut stats = CommissionStats::default();
+        assert_eq!(resolve_commission_percent(None, None, &mut stats), None);
+        assert_eq!(stats.unresolved, 1);
+    }
+
+    #[test]
+    fn inflation_reward_deserializes_the_post_simd_0291_payload() {
+        let reward: RpcInflationRewardExt = serde_json::from_str(
+            r#"{"amount":591366523,"commission":null,"commissionBps":300,"effectiveSlot":434592000,"epoch":1005,"postBalance":10012207545}"#,
+        )
+        .unwrap();
+        assert_eq!(reward.commission, None);
+        assert_eq!(reward.commission_bps, Some(300));
+
+        let legacy: RpcInflationRewardExt = serde_json::from_str(
+            r#"{"amount":530714233,"commission":3,"effectiveSlot":432864000,"epoch":1001,"postBalance":7729378465}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.commission, Some(3));
+        assert_eq!(legacy.commission_bps, None);
+    }
+
+    #[test]
     fn plausible_node_versions() {
         assert!(is_plausible_node_version("4.1.0"));
         assert!(is_plausible_node_version("4.1.0-rc.1"));
@@ -847,31 +1033,85 @@ mod tests {
     }
 
     #[test]
-    fn display_name_never_drops_a_client_the_node_reported() {
-        let display = |raw| client_display_name(resolve_client_id(raw), raw);
-        assert_eq!(display(Some("Unknown(8)")), Some("Rakurai".to_string()));
-        assert_eq!(display(Some("AgaveBam")), Some("Agave Bam".to_string()));
-        assert_eq!(
-            display(Some("Unknown(86)")),
-            Some("Unknown(86)".to_string())
-        );
-        assert_eq!(
-            display(Some("brand-new/1.0")),
-            Some("brand-new/1.0".to_string())
-        );
-        assert_eq!(display(Some("   ")), None);
-        assert_eq!(display(None), None);
+    fn client_label_pairs_lineage_with_the_vendor_modification() {
+        let label = |raw| resolve_client_id(Some(raw)).label();
+        assert_eq!(label("Agave"), Some("Agave"));
+        assert_eq!(label("Solana Labs"), Some("Agave"));
+        assert_eq!(label("JitoLabs"), Some("Agave + Jito"));
+        assert_eq!(label("AgaveBam"), Some("Agave + JitoBAM"));
+        assert_eq!(label("AgavePaladin"), Some("Agave + Paladin"));
+        assert_eq!(label("Unknown(8)"), Some("Agave + Rakurai"));
+        assert_eq!(label("Unknown(10)"), Some("Agave + Harmonic"));
+        assert_eq!(label("Raiku"), Some("Agave + Raiku"));
+        assert_eq!(label("Frankendancer"), Some("Frankendancer"));
+        assert_eq!(label("Unknown(11)"), Some("Frankendancer + Harmonic"));
+        assert_eq!(label("Unknown(12)"), Some("Frankendancer + JitoBAM"));
+        assert_eq!(label("Firedancer"), Some("Firedancer"));
+        assert_eq!(label("Unknown(9)"), Some("Firedancer + Harmonic"));
+        assert_eq!(label("Sig"), Some("Sig"));
+        assert_eq!(label("Unknown(86)"), None);
+        assert_eq!(resolve_client_id(None).label(), None);
+    }
+
+    // The label repeats the lineage as display text, so a mapping edit that touches one and not the
+    // other fails here instead of serving a label that contradicts client_lineage.
+    #[test]
+    fn every_label_starts_with_its_own_lineage() {
+        for id in client_registry().names.keys() {
+            let client = ClientId::Registered(*id);
+            let (lineage, label) = (client.lineage().unwrap(), client.label().unwrap());
+            let mut expected = lineage.to_string();
+            expected[..1].make_ascii_uppercase();
+            assert!(
+                label.starts_with(&expected),
+                "client id {id} label {label} does not start with its lineage {lineage}"
+            );
+        }
     }
 
     #[test]
-    fn client_number_survives_an_unregistered_id() {
+    fn client_number_is_set_only_for_a_registered_id() {
         assert_eq!(resolve_client_id(Some("Unknown(8)")).number(), Some(8));
         assert_eq!(resolve_client_id(Some("Rakurai")).number(), Some(8));
-        assert_eq!(resolve_client_id(Some("Unknown(86)")).number(), Some(86));
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).number(), None);
         assert_eq!(resolve_client_id(Some("Unknown(86)")).name(), None);
         assert_eq!(resolve_client_id(Some("brand-new/1.0")).number(), None);
         assert_eq!(resolve_client_id(None).number(), None);
         assert_eq!(resolve_client_id(None).name(), None);
+    }
+
+    // A client the registry predates must store the same identity through either rendering, or the
+    // stored id flips with whichever RPC answered and store logs a client change that never happened.
+    // Id 86 is live on mainnet (Vexor), and the Foundation has not assigned it a registry entry.
+    #[test]
+    fn an_unregistered_client_stores_the_same_identity_whichever_form_the_rpc_renders() {
+        let stored = |raw| {
+            let resolved = resolve_client_id(Some(raw));
+            (resolved.number(), resolved.vendor(), resolved.lineage())
+        };
+        assert_eq!(stored("Unknown(86)"), (None, None, None));
+        assert_eq!(stored("Vexor"), stored("Unknown(86)"));
+
+        // A registered id stays fully classified through either rendering.
+        assert_eq!(
+            stored("Unknown(8)"),
+            (Some(8), Some("rakurai"), Some("agave"))
+        );
+        assert_eq!(stored("Rakurai"), stored("Unknown(8)"));
+    }
+
+    #[test]
+    fn unclassified_clients_are_summarised_by_node_count() {
+        let renderings = HashMap::from([
+            ("Raiku2".to_string(), 12),
+            ("Unknown(14)".to_string(), 37),
+            ("Vexor".to_string(), 12),
+        ]);
+        assert_eq!(
+            unclassified_clients_summary(&renderings),
+            "Unknown(14) on 37 node(s), Raiku2 on 12 node(s), Vexor on 12 node(s)"
+        );
+        assert_eq!(unclassified_clients_summary(&HashMap::new()), "");
     }
 
     #[test]
@@ -936,6 +1176,8 @@ mod tests {
         assert_eq!(ClientId::Registered(12).lineage(), Some("frankendancer"));
     }
 
+    // Only about what the rendering can be parsed into: the number is kept in the resolution so the
+    // two unclassified shapes stay distinguishable, but `number()` deliberately does not expose it.
     #[test]
     fn unregistered_number_keeps_the_number() {
         assert_eq!(

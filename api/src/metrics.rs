@@ -21,6 +21,16 @@ lazy_static! {
         "How many times /validators endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_CLIENTS: IntCounter = register_int_counter!(
+        "ds_request_count_clients",
+        "How many times /clients endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_PROVIDERS: IntCounter = register_int_counter!(
+        "ds_request_count_providers",
+        "How many times /providers endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN: IntCounter = register_int_counter!(
         "ds_request_count_validator_score_breakdown",
         "How many times /validators/score-breakdown endpoint was requested"
@@ -80,6 +90,13 @@ lazy_static! {
     pub static ref JOB_DURATION: IntGaugeVec =
         register_int_gauge_vec!("ds_job_duration", "Workflow jobs duration", &["workflow"])
             .unwrap();
+    // Readiness latches once warm, so a cache that stops refreshing is only visible here.
+    pub static ref CACHE_LAST_SUCCESS_SECONDS: IntGaugeVec = register_int_gauge_vec!(
+        "ds_cache_last_success_seconds",
+        "Unix timestamp of the last successful load of each cache",
+        &["cache"]
+    )
+    .unwrap();
 }
 
 fn collect_metrics() -> String {

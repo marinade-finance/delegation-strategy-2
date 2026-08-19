@@ -1,10 +1,12 @@
 use crate::dto::{
+    client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
     TakeRateRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord,
 };
+use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -18,16 +20,14 @@ use std::{
 };
 use tokio::join;
 use tokio::sync::Semaphore;
-use tokio_postgres::{types::ToSql, Client};
+use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 
-const SECONDS_IN_YEAR: f64 = 365.25 * 24f64 * 3600f64;
-const IDEAL_SLOT_DURATION_MS: u64 = 400;
-const SLOTS_IN_EPOCH: u64 = 432000;
-const SECONDS_IN_IDEAL_EPOCH: u64 = SLOTS_IN_EPOCH * IDEAL_SLOT_DURATION_MS / 1000;
-const IDEAL_EPOCHS_PER_YEAR: f64 = SECONDS_IN_YEAR / SECONDS_IN_IDEAL_EPOCH as f64;
+/// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
+const SECONDS_IN_YEAR: f64 = 31556925.9936;
+pub use collect::slot_params::SLOTS_IN_EPOCH;
 const SCORING_SCRAPER_WORKERS: usize = 10;
 /// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
 /// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
@@ -43,8 +43,10 @@ pub fn to_fixed(a: f64, decimals: i32) -> u64 {
     (a * 10f64.powi(decimals)).round() as u64
 }
 
-pub fn to_fixed_for_sort(a: f64) -> u64 {
-    to_fixed(a, 4)
+// Guarding the scaled value, not the input: the multiplication is what overflows, and the u64 cast then saturates to either end and reads as a genuine rank.
+pub fn to_fixed_for_sort(a: f64) -> Option<u64> {
+    let scaled = (a * 10f64.powi(4)).round();
+    (scaled >= 0.0 && scaled < u64::MAX as f64).then_some(scaled as u64)
 }
 
 impl<'a> InsertQueryCombiner<'a> {
@@ -73,6 +75,10 @@ impl<'a> InsertQueryCombiner<'a> {
     }
 
     pub async fn execute(&self, client: &mut Client) -> anyhow::Result<Option<u64>> {
+        self.execute_in(&*client).await
+    }
+
+    pub async fn execute_in(&self, client: &impl GenericClient) -> anyhow::Result<Option<u64>> {
         if self.insertions == 0 {
             return Ok(None);
         }
@@ -149,6 +155,7 @@ struct InflationApyCalculator {
     supply: u64,
     duration: u64,
     inflation: f64,
+    slots_per_year: f64,
     total_weighted_credits: u128,
 }
 impl InflationApyCalculator {
@@ -161,11 +168,14 @@ impl InflationApyCalculator {
         let staker_share = 1.0 - commission;
         let actual_epochs_per_year = SECONDS_IN_YEAR / self.duration as f64;
 
+        // Nominal, not measured: it converts annual issuance into what the protocol mints per epoch.
+        let nominal_epochs_per_year = self.slots_per_year / SLOTS_IN_EPOCH as f64;
+
         let cluster_rewards_per_year = self.supply as f64 * self.inflation;
-        let cluster_rewards_per_ideal_epoch = cluster_rewards_per_year / IDEAL_EPOCHS_PER_YEAR;
+        let cluster_rewards_per_nominal_epoch = cluster_rewards_per_year / nominal_epochs_per_year;
 
         let stake_fraction_per_epoch =
-            staker_share * cluster_rewards_per_ideal_epoch * credits as f64
+            staker_share * cluster_rewards_per_nominal_epoch * credits as f64
                 / self.total_weighted_credits as f64;
 
         let apr = stake_fraction_per_epoch * actual_epochs_per_year;
@@ -184,6 +194,7 @@ async fn get_apy_calculators(
                     (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER AS duration,
                     supply,
                     inflation,
+                    slots_per_year,
                     SUM(validators.credits * validators.activated_stake) total_weighted_credits
                 FROM
                 epochs
@@ -201,6 +212,7 @@ async fn get_apy_calculators(
                 supply: row.get::<_, Decimal>("supply").try_into()?,
                 duration: row.get::<_, i32>("duration").try_into()?,
                 inflation: row.get("inflation"),
+                slots_per_year: row.get("slots_per_year"),
                 total_weighted_credits: row
                     .get::<_, Decimal>("total_weighted_credits")
                     .try_into()?,
@@ -214,6 +226,10 @@ async fn get_apy_calculators(
 /// Window (in epochs) over which per-validator downtime incidents are collected for the
 /// `incidents` field on `/validators`.
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+
+/// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
+/// with no distribution account written, short enough that a long-departed validator reads as absent.
+const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
 /// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
@@ -315,7 +331,7 @@ pub async fn load_versions(
             "
             WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, version, client_id, client_name, client_vendor, client_lineage, client_id_raw, feature_set, shred_version, epoch, created_at
+                vote_account, version, client_id, client_id_raw, feature_set, shred_version, epoch, created_at
             FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
             &[&Decimal::from(epochs)],
         )
@@ -324,17 +340,23 @@ pub async fn load_versions(
     let mut records: HashMap<_, Vec<_>> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
+        let client_id_raw: Option<String> = row.get("client_id_raw");
+        let client_id = effective_client_id(
+            row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+            client_id_raw.as_deref(),
+        );
         let versions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
         versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             version: row.get("version"),
-            client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_name: row.get("client_name"),
-            client_vendor: row.get("client_vendor"),
-            client_lineage: row.get("client_lineage"),
-            client_id_raw: row.get("client_id_raw"),
+            client_id,
+            client_name: client_name(client_id),
+            client_label: client_label(client_id),
+            client_vendor: client_vendor(client_id),
+            client_lineage: client_lineage(client_id),
+            client_id_raw,
             feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
             shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
             created_at: row.get("created_at"),
@@ -587,9 +609,10 @@ pub fn update_validators_with_avgs(
     }
 }
 
+// Validators without a value stay unranked; ranking them as 0 would contradict the list sort.
 pub fn update_validators_ranks<T>(
     validators: &mut HashMap<String, ValidatorRecord>,
-    field_extractor: fn(&ValidatorEpochStats) -> T,
+    field_extractor: fn(&ValidatorEpochStats) -> Option<T>,
     rank_updater: fn(&mut ValidatorEpochStats, usize) -> (),
 ) where
     T: Ord,
@@ -597,10 +620,12 @@ pub fn update_validators_ranks<T>(
     let mut stats_by_epoch: HashMap<u64, Vec<(String, T)>> = Default::default();
     for (vote_account, record) in validators.iter() {
         for validator_epoch_stats in record.epoch_stats.iter() {
-            stats_by_epoch
-                .entry(validator_epoch_stats.epoch)
-                .or_default()
-                .push((vote_account.clone(), field_extractor(validator_epoch_stats)));
+            if let Some(value) = field_extractor(validator_epoch_stats) {
+                stats_by_epoch
+                    .entry(validator_epoch_stats.epoch)
+                    .or_default()
+                    .push((vote_account.clone(), value));
+            }
         }
     }
 
@@ -713,43 +738,182 @@ async fn scalar_u64(bq_client: &BqClient, query: String) -> anyhow::Result<Optio
     }
 }
 
-/// Per-validator scalar take rate over the last `TAKE_RATE_WINDOW_DAYS`, derived from the persisted
-/// per-epoch `take_rates` table as `SUM(validator_rewards) / SUM(total_rewards)` (ratio of sums,
-/// byte-for-byte the same value the previous BigQuery query produced). The per-epoch rows are
-/// populated by the `take-rates` collect/store pipeline, so this reads Postgres only — no BigQuery.
-pub async fn load_avg_take_rates(psql_client: &Client) -> anyhow::Result<HashMap<String, f64>> {
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-                WITH win AS (
-                    SELECT MIN(epoch) AS min_epoch FROM epochs
-                    WHERE end_at >= (SELECT MAX(end_at) FROM epochs)
-                        - INTERVAL '{TAKE_RATE_WINDOW_DAYS} days'
-                )
+/// Cluster-wide split of the window's rewards across the three components, as fractions of the
+/// total pot. Each counts both sides, so a validator choosing to share its block rewards moves
+/// lamports between the sides without moving the weight every validator's take rate is scaled by.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct RewardMixShares {
+    pub inflation: f64,
+    pub mev: f64,
+    pub block: f64,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct TakeRates {
+    pub measured: HashMap<String, f64>,
+    pub shares: Option<RewardMixShares>,
+}
+
+/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
+/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
+/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
+/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
+/// Also returns the cluster reward mix, which the same scan already has to compute.
+pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
+    let (config, _) = BqClientConfig::new_with_auth().await?;
+    let bq_client = BqClient::new(config).await?;
+
+    let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
+
+    let min_epoch = match scalar_u64(
+        &bq_client,
+        format!(
+            "SELECT CAST(MIN(epoch) AS STRING) FROM `{ds}.epochs` \
+             WHERE epoch_end_time >= TIMESTAMP_SUB( \
+                 (SELECT MAX(epoch_end_time) FROM `{ds}.epochs`), INTERVAL {TAKE_RATE_WINDOW_DAYS} DAY)"
+        ),
+    )
+    .await?
+    {
+        Some(min_epoch) => min_epoch,
+        None => return Ok(Default::default()),
+    };
+
+    let query = format!(
+        "SELECT
+            vote_account,
+            CAST(take_rate AS STRING) AS take_rate,
+            CAST(inflation_share AS STRING) AS inflation_share,
+            CAST(mev_share AS STRING) AS mev_share,
+            CAST(block_share AS STRING) AS block_share
+        FROM (
+            WITH stakers AS (
                 SELECT
-                    vote_account,
-                    (SUM(validator_rewards) / NULLIF(SUM(total_rewards), 0))::DOUBLE PRECISION
-                        AS take_rate
-                FROM take_rates
-                CROSS JOIN win
-                WHERE take_rates.epoch >= win.min_epoch
-                GROUP BY vote_account
-                "
+                    stakes.vote_account AS vote_account,
+                    stakes.epoch AS epoch,
+                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
+                    SUM(COALESCE(mev.amount, 0)) AS staker_mev,
+                    SUM(COALESCE(prio.amount, 0)) AS staker_blocks
+                FROM `{ds}.stakes` stakes
+                LEFT JOIN `{ds}.rewards_inflation` inflation
+                    ON stakes.stake_account = inflation.stake_account
+                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
+                LEFT JOIN `{ds}.rewards_mev` mev
+                    ON stakes.stake_account = mev.stake_account
+                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
+                -- rewards_validators_blocks is gross, so what Jito's PriorityFeeDistribution passed through has to come off the validator's keep rather than add to the pot.
+                LEFT JOIN `{ds}.rewards_jito_priority_fee` prio
+                    ON stakes.stake_account = prio.stake_account
+                    AND stakes.epoch = prio.epoch AND prio.epoch >= {min_epoch}
+                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
+                GROUP BY stakes.vote_account, stakes.epoch
             ),
-            &[],
+            per_validator AS (
+                SELECT
+                    stakers.vote_account AS vote_account,
+                    SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_total,
+                    SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_total,
+                    SUM(COALESCE(vb.amount, 0)) AS block_total,
+                    -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
+                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
+                        + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_total
+                FROM stakers
+                -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_inflation`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vi
+                    ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_mev`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vm
+                    ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
+                LEFT JOIN (
+                    SELECT vote_account, epoch, SUM(amount) AS amount
+                    FROM `{ds}.rewards_validators_blocks`
+                    WHERE epoch >= {min_epoch}
+                    GROUP BY vote_account, epoch
+                ) vb
+                    ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
+                GROUP BY stakers.vote_account
+            )
+            SELECT
+                vote_account,
+                SAFE_DIVIDE(validator_total, inflation_total + mev_total + block_total) AS take_rate,
+                -- Windowed over the already-grouped rows, so the cluster mix costs no extra scan.
+                SAFE_DIVIDE(SUM(inflation_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS inflation_share,
+                SAFE_DIVIDE(SUM(mev_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS mev_share,
+                SAFE_DIVIDE(SUM(block_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
+                    AS block_share
+            FROM per_validator
         )
+        WHERE take_rate IS NOT NULL"
+    );
+
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
         .await?;
 
-    let mut records: HashMap<String, f64> = Default::default();
-    for row in rows {
-        if let Some(take_rate) = row.get::<_, Option<f64>>("take_rate") {
-            let vote_account: String = row.get("vote_account");
-            records.insert(vote_account, take_rate);
-        }
+    let mut measured: HashMap<String, f64> = Default::default();
+    // Identical on every row by construction, so the last one read is the cluster mix.
+    let mut shares = None;
+    while let Some(row) = iter.next().await? {
+        let vote_account = row.column::<String>(0)?;
+        let take_rate_str = row.column::<String>(1)?;
+        measured.insert(vote_account, take_rate_str.parse()?);
+        shares = match (
+            row.column::<Option<String>>(2)?,
+            row.column::<Option<String>>(3)?,
+            row.column::<Option<String>>(4)?,
+        ) {
+            (Some(inflation), Some(mev), Some(block)) => Some(RewardMixShares {
+                inflation: inflation.parse()?,
+                mev: mev.parse()?,
+                block: block.parse()?,
+            }),
+            _ => shares,
+        };
     }
 
-    Ok(records)
+    Ok(TakeRates { measured, shares })
+}
+
+/// What the validator's own fee settings imply it keeps, weighted by the cluster reward mix.
+/// Renormalized over the components it actually earns: a validator not running Jito receives no MEV
+/// at all, so crediting it a 0% MEV commission would dilute the rate it takes on what it does earn.
+/// None when the inflation commission is unknown, which is the one component no validator can opt out of.
+pub fn expected_take_rate(
+    shares: RewardMixShares,
+    inflation_commission_pct: Option<i32>,
+    mev_commission_bps: Option<i32>,
+    priority_commission_bps: Option<i32>,
+) -> Option<f64> {
+    let mut weighted = (f64::from(inflation_commission_pct?) / 100.0) * shares.inflation;
+    let mut weight = shares.inflation;
+
+    if let Some(bps) = mev_commission_bps {
+        weighted += (f64::from(bps) / 10_000.0) * shares.mev;
+        weight += shares.mev;
+    }
+    // Block rewards are always earned, and absent a Jito PriorityFeeDistribution account none of them
+    // are shared: SIMD-0096 pays every priority fee to the block producer.
+    weighted += priority_commission_bps.map_or(1.0, |bps| f64::from(bps) / 10_000.0) * shares.block;
+    weight += shares.block;
+
+    (weight > 0.0).then_some(weighted / weight)
 }
 
 #[derive(serde::Deserialize)]
@@ -757,34 +921,91 @@ struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
 }
 
-// `base` is the validator-bonds API base URL; the verified path is appended here.
+#[derive(serde::Deserialize)]
+struct ProtectedValidatorsResponse {
+    protected_validators: Vec<String>,
+}
+
 pub async fn load_verified_validators(base: &str) -> anyhow::Result<HashSet<String>> {
-    let url = format!("{}/validators/verified", base.trim_end_matches('/'));
+    load_validator_flag(base, "verified", |resp: VerifiedValidatorsResponse| {
+        resp.verified_validators
+    })
+    .await
+}
+
+pub async fn load_protected_validators(base: &str) -> anyhow::Result<HashSet<String>> {
+    load_validator_flag(base, "protected", |resp: ProtectedValidatorsResponse| {
+        resp.protected_validators
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct LatestValidatorApyRecord {
+    apy: f64,
+}
+
+// `what` names the upstream in the status error; it is the only part of this that differs per caller.
+async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> anyhow::Result<T> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
         .build()?;
-    let resp = client.get(&url).send().await?;
+    let resp = client.get(url).send().await?;
     anyhow::ensure!(
         resp.status().is_success(),
-        "verified endpoint returned {}",
+        "{what} returned {}",
         resp.status()
     );
-    Ok(resp
-        .json::<VerifiedValidatorsResponse>()
-        .await?
-        .verified_validators
-        .into_iter()
-        .collect())
+    Ok(resp.json::<T>().await?)
+}
+
+// `base` is the apy-api base URL; the rolling window is fixed by that endpoint, so it is deliberately not a parameter here.
+pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String, f64>> {
+    let url = format!(
+        "{}/v1/rolling-apy/validator/latest/all",
+        base.trim_end_matches('/')
+    );
+    Ok(fetch_json::<HashMap<String, LatestValidatorApyRecord>>(
+        &url,
+        "latest validator net APY endpoint",
+    )
+    .await?
+    .into_iter()
+    .map(|(vote_account, record)| (vote_account, record.apy))
+    .collect())
+}
+
+// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
+async fn load_validator_flag<T, F>(
+    base: &str,
+    flag: &str,
+    vote_accounts: F,
+) -> anyhow::Result<HashSet<String>>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce(T) -> Vec<String>,
+{
+    let url = format!("{}/v1/validators/{flag}", base.trim_end_matches('/'));
+    let resp = fetch_json::<T>(&url, &format!("{flag} endpoint")).await?;
+    Ok(vote_accounts(resp).into_iter().collect())
+}
+
+/// Per-record values the SQL query does not provide: the BigQuery-derived pair from the epoch cache, the apy-api net APY, and the validator-bonds flags the caller resolved.
+#[derive(Default)]
+pub struct ValidatorOverlays {
+    pub unique_delegators: HashMap<String, u64>,
+    pub take_rates: TakeRates,
+    pub net_apy: HashMap<String, f64>,
+    pub verified: HashSet<String>,
+    pub protected: HashSet<String>,
 }
 
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
-    validator_bonds_api_url: String,
     display_epochs: u64,
     computing_epochs: u64,
-    unique_delegators: &HashMap<String, u64>,
-    take_rates: &HashMap<String, f64>,
+    overlays: &ValidatorOverlays,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -836,9 +1057,6 @@ pub async fn load_validators(
                 mev.mev_commission AS mev_commission_bps,
                 jpf.validator_commission AS priority_commission_bps,
                 client_id,
-                client_name,
-                client_vendor,
-                client_lineage,
                 client_id_raw,
                 feature_set,
                 shred_version,
@@ -935,6 +1153,12 @@ pub async fn load_validators(
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
+            let client_id_raw: Option<String> = row.get("client_id_raw");
+            let client_id = effective_client_id(
+                row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
+                client_id_raw.as_deref(),
+            );
+
             let record = records
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
@@ -966,11 +1190,12 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
                     version: row.get("version"),
-                    client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                    client_name: row.get("client_name"),
-                    client_vendor: row.get("client_vendor"),
-                    client_lineage: row.get("client_lineage"),
-                    client_id_raw: row.get("client_id_raw"),
+                    client_id,
+                    client_name: client_name(client_id),
+                    client_label: client_label(client_id),
+                    client_vendor: client_vendor(client_id),
+                    client_lineage: client_lineage(client_id),
+                    client_id_raw: client_id_raw.clone(),
                     feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                     shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                     gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -996,8 +1221,11 @@ pub async fn load_validators(
                     avg_apy: None,
                     unique_delegators: None,
                     avg_take_rate: None,
+                    expected_take_rate: None,
+                    net_apy: None,
                     incidents: Vec::new(),
                     verified: false,
+                    protected: false,
                     has_last_epoch_stats: false,
                     rugged_commission: false,
                     rugged_commission_info: Vec::new(),
@@ -1048,11 +1276,12 @@ pub async fn load_validators(
                 dc_aso: row.get::<_, Option<String>>("dc_aso"),
                 dc_city: row.get::<_, Option<String>>("dc_city"),
                 dc_country: row.get::<_, Option<String>>("dc_country"),
-                client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                client_name: row.get("client_name"),
-                client_vendor: row.get("client_vendor"),
-                client_lineage: row.get("client_lineage"),
-                client_id_raw: row.get("client_id_raw"),
+                client_id,
+                client_name: client_name(client_id),
+                client_label: client_label(client_id),
+                client_vendor: client_vendor(client_id),
+                client_lineage: client_lineage(client_id),
+                client_id_raw,
                 feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
                 shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
                 gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
@@ -1106,24 +1335,28 @@ pub async fn load_validators(
     log::info!("Updating ranks...");
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| a.activated_stake,
+        |a: &ValidatorEpochStats| Some(a.activated_stake),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_activated_stake = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| to_fixed_for_sort(a.score.unwrap_or(0.0)),
+        |a: &ValidatorEpochStats| a.score.and_then(Decimal::from_f64_retain),
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_score = Some(rank),
     );
     update_validators_ranks(
         &mut records,
-        |a: &ValidatorEpochStats| to_fixed_for_sort(a.apy.unwrap_or(0.0)),
+        |a: &ValidatorEpochStats| {
+            a.apy
+                .filter(|apy| *apy >= 0.0)
+                .and_then(Decimal::from_f64_retain)
+        },
         |a: &mut ValidatorEpochStats, rank: usize| a.rank_apy = Some(rank),
     );
     update_with_warnings(&mut records, epochs_range.clone()).await?;
 
     log::info!("Updating unique delegators...");
     for (vote_account, record) in records.iter_mut() {
-        record.unique_delegators = unique_delegators.get(vote_account).copied();
+        record.unique_delegators = overlays.unique_delegators.get(vote_account).copied();
     }
 
     log::info!("Updating incidents...");
@@ -1132,20 +1365,39 @@ pub async fn load_validators(
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
 
-    log::info!("Updating verified flag...");
-    let verified = load_verified_validators(&validator_bonds_api_url)
-        .await
-        .map_err(|err| {
-            log::error!("Failed to load verified validators, keeping previous cache intact: {err}");
-            err
-        })?;
+    log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
-        record.verified = verified.contains(vote_account);
+        record.verified = overlays.verified.contains(vote_account);
+        record.protected = overlays.protected.contains(vote_account);
     }
 
     log::info!("Updating take rates...");
+    let mut mev_commissions: HashMap<String, i32> = Default::default();
+    let mut priority_commissions: HashMap<String, i32> = Default::default();
+    // get_last_jito_info keys on (vote_account, epoch): the two distribution accounts resolve their last epoch separately, splitting one validator across two records.
+    for jito in get_last_jito_info(psql_client, DEFAULT_JITO_COMMISSION_EPOCHS).await? {
+        if let Some(bps) = jito.mev_commission_bps {
+            mev_commissions.insert(jito.vote_account.clone(), bps);
+        }
+        if let Some(bps) = jito.priority_commission_bps {
+            priority_commissions.insert(jito.vote_account, bps);
+        }
+    }
     for (vote_account, record) in records.iter_mut() {
-        record.avg_take_rate = take_rates.get(vote_account).copied();
+        record.avg_take_rate = overlays.take_rates.measured.get(vote_account).copied();
+        record.expected_take_rate = overlays.take_rates.shares.and_then(|shares| {
+            expected_take_rate(
+                shares,
+                record.commission_advertised,
+                mev_commissions.get(vote_account).copied(),
+                priority_commissions.get(vote_account).copied(),
+            )
+        });
+    }
+
+    log::info!("Updating net APY...");
+    for (vote_account, record) in records.iter_mut() {
+        record.net_apy = overlays.net_apy.get(vote_account).copied();
     }
 
     log::info!("Records prepared...");
@@ -1350,6 +1602,15 @@ pub async fn load_scores(
     };
     log::info!("Records prepared...");
     Ok(records)
+}
+
+/// Whether the table holds any row at all, regardless of epoch — `load_validators` filters by the latest `cluster_info` epoch and cannot answer this.
+pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
+    let row = psql_client
+        .query_one("SELECT EXISTS(SELECT 1 FROM validators) AS has_rows", &[])
+        .await?;
+
+    Ok(row.get("has_rows"))
 }
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
@@ -1587,42 +1848,93 @@ async fn load_stake_distribution(
     Ok(distributions)
 }
 
+// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
+const CLIENT_ID_GROUPING: &str = "COALESCE(client_id::TEXT, client_id_raw, '')";
+const UNKNOWN_CLIENT_GROUP: &str = "unknown";
+
+fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
+    map(effective_client_id(key.parse().ok(), Some(key)))
+        .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
+}
+
+// SQL groups one row per client id, but several ids share a vendor.
+fn fold_distribution(
+    distributions: &[StakeDistribution],
+    map: fn(Option<u16>) -> Option<String>,
+) -> Vec<StakeDistribution> {
+    distributions
+        .iter()
+        .map(|distribution| {
+            let mut stake_by: HashMap<String, u64> = Default::default();
+            let mut count_by: HashMap<String, u64> = Default::default();
+            for (key, stake) in distribution.stake_by.iter() {
+                let folded = grouped_by(key, map);
+                *stake_by.entry(folded.clone()).or_default() += stake;
+                *count_by.entry(folded).or_default() +=
+                    distribution.count_by.get(key).copied().unwrap_or_default();
+            }
+            let share_by = stake_by
+                .iter()
+                .map(|(key, stake)| {
+                    let share = if distribution.total_stake > 0 {
+                        *stake as f64 / distribution.total_stake as f64
+                    } else {
+                        0.0
+                    };
+                    (key.clone(), share)
+                })
+                .collect();
+            StakeDistribution {
+                epoch: distribution.epoch,
+                total_stake: distribution.total_stake,
+                stake_by,
+                share_by,
+                count_by,
+            }
+        })
+        .collect()
+}
+
+fn client_diversity_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientDiversityStats> {
+    fold_distribution(by_client_id, client_vendor)
+        .into_iter()
+        .map(|distribution| ClientDiversityStats {
+            epoch: distribution.epoch,
+            total_activated_stake: distribution.total_stake,
+            client_stake: distribution.stake_by,
+            client_share: distribution.share_by,
+            client_validator_count: distribution.count_by,
+        })
+        .collect()
+}
+
+fn client_lineage_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientLineageStats> {
+    fold_distribution(by_client_id, client_lineage)
+        .into_iter()
+        .map(|distribution| ClientLineageStats {
+            epoch: distribution.epoch,
+            total_activated_stake: distribution.total_stake,
+            lineage_stake: distribution.stake_by,
+            lineage_share: distribution.share_by,
+            lineage_validator_count: distribution.count_by,
+        })
+        .collect()
+}
+
 pub async fn load_client_diversity_stats(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientDiversityStats>> {
-    Ok(
-        load_stake_distribution(psql_client, epochs, "COALESCE(client_vendor, 'unknown')")
-            .await?
-            .into_iter()
-            .map(|distribution| ClientDiversityStats {
-                epoch: distribution.epoch,
-                total_activated_stake: distribution.total_stake,
-                client_stake: distribution.stake_by,
-                client_share: distribution.share_by,
-                client_validator_count: distribution.count_by,
-            })
-            .collect(),
-    )
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    Ok(client_diversity_stats(&by_client_id))
 }
 
 pub async fn load_client_lineage_stats(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientLineageStats>> {
-    Ok(
-        load_stake_distribution(psql_client, epochs, "COALESCE(client_lineage, 'unknown')")
-            .await?
-            .into_iter()
-            .map(|distribution| ClientLineageStats {
-                epoch: distribution.epoch,
-                total_activated_stake: distribution.total_stake,
-                lineage_stake: distribution.stake_by,
-                lineage_share: distribution.share_by,
-                lineage_validator_count: distribution.count_by,
-            })
-            .collect(),
-    )
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    Ok(client_lineage_stats(&by_client_id))
 }
 
 pub async fn load_feature_set_stats(
@@ -1647,13 +1959,57 @@ pub async fn load_feature_set_stats(
 }
 
 pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
+    // Vendor and lineage are two folds of one per-client-id distribution, not two queries.
+    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
     Ok(ClusterStats {
         block_production_stats: load_block_production_stats(psql_client, epochs).await?,
         dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
-        client_diversity_stats: load_client_diversity_stats(psql_client, epochs).await?,
-        client_lineage_stats: load_client_lineage_stats(psql_client, epochs).await?,
+        client_diversity_stats: client_diversity_stats(&by_client_id),
+        client_lineage_stats: client_lineage_stats(&by_client_id),
         feature_set_stats: load_feature_set_stats(psql_client, epochs).await?,
     })
+}
+
+const MIN_REQUIRED_EPOCHS_IN_THE_PAST: u64 = 1;
+const MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE: u64 = 1;
+
+/// Whether a validator is one the API should return at all: present in the last two epochs, and voting or
+/// holding stake in them.
+pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bool {
+    let min_required_epoch = last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_IN_THE_PAST);
+    let credits_or_stake_from =
+        last_epoch.saturating_sub(MIN_REQUIRED_EPOCHS_WITH_CREDITS_OR_STAKE);
+
+    let has_min_epoch_stats = (min_required_epoch..=last_epoch).all(|epoch| {
+        validator
+            .epoch_stats
+            .iter()
+            .any(|epoch_stat| epoch_stat.epoch == epoch)
+    });
+    if !has_min_epoch_stats {
+        return false;
+    }
+
+    (credits_or_stake_from..=last_epoch).all(|epoch| {
+        validator
+            .epoch_stats
+            .iter()
+            .find(|&epoch_stat| epoch_stat.epoch == epoch)
+            .is_some_and(|epoch_stat| {
+                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
+            })
+    })
+}
+
+/// The newest epoch any validator reports, which every eligibility check is relative to.
+pub fn last_reported_epoch<'a>(
+    validators: impl IntoIterator<Item = &'a ValidatorRecord>,
+) -> Option<u64> {
+    validators
+        .into_iter()
+        .flat_map(|validator| &validator.epoch_stats)
+        .map(|epoch_stat| epoch_stat.epoch)
+        .max()
 }
 
 pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAggregated> {
@@ -1691,7 +2047,7 @@ pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAgg
         })
         .collect();
 
-    agg.sort_by(|a, b| b.epoch.cmp(&a.epoch));
+    agg.sort_by_key(|a| std::cmp::Reverse(a.epoch));
 
     agg
 }
@@ -1710,7 +2066,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc) filter (where version is not null))[1] as last_version, (array_agg(client_vendor order by created_at desc) filter (where client_vendor is not null and epoch <= $2))[1] as last_client_vendor, (array_agg(client_lineage order by created_at desc) filter (where client_lineage is not null and epoch <= $2))[1] as last_client_lineage from versions group by vote_account)
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -1723,8 +2079,8 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    coalesce((array_agg(agg_versions.last_client_vendor))[1], 'unknown') AS last_client_vendor,
-                    coalesce((array_agg(agg_versions.last_client_lineage))[1], 'unknown') AS last_client_lineage
+                    (array_agg(agg_versions.last_client_id))[1] AS last_client_id,
+                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw
                 FROM
                     validators
                     LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
@@ -1742,6 +2098,13 @@ pub async fn load_validators_aggregated_flat(
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
     for row in rows.iter() {
+        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
+        let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
+        let last_client_id = effective_client_id(
+            row.get::<_, Option<i32>>("last_client_id")
+                .map(|n| n as u16),
+            last_client_id_raw.as_deref(),
+        );
         validators.push(ValidatorAggregatedFlat {
             vote_account: row.get("vote_account"),
             minimum_stake: row.get("minimum_stake"),
@@ -1754,8 +2117,10 @@ pub async fn load_validators_aggregated_flat(
             dc_aso: row.get("dc_aso"),
             marinade_stake: row.get("marinade_stake"),
             version: row.get("last_version"),
-            client_vendor: row.get("last_client_vendor"),
-            client_lineage: row.get("last_client_lineage"),
+            client_vendor: client_vendor(last_client_id)
+                .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
+            client_lineage: client_lineage(last_client_id)
+                .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
         });
     }
 
@@ -1785,7 +2150,10 @@ pub async fn store_scoring(
     component_weights: Vec<f64>,
     scores: Vec<ValidatorScoringCsvRow>,
 ) -> anyhow::Result<()> {
-    let scoring_run_result = psql_client
+    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
+    let tx = psql_client.transaction().await?;
+
+    let scoring_run_result = tx
         .query_one(
             "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
             VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
@@ -1881,8 +2249,180 @@ pub async fn store_scoring(
             ];
             query.add(&mut params);
         }
-        query.execute(psql_client).await?;
+        query.execute_in(&tx).await?;
     }
 
+    tx.commit().await?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_fixed_for_sort_scales_usable_values() {
+        assert_eq!(to_fixed_for_sort(0.0), Some(0));
+        assert_eq!(to_fixed_for_sort(0.05), Some(500));
+        assert_eq!(to_fixed_for_sort(1.0), Some(10_000));
+    }
+
+    #[test]
+    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_zero() {
+        assert_eq!(to_fixed_for_sort(-0.01), None);
+        assert_eq!(to_fixed_for_sort(f64::NAN), None);
+        assert_eq!(to_fixed_for_sort(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_max() {
+        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
+        assert_eq!(to_fixed_for_sort(f64::MAX), None);
+        assert_eq!(to_fixed_for_sort(1e30), None);
+    }
+
+    const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
+    const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
+
+    const CREDITS: u64 = 400_000;
+
+    /// Mainnet-scale: 600M SOL supply, ~400k credits per validator, ~400M SOL staked cluster-wide.
+    fn calculator(slots_per_year: f64) -> InflationApyCalculator {
+        InflationApyCalculator {
+            supply: 600_000_000_000_000_000,
+            duration: 182_400,
+            inflation: 0.043,
+            slots_per_year,
+            total_weighted_credits: 160_000_000_000_000_000_000_000,
+        }
+    }
+
+    /// Relative, because these quantities span 1e-2 to 1e15 and a fixed epsilon fits neither end.
+    fn assert_close(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() / right.abs() < 1e-12,
+            "{left} != {right}"
+        );
+    }
+
+    fn rate_per_epoch(calculator: &InflationApyCalculator) -> f64 {
+        let (apr, _) = calculator.estimate_yields(CREDITS, 5);
+        apr / (SECONDS_IN_YEAR / calculator.duration as f64)
+    }
+
+    #[test]
+    fn per_epoch_issuance_tracks_the_protocol_slot_time() {
+        let baseline = calculator(BASELINE_SLOTS_PER_YEAR);
+        let stage_1 = calculator(SLOTS_PER_YEAR_350MS);
+        let (_, apy_baseline) = baseline.estimate_yields(CREDITS, 5);
+        let (_, apy_350) = stage_1.estimate_yields(CREDITS, 5);
+
+        // Guards the fixture: an implausible one overflows to inf, where every ratio below matches.
+        assert!((0.03..0.12).contains(&apy_baseline), "{apy_baseline}");
+
+        // Shorter slots mint proportionally less per epoch, so the rate scales by exactly 350/400.
+        assert_close(
+            rate_per_epoch(&stage_1) / rate_per_epoch(&baseline),
+            350.0 / 400.0,
+        );
+
+        let epochs_per_year = SECONDS_IN_YEAR / stage_1.duration as f64;
+        assert_close(
+            1.0 + apy_350,
+            (1.0 + rate_per_epoch(&stage_1)).powf(epochs_per_year),
+        );
+        assert!(apy_350 < apy_baseline);
+    }
+
+    #[test]
+    fn measured_epoch_length_does_not_move_per_epoch_issuance() {
+        let short = InflationApyCalculator {
+            duration: 151_200,
+            ..calculator(BASELINE_SLOTS_PER_YEAR)
+        };
+        let long = InflationApyCalculator {
+            duration: 182_400,
+            ..calculator(BASELINE_SLOTS_PER_YEAR)
+        };
+
+        // Only the compounding exponent may depend on the measured epoch, never the minted amount.
+        assert_close(rate_per_epoch(&short), rate_per_epoch(&long));
+    }
+
+    // Roughly mainnet's mix at epoch 1015, so the numbers below read against something real.
+    const MIX: RewardMixShares = RewardMixShares {
+        inflation: 0.90,
+        mev: 0.044,
+        block: 0.056,
+    };
+
+    fn approx(actual: Option<f64>, expected: f64) {
+        let actual = actual.expect("expected a rate");
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_floors_at_the_block_share_for_a_zero_fee_validator() {
+        // HelixNode's shape: 0% inflation, 0% MEV, no priority-fee account. It measures ~5.6%.
+        approx(expected_take_rate(MIX, Some(0), Some(0), None), MIX.block);
+    }
+
+    #[test]
+    fn expected_take_rate_reaches_one_when_every_component_is_fully_taken() {
+        approx(
+            expected_take_rate(MIX, Some(100), Some(10_000), Some(10_000)),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_weights_each_commission_by_its_component() {
+        approx(
+            expected_take_rate(MIX, Some(5), Some(1_000), None),
+            0.05 * MIX.inflation + 0.1 * MIX.mev + MIX.block,
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_drops_below_the_floor_when_block_rewards_are_shared() {
+        // The two validators on Jito's PriorityFeeDistribution at 0 bps keep none of their priority fees.
+        approx(expected_take_rate(MIX, Some(0), Some(0), Some(0)), 0.0);
+    }
+
+    #[test]
+    fn expected_take_rate_renormalizes_when_the_validator_earns_no_mev() {
+        // Without Jito there is no MEV to take a cut of, so the MEV weight must leave the denominator
+        // rather than count as a 0% commission and dilute the rate.
+        let no_jito = expected_take_rate(MIX, Some(10), None, None);
+        approx(
+            no_jito,
+            (0.1 * MIX.inflation + MIX.block) / (MIX.inflation + MIX.block),
+        );
+
+        let diluted = 0.1 * MIX.inflation + MIX.block;
+        assert!(
+            no_jito.unwrap() > diluted,
+            "renormalizing must read higher than crediting a 0% MEV commission"
+        );
+    }
+
+    #[test]
+    fn expected_take_rate_is_unknown_without_an_inflation_commission() {
+        // Inflation rewards are earned by every validator, so a missing commission cannot renormalize away the way a missing MEV one does.
+        assert_eq!(expected_take_rate(MIX, None, Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn expected_take_rate_needs_at_least_one_component_to_weigh() {
+        let empty = RewardMixShares {
+            inflation: 0.0,
+            mev: 0.0,
+            block: 0.0,
+        };
+        assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
+    }
 }

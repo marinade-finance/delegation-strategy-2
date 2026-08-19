@@ -104,8 +104,8 @@ fn get_stakes_grouped_by_validator(
     let stakes = get_stake_accounts(rpc_client, delegation_authority, withdrawer_authority)?;
 
     let stakes: Vec<_> = stakes
-        .iter()
-        .filter_map(|(_, stake_account)| {
+        .values()
+        .filter_map(|stake_account| {
             stake_account.stake().and_then(|stake| {
                 let StakeHistoryEntry { effective, .. } = stake
                     .delegation

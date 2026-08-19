@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use collect::solana_service::{resolve_client_id, ClientId};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
@@ -8,6 +9,42 @@ use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+/// Served instead of null so every consumer has a client name to render.
+pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
+
+// Re-resolved because the stored id is registry-only: without this a client-ids.csv row added later reclassifies nothing already collected.
+pub fn effective_client_id(client_id: Option<u16>, client_id_raw: Option<&str>) -> Option<u16> {
+    client_id.or_else(|| resolve_client_id(client_id_raw).number())
+}
+
+// Gated on both halves of the registry — the CSV names and the vendored groupings — so an id in one but not the other cannot read as half-classified.
+fn classified(client_id: Option<u16>) -> Option<ClientId> {
+    let client = ClientId::Registered(client_id?);
+    (client.name().is_some() && client.label().is_some()).then_some(client)
+}
+
+pub fn client_name(client_id: Option<u16>) -> String {
+    classified(client_id)
+        .and_then(|client| client.name())
+        .unwrap_or(UNKNOWN_CLIENT_NAME)
+        .to_string()
+}
+
+pub fn client_label(client_id: Option<u16>) -> String {
+    classified(client_id)
+        .and_then(|client| client.label())
+        .unwrap_or(UNKNOWN_CLIENT_NAME)
+        .to_string()
+}
+
+pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.vendor().map(str::to_string))
+}
+
+pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.lineage().map(str::to_string))
+}
 
 pub struct ValidatorJitoMEVInfo {
     pub vote_account: String,
@@ -102,9 +139,6 @@ pub struct Validator {
     pub commission_effective: Option<i32>,
     pub version: Option<String>,
     pub client_id: Option<i32>,
-    pub client_name: Option<String>,
-    pub client_vendor: Option<String>,
-    pub client_lineage: Option<String>,
     pub client_id_raw: Option<String>,
     pub feature_set: Option<i64>,
     pub shred_version: Option<i32>,
@@ -151,8 +185,8 @@ impl Validator {
             info_icon_url: v.info_icon_url.clone(),
 
             node_ip: v.node_ip.clone(),
-            dc_coordinates_lon: coordinates.map(|(_, lon)| lon),
-            dc_coordinates_lat: coordinates.map(|(lat, _)| lat),
+            dc_coordinates_lon: coordinates.map(|(lon, _)| lon),
+            dc_coordinates_lat: coordinates.map(|(_, lat)| lat),
             dc_continent: continent,
             dc_country_iso: country_iso,
             dc_country: country,
@@ -166,9 +200,6 @@ impl Validator {
             commission_effective: None,
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
-            client_name: v.performance.client_name.clone(),
-            client_vendor: v.performance.client_vendor.clone(),
-            client_lineage: v.performance.client_lineage.clone(),
             client_id_raw: v.performance.client_id_raw.clone(),
             feature_set: v.performance.feature_set.map(|f| f as i64),
             shred_version: v.performance.shred_version.map(|s| s as i32),
@@ -197,6 +228,7 @@ impl Validator {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[cfg_attr(test, derive(Default))]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
@@ -214,8 +246,10 @@ pub struct ValidatorEpochStats {
     pub dc_country: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
+    pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -251,6 +285,7 @@ pub struct ValidatorEpochStats {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[cfg_attr(test, derive(Default))]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -285,8 +320,10 @@ pub struct ValidatorRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
+    pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -315,9 +352,16 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
+    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. Null for a validator whose advertised commission is unknown.
+    pub expected_take_rate: Option<f64>,
+    /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
+    pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
     #[serde(default)]
     pub verified: bool,
+    /// As listed by the validator-bonds `/validators/protected` endpoint, which owns the rule.
+    #[serde(default)]
+    pub protected: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -378,8 +422,10 @@ pub struct VersionRecord {
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
     pub client_id: Option<u16>,
-    /// Client name to display — the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, falling back to `client_id_raw` for an id the registry does not know; null only when the node reports no client.
-    pub client_name: Option<String>,
+    /// Client name to display, never null: the Solana Foundation registry name of `client_id`, e.g. `Rakurai` or `Agave Bam`, and `Unknown` for a client the registry does not know. See `client_id_raw` for what the node actually reported.
+    pub client_name: String,
+    /// Client label to display, never null: the lineage, plus the vendor's modification of it when there is one, e.g. `Agave + JitoBAM` or `Frankendancer`. `Unknown` for a client the registry does not know.
+    pub client_label: String,
     /// Who ships the binary, derived from `client_id`, collapsing a vendor's per-lineage ids (`HarmonicAgave` + `HarmonicFiredancer` -> `harmonic`).
     pub client_vendor: Option<String>,
     /// Which upstream codebase `client_id` is built from: `agave`, `firedancer`, `frankendancer` or `sig`.
@@ -508,6 +554,45 @@ pub struct FeatureSetStats {
     pub feature_set_stake: HashMap<String, u64>,
     pub feature_set_share: HashMap<String, f64>,
     pub feature_set_validator_count: HashMap<String, u64>,
+}
+
+/// One hosting provider or one validator client, aggregated over every validator running it in the
+/// last epoch.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupRecord {
+    /// Name of the group or `Unknown`
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+    pub stake_delta_7d: Option<Decimal>,
+    pub stake_delta_30d: Option<Decimal>,
+    pub net_apy: Option<f64>,
+    pub take_rate: Option<f64>,
+    /// Stake authorities summed over the group's members, so one authority delegating to several of
+    /// them counts once per validator.
+    pub delegation_relationship_count: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroups {
+    pub groups: Vec<ValidatorGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
+/// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the block engines it runs with.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupNode {
+    pub group: ValidatorGroupRecord,
+    pub children: Vec<ValidatorGroupRecord>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupTree {
+    pub nodes: Vec<ValidatorGroupNode>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

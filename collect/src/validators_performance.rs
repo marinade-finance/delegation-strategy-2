@@ -1,11 +1,17 @@
 use crate::common::*;
+use crate::slot_params::{
+    baseline_slots_per_year, get_slot_time_activations, nearest_slot_time_ms, select_slot_params,
+    SlotParams, SLOTS_IN_EPOCH,
+};
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
+use anyhow::Context;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_client::{rpc_client::RpcClient, rpc_response::RpcVoteAccountStatus};
 use solana_sdk::clock::Epoch;
+use solana_sdk::epoch_info::EpochInfo;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use structopt::StructOpt;
@@ -73,12 +79,6 @@ pub struct ValidatorPerformance {
     #[serde(default, deserialize_with = "deserialize_client_id")]
     pub client_id: Option<u16>,
     #[serde(default)]
-    pub client_name: Option<String>,
-    #[serde(default)]
-    pub client_vendor: Option<String>,
-    #[serde(default)]
-    pub client_lineage: Option<String>,
-    #[serde(default)]
     pub client_id_raw: Option<String>,
     #[serde(default)]
     pub feature_set: Option<u32>,
@@ -97,9 +97,95 @@ pub struct ValidatorsPerformanceSnapshot {
     pub epoch_slot: u64,
     pub transaction_count: u64,
     pub created_at: String,
+    // Snapshots predating the gate read describe epochs that provably ran at the baseline slot time.
+    #[serde(default = "baseline_slots_per_year")]
+    pub slots_per_year: f64,
     pub cluster_inflation: Option<ClusterInflation>,
     pub validators: HashMap<String, ValidatorPerformance>,
     pub rewards: Option<HashMap<String, ValidatorRewards>>,
+}
+
+/// A mistyped gate pubkey reads exactly like "not activated", and only the clock can tell them apart.
+fn warn_on_slot_time_divergence(
+    client: &RpcClient,
+    current_epoch_info: &EpochInfo,
+    activations: &[(SlotParams, Option<Epoch>)],
+) -> anyhow::Result<()> {
+    let Some(measured_ms) = measure_milliseconds_per_slot(client, current_epoch_info)? else {
+        return Ok(());
+    };
+    // The current epoch's nominal, not the collected epoch's: the measurement is of the epoch running now.
+    let nominal_ms = select_slot_params(activations, current_epoch_info.epoch).slot_time_ms;
+    let nearest_ms = nearest_slot_time_ms(measured_ms);
+    if nearest_ms != nominal_ms {
+        warn!(
+            "Epoch {} runs at a measured {measured_ms}ms/slot, nearest the {nearest_ms}ms row, but {nominal_ms}ms was selected. Check the slot time gate pubkeys.",
+            current_epoch_info.epoch
+        );
+    }
+    Ok(())
+}
+
+/// RPC answers for the current epoch; a backfilled one was minted at an earlier point on agave's taper curve.
+fn cluster_inflation_at_epoch(
+    client: &RpcClient,
+    epoch: Epoch,
+    slots_per_year: f64,
+) -> anyhow::Result<ClusterInflation> {
+    let rate = client.get_inflation_rate()?;
+    let governor = client.get_inflation_governor()?;
+    let epochs_behind = rate.epoch.checked_sub(epoch).with_context(|| {
+        format!(
+            "Epoch {epoch} is ahead of the cluster's current epoch {}",
+            rate.epoch
+        )
+    })?;
+
+    let (inflation, sol_total_supply) = inflation_and_supply_at(
+        rate.total,
+        client.supply()?.value.total,
+        governor.taper,
+        governor.initial,
+        governor.terminal,
+        slots_per_year / SLOTS_IN_EPOCH as f64,
+        epochs_behind,
+    );
+
+    Ok(ClusterInflation {
+        sol_total_supply,
+        inflation,
+        inflation_taper: governor.taper,
+    })
+}
+
+fn inflation_and_supply_at(
+    inflation_now: f64,
+    supply_now: u64,
+    taper: f64,
+    initial: f64,
+    terminal: f64,
+    nominal_epochs_per_year: f64,
+    epochs_behind: u64,
+) -> (f64, u64) {
+    if epochs_behind == 0 {
+        return (inflation_now, supply_now);
+    }
+    // Agave's curve is `max(initial * (1 - taper)^year, terminal)`: walking it back is bounded by `initial`, pinned by `terminal`.
+    let step_back = if inflation_now > terminal {
+        (1.0 - taper).powf(-1.0 / nominal_epochs_per_year)
+    } else {
+        1.0
+    };
+
+    let mut inflation = inflation_now;
+    let mut supply = supply_now as f64;
+    for _ in 0..epochs_behind {
+        // Un-mint at the rate that epoch ran, not today's: a flat rate understates minting as the walk deepens.
+        supply /= 1.0 + inflation / nominal_epochs_per_year;
+        inflation = (inflation * step_back).min(initial);
+    }
+
+    (inflation, supply as u64)
 }
 
 pub fn validators_performance(
@@ -146,9 +232,6 @@ pub fn validators_performance(
                 commission: vote_account.commission,
                 version: node.and_then(|n| n.version.clone()),
                 client_id: node.and_then(|n| n.client_id),
-                client_name: node.and_then(|n| n.client_name.clone()),
-                client_vendor: node.and_then(|n| n.client_vendor.map(str::to_string)),
-                client_lineage: node.and_then(|n| n.client_lineage.map(str::to_string)),
                 client_id_raw: node.and_then(|n| n.client_id_raw.clone()),
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),
@@ -235,16 +318,24 @@ pub fn collect_validators_performance_info(
         None
     };
 
-    let cluster_inflation = if performance_params.with_rewards {
-        let sol_total_supply = client.supply()?.value.total;
-        let inflation = client.get_inflation_rate()?.total;
-        let inflation_taper = client.get_inflation_governor()?.taper;
+    let activations = get_slot_time_activations(&client)?;
+    let slot_params = select_slot_params(&activations, epoch);
+    info!(
+        "Epoch {epoch} slot params: {}ms, {} slots/year",
+        slot_params.slot_time_ms, slot_params.slots_per_year
+    );
 
-        Some(ClusterInflation {
-            sol_total_supply,
-            inflation,
-            inflation_taper,
-        })
+    // Every run persists slots_per_year, so the only detector of a mistyped gate must not sit behind --with-rewards.
+    if let Err(err) = warn_on_slot_time_divergence(&client, &current_epoch_info, &activations) {
+        warn!("Could not cross-check the nominal slot time against the clock: {err}");
+    }
+
+    let cluster_inflation = if performance_params.with_rewards {
+        Some(cluster_inflation_at_epoch(
+            &client,
+            epoch,
+            slot_params.slots_per_year,
+        )?)
     } else {
         None
     };
@@ -256,6 +347,7 @@ pub fn collect_validators_performance_info(
             epoch_slot: current_epoch_info.slot_index,
             transaction_count: current_epoch_info.transaction_count.unwrap(),
             created_at: created_at.to_string(),
+            slots_per_year: slot_params.slots_per_year,
             cluster_inflation,
             validators,
             rewards,
@@ -263,4 +355,73 @@ pub fn collect_validators_performance_info(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TAPER: f64 = 0.15;
+    const INITIAL: f64 = 0.08;
+    const TERMINAL: f64 = 0.015;
+    const NOMINAL_EPOCHS_PER_YEAR: f64 = 182.6211;
+    const SUPPLY: u64 = 600_000_000_000_000_000;
+    const INFLATION: f64 = 0.043;
+
+    fn at_epochs_behind(inflation_now: f64, epochs_behind: u64) -> (f64, u64) {
+        inflation_and_supply_at(
+            inflation_now,
+            SUPPLY,
+            TAPER,
+            INITIAL,
+            TERMINAL,
+            NOMINAL_EPOCHS_PER_YEAR,
+            epochs_behind,
+        )
+    }
+
+    #[test]
+    fn the_current_epoch_needs_no_correction() {
+        let (inflation, supply) = at_epochs_behind(INFLATION, 0);
+        assert_eq!(inflation, INFLATION);
+        assert_eq!(supply, SUPPLY);
+    }
+
+    #[test]
+    fn a_backfilled_epoch_was_minted_at_a_higher_rate_on_a_smaller_supply() {
+        let (inflation, supply) = at_epochs_behind(INFLATION, 1);
+        let expected_inflation = INFLATION * (1.0 - TAPER).powf(-1.0 / NOMINAL_EPOCHS_PER_YEAR);
+        assert!((inflation - expected_inflation).abs() / expected_inflation < 1e-12);
+        assert!(inflation > INFLATION);
+
+        let expected_supply = SUPPLY as f64 / (1.0 + INFLATION / NOMINAL_EPOCHS_PER_YEAR);
+        assert!((supply as f64 - expected_supply).abs() / expected_supply < 1e-12);
+        assert!(supply < SUPPLY);
+    }
+
+    #[test]
+    fn a_rate_already_at_the_terminal_does_not_move() {
+        let (inflation, supply) = at_epochs_behind(TERMINAL, 3);
+        assert_eq!(inflation, TERMINAL);
+        assert!(supply < SUPPLY);
+    }
+
+    #[test]
+    fn a_deep_backfill_cannot_exceed_the_rate_the_curve_started_at() {
+        // ~11 years back, where the unbounded curve would read 25% - a rate the cluster never had.
+        let (inflation, _) = at_epochs_behind(INFLATION, 2_000);
+        assert_eq!(inflation, INITIAL);
+    }
+
+    #[test]
+    fn a_deep_backfill_un_mints_at_the_rates_those_epochs_ran() {
+        let (_, supply) = at_epochs_behind(INFLATION, 2_000);
+        let at_todays_rate =
+            SUPPLY as f64 / (1.0 + INFLATION / NOMINAL_EPOCHS_PER_YEAR).powi(2_000);
+        // Those epochs averaged ~6.5% against today's 4.3%, so a flat walk leaves ~25% too much supply.
+        assert!(
+            (supply as f64) < at_todays_rate * 0.8,
+            "{supply} is not materially below the flat-rate {at_todays_rate}"
+        );
+    }
 }
