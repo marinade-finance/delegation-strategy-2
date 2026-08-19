@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, VersionRecord,
+    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
+use store::groups::ValidatorGroupings;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
 use store::utils::{TakeRates, ValidatorOverlays};
@@ -25,6 +26,8 @@ const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
 const WARM_STEPS: usize = 6;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
+/// Client and provider aggregates, derived from the validators they are published with.
+type CachedValidatorGroups = ValidatorGroupings;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
@@ -68,6 +71,7 @@ pub struct Cache {
     pub bond_flags: CachedBondFlags,
     pub net_apy: CachedNetApy,
     pub validators: CachedValidators,
+    pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
@@ -149,6 +153,16 @@ impl Cache {
 
     pub fn get_validators(&self) -> CachedValidators {
         self.validators.clone()
+    }
+
+    // Aggregated once per refresh rather than per request: the rows are a few dozen, while the set
+    // they are derived from is every validator with every cached epoch.
+    pub fn get_client_groups(&self) -> ValidatorGroupTree {
+        self.validator_groups.clients.clone()
+    }
+
+    pub fn get_provider_groups(&self) -> ValidatorGroups {
+        self.validator_groups.providers.clone()
     }
 
     // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
@@ -372,9 +386,19 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in DB, caching an empty set");
     }
 
+    // Off the executor thread: three walks of every cached epoch of every validator per grouping,
+    // over the three groupings the endpoints serve, each key resolved through the client registry.
+    let (validators, validator_groups) = tokio::task::spawn_blocking(move || {
+        let validator_groups = store::groups::aggregate_all(&validators);
+        (validators, validator_groups)
+    })
+    .await?;
+
     let validators_len = validators.len();
     {
         // Flags and net APY publish with the records they stamped, so their timestamps cannot outrun them.
+        // The group aggregates go with them for the same reason: read from a later refresh they would
+        // describe an epoch the validators no longer do.
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
@@ -382,6 +406,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
+        ctx.cache.validator_groups = validator_groups;
     }
 
     info!(

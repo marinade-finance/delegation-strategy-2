@@ -1,4 +1,5 @@
 pub mod dto;
+pub mod groups;
 pub mod rewards;
 pub mod scoring;
 pub mod utils;

@@ -1,10 +1,13 @@
+// The `.or(...)` chain of route handles in main function requires this limit to be higher than default 128.
+#![recursion_limit = "256"]
+
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
-    validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use env_logger::Env;
 use log::{error, info};
@@ -132,6 +135,20 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<list_validators::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
+
+    let route_clients = warp::path!("clients")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<list_clients::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(list_clients::handler);
+
+    let route_providers = warp::path!("providers")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<list_providers::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(list_providers::handler);
 
     let route_validator_score_breakdown = warp::path!("validators" / "score-breakdown")
         .and(warp::path::end())
@@ -296,6 +313,8 @@ async fn main() -> anyhow::Result<()> {
         .or(route_readiness)
         .or(route_cluster_stats)
         .or(route_validators)
+        .or(route_clients)
+        .or(route_providers)
         .or(route_validator_score_breakdown)
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
