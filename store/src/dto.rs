@@ -133,6 +133,8 @@ pub struct Validator {
     pub dc_city: Option<String>,
     pub dc_asn: Option<i32>,
     pub dc_aso: Option<String>,
+    // Whether the whois lookup answered at all, which no single dc_ column can express: every field of a resolved answer is independently optional.
+    pub dc_resolved: bool,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
@@ -193,6 +195,7 @@ impl Validator {
             dc_city: city,
             dc_asn: asn.map(|asn| asn as i32),
             dc_aso: aso,
+            dc_resolved: v.data_center.is_some(),
 
             commission_max_observed: None,
             commission_min_observed: None,
@@ -352,7 +355,7 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
-    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. Null for a validator whose advertised commission is unknown.
+    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. The inflation commission is the worse of `commission_max_observed` and `commission_advertised`, so a validator that only advertises a low rate early in the epoch reads at the rate it actually charges. Null for a validator whose commission is unknown on both.
     pub expected_take_rate: Option<f64>,
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
