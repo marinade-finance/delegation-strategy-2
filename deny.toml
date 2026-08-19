@@ -44,6 +44,12 @@ ignore = [
   # 0.102.x is pulled via gcp-bigquery-client -> yup-oauth2 -> rustls 0.22.
   # Revisit when gcp-bigquery-client moves to a rustls 0.23 release.
   "RUSTSEC-2026-0049",
+  # h2 unbounded empty DATA frames. Patched in 0.4.16 only, which the lockfile
+  # is on; the 0.3 line has no fix and is pulled via hyper 0.14 (warp 0.3
+  # server, reqwest 0.11). The `bans` entry below keeps the 0.4 line from
+  # sliding back below the patched version. Drop this once the API moves off
+  # warp 0.3 and the Solana / gcp-bigquery-client stack off reqwest 0.11.
+  "RUSTSEC-2026-0258",
   # Unmaintained crates pinned deep in the Solana validator stack
   # (solana-runtime / solana-ledger / solana-storage-bigtable), reached via
   # the snapshot-parser git dep, plus the reqwest 0.11 / gcp-bigquery-client
@@ -163,7 +169,11 @@ wildcards = "deny"
 # otherwise flag as a wildcard. Allow wildcards *only* for path deps; a
 # wildcard on a crates.io dependency is still denied.
 allow-wildcard-paths = true
-deny = []
+deny = [
+  # The advisories section ignores RUSTSEC-2026-0258 for the unfixable h2 0.3
+  # line; the 0.4 line is patched in 0.4.16, so keep it from sliding back.
+  { crate = "h2:>=0.4, <0.4.16", reason = "RUSTSEC-2026-0258, patched in 0.4.16" },
+]
 skip = []
 skip-tree = []
 
