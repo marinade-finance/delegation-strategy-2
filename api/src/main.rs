@@ -1,3 +1,6 @@
+// The `.or(...)` chain of route handles in main function requires this limit to be higher than default 128.
+#![recursion_limit = "256"]
+
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
