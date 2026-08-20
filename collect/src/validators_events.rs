@@ -78,10 +78,13 @@ async fn query_validator_settlements(
     let project_table_name = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.{table_name}");
     info!("Querying BigQuery for settlements from epoch {from_epoch} from project table {project_table_name}");
 
+    // Direct-staking PSR is charged to the same bonds and shares these tables, and it is attributed
+    // per staker elsewhere; summed in here it would silently inflate a validator's PSR totals.
     let query = format!(
         "SELECT epoch, vote_account, reason, meta, CAST(SUM(amount) AS INT64) AS amount \
          FROM `{project_table_name}` \
          WHERE epoch >= {from_epoch} AND vote_account IS NOT NULL \
+           AND product <> 'single-validator' \
          GROUP BY epoch, vote_account, reason, meta \
          ORDER BY epoch DESC"
     );
