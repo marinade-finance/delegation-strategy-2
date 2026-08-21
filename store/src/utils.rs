@@ -1201,6 +1201,11 @@ pub async fn load_validators(
                     rugged_commission_occurrences: 0,
                 });
 
+            // Gossip can miss a node for a whole epoch, leaving that epoch's row versionless; rows arrive epoch-DESC, so this lands the newest epoch that observed a version.
+            if record.version.is_none() {
+                record.version = row.get("version");
+            }
+
             let seeding_epoch = *seeding_epochs.entry(vote_account.clone()).or_insert(epoch);
             // Gating all three on max_observed keeps them from one row; stopping one epoch below the record's own is what makes that row the newest closed epoch rather than whichever older row still happens to have the column. commission_advertised deliberately stays on the open epoch that seeded the record.
             if record.commission_max_observed.is_none() && epoch + 1 >= seeding_epoch {
