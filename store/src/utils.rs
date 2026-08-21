@@ -8,6 +8,7 @@ use crate::dto::{
 };
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
+use collect::take_rates::query_validator_rewards;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -514,13 +515,13 @@ pub async fn load_take_rate_series(
             "
             WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
-                vote_account, take_rate, take_rates.epoch,
+                vote_account, take_rate, validators_rewards.epoch,
                 epochs.start_at AS epoch_start, epochs.end_at AS epoch_end, created_at
-            FROM take_rates
-            LEFT JOIN epochs ON take_rates.epoch = epochs.epoch
+            FROM validators_rewards
+            LEFT JOIN epochs ON validators_rewards.epoch = epochs.epoch
             CROSS JOIN cluster
-            WHERE take_rates.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY take_rates.epoch ASC
+            WHERE validators_rewards.epoch > cluster.last_epoch - $1::NUMERIC
+            ORDER BY validators_rewards.epoch ASC
             ",
             &[&Decimal::from(epochs)],
         )
@@ -754,11 +755,9 @@ pub struct TakeRates {
     pub shares: Option<RewardMixShares>,
 }
 
-/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
-/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
-/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
-/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
-/// Also returns the cluster reward mix, which the same scan already has to compute.
+/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, collapsed from the per-epoch rows
+/// `query_validator_rewards` returns, plus the cluster reward mix those same rows sum to. Windowed by
+/// `epochs.epoch_end_time` (same as apy-api).
 pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
@@ -779,114 +778,43 @@ pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
         None => return Ok(Default::default()),
     };
 
-    let query = format!(
-        "SELECT
-            vote_account,
-            CAST(take_rate AS STRING) AS take_rate,
-            CAST(inflation_share AS STRING) AS inflation_share,
-            CAST(mev_share AS STRING) AS mev_share,
-            CAST(block_share AS STRING) AS block_share
-        FROM (
-            WITH stakers AS (
-                SELECT
-                    stakes.vote_account AS vote_account,
-                    stakes.epoch AS epoch,
-                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
-                    SUM(COALESCE(mev.amount, 0)) AS staker_mev,
-                    SUM(COALESCE(prio.amount, 0)) AS staker_blocks
-                FROM `{ds}.stakes` stakes
-                LEFT JOIN `{ds}.rewards_inflation` inflation
-                    ON stakes.stake_account = inflation.stake_account
-                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
-                LEFT JOIN `{ds}.rewards_mev` mev
-                    ON stakes.stake_account = mev.stake_account
-                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
-                -- rewards_validators_blocks is gross, so what Jito's PriorityFeeDistribution passed through has to come off the validator's keep rather than add to the pot.
-                LEFT JOIN `{ds}.rewards_jito_priority_fee` prio
-                    ON stakes.stake_account = prio.stake_account
-                    AND stakes.epoch = prio.epoch AND prio.epoch >= {min_epoch}
-                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
-                GROUP BY stakes.vote_account, stakes.epoch
-            ),
-            per_validator AS (
-                SELECT
-                    stakers.vote_account AS vote_account,
-                    SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_total,
-                    SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_total,
-                    SUM(COALESCE(vb.amount, 0)) AS block_total,
-                    -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
-                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
-                        + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_total
-                FROM stakers
-                -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_inflation`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vi
-                    ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_mev`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vm
-                    ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_blocks`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vb
-                    ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
-                GROUP BY stakers.vote_account
-            )
-            SELECT
-                vote_account,
-                SAFE_DIVIDE(validator_total, inflation_total + mev_total + block_total) AS take_rate,
-                -- Windowed over the already-grouped rows, so the cluster mix costs no extra scan.
-                SAFE_DIVIDE(SUM(inflation_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS inflation_share,
-                SAFE_DIVIDE(SUM(mev_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS mev_share,
-                SAFE_DIVIDE(SUM(block_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS block_share
-            FROM per_validator
-        )
-        WHERE take_rate IS NOT NULL"
-    );
+    let rows = query_validator_rewards(&bq_client, min_epoch).await?;
 
-    let request = QueryRequest {
-        query,
-        use_legacy_sql: false,
-        ..Default::default()
-    };
+    // Lamports summed over every validator and epoch in the window; u128 so the cluster-wide
+    // accumulation is not what overflows.
+    let mut per_validator: HashMap<String, (u128, u128)> = Default::default();
+    let mut cluster_inflation: u128 = 0;
+    let mut cluster_mev: u128 = 0;
+    let mut cluster_block: u128 = 0;
 
-    let mut iter = bq_client
-        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
-        .await?;
-
-    let mut measured: HashMap<String, f64> = Default::default();
-    // Identical on every row by construction, so the last one read is the cluster mix.
-    let mut shares = None;
-    while let Some(row) = iter.next().await? {
-        let vote_account = row.column::<String>(0)?;
-        let take_rate_str = row.column::<String>(1)?;
-        measured.insert(vote_account, take_rate_str.parse()?);
-        shares = match (
-            row.column::<Option<String>>(2)?,
-            row.column::<Option<String>>(3)?,
-            row.column::<Option<String>>(4)?,
-        ) {
-            (Some(inflation), Some(mev), Some(block)) => Some(RewardMixShares {
-                inflation: inflation.parse()?,
-                mev: mev.parse()?,
-                block: block.parse()?,
-            }),
-            _ => shares,
-        };
+    for row in &rows {
+        let (validator_rewards, total_rewards) =
+            per_validator.entry(row.vote_account.clone()).or_default();
+        *validator_rewards += u128::from(row.validator_rewards);
+        *total_rewards += u128::from(row.total_rewards);
+        cluster_inflation += u128::from(row.inflation_rewards);
+        cluster_mev += u128::from(row.mev_rewards);
+        cluster_block += u128::from(row.block_rewards);
     }
+
+    // Ratio of sums, not a mean of the per-epoch rates: a big epoch has to weigh more than a small one.
+    let measured = per_validator
+        .into_iter()
+        .filter(|(_, (_, total_rewards))| *total_rewards > 0)
+        .map(|(vote_account, (validator_rewards, total_rewards))| {
+            (
+                vote_account,
+                validator_rewards as f64 / total_rewards as f64,
+            )
+        })
+        .collect();
+
+    let cluster_total = cluster_inflation + cluster_mev + cluster_block;
+    let shares = (cluster_total > 0).then(|| RewardMixShares {
+        inflation: cluster_inflation as f64 / cluster_total as f64,
+        mev: cluster_mev as f64 / cluster_total as f64,
+        block: cluster_block as f64 / cluster_total as f64,
+    });
 
     Ok(TakeRates { measured, shares })
 }

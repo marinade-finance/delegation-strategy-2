@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use collect::take_rates::TakeRatesSnapshot;
+use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use structopt::StructOpt;
 use tokio_postgres::Client;
 
-pub const TAKE_RATES_TABLE: &str = "take_rates";
+pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
 
 #[derive(Debug, StructOpt)]
 pub struct StoreTakeRatesParams {
@@ -17,11 +17,14 @@ pub struct StoreTakeRatesParams {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
-struct TakeRateRow {
+struct ValidatorRewardsRow {
     vote_account: String,
     epoch: Decimal,
     validator_rewards: Decimal,
     total_rewards: Decimal,
+    inflation_rewards: Decimal,
+    mev_rewards: Decimal,
+    block_rewards: Decimal,
     take_rate: f64,
 }
 
@@ -34,7 +37,7 @@ pub async fn store_take_rates(
     let path = params.snapshot_path;
     let snapshot_file = std::fs::File::open(&path)
         .map_err(|e| anyhow::anyhow!("Failed to open snapshot take rates file '{path}': {e}"))?;
-    let snapshot: TakeRatesSnapshot = serde_yaml::from_reader(snapshot_file)
+    let snapshot: ValidatorRewardsSnapshot = serde_yaml::from_reader(snapshot_file)
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot take rates file '{path}': {e}"))?;
 
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
@@ -49,8 +52,8 @@ pub async fn store_take_rates(
 
     // The BigQuery query already emits one row per (vote_account, epoch); dedup defensively so a
     // single upsert statement can never touch the same conflict target twice.
-    let rows: HashMap<(String, u64), TakeRateRow> = snapshot
-        .take_rates
+    let rows: HashMap<(String, u64), ValidatorRewardsRow> = snapshot
+        .rewards
         .iter()
         .filter(|r| r.total_rewards > 0)
         .map(|r| {
@@ -58,11 +61,14 @@ pub async fn store_take_rates(
             let take_rate = r.validator_rewards as f64 / r.total_rewards as f64;
             (
                 key,
-                TakeRateRow {
+                ValidatorRewardsRow {
                     vote_account: r.vote_account.clone(),
                     epoch: Decimal::from(r.epoch),
                     validator_rewards: Decimal::from(r.validator_rewards),
                     total_rewards: Decimal::from(r.total_rewards),
+                    inflation_rewards: Decimal::from(r.inflation_rewards),
+                    mev_rewards: Decimal::from(r.mev_rewards),
+                    block_rewards: Decimal::from(r.block_rewards),
                     take_rate,
                 },
             )
@@ -82,16 +88,22 @@ pub async fn store_take_rates(
         let epochs: Vec<&Decimal> = chunk.iter().map(|r| &r.epoch).collect();
         let validator_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.validator_rewards).collect();
         let total_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.total_rewards).collect();
+        let inflation_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.inflation_rewards).collect();
+        let mev_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.mev_rewards).collect();
+        let block_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.block_rewards).collect();
         let take_rates: Vec<f64> = chunk.iter().map(|r| r.take_rate).collect();
         let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
         let created_ats = updated_ats.clone();
 
         let query = format!(
-            "INSERT INTO {TAKE_RATES_TABLE} (
+            "INSERT INTO {VALIDATORS_REWARDS_TABLE} (
             vote_account,
             epoch,
             validator_rewards,
             total_rewards,
+            inflation_rewards,
+            mev_rewards,
+            block_rewards,
             take_rate,
             created_at,
             updated_at
@@ -101,14 +113,20 @@ pub async fn store_take_rates(
             $2::NUMERIC[],
             $3::NUMERIC[],
             $4::NUMERIC[],
-            $5::DOUBLE PRECISION[],
-            $6::TIMESTAMP WITH TIME ZONE[],
-            $7::TIMESTAMP WITH TIME ZONE[]
+            $5::NUMERIC[],
+            $6::NUMERIC[],
+            $7::NUMERIC[],
+            $8::DOUBLE PRECISION[],
+            $9::TIMESTAMP WITH TIME ZONE[],
+            $10::TIMESTAMP WITH TIME ZONE[]
         )
         ON CONFLICT (vote_account, epoch)
         DO UPDATE SET
             validator_rewards = EXCLUDED.validator_rewards,
             total_rewards = EXCLUDED.total_rewards,
+            inflation_rewards = EXCLUDED.inflation_rewards,
+            mev_rewards = EXCLUDED.mev_rewards,
+            block_rewards = EXCLUDED.block_rewards,
             take_rate = EXCLUDED.take_rate,
             updated_at = EXCLUDED.updated_at"
         );
@@ -121,6 +139,9 @@ pub async fn store_take_rates(
                     &epochs,
                     &validator_rewards,
                     &total_rewards,
+                    &inflation_rewards,
+                    &mev_rewards,
+                    &block_rewards,
                     &take_rates,
                     &created_ats,
                     &updated_ats,

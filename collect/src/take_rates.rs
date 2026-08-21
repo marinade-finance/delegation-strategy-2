@@ -39,24 +39,30 @@ pub struct TakeRatesParams {
 const DATA_VERSION: u16 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TakeRatesSnapshot {
+pub struct ValidatorRewardsSnapshot {
     pub version: u16,
     pub from_epoch: Epoch,
     pub loaded_at_epoch: Epoch,
     pub loaded_at_slot_index: u64,
     pub created_at: String,
-    pub take_rates: Vec<ValidatorTakeRate>,
+    pub rewards: Vec<ValidatorEpochRewards>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ValidatorTakeRate {
+pub struct ValidatorEpochRewards {
     pub epoch: Epoch,
     pub vote_account: String,
-    // Realized reward split, in lamports, per (vote_account, epoch):
-    // validator_rewards = validator inflation + MEV + block commission
-    // total_rewards     = staker rewards + validator_rewards
+    // Lamports. What the validator kept: its inflation and MEV commissions plus the block rewards it
+    // did not pass through to stakers via Jito's PriorityFeeDistribution.
     pub validator_rewards: u64,
+    // Lamports. Counts both sides of every component and equals inflation + mev + block below. The
+    // Jito passthrough is already inside `block_rewards`, so it is never added twice.
     pub total_rewards: u64,
+    // Lamports, both sides. Summed cluster-wide these are the reward mix `expected_take_rate`
+    // weights commissions by.
+    pub inflation_rewards: u64,
+    pub mev_rewards: u64,
+    pub block_rewards: u64,
 }
 
 async fn create_bigquery_client() -> anyhow::Result<BqClient> {
@@ -64,27 +70,32 @@ async fn create_bigquery_client() -> anyhow::Result<BqClient> {
     Ok(BqClient::new(config).await?)
 }
 
-/// Per-(vote_account, epoch) realized reward split, computed from BigQuery reward tables. Same joins
-/// as the legacy scalar `load_take_rates`, but returns the numerator and denominator separately and
-/// grouped per epoch (not collapsed), so the API can serve a timeseries and derive the windowed
-/// scalar as SUM(num)/SUM(denom). `from_epoch` is a resolved literal so the epoch-partitioned reward
-/// tables are pruned to just the requested window.
-async fn query_take_rates(
+/// Per-(vote_account, epoch) realized reward split, computed from the BigQuery reward tables, for
+/// epochs `>= from_epoch`. The single source of the take-rate math: `collect` persists these rows and
+/// `store::utils::load_take_rates` collapses them into the windowed per-validator scalar and the
+/// cluster reward mix. `from_epoch` is interpolated as a literal on every reward table because they
+/// are epoch-partitioned and would otherwise be scanned whole.
+pub async fn query_validator_rewards(
     bq_client: &BqClient,
     from_epoch: Epoch,
-) -> anyhow::Result<Vec<ValidatorTakeRate>> {
+) -> anyhow::Result<Vec<ValidatorEpochRewards>> {
     let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
     info!("Querying BigQuery for take rates from epoch {from_epoch} in dataset {ds}");
 
     let query = format!(
-        "SELECT vote_account, epoch, CAST(validator_rewards AS STRING) AS validator_rewards, \
-                CAST(total_rewards AS STRING) AS total_rewards FROM (
+        "SELECT vote_account, epoch, \
+                CAST(validator_rewards AS STRING) AS validator_rewards, \
+                CAST(total_rewards AS STRING) AS total_rewards, \
+                CAST(inflation_rewards AS STRING) AS inflation_rewards, \
+                CAST(mev_rewards AS STRING) AS mev_rewards, \
+                CAST(block_rewards AS STRING) AS block_rewards FROM (
             WITH stakers AS (
                 SELECT
                     stakes.vote_account AS vote_account,
                     stakes.epoch AS epoch,
                     SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
-                    SUM(COALESCE(mev.amount, 0)) AS staker_mev
+                    SUM(COALESCE(mev.amount, 0)) AS staker_mev,
+                    SUM(COALESCE(prio.amount, 0)) AS staker_blocks
                 FROM `{ds}.stakes` stakes
                 LEFT JOIN `{ds}.rewards_inflation` inflation
                     ON stakes.stake_account = inflation.stake_account
@@ -92,17 +103,25 @@ async fn query_take_rates(
                 LEFT JOIN `{ds}.rewards_mev` mev
                     ON stakes.stake_account = mev.stake_account
                     AND stakes.epoch = mev.epoch AND mev.epoch >= {from_epoch}
+                -- rewards_validators_blocks is gross, so what Jito's PriorityFeeDistribution passed through has to come off the validator's keep rather than add to the pot.
+                LEFT JOIN `{ds}.rewards_jito_priority_fee` prio
+                    ON stakes.stake_account = prio.stake_account
+                    AND stakes.epoch = prio.epoch AND prio.epoch >= {from_epoch}
                 WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {from_epoch}
                 GROUP BY stakes.vote_account, stakes.epoch
             )
             SELECT
                 stakers.vote_account AS vote_account,
                 stakers.epoch AS epoch,
-                SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
-                    AS validator_rewards,
-                SUM(staker_inflation + staker_mev
-                    + COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0) + COALESCE(vb.amount, 0))
-                    AS total_rewards
+                -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
+                SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
+                    + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_rewards,
+                SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_rewards,
+                SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_rewards,
+                SUM(COALESCE(vb.amount, 0)) AS block_rewards,
+                SUM(staker_inflation + COALESCE(vi.amount, 0)
+                    + staker_mev + COALESCE(vm.amount, 0)
+                    + COALESCE(vb.amount, 0)) AS total_rewards
             FROM stakers
             -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
             LEFT JOIN (
@@ -128,6 +147,7 @@ async fn query_take_rates(
                 ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
             GROUP BY stakers.vote_account, stakers.epoch
         )
+        -- validator_rewards <= total_rewards by construction, so this drops only epochs that paid nothing.
         WHERE total_rewards > 0
         ORDER BY epoch DESC"
     );
@@ -154,28 +174,23 @@ async fn query_take_rates(
         let vote_account = row
             .column::<String>(0)
             .context("Failed to parse vote_account")?;
-        let epoch_str = row.column::<String>(1).context("Failed to parse epoch")?;
-        let validator_rewards_str = row
-            .column::<String>(2)
-            .context("Failed to parse validator_rewards")?;
-        let total_rewards_str = row
-            .column::<String>(3)
-            .context("Failed to parse total_rewards")?;
-        let epoch: Epoch = epoch_str
-            .parse()
-            .context(format!("Failed to parse epoch '{epoch_str}' as u64"))?;
-        let validator_rewards: u64 = validator_rewards_str.parse().context(format!(
-            "Failed to parse validator_rewards '{validator_rewards_str}' as u64"
-        ))?;
-        let total_rewards: u64 = total_rewards_str.parse().context(format!(
-            "Failed to parse total_rewards '{total_rewards_str}' as u64"
-        ))?;
+        // Every numeric column is CAST AS STRING because BigQuery hands back NUMERIC as text.
+        let u64_column = |index: usize, name: &str| -> anyhow::Result<u64> {
+            let raw = row
+                .column::<String>(index)
+                .context(format!("Failed to read {name}"))?;
+            raw.parse()
+                .context(format!("Failed to parse {name} '{raw}' as u64"))
+        };
 
-        results.push(ValidatorTakeRate {
-            epoch,
+        results.push(ValidatorEpochRewards {
+            epoch: u64_column(1, "epoch")?,
             vote_account,
-            validator_rewards,
-            total_rewards,
+            validator_rewards: u64_column(2, "validator_rewards")?,
+            total_rewards: u64_column(3, "total_rewards")?,
+            inflation_rewards: u64_column(4, "inflation_rewards")?,
+            mev_rewards: u64_column(5, "mev_rewards")?,
+            block_rewards: u64_column(6, "block_rewards")?,
         });
     }
 
@@ -204,22 +219,22 @@ pub fn collect_take_rates_info(
     info!("Querying take rates from epoch: {from_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let take_rates = runtime.block_on(async {
+    let rewards = runtime.block_on(async {
         let bq_client = create_bigquery_client().await?;
-        query_take_rates(&bq_client, from_epoch).await
+        query_validator_rewards(&bq_client, from_epoch).await
     })?;
 
-    info!("Retrieved {} validator take rate records", take_rates.len());
+    info!("Retrieved {} validator reward records", rewards.len());
 
     serde_yaml::to_writer(
         std::io::stdout(),
-        &TakeRatesSnapshot {
+        &ValidatorRewardsSnapshot {
             version: DATA_VERSION,
             from_epoch,
             loaded_at_epoch: current_epoch_info.epoch,
             loaded_at_slot_index: current_epoch_info.slot_index,
             created_at: created_at.to_rfc3339(),
-            take_rates,
+            rewards,
         },
     )?;
 
