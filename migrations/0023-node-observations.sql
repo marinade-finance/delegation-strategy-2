@@ -15,11 +15,14 @@ CREATE TABLE node_observations (
   epoch_slot NUMERIC NOT NULL,
   epoch NUMERIC NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  -- A row is written only when something changed, so created_at cannot answer "is this node still
+  -- here". Every run re-stamps this on the node's newest row, making each row an observed interval.
+  last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id)
 );
 
 CREATE INDEX idx_node_observations_identity_created_at
     ON node_observations(identity, created_at);
-CREATE INDEX idx_node_observations_ip_created_at
-    ON node_observations(ip, created_at);
+CREATE INDEX idx_node_observations_ip_last_seen_at
+    ON node_observations(ip, last_seen_at);

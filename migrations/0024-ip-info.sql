@@ -2,7 +2,7 @@
 -- what moves, so one row per IP joined against the observation log gives location history for free.
 CREATE TABLE ip_info (
   ip TEXT NOT NULL,
-  asn INTEGER NULL,
+  asn BIGINT NULL,
   aso TEXT NULL,
   continent TEXT NULL,
   country_iso TEXT NULL,

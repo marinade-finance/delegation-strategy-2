@@ -1,5 +1,6 @@
 mod common;
 
+use chrono::{DateTime, Utc};
 use collect::slot_params::baseline_slots_per_year;
 use collect::solana_service::NodeContact;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
@@ -412,4 +413,129 @@ async fn an_rpc_public_flip_records_a_row() {
         .map(|row| row.get("rpc_public"))
         .collect();
     assert_eq!(flags, vec![Some(false), Some(true)]);
+}
+
+// The gap P1 of the review turned on: an unchanged node appends nothing, so only last_seen_at can
+// still prove it is in the cluster.
+#[tokio::test]
+async fn an_unchanged_node_keeps_one_row_but_advances_last_seen_at() {
+    let schema = "ds_test_node_observations_last_seen";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let nodes = vec![("identityA", node(Some("1.2.3.4")))];
+    run(
+        &mut client,
+        schema,
+        &snapshot(EPOCH, 10, "2026-07-31T00:00:00Z", nodes.clone()),
+    )
+    .await;
+    run(
+        &mut client,
+        schema,
+        &snapshot(EPOCH, 20, "2026-08-30T00:00:00Z", nodes),
+    )
+    .await;
+
+    let rows = rows_for(&client, "identityA").await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get::<_, DateTime<Utc>>("created_at"),
+        "2026-07-31T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    assert_eq!(
+        rows[0].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-08-30T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+}
+
+// A node that stops gossiping must stop advancing, or the departure is invisible.
+#[tokio::test]
+async fn a_node_absent_from_the_snapshot_keeps_its_old_last_seen_at() {
+    let schema = "ds_test_node_observations_departed";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    run(
+        &mut client,
+        schema,
+        &snapshot(
+            EPOCH,
+            10,
+            "2026-07-31T00:00:00Z",
+            vec![
+                ("identityStays", node(Some("1.2.3.4"))),
+                ("identityLeaves", node(Some("5.6.7.8"))),
+            ],
+        ),
+    )
+    .await;
+    run(
+        &mut client,
+        schema,
+        &snapshot(
+            EPOCH,
+            20,
+            "2026-08-30T00:00:00Z",
+            vec![("identityStays", node(Some("1.2.3.4")))],
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        rows_for(&client, "identityLeaves").await[0].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-07-31T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    assert_eq!(
+        rows_for(&client, "identityStays").await[0].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-08-30T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+}
+
+// A changed node gets a fresh row; the superseded one must keep the last_seen_at it actually had.
+#[tokio::test]
+async fn a_changed_node_does_not_advance_the_superseded_row() {
+    let schema = "ds_test_node_observations_superseded";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    run(
+        &mut client,
+        schema,
+        &snapshot(
+            EPOCH,
+            10,
+            "2026-07-31T00:00:00Z",
+            vec![("identityA", node(Some("1.2.3.4")))],
+        ),
+    )
+    .await;
+    run(
+        &mut client,
+        schema,
+        &snapshot(
+            EPOCH,
+            20,
+            "2026-08-30T00:00:00Z",
+            vec![("identityA", node(Some("9.9.9.9")))],
+        ),
+    )
+    .await;
+
+    let rows = rows_for(&client, "identityA").await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-07-31T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    assert_eq!(
+        rows[1].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-08-30T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
 }

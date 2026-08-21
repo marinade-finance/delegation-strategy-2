@@ -52,6 +52,35 @@ struct ObservationRow {
     client_id_raw: Option<String>,
 }
 
+// Re-stamps the node's newest row instead of appending one, so an unchanged node stays a single row
+// while still proving it was in gossip at this instant.
+async fn touch_last_seen(
+    psql_client: &Client,
+    identities: &[String],
+    last_seen_at: DateTime<Utc>,
+) -> anyhow::Result<u64> {
+    if identities.is_empty() {
+        return Ok(0);
+    }
+
+    Ok(psql_client
+        .execute(
+            "
+        UPDATE node_observations o
+        SET last_seen_at = $2
+        FROM (
+            SELECT DISTINCT ON (identity) id
+            FROM node_observations
+            WHERE identity = ANY($1)
+            ORDER BY identity, created_at DESC, id DESC
+        ) newest
+        WHERE o.id = newest.id
+    ",
+            &[&identities, &last_seen_at],
+        )
+        .await?)
+}
+
 pub async fn store_node_observations(
     params: StoreNodeObservationsParams,
     psql_client: &mut Client,
@@ -104,22 +133,28 @@ pub async fn store_node_observations(
 
     // Comparing in Rust, not SQL: a node that gained or lost an address must count as changed, and
     // NULL = NULL in SQL is UNKNOWN.
-    let rows_to_insert: Vec<_> = snapshot
-        .nodes
-        .into_iter()
-        .map(|(identity, node)| ObservationRow {
+    let mut unchanged_identities: Vec<String> = Vec::new();
+    let mut rows_to_insert: Vec<ObservationRow> = Vec::new();
+    for (identity, node) in snapshot.nodes {
+        let row = ObservationRow {
             key: NodeKey::from(&node),
             client_id_raw: node.client_id_raw,
             identity,
-        })
-        .filter(|row| previous.get(&row.identity) != Some(&row.key))
-        .collect();
+        };
+        if previous.get(&row.identity) == Some(&row.key) {
+            unchanged_identities.push(row.identity);
+        } else {
+            rows_to_insert.push(row);
+        }
+    }
+
+    let touched = touch_last_seen(psql_client, &unchanged_identities, snapshot_created_at).await?;
 
     let mut insertions = 0;
     for chunk in rows_to_insert.chunks(DEFAULT_CHUNK_SIZE) {
         let mut query = InsertQueryCombiner::new(
             "node_observations".to_string(),
-            "identity, ip, gossip_port, version, client_id, client_id_raw, feature_set, shred_version, rpc_public, pubsub_public, epoch_slot, epoch, created_at".to_string(),
+            "identity, ip, gossip_port, version, client_id, client_id_raw, feature_set, shred_version, rpc_public, pubsub_public, epoch_slot, epoch, created_at, last_seen_at".to_string(),
         );
         for row in chunk {
             let mut params: Vec<&(dyn ToSql + Sync)> = vec![
@@ -136,13 +171,14 @@ pub async fn store_node_observations(
                 &snapshot_epoch_slot,
                 &snapshot_epoch,
                 &snapshot_created_at,
+                &snapshot_created_at,
             ];
             query.add(&mut params);
         }
         insertions += query.execute(psql_client).await?.unwrap_or(0);
     }
 
-    info!("Stored {insertions} node observation changes");
+    info!("Stored {insertions} node observation changes, {touched} nodes unchanged");
 
     Ok(())
 }

@@ -39,7 +39,9 @@ impl WhoisClient {
                     self.bearer_token.clone().unwrap_or("none".to_string())
                 ),
             )
-            .send()?;
+            .send()?
+            // Every IpInfo field is optional, so an error body would deserialize into an all-None answer indistinguishable from a genuinely unknown address.
+            .error_for_status()?;
         Ok(body.json()?)
     }
 }

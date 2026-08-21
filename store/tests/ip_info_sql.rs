@@ -18,12 +18,14 @@ fn info(city: Option<&str>) -> IpInfo {
     }
 }
 
-async fn observe(client: &Client, identity: &str, ip: Option<&str>, age: &str) {
+// created_at deliberately far older than last_seen_at: that gap is what the rotation must survive,
+// since a node only gets a new row when it changes.
+async fn observe(client: &Client, identity: &str, ip: Option<&str>, last_seen_age: &str) {
     client
         .execute(
-            "INSERT INTO node_observations (identity, ip, epoch_slot, epoch, created_at)
-             VALUES ($1, $2, 0, 1000, now() - $3::text::interval)",
-            &[&identity, &ip, &age],
+            "INSERT INTO node_observations (identity, ip, epoch_slot, epoch, created_at, last_seen_at)
+             VALUES ($1, $2, 0, 1000, now() - interval '365 days', now() - $3::text::interval)",
+            &[&identity, &ip, &last_seen_age],
         )
         .await
         .unwrap();
@@ -48,11 +50,38 @@ async fn only_addresses_never_looked_up_are_offered() {
     observe(&client, "identityB", Some("2.2.2.2"), "1 minute").await;
     observe(&client, "identityC", None, "1 minute").await;
     observe(&client, "identityD", Some("127.0.0.1"), "1 minute").await;
+    observe(&client, "identityE", Some("10.0.0.1"), "1 minute").await;
+    observe(&client, "identityF", Some("3.3.3.3"), "30 days").await;
     enrich(&client, "2.2.2.2", Utc::now()).await;
 
-    let unknown = select_unknown_ips(&client).await.unwrap();
+    let unknown = select_unknown_ips(&client, 7).await.unwrap();
 
     assert_eq!(unknown, vec!["1.1.1.1".to_string()]);
+}
+
+// The whole point of last_seen_at: a node that has not changed in a year is still in the cluster,
+// and its address must stay eligible for enrichment.
+#[tokio::test]
+async fn an_unchanged_node_is_still_offered_for_lookup_and_refresh() {
+    let schema = "ds_test_ip_info_stable_node";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    observe(&client, "identityStable", Some("1.1.1.1"), "1 minute").await;
+
+    assert_eq!(
+        select_unknown_ips(&client, 7).await.unwrap(),
+        vec!["1.1.1.1".to_string()]
+    );
+
+    enrich(&client, "1.1.1.1", Utc::now() - Duration::days(9)).await;
+
+    assert_eq!(
+        select_stale_ips(&client, 10, 7).await.unwrap(),
+        vec!["1.1.1.1".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -116,7 +145,7 @@ async fn a_refresh_overwrites_every_field_including_back_to_null() {
         .query_one("SELECT * FROM ip_info WHERE ip = '1.1.1.1'", &[])
         .await
         .unwrap();
-    assert_eq!(row.get::<_, Option<i32>>("asn"), Some(64500));
+    assert_eq!(row.get::<_, Option<i64>>("asn"), Some(64500));
     assert_eq!(
         row.get::<_, Option<String>>("city").as_deref(),
         Some("Brno")
@@ -146,4 +175,26 @@ async fn a_refresh_overwrites_every_field_including_back_to_null() {
             .get::<_, i64>(0),
         1
     );
+}
+
+// 4-byte ASNs run past i32::MAX, and the column is what decides whether they survive the round trip.
+#[tokio::test]
+async fn a_32_bit_asn_survives_storage() {
+    let schema = "ds_test_ip_info_wide_asn";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    let mut wide = info(Some("Brno"));
+    wide.asn = Some(u32::MAX);
+    upsert_ip_info(&client, &[("1.1.1.1".to_string(), wide)], Utc::now())
+        .await
+        .unwrap();
+
+    let row = client
+        .query_one("SELECT * FROM ip_info WHERE ip = '1.1.1.1'", &[])
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Option<i64>>("asn"), Some(u32::MAX as i64));
 }
