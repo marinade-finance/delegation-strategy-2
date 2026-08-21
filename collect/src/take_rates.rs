@@ -218,7 +218,7 @@ pub fn collect_take_rates_info(
             from_epoch,
             loaded_at_epoch: current_epoch_info.epoch,
             loaded_at_slot_index: current_epoch_info.slot_index,
-            created_at: created_at.to_string(),
+            created_at: created_at.to_rfc3339(),
             take_rates,
         },
     )?;

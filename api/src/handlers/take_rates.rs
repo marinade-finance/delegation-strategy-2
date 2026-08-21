@@ -30,7 +30,8 @@ pub struct QueryParams {
         QueryParams
     ),
     responses(
-        (status = 200, body = ResponseTakeRates)
+        (status = 200, body = ResponseTakeRates),
+        (status = 404, description = "No validator found for the given vote account or identity, or no take rate records stored for it")
     )
 )]
 pub async fn handler(
