@@ -1,9 +1,8 @@
 use crate::context::WrappedContext;
-use crate::handlers::list_validators::OrderDirection;
-use crate::handlers::validator_groups::{
-    page_tree, GetGroupsConfig, GroupOrderField, DEFAULT_LIMIT, DEFAULT_ORDER_DIRECTION,
-    DEFAULT_ORDER_FIELD,
+use crate::handlers::order::{
+    OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
+use crate::handlers::validator_groups::{page_tree, GetGroupsConfig, DEFAULT_LIMIT};
 use crate::metrics;
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -28,7 +27,7 @@ pub struct QueryParams {
     /// block engines does, and its block engines are then served whole.
     query: Option<String>,
     /// Orders the clients, and the block engines inside each one by the same column.
-    order_field: Option<GroupOrderField>,
+    order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
     /// Applies to the clients only; a client always arrives with all of its block engines.
     offset: Option<usize>,

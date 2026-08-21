@@ -1,9 +1,8 @@
 use crate::context::WrappedContext;
-use crate::handlers::list_validators::OrderDirection;
-use crate::handlers::validator_groups::{
-    page_groups, GetGroupsConfig, GroupOrderField, DEFAULT_LIMIT, DEFAULT_ORDER_DIRECTION,
-    DEFAULT_ORDER_FIELD,
+use crate::handlers::order::{
+    OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
+use crate::handlers::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
 use crate::metrics;
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -31,7 +30,7 @@ pub struct ResponseProviders {
 pub struct QueryParams {
     /// Case-insensitive text search over the provider name.
     query: Option<String>,
-    order_field: Option<GroupOrderField>,
+    order_field: Option<OrderField>,
     order_direction: Option<OrderDirection>,
     offset: Option<usize>,
     limit: Option<usize>,

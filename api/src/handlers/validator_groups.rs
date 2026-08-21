@@ -1,29 +1,14 @@
-use crate::handlers::list_validators::OrderDirection;
+use crate::handlers::order::{directed, OrderDirection, OrderField};
 use rust_decimal::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use store::dto::{ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups};
 
 pub const DEFAULT_LIMIT: usize = 100;
-pub const DEFAULT_ORDER_FIELD: GroupOrderField = GroupOrderField::Stake;
-pub const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
-
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, utoipa::ToSchema)]
-pub enum GroupOrderField {
-    Name,
-    Stake,
-    StakeDelta7d,
-    StakeDelta30d,
-    NetApy,
-    TakeRate,
-    Validators,
-    DelegationRelationships,
-}
 
 #[derive(Debug)]
 pub struct GetGroupsConfig {
-    pub order_field: GroupOrderField,
+    pub order_field: OrderField,
     pub order_direction: OrderDirection,
     pub offset: usize,
     pub limit: usize,
@@ -41,46 +26,60 @@ pub struct GroupsPage {
 
 type FieldExtractor = fn(&ValidatorGroupRecord) -> Option<Decimal>;
 
-fn field_extractor(order_field: GroupOrderField) -> FieldExtractor {
+fn field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        GroupOrderField::Name => |_: &ValidatorGroupRecord| None,
-        GroupOrderField::Stake => |group: &ValidatorGroupRecord| Some(group.total_stake),
-        GroupOrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d,
-        GroupOrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d,
-        GroupOrderField::NetApy => {
+        OrderField::Name => |_: &ValidatorGroupRecord| None,
+        OrderField::Stake => |group: &ValidatorGroupRecord| Some(group.total_stake),
+        OrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d,
+        OrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d,
+        OrderField::NetApy => {
             |group: &ValidatorGroupRecord| group.net_apy.and_then(Decimal::from_f64_retain)
         }
-        GroupOrderField::TakeRate => {
+        OrderField::TakeRate => {
             |group: &ValidatorGroupRecord| group.take_rate.and_then(Decimal::from_f64_retain)
         }
-        GroupOrderField::Validators => {
+        OrderField::Credits => {
+            |group: &ValidatorGroupRecord| group.credits.and_then(Decimal::from_f64_retain)
+        }
+        OrderField::MarinadeScore => {
+            |group: &ValidatorGroupRecord| group.marinade_score.and_then(Decimal::from_f64_retain)
+        }
+        OrderField::Apy => {
+            |group: &ValidatorGroupRecord| group.apy.and_then(Decimal::from_f64_retain)
+        }
+        OrderField::Commission => {
+            |group: &ValidatorGroupRecord| group.commission.and_then(Decimal::from_f64_retain)
+        }
+        OrderField::Uptime => {
+            |group: &ValidatorGroupRecord| group.uptime_pct.and_then(Decimal::from_f64_retain)
+        }
+        OrderField::ExpectedTakeRate => |group: &ValidatorGroupRecord| {
+            group.expected_take_rate.and_then(Decimal::from_f64_retain)
+        },
+        OrderField::Validators => {
             |group: &ValidatorGroupRecord| Some(Decimal::from(group.validator_count))
         }
-        GroupOrderField::DelegationRelationships => {
+        OrderField::DelegationRelationships => {
             |group: &ValidatorGroupRecord| group.delegation_relationship_count.map(Decimal::from)
+        }
+        OrderField::Incidents => {
+            |group: &ValidatorGroupRecord| Some(Decimal::from(group.incident_count_3m))
         }
     }
 }
 
-fn directed(ordering: Ordering, order_direction: &OrderDirection) -> Ordering {
-    match order_direction {
-        OrderDirection::ASC => ordering,
-        OrderDirection::DESC => ordering.reverse(),
-    }
-}
-
-fn sort_groups(
+pub fn sort_groups(
     mut groups: Vec<ValidatorGroupRecord>,
-    order_field: GroupOrderField,
+    order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorGroupRecord> {
-    if let GroupOrderField::Name = order_field {
+    if let OrderField::Name = order_field {
         groups.sort_by(|a, b| {
             directed(
-                a.key
+                a.name
                     .to_lowercase()
-                    .cmp(&b.key.to_lowercase())
-                    .then_with(|| a.key.cmp(&b.key)),
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.name.cmp(&b.name)),
                 order_direction,
             )
         });
@@ -101,11 +100,22 @@ fn sort_groups(
             (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
         };
         ordering
-            .then_with(|| a.key.to_lowercase().cmp(&b.key.to_lowercase()))
-            .then_with(|| a.key.cmp(&b.key))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
+}
+
+/// Position of each operator in the order asked for.
+pub type OperatorRanks = HashMap<String, usize>;
+
+pub fn operator_ranks(operators: &[ValidatorGroupRecord]) -> OperatorRanks {
+    operators
+        .iter()
+        .enumerate()
+        .map(|(rank, group)| (group.name.to_lowercase(), rank))
+        .collect()
 }
 
 fn filter_groups(
@@ -118,7 +128,7 @@ fn filter_groups(
 
     groups
         .into_iter()
-        .filter(|group| group.key.to_lowercase().contains(&query))
+        .filter(|group| group.name.to_lowercase().contains(&query))
         .collect()
 }
 
@@ -163,9 +173,9 @@ pub struct TreePage {
 }
 
 fn matches_query(node: &ValidatorGroupNode, query: &str) -> bool {
-    let matches = |key: &str| key.to_lowercase().contains(query);
+    let matches = |name: &str| name.to_lowercase().contains(query);
 
-    matches(&node.group.key) || node.children.iter().any(|child| matches(&child.key))
+    matches(&node.group.name) || node.children.iter().any(|child| matches(&child.name))
 }
 
 pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage {
@@ -185,9 +195,9 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .collect();
     let total_count = matching.len();
 
-    let mut children_by_key: HashMap<String, Vec<ValidatorGroupRecord>> = matching
+    let mut children_by_name: HashMap<String, Vec<ValidatorGroupRecord>> = matching
         .iter()
-        .map(|node| (node.group.key.clone(), node.children.clone()))
+        .map(|node| (node.group.name.clone(), node.children.clone()))
         .collect();
     let parents = sort_groups(
         matching.into_iter().map(|node| node.group).collect(),
@@ -200,7 +210,7 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .skip(config.offset)
         .take(config.limit)
         .map(|group| {
-            let children = children_by_key.remove(&group.key).unwrap_or_default();
+            let children = children_by_name.remove(&group.name).unwrap_or_default();
             ValidatorGroupNode {
                 children: sort_groups(children, config.order_field, &config.order_direction),
                 group,
@@ -221,11 +231,39 @@ mod tests {
     use super::*;
     use store::groups::UNKNOWN_GROUP;
 
-    fn group(key: &str, stake: i64) -> ValidatorGroupRecord {
+    fn group(name: &str, stake: i64) -> ValidatorGroupRecord {
         ValidatorGroupRecord {
-            key: key.to_string(),
+            name: name.to_string(),
             total_stake: Decimal::from(stake),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn operator_ranks_follow_the_order_asked_for_and_fold_the_name() {
+        let rows = vec![
+            group("Figment", 100),
+            group("Hetzner", 500),
+            group("Helius", 900),
+        ];
+
+        for (order_direction, expected) in [
+            (OrderDirection::DESC, [("helius", 0), ("figment", 2)]),
+            (OrderDirection::ASC, [("helius", 2), ("figment", 0)]),
+        ] {
+            let ranks = operator_ranks(&sort_groups(
+                rows.clone(),
+                OrderField::Stake,
+                &order_direction,
+            ));
+            for (name, rank) in expected {
+                assert_eq!(
+                    ranks.get(name),
+                    Some(&rank),
+                    "{name} under {order_direction:?}"
+                );
+            }
+            assert_eq!(ranks.len(), 3);
         }
     }
 
@@ -239,8 +277,8 @@ mod tests {
 
     fn config() -> GetGroupsConfig {
         GetGroupsConfig {
-            order_field: DEFAULT_ORDER_FIELD,
-            order_direction: DEFAULT_ORDER_DIRECTION,
+            order_field: crate::handlers::order::DEFAULT_ORDER_FIELD,
+            order_direction: crate::handlers::order::DEFAULT_ORDER_DIRECTION,
             offset: 0,
             limit: DEFAULT_LIMIT,
             query: None,
@@ -248,7 +286,7 @@ mod tests {
     }
 
     fn keys(page: &GroupsPage) -> Vec<String> {
-        page.groups.iter().map(|group| group.key.clone()).collect()
+        page.groups.iter().map(|group| group.name.clone()).collect()
     }
 
     fn named(keys: &[&str]) -> Vec<String> {
@@ -273,18 +311,18 @@ mod tests {
     fn parent_keys(page: &TreePage) -> Vec<String> {
         page.nodes
             .iter()
-            .map(|node| node.group.key.clone())
+            .map(|node| node.group.name.clone())
             .collect()
     }
 
     fn child_keys(page: &TreePage, parent: &str) -> Vec<String> {
         page.nodes
             .iter()
-            .find(|node| node.group.key == parent)
+            .find(|node| node.group.name == parent)
             .unwrap_or_else(|| panic!("no {parent} in {:?}", parent_keys(page)))
             .children
             .iter()
-            .map(|child| child.key.clone())
+            .map(|child| child.name.clone())
             .collect()
     }
 
@@ -340,7 +378,7 @@ mod tests {
         let page = page_tree(
             client_tree(),
             &GetGroupsConfig {
-                order_field: GroupOrderField::Name,
+                order_field: OrderField::Name,
                 order_direction: OrderDirection::ASC,
                 ..config()
             },
@@ -397,7 +435,7 @@ mod tests {
         let page = page_tree(
             with_unknown,
             &GetGroupsConfig {
-                order_field: GroupOrderField::Name,
+                order_field: OrderField::Name,
                 order_direction: OrderDirection::ASC,
                 ..config()
             },
@@ -473,7 +511,7 @@ mod tests {
                     with_net_apy("high", Some(0.09)),
                 ]),
                 &GetGroupsConfig {
-                    order_field: GroupOrderField::NetApy,
+                    order_field: OrderField::NetApy,
                     order_direction,
                     ..config()
                 },
@@ -536,16 +574,51 @@ mod tests {
                 delegation_relationship_count: Some(900),
                 ..group("relationships", 100)
             },
+            ValidatorGroupRecord {
+                incident_count_3m: 900,
+                ..group("incidents", 100)
+            },
+            ValidatorGroupRecord {
+                credits: Some(0.9),
+                ..group("credits", 100)
+            },
+            ValidatorGroupRecord {
+                marinade_score: Some(0.9),
+                ..group("marinadeScore", 100)
+            },
+            ValidatorGroupRecord {
+                apy: Some(0.9),
+                ..group("apy", 100)
+            },
+            ValidatorGroupRecord {
+                commission: Some(0.9),
+                ..group("commission", 100)
+            },
+            ValidatorGroupRecord {
+                uptime_pct: Some(0.9),
+                ..group("uptime", 100)
+            },
+            ValidatorGroupRecord {
+                expected_take_rate: Some(0.9),
+                ..group("expectedTakeRate", 100)
+            },
         ];
 
         for (order_field, leader) in [
-            (GroupOrderField::Stake, "stake"),
-            (GroupOrderField::StakeDelta7d, "delta7d"),
-            (GroupOrderField::StakeDelta30d, "delta30d"),
-            (GroupOrderField::NetApy, "netApy"),
-            (GroupOrderField::TakeRate, "takeRate"),
-            (GroupOrderField::Validators, "validators"),
-            (GroupOrderField::DelegationRelationships, "relationships"),
+            (OrderField::Stake, "stake"),
+            (OrderField::StakeDelta7d, "delta7d"),
+            (OrderField::StakeDelta30d, "delta30d"),
+            (OrderField::NetApy, "netApy"),
+            (OrderField::TakeRate, "takeRate"),
+            (OrderField::Validators, "validators"),
+            (OrderField::DelegationRelationships, "relationships"),
+            (OrderField::Incidents, "incidents"),
+            (OrderField::Credits, "credits"),
+            (OrderField::MarinadeScore, "marinadeScore"),
+            (OrderField::Apy, "apy"),
+            (OrderField::Commission, "commission"),
+            (OrderField::Uptime, "uptime"),
+            (OrderField::ExpectedTakeRate, "expectedTakeRate"),
         ] {
             let page = page_groups(
                 groups(rows.clone()),

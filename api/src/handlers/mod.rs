@@ -12,6 +12,7 @@ pub mod jito_mev;
 pub mod list_clients;
 pub mod list_providers;
 pub mod list_validators;
+pub mod order;
 pub mod readiness;
 pub mod reports_commission_changes;
 pub mod reports_scoring;

@@ -51,7 +51,10 @@ pub mod close_epoch;
 pub mod cluster_info;
 pub mod commissions;
 pub mod dto;
+// Reached only through `utils`, which stamps operator ids and the incident window onto the records.
+pub mod groups;
 pub mod ls_open_epochs;
+pub mod operators;
 pub mod uptime;
 pub mod utils;
 pub mod validators;

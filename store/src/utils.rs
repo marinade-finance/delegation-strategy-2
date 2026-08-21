@@ -1193,6 +1193,8 @@ pub async fn load_validators(
                     expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
+                    incident_count_3m: 0,
+                    operator: None,
                     verified: false,
                     protected: false,
                     has_last_epoch_stats: false,
@@ -1340,9 +1342,18 @@ pub async fn load_validators(
 
     log::info!("Updating incidents...");
     let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    let incidents_from = Utc::now() - chrono::Duration::days(crate::groups::INCIDENT_WINDOW_DAYS);
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+        record.incident_count_3m = record
+            .incidents
+            .iter()
+            .filter(|incident| incident.start_at >= incidents_from)
+            .count() as u64;
     }
+
+    log::info!("Updating operators...");
+    crate::operators::stamp_operators(records.values_mut());
 
     log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
