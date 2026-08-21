@@ -60,10 +60,8 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
     )?)
 }
 
-pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_credits(vote_accounts: &RpcVoteAccountStatus, epoch: Epoch) -> HashMap<String, u64> {
     info!("Getting credits");
-    let vote_accounts = rpc_client.get_vote_accounts()?;
-
     let mut credits = HashMap::new();
 
     for vote_account in vote_accounts
@@ -81,7 +79,7 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
         }
     }
 
-    Ok(credits)
+    credits
 }
 
 const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");

@@ -210,7 +210,7 @@ pub fn validators_performance(
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
         },
     )?;
-    let credits = get_credits(client, epoch)?;
+    let credits = get_credits(vote_accounts, epoch);
 
     for vote_account in vote_accounts
         .current
