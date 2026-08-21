@@ -114,14 +114,14 @@ pub async fn query_validator_rewards(
                 stakers.vote_account AS vote_account,
                 stakers.epoch AS epoch,
                 -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
-                SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
-                    + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_rewards,
-                SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_rewards,
-                SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_rewards,
-                SUM(COALESCE(vb.amount, 0)) AS block_rewards,
-                SUM(staker_inflation + COALESCE(vi.amount, 0)
+                CAST(SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
+                    + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS INT64) AS validator_rewards,
+                CAST(SUM(staker_inflation + COALESCE(vi.amount, 0)) AS INT64) AS inflation_rewards,
+                CAST(SUM(staker_mev + COALESCE(vm.amount, 0)) AS INT64) AS mev_rewards,
+                CAST(SUM(COALESCE(vb.amount, 0)) AS INT64) AS block_rewards,
+                CAST(SUM(staker_inflation + COALESCE(vi.amount, 0)
                     + staker_mev + COALESCE(vm.amount, 0)
-                    + COALESCE(vb.amount, 0)) AS total_rewards
+                    + COALESCE(vb.amount, 0)) AS INT64) AS total_rewards
             FROM stakers
             -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
             LEFT JOIN (
@@ -174,7 +174,7 @@ pub async fn query_validator_rewards(
         let vote_account = row
             .column::<String>(0)
             .context("Failed to parse vote_account")?;
-        // Every numeric column is CAST AS STRING because BigQuery hands back NUMERIC as text.
+        // BigQuery hands back every scalar as text.
         let u64_column = |index: usize, name: &str| -> anyhow::Result<u64> {
             let raw = row
                 .column::<String>(index)
