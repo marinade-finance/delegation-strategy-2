@@ -1,5 +1,6 @@
 mod common;
 
+use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use common::{
@@ -10,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use store::dto::UNKNOWN_CLIENT_NAME;
 use store::utils::{load_validators, load_versions, ValidatorOverlays};
 use store::versions::{store_versions, StoreVersionsParams};
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
@@ -81,7 +81,7 @@ async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFiel
     };
     let path = write_yaml(name, &serde_yaml::to_string(&snapshot).unwrap());
     store_versions(
-        StoreVersionsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreVersionsParams::parse_from(["store", "--snapshot-file", &path]),
         client,
     )
     .await

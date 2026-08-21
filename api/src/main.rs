@@ -9,13 +9,13 @@ use crate::handlers::{
     unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
     validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
+use clap::Parser;
 use env_logger::Env;
 use log::{error, info};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use std::convert::Infallible;
 use std::sync::Arc;
-use structopt::StructOpt;
 use tokio::sync::RwLock;
 use warp::{Filter, Rejection};
 
@@ -26,41 +26,41 @@ pub mod handlers;
 pub mod metrics;
 pub mod utils;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct Params {
-    #[structopt(long = "postgres-url")]
+    #[arg(long = "postgres-url")]
     postgres_url: String,
 
-    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    #[arg(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
     pub postgres_ssl_root_cert: String,
 
-    #[structopt(long = "scoring-url")]
+    #[arg(long = "scoring-url")]
     scoring_url: String,
 
-    #[structopt(
+    #[arg(
         long = "validator-bonds-api-url",
         env = "VALIDATOR_BONDS_API_URL",
         default_value = "https://validator-bonds-api.marinade.finance"
     )]
     validator_bonds_api_url: String,
 
-    #[structopt(
+    #[arg(
         long = "apy-api-url",
         env = "APY_API_URL",
         default_value = "https://apy.marinade.finance"
     )]
     apy_api_url: String,
 
-    #[structopt(long = "glossary-path")]
+    #[arg(long = "glossary-path")]
     glossary_path: String,
 
-    #[structopt(long = "blacklist-path")]
+    #[arg(long = "blacklist-path")]
     blacklist_path: String,
 
-    #[structopt(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
+    #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
-    #[structopt(long = "port", default_value = "8000")]
+    #[arg(long = "port", default_value = "8000")]
     port: u16,
 }
 
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     info!("Launching API");
 
-    let params = Params::from_args();
+    let params = Params::parse();
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;

@@ -1,16 +1,16 @@
 use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
-use structopt::StructOpt;
 use tokio_postgres::{types::ToSql, Client};
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CloseEpochParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

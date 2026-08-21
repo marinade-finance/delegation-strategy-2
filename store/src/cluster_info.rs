@@ -1,14 +1,14 @@
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreClusterInfoParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

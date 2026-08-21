@@ -6,6 +6,7 @@ use crate::slot_params::{
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use anyhow::Context;
+use clap::Parser;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -14,24 +15,23 @@ use solana_sdk::clock::Epoch;
 use solana_sdk::epoch_info::EpochInfo;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct ValidatorsPerformanceParams {
-    #[structopt(long = "with-rewards", help = "Whether to calculate APY and rewards.")]
+    #[arg(long = "with-rewards", help = "Whether to calculate APY and rewards.")]
     with_rewards: bool,
 
-    #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
+    #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
 
-    #[structopt(
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
     )]
     rpc_attempts: usize,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"

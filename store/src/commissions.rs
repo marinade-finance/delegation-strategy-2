@@ -1,17 +1,17 @@
 use crate::utils::*;
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
-use structopt::StructOpt;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreCommissionsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

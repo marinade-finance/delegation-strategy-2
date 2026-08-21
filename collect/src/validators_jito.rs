@@ -1,5 +1,6 @@
 use crate::{common::*, solana_service::solana_client_with_timeout};
 use anchor_lang::AccountDeserialize;
+use clap::Parser;
 use jito_priority_fee_distribution::state::PriorityFeeDistributionAccount;
 use jito_tip_distribution::state::TipDistributionAccount;
 use log::{info, warn};
@@ -17,25 +18,24 @@ use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct JitoParams {
-    #[structopt(
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
     )]
     rpc_attempts: usize,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(
+    #[arg(
         long = "epoch",
         help = "Overriding 'epoch' to act as if current epoch was set to this value."
     )]

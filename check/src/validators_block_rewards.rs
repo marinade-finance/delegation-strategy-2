@@ -1,14 +1,14 @@
+use clap::Parser;
 use collect::common::measure_milliseconds_per_slot;
 use log::{debug, info};
 use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 use validator::Validate;
 
-#[derive(Debug, StructOpt, Validate)]
+#[derive(Debug, Parser, Validate)]
 pub struct BlockRewardsCheckParams {
-    #[structopt(
+    #[arg(
         long = "slot-offset-wait",
         help = "How many slots to wait after epoch has just started before collecting block rewards. Max slots per epoch is 432000.",
         default_value = "10000"

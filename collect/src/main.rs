@@ -1,3 +1,4 @@
+use clap::Parser;
 use collect::common::*;
 use collect::validators::*;
 use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
@@ -9,18 +10,17 @@ use collect::validators_performance::{
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Params {
-    #[structopt(flatten)]
+    #[command(flatten)]
     common: CommonParams,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: CollectCommand,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 enum CollectCommand {
     Validators(ValidatorsParams),
     ValidatorsPerformance(ValidatorsPerformanceParams),
@@ -46,7 +46,7 @@ impl Display for CollectCommand {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let params = Params::from_args();
+    let params = Params::parse();
 
     let command_name = params.command.to_string();
     let result = match params.command {

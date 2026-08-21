@@ -1,3 +1,4 @@
+use clap::Parser;
 use close_epoch::{close_epoch, CloseEpochParams};
 use cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use collect::validators_jito::JitoAccountType;
@@ -8,31 +9,30 @@ use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
-use structopt::StructOpt;
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
 use validators_jito::{store_jito, StoreJitoParams};
 use versions::{store_versions, StoreVersionsParams};
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CommonParams {
-    #[structopt(long = "postgres-url")]
+    #[arg(long = "postgres-url")]
     postgres_url: String,
 
-    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    #[arg(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
     pub postgres_ssl_root_cert: String,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Params {
-    #[structopt(flatten)]
+    #[command(flatten)]
     common: CommonParams,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: StoreCommand,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 enum StoreCommand {
     Uptime(StoreUptimeParams),
     Commissions(StoreCommissionsParams),
@@ -62,7 +62,7 @@ pub mod versions;
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let params = Params::from_args();
+    let params = Params::parse();
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
