@@ -102,6 +102,9 @@ pub struct ValidatorsPerformanceSnapshot {
     pub slots_per_year: f64,
     pub cluster_inflation: Option<ClusterInflation>,
     pub validators: HashMap<String, ValidatorPerformance>,
+    // Every gossip node, not just the vote-account-joined subset in `validators`; absent from snapshots written before the field existed, which the backfill path still reads.
+    #[serde(default)]
+    pub nodes: HashMap<String, NodeContact>,
     pub rewards: Option<HashMap<String, ValidatorRewards>>,
 }
 
@@ -350,6 +353,7 @@ pub fn collect_validators_performance_info(
             slots_per_year: slot_params.slots_per_year,
             cluster_inflation,
             validators,
+            nodes: node_info,
             rewards,
         },
     )?;
@@ -423,5 +427,62 @@ mod tests {
             (supply as f64) < at_todays_rate * 0.8,
             "{supply} is not materially below the flat-rate {at_todays_rate}"
         );
+    }
+
+    // The backfill and finalized-performance paths replay snapshots written before `nodes` existed.
+    #[test]
+    fn a_snapshot_without_nodes_still_deserializes() {
+        let yaml = "
+epoch: 1000
+epoch_slot: 1
+transaction_count: 1
+created_at: '2026-07-31T00:00:00Z'
+cluster_inflation: null
+validators: {}
+rewards: null
+";
+        let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_str(yaml).unwrap();
+        assert!(snapshot.nodes.is_empty());
+        assert_eq!(snapshot.slots_per_year, baseline_slots_per_year());
+    }
+
+    #[test]
+    fn a_node_survives_the_snapshot_round_trip() {
+        let node = NodeContact {
+            ip: Some("1.2.3.4".into()),
+            gossip_port: Some(8001),
+            version: Some("2.0.0".into()),
+            client_id: Some(3),
+            client_id_raw: Some("Agave".into()),
+            feature_set: Some(123),
+            shred_version: Some(456),
+            rpc_public: true,
+            pubsub_public: false,
+        };
+        let snapshot = ValidatorsPerformanceSnapshot {
+            epoch: 1000,
+            epoch_slot: 1,
+            transaction_count: 1,
+            created_at: "2026-07-31T00:00:00Z".into(),
+            slots_per_year: baseline_slots_per_year(),
+            cluster_inflation: None,
+            validators: Default::default(),
+            nodes: HashMap::from([("identityRoundTrip".to_string(), node)]),
+            rewards: None,
+        };
+
+        let restored: ValidatorsPerformanceSnapshot =
+            serde_yaml::from_str(&serde_yaml::to_string(&snapshot).unwrap()).unwrap();
+
+        let restored_node = restored.nodes.get("identityRoundTrip").unwrap();
+        assert_eq!(restored_node.ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(restored_node.gossip_port, Some(8001));
+        assert_eq!(restored_node.version.as_deref(), Some("2.0.0"));
+        assert_eq!(restored_node.client_id, Some(3));
+        assert_eq!(restored_node.client_id_raw.as_deref(), Some("Agave"));
+        assert_eq!(restored_node.feature_set, Some(123));
+        assert_eq!(restored_node.shred_version, Some(456));
+        assert!(restored_node.rpc_public);
+        assert!(!restored_node.pubsub_public);
     }
 }

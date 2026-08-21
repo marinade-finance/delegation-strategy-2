@@ -5,7 +5,7 @@ use crate::validators::*;
 use bincode::deserialize;
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
@@ -226,7 +226,7 @@ fn is_plausible_node_version(version: &str) -> bool {
         })
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeContact {
     pub ip: Option<String>,
     pub gossip_port: Option<u16>,
