@@ -23,6 +23,6 @@ CREATE TABLE node_observations (
 );
 
 CREATE INDEX idx_node_observations_identity_created_at
-    ON node_observations(identity, created_at);
+    ON node_observations(identity, created_at DESC, id DESC);
 CREATE INDEX idx_node_observations_ip_last_seen_at
     ON node_observations(ip, last_seen_at);
