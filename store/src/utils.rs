@@ -1207,17 +1207,18 @@ pub async fn load_validators(
                 });
 
             // Rows are newest-first, so project all node metadata from the first usable row.
-            let has_node_metadata = [
-                rpc_public.is_some(),
-                version.is_some(),
-                stored_client_id.is_some(),
-                client_id_raw.is_some(),
-                feature_set.is_some(),
-                shred_version.is_some(),
-            ]
-            .into_iter()
-            .any(|present| present);
-            if has_node_metadata && !projected_node_metadata.contains(&vote_account) {
+            let has_node_metadata = rpc_public.is_some()
+                || pubsub_public.is_some()
+                || gossip_port.is_some()
+                || version.is_some()
+                || stored_client_id.is_some()
+                || client_id_raw.is_some()
+                || feature_set.is_some()
+                || shred_version.is_some();
+            if has_node_metadata
+                && row.get::<_, &str>("identity") == record.identity
+                && !projected_node_metadata.contains(&vote_account)
+            {
                 record.version = version.clone();
                 record.client_id = client_id;
                 record.client_name = client_name(client_id);
@@ -1295,9 +1296,9 @@ pub async fn load_validators(
                 client_id_raw,
                 feature_set,
                 shred_version,
-                gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
+                gossip_port,
                 rpc_public,
-                pubsub_public: row.get("pubsub_public"),
+                pubsub_public,
                 activated_stake: row.get::<_, Decimal>("activated_stake"),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                 foundation_stake: row.get::<_, Decimal>("foundation_stake"),
