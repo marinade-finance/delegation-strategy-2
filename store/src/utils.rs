@@ -1130,6 +1130,8 @@ pub async fn load_validators(
             let feature_set = row.get::<_, Option<i64>>("feature_set").map(|n| n as u32);
             let shred_version = row.get::<_, Option<i32>>("shred_version").map(|n| n as u16);
             let rpc_public: Option<bool> = row.get("rpc_public");
+            let pubsub_public: Option<bool> = row.get("pubsub_public");
+            let gossip_port = row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16);
 
             let record = records
                 .entry(vote_account.clone())
@@ -1170,9 +1172,9 @@ pub async fn load_validators(
                     client_id_raw: client_id_raw.clone(),
                     feature_set,
                     shred_version,
-                    gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
+                    gossip_port,
                     rpc_public,
-                    pubsub_public: row.get("pubsub_public"),
+                    pubsub_public,
                     activated_stake: row.get::<_, Decimal>("activated_stake"),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                     foundation_stake: row.get::<_, Decimal>("foundation_stake"),
@@ -1225,6 +1227,9 @@ pub async fn load_validators(
                 record.client_id_raw = client_id_raw.clone();
                 record.feature_set = feature_set;
                 record.shred_version = shred_version;
+                record.gossip_port = gossip_port;
+                record.rpc_public = rpc_public;
+                record.pubsub_public = pubsub_public;
                 projected_node_metadata.insert(vote_account.clone());
             }
 

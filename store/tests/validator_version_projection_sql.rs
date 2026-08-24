@@ -34,18 +34,18 @@ async fn load_validators_projects_the_newest_observed_version() {
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
                 leader_slots, blocks_produced, skip_rate, updated_at, version, client_id,
-                client_id_raw, feature_set, shred_version, rpc_public, pubsub_public
+                client_id_raw, feature_set, shred_version, rpc_public, pubsub_public, gossip_port
             ) VALUES
-                ('identityGossipGap', 'voteGossipGap', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0-rc.1', 3, 'Agave', 123, 456, false, false),
-                ('identityGossipGap', 'voteGossipGap', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL),
-                ('identityGossipGap', 'voteGossipGap', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL),
-                ('identitySeen', 'voteSeen', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false),
-                ('identitySeen', 'voteSeen', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0', 1, 'Jito', 333, 444, true, false),
-                ('identityPartial', 'votePartial', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false),
-                ('identityPartial', 'votePartial', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 1, 'Jito', 333, 444, false, false),
-                ('identityRetained', 'voteRetained', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false),
-                ('identityRetained', 'voteRetained', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0', 1, 'Jito', NULL, NULL, NULL, NULL),
-                ('identityNeverSeen', 'voteNeverSeen', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+                ('identityGossipGap', 'voteGossipGap', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0-rc.1', 3, 'Agave', 123, 456, false, false, 8000),
+                ('identityGossipGap', 'voteGossipGap', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('identityGossipGap', 'voteGossipGap', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('identitySeen', 'voteSeen', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false, 8000),
+                ('identitySeen', 'voteSeen', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0', 1, 'Jito', 333, 444, true, false, 8001),
+                ('identityPartial', 'votePartial', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false, 8000),
+                ('identityPartial', 'votePartial', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 1, 'Jito', 333, 444, false, false, 8001),
+                ('identityRetained', 'voteRetained', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.0.3', 3, 'Agave', 111, 222, false, false, 8000),
+                ('identityRetained', 'voteRetained', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), '4.1.0', 1, 'Jito', NULL, NULL, NULL, NULL, NULL),
+                ('identityNeverSeen', 'voteNeverSeen', $3, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
             &[
                 &Decimal::from(EPOCH_OBSERVED),
                 &Decimal::from(EPOCH_BLANK),
@@ -81,6 +81,9 @@ async fn load_validators_projects_the_newest_observed_version() {
     assert_eq!(gap.client_id_raw, Some("Agave".to_string()));
     assert_eq!(gap.feature_set, Some(123));
     assert_eq!(gap.shred_version, Some(456));
+    assert_eq!(gap.rpc_public, Some(false));
+    assert_eq!(gap.pubsub_public, Some(false));
+    assert_eq!(gap.gossip_port, Some(8000));
     assert_eq!(
         gap.epoch_stats
             .iter()
@@ -116,6 +119,9 @@ async fn load_validators_projects_the_newest_observed_version() {
     assert_eq!(seen.client_id_raw, Some("Jito".to_string()));
     assert_eq!(seen.feature_set, Some(333));
     assert_eq!(seen.shred_version, Some(444));
+    assert_eq!(seen.rpc_public, Some(true));
+    assert_eq!(seen.pubsub_public, Some(false));
+    assert_eq!(seen.gossip_port, Some(8001));
 
     let partial = validators.get("votePartial").unwrap();
     assert_eq!(partial.version, None);
@@ -123,6 +129,8 @@ async fn load_validators_projects_the_newest_observed_version() {
     assert_eq!(partial.client_name, "Jito Labs");
     assert_eq!(partial.feature_set, Some(333));
     assert_eq!(partial.shred_version, Some(444));
+    assert_eq!(partial.rpc_public, Some(false));
+    assert_eq!(partial.gossip_port, Some(8001));
 
     let retained = validators.get("voteRetained").unwrap();
     assert_eq!(retained.version, Some("4.1.0".to_string()));
@@ -130,6 +138,10 @@ async fn load_validators_projects_the_newest_observed_version() {
     assert_eq!(retained.client_name, "Jito Labs");
     assert_eq!(retained.feature_set, None);
     assert_eq!(retained.shred_version, None);
+    // The row that carries the group carries its gaps too: the older row's ports are not mixed in.
+    assert_eq!(retained.rpc_public, None);
+    assert_eq!(retained.pubsub_public, None);
+    assert_eq!(retained.gossip_port, None);
     assert_eq!(
         validators.get("voteNeverSeen").unwrap().version,
         None,
