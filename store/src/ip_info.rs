@@ -48,7 +48,13 @@ fn is_worth_looking_up(ip: &str) -> bool {
                 && !v4.is_broadcast()
                 && !v4.is_documentation()
         }
-        Ok(IpAddr::V6(v6)) => !v6.is_loopback() && !v6.is_unspecified(),
+        Ok(IpAddr::V6(v6)) => {
+            !v6.is_loopback()
+                && !v6.is_unspecified()
+                && !v6.is_multicast()
+                && !v6.is_unique_local()
+                && !v6.is_unicast_link_local()
+        }
         Err(_) => false,
     }
 }
@@ -268,6 +274,10 @@ mod tests {
         assert!(!is_worth_looking_up("0.0.0.0"));
         assert!(!is_worth_looking_up("255.255.255.255"));
         assert!(!is_worth_looking_up("::1"));
+        assert!(!is_worth_looking_up("::"));
+        assert!(!is_worth_looking_up("fc00::1"));
+        assert!(!is_worth_looking_up("fe80::1"));
+        assert!(!is_worth_looking_up("ff02::1"));
     }
 
     // parse_socket_addr splits on the last colon without validating, so the column can hold this.

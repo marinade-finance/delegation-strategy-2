@@ -451,6 +451,41 @@ async fn an_unchanged_node_keeps_one_row_but_advances_last_seen_at() {
     );
 }
 
+// Backfilling an old snapshot must not shorten the observed interval, or the address drops out of the in-use window ip-info selects on.
+#[tokio::test]
+async fn a_replayed_older_snapshot_does_not_move_last_seen_at_backward() {
+    let schema = "ds_test_node_observations_replay";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let nodes = vec![("identityA", node(Some("1.2.3.4")))];
+    run(
+        &mut client,
+        schema,
+        &snapshot(EPOCH, 20, "2026-08-30T00:00:00Z", nodes.clone()),
+    )
+    .await;
+    run(
+        &mut client,
+        schema,
+        &snapshot(EPOCH, 10, "2026-07-31T00:00:00Z", nodes),
+    )
+    .await;
+
+    let rows = rows_for(&client, "identityA").await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get::<_, DateTime<Utc>>("created_at"),
+        "2026-08-30T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    assert_eq!(
+        rows[0].get::<_, DateTime<Utc>>("last_seen_at"),
+        "2026-08-30T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+}
+
 // A node that stops gossiping must stop advancing, or the departure is invisible.
 #[tokio::test]
 async fn a_node_absent_from_the_snapshot_keeps_its_old_last_seen_at() {

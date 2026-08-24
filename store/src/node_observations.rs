@@ -67,7 +67,7 @@ async fn touch_last_seen(
         .execute(
             "
         UPDATE node_observations o
-        SET last_seen_at = $2
+        SET last_seen_at = GREATEST(o.last_seen_at, $2)
         FROM (
             SELECT DISTINCT ON (identity) id
             FROM node_observations
