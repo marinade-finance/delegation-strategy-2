@@ -216,7 +216,7 @@ pub fn collect_validators_info(
                 .filter_map(|(identity, n)| n.ip.clone().map(|ip| (identity.clone(), ip)))
                 .collect();
             get_data_centers(
-                WhoisClient::new(whois, validator_params.whois_bearer_token),
+                WhoisClient::new(whois, validator_params.whois_bearer_token)?,
                 node_ips,
             )?
         }

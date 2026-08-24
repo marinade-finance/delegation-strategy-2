@@ -217,7 +217,7 @@ pub async fn store_ip_info(
         return Ok(());
     }
 
-    let whois_client = Arc::new(WhoisClient::new(params.whois, params.whois_bearer_token));
+    let whois_client = Arc::new(WhoisClient::new(params.whois, params.whois_bearer_token)?);
     let mut upserted = 0;
     // Committed per chunk: a run killed part-way through keeps the lookups it already paid for,
     // instead of discarding the whole batch and starting over next time.
