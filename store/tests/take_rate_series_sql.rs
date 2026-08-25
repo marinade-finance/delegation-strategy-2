@@ -55,7 +55,7 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     let first_epoch = LAST_EPOCH - EPOCHS + 1;
     for epoch in first_epoch..=LAST_EPOCH {
         insert_reward(&client, VOTE, epoch, 0.05).await;
-        // The last epoch is still open: no `epochs` row, so no boundaries.
+        // No `epochs` row for the last one, so its boundaries come back null.
         if epoch < LAST_EPOCH {
             insert_epoch(&client, epoch).await;
         }
@@ -66,10 +66,10 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     let epochs: Vec<u64> = series.iter().map(|record| record.epoch).collect();
     assert_eq!(epochs, (first_epoch..=LAST_EPOCH).collect::<Vec<_>>());
 
-    let open_epoch = series.last().unwrap();
-    assert_eq!(open_epoch.epoch, LAST_EPOCH);
-    assert_eq!(open_epoch.epoch_start_at, None);
-    assert_eq!(open_epoch.epoch_end_at, None);
+    let epoch_without_boundaries = series.last().unwrap();
+    assert_eq!(epoch_without_boundaries.epoch, LAST_EPOCH);
+    assert_eq!(epoch_without_boundaries.epoch_start_at, None);
+    assert_eq!(epoch_without_boundaries.epoch_end_at, None);
 
     let closed_epoch = &series[0];
     assert_eq!(closed_epoch.epoch_start_at, Some(epoch_start(first_epoch)));
