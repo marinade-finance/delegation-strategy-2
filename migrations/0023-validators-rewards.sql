@@ -13,10 +13,6 @@ CREATE TABLE validators_rewards (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
 
   PRIMARY KEY(id),
+  -- Serves the per-validator series read too: leading vote_account, then the epoch lower bound.
   UNIQUE(vote_account, epoch)
 );
-
-CREATE INDEX idx_validators_rewards_epoch
-    ON validators_rewards(epoch);
-CREATE INDEX idx_validators_rewards_vote_account
-    ON validators_rewards(vote_account);
