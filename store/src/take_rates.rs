@@ -184,7 +184,8 @@ pub async fn get_take_rate_series(
 
     let mut records = Vec::with_capacity(rows.len());
     for row in rows {
-        // Null until `store close-epoch` writes the `epochs` row, so the open epoch has no boundaries.
+        // Null where `epochs` has no row: `store close-epoch` has not run for it yet, or a
+        // `--from-epoch` backfill reached past the stored epoch history.
         records.push(TakeRateRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
             epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),

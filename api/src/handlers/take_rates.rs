@@ -57,7 +57,7 @@ impl QueryParams {
     get,
     tag = "Validators",
     operation_id = "List take rate history",
-    description = "Take rate per epoch for a validator. Returns the whole stored history unless bounded by a query parameter.",
+    description = "Take rate per epoch for a validator. Returns the whole stored history unless bounded by a query parameter. `epoch_start_at` and `epoch_end_at` are null for epochs whose boundaries are not recorded.",
     path = "/validators/{vote_account}/take-rates",
     params(
         ("vote_account" = String, Path, description = "Vote account or identity of the validator"),

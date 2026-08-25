@@ -8,10 +8,14 @@ Query parameters:
 - `query_marinade_score` - Optional, if set, filters validators based on them having a positive score from Marinade.
 - `query_marinade_stake` - Optional, if set, filters validators based on them having stake from Marinade.
 - `query_with_names` - Optional, if set, filters validators based on them having/not having `info_name`.
-- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MarinadeScore`, `Apy`, `NetApy`, `Commission`, `Uptime`, `TakeRate`, `ExpectedTakeRate`.
+- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MarinadeScore`, `Apy`, `NetApy`, `Commission`, `Uptime`, `TakeRate`, `ExpectedTakeRate`, `DelegationRelationships`, `Incidents`, and the group-only `Name`, `StakeDelta7d`, `StakeDelta30d`, `Validators` (these four order the `operators` array and leave the validators inside each operator on the `vote_account` tiebreak).
 - `order_direction` - Default `DESC`, possible values: `ASC`, `DESC`.
+- `with_operator_groups` - Optional, `true` also returns the `operators` array and groups the validators by operator: operators ordered by `order_field`, validators ordered by their operator's position and then by the same column. Validators with no operator come last. The array is never filtered and never paged, and its aggregates describe the whole eligible validator set rather than the filtered page.
 - `offset` - Default `0`.
-- `limit` - Default `100`.
+- `limit` - Default `100`. Pages `validators` only.
+
+Every validator carries `operator`, the name of its node operator from operators.csv, or `null` for
+a vote account the file does not list. It matches `operators[].name`, case aside.
 ```bash
 curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
 ```
@@ -133,6 +137,30 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "epoch": 378,
       "commission": 8,
       "created_at": "2022-11-28T15:58:04.038843Z"
+    }
+  ]
+}
+```
+
+## Take rates
+Query parameters, mutually exclusive; without either one the whole stored history is returned:
+- `query_from_epoch` - Lower-bound epoch, inclusive.
+- `query_from_date` - Lower-bound RFC3339 date, resolved to the first epoch ending on/after it.
+
+`epoch_start_at` and `epoch_end_at` are `null` for epochs whose boundaries are not recorded, which
+also puts them out of reach of `query_from_date`.
+```bash
+curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
+```
+```json
+{
+  "take_rates": [
+    {
+      "epoch": 378,
+      "epoch_start_at": "2022-11-27T19:45:05.669098Z",
+      "epoch_end_at": "2022-11-29T19:45:05.669098Z",
+      "take_rate": 0.0812,
+      "created_at": "2022-11-30T15:58:04.038843Z"
     }
   ]
 }
