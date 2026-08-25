@@ -5,9 +5,10 @@ use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::TakeRateRecord;
+use store::take_rates::get_take_rate_series;
+use store::validators_events::resolve_epoch_for_date;
+use tokio_postgres::Client;
 use warp::{http::StatusCode, reply::json, Reply};
-
-const DEFAULT_EPOCHS: u64 = 20;
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseTakeRates {
@@ -17,13 +18,46 @@ pub struct ResponseTakeRates {
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
+    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`.
+    query_from_epoch: Option<u64>,
+    /// Lower-bound date (RFC3339), resolved to the first epoch ending on/after it. Mutually exclusive with `query_from_epoch`.
     query_from_date: Option<DateTime<Utc>>,
+}
+
+impl QueryParams {
+    /// Resolves the lower-bound epoch. `query_from_epoch` and `query_from_date` are mutually
+    /// exclusive; on failure returns the HTTP status + message to respond with.
+    async fn resolve_from_epoch(&self, psql: &Client) -> Result<Option<u64>, (StatusCode, String)> {
+        match (self.query_from_epoch, self.query_from_date) {
+            (Some(_), Some(_)) => Err((
+                StatusCode::BAD_REQUEST,
+                "Specify only one of query_from_epoch / query_from_date".into(),
+            )),
+            (Some(epoch), None) => Ok(Some(epoch)),
+            (None, Some(date)) => match resolve_epoch_for_date(psql, date, true).await {
+                Ok(Some(epoch)) => Ok(Some(epoch)),
+                Ok(None) => Err((
+                    StatusCode::BAD_REQUEST,
+                    "query_from_date is outside the recorded epoch range".into(),
+                )),
+                Err(err) => {
+                    error!("Failed to resolve query_from_date: {err}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to fetch records!".into(),
+                    ))
+                }
+            },
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 #[utoipa::path(
     get,
     tag = "Validators",
     operation_id = "List take rate history",
+    description = "Take rate per epoch for a validator. Returns the whole stored history unless bounded by a query parameter.",
     path = "/validators/{vote_account}/take-rates",
     params(
         ("vote_account" = String, Path, description = "Vote account or identity of the validator"),
@@ -31,7 +65,8 @@ pub struct QueryParams {
     ),
     responses(
         (status = 200, body = ResponseTakeRates),
-        (status = 404, description = "No validator found for the given vote account or identity, or no take rate records stored for it")
+        (status = 400, description = "Both query parameters given, or query_from_date outside the recorded epoch range"),
+        (status = 404, description = "No validator found for the given vote account or identity")
     )
 )]
 pub async fn handler(
@@ -47,48 +82,34 @@ pub async fn handler(
         record.identity == vote_account || record.vote_account == vote_account
     });
 
-    match validator {
-        Some((vote_key, _validator)) => {
-            let take_rates = context.read().await.cache.get_take_rates(vote_key);
+    let Some((vote_key, _validator)) = validator else {
+        error!("No validator found for {}", &vote_account);
+        return Ok(response_error(
+            StatusCode::NOT_FOUND,
+            "Failed to fetch records!".into(),
+        ));
+    };
 
-            Ok(match take_rates {
-                Some(mut take_rates) => {
-                    if let Some(query_from_date) = query_params.query_from_date {
-                        take_rates = take_rates
-                            .iter()
-                            // Epochs with no boundaries yet can't be placed in the range.
-                            .filter(|v| {
-                                v.epoch_start_at
-                                    .is_some_and(|start_at| start_at > query_from_date)
-                            })
-                            .cloned()
-                            .collect();
-                    } else {
-                        let max_epoch = take_rates.iter().map(|v| v.epoch).max().unwrap_or(0);
-                        let from_epoch = max_epoch.saturating_sub(DEFAULT_EPOCHS);
-                        take_rates = take_rates
-                            .iter()
-                            .filter(|v| v.epoch > from_epoch)
-                            .cloned()
-                            .collect();
-                    }
-                    warp::reply::with_status(
-                        json(&ResponseTakeRates { take_rates }),
-                        StatusCode::OK,
-                    )
-                }
-                _ => {
-                    error!("No take rates found for {}", &vote_account);
-                    response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
-                }
-            })
-        }
-        None => {
-            error!("No validator found for {}", &vote_account);
-            Ok(response_error(
-                StatusCode::NOT_FOUND,
-                "Failed to fetch records!".into(),
-            ))
-        }
-    }
+    let context_guard = context.read().await;
+    let psql_client = &context_guard.psql_client;
+
+    let from_epoch = match query_params.resolve_from_epoch(psql_client).await {
+        Ok(from_epoch) => from_epoch,
+        Err((status, message)) => return Ok(response_error(status, message)),
+    };
+
+    Ok(
+        match get_take_rate_series(psql_client, vote_key, from_epoch).await {
+            Ok(take_rates) => {
+                warp::reply::with_status(json(&ResponseTakeRates { take_rates }), StatusCode::OK)
+            }
+            Err(err) => {
+                error!("Failed to fetch take rates for {vote_account}: {err}");
+                response_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch records!".into(),
+                )
+            }
+        },
+    )
 }

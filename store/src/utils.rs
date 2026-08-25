@@ -2,7 +2,7 @@ use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
-    TakeRateRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord,
 };
@@ -499,46 +499,6 @@ pub async fn load_commissions(
             epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
-            created_at: row.get("created_at"),
-        })
-    }
-
-    Ok(records)
-}
-
-pub async fn load_take_rate_series(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<HashMap<String, Vec<TakeRateRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account, take_rate, validators_rewards.epoch,
-                epochs.start_at AS epoch_start, epochs.end_at AS epoch_end, created_at
-            FROM validators_rewards
-            LEFT JOIN epochs ON validators_rewards.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE validators_rewards.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY validators_rewards.epoch ASC
-            ",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
-
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let take_rates = records
-            .entry(vote_account.clone())
-            .or_insert(Default::default());
-        // Null until `store close-epoch` writes the `epochs` row, so the open epoch has no boundaries.
-        take_rates.push(TakeRateRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
-            epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
-            take_rate: row.get("take_rate"),
             created_at: row.get("created_at"),
         })
     }

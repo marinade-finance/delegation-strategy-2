@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, TakeRateRecord, UptimeRecord,
-    ValidatorGroupTree, ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
+    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
 use store::groups::ValidatorGroupings;
 use tokio::time::{sleep, timeout, Duration, Instant};
@@ -23,13 +23,12 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 7;
+const WARM_STEPS: usize = 6;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Client and provider aggregates, derived from the validators they are published with.
 type CachedValidatorGroups = ValidatorGroupings;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
-type CachedTakeRates = HashMap<String, Vec<TakeRateRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
@@ -74,7 +73,6 @@ pub struct Cache {
     pub validators: CachedValidators,
     pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
-    pub take_rates: CachedTakeRates,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
@@ -184,10 +182,6 @@ impl Cache {
 
     pub fn get_all_commissions(&self) -> CachedCommissions {
         self.commissions.clone()
-    }
-
-    pub fn get_take_rates(&self, vote_account: &String) -> Option<Vec<TakeRateRecord>> {
-        self.take_rates.get(vote_account).cloned()
     }
 
     pub fn get_versions(&self, vote_account: &String) -> Option<Vec<VersionRecord>> {
@@ -438,29 +432,6 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
 
     Ok(())
 }
-pub async fn warm_take_rates_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading take rates from DB");
-    let warmup_timer = Instant::now();
-    let take_rates = store::utils::load_take_rate_series(
-        &context.read().await.psql_client,
-        DEFAULT_CACHE_EPOCHS,
-    )
-    .await?;
-
-    context
-        .write()
-        .await
-        .cache
-        .take_rates
-        .clone_from(&take_rates);
-    info!(
-        "Loaded {} take rates to cache in {} ms",
-        take_rates.len(),
-        warmup_timer.elapsed().as_millis()
-    );
-
-    Ok(())
-}
 pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading versions from DB");
     let warmup_timer = Instant::now();
@@ -582,7 +553,6 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("scores", |c| Box::pin(warm_scores_cache(c))),
         ("versions", |c| Box::pin(warm_versions_cache(c))),
         ("commissions", |c| Box::pin(warm_commissions_cache(c))),
-        ("take_rates", |c| Box::pin(warm_take_rates_cache(c))),
         ("uptimes", |c| Box::pin(warm_uptimes_cache(c))),
         ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
         ("validators", |c| Box::pin(warm_validators_cache(c))),

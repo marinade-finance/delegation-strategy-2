@@ -1,3 +1,4 @@
+use crate::dto::TakeRateRecord;
 use chrono::{DateTime, Utc};
 use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
@@ -157,4 +158,41 @@ pub async fn store_take_rates(
     info!("Stored take rates snapshot: {total_upserted} total records upserted");
 
     Ok(())
+}
+
+pub async fn get_take_rate_series(
+    psql_client: &Client,
+    vote_account: &str,
+    from_epoch: Option<u64>,
+) -> anyhow::Result<Vec<TakeRateRecord>> {
+    let from_epoch = from_epoch.map(Decimal::from);
+    let query = format!(
+        "
+        SELECT
+            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate, created_at,
+            epochs.start_at AS epoch_start, epochs.end_at AS epoch_end
+        FROM {VALIDATORS_REWARDS_TABLE}
+        LEFT JOIN epochs ON {VALIDATORS_REWARDS_TABLE}.epoch = epochs.epoch
+        WHERE vote_account = $1
+          AND ($2::NUMERIC IS NULL OR {VALIDATORS_REWARDS_TABLE}.epoch >= $2::NUMERIC)
+        ORDER BY {VALIDATORS_REWARDS_TABLE}.epoch ASC
+        "
+    );
+    let rows = psql_client
+        .query(&query, &[&vote_account, &from_epoch])
+        .await?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Null until `store close-epoch` writes the `epochs` row, so the open epoch has no boundaries.
+        records.push(TakeRateRecord {
+            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
+            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
+            take_rate: row.get("take_rate"),
+            created_at: row.get("created_at"),
+        })
+    }
+
+    Ok(records)
 }

@@ -3,7 +3,7 @@ use anyhow::Context;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
-use log::info;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_sdk::clock::Epoch;
@@ -152,7 +152,7 @@ pub async fn query_validator_rewards(
         ORDER BY epoch DESC"
     );
 
-    info!("Executing query: {query}");
+    debug!("Executing query: {query}");
 
     let request = QueryRequest {
         query,
