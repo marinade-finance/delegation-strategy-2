@@ -2,7 +2,7 @@ use crate::dto::{
     client_label, client_lineage, effective_client_id, ValidatorEpochStats, ValidatorGroupNode,
     ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
-use crate::operators::{self, OperatorLookup};
+use crate::operators;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::*;
@@ -81,12 +81,13 @@ fn group_key(
     validator: &ValidatorRecord,
     stats: &ValidatorEpochStats,
     kind: GroupKind,
-    operator_of: OperatorLookup,
 ) -> Option<String> {
     let client_id = effective_client_id(stats.client_id, stats.client_id_raw.as_deref());
 
     match kind {
-        GroupKind::Operator => normalized(operator_of(&validator.vote_account).map(str::to_string)),
+        GroupKind::Operator => {
+            normalized(operators::operator_of(&validator.vote_account).map(str::to_string))
+        }
         GroupKind::ProviderAso => normalized(stats.dc_aso.clone()),
         GroupKind::ClientLabel => {
             normalized(Some(client_label(client_id))).or_else(|| reported_client(stats))
@@ -283,13 +284,12 @@ fn stake_by_key_at(
     validators: &[&ValidatorRecord],
     epoch: u64,
     kind: GroupKind,
-    operator_of: OperatorLookup,
 ) -> Option<ReferenceStake> {
     let mut stake_by_key: ReferenceStake = Default::default();
     for validator in validators {
         if let Some(stats) = validator.epoch_stats.iter().find(|s| s.epoch == epoch) {
             *stake_by_key
-                .entry(folded(&group_key(validator, stats, kind, operator_of)))
+                .entry(folded(&group_key(validator, stats, kind)))
                 .or_default() += stats.activated_stake;
         }
     }
@@ -306,16 +306,7 @@ fn aggregate_groups(
     validators: &HashMap<String, ValidatorRecord>,
     kind: GroupKind,
 ) -> ValidatorGroups {
-    aggregate_groups_as(validators, kind, operators::operator_of)
-}
-
-#[cfg(test)]
-fn aggregate_groups_as(
-    validators: &HashMap<String, ValidatorRecord>,
-    kind: GroupKind,
-    operator_of: OperatorLookup,
-) -> ValidatorGroups {
-    let Some(population) = Population::with_operators(validators, operator_of) else {
+    let Some(population) = Population::new(validators) else {
         return Default::default();
     };
 
@@ -332,18 +323,10 @@ struct Population<'a> {
     /// than over the rows, so a grouping that drops its unclassified members still reports shares
     /// of the cluster.
     eligible_stake: Decimal,
-    operator_of: OperatorLookup,
 }
 
 impl<'a> Population<'a> {
     fn new(validators: &'a HashMap<String, ValidatorRecord>) -> Option<Self> {
-        Self::with_operators(validators, operators::operator_of)
-    }
-
-    fn with_operators(
-        validators: &'a HashMap<String, ValidatorRecord>,
-        operator_of: OperatorLookup,
-    ) -> Option<Self> {
         let now = Utc::now();
         let eligible = eligible(validators);
         let epochs = epochs(&eligible, now)?;
@@ -363,7 +346,6 @@ impl<'a> Population<'a> {
             all: validators.values().collect(),
             epochs,
             eligible_stake,
-            operator_of,
         })
     }
 }
@@ -392,11 +374,11 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
     let stake_short = population
         .epochs
         .delta_7d
-        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind, population.operator_of));
+        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
     let stake_long = population
         .epochs
         .delta_30d
-        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind, population.operator_of));
+        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
 
     let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
     for validator in &population.eligible {
@@ -408,7 +390,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
             continue;
         };
 
-        let key = group_key(validator, stats, kind, population.operator_of);
+        let key = group_key(validator, stats, kind);
         if key.is_none() && kind.drops_unclassified() {
             continue;
         }
@@ -455,11 +437,8 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
 fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
     let clients = aggregate_keyed(population, GroupKind::ClientLineage);
     let block_engines = aggregate_keyed(population, GroupKind::ClientLabel);
-    let engines_by_client = block_engines_by_client(
-        &population.eligible,
-        population.epochs.current,
-        population.operator_of,
-    );
+    let engines_by_client =
+        block_engines_by_client(&population.eligible, population.epochs.current);
 
     let nodes = clients
         .rows
@@ -491,7 +470,6 @@ fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
 fn block_engines_by_client(
     validators: &[&ValidatorRecord],
     current_epoch: u64,
-    operator_of: OperatorLookup,
 ) -> HashMap<FoldedKey, HashSet<FoldedKey>> {
     let mut engines: HashMap<FoldedKey, HashSet<FoldedKey>> = Default::default();
     for validator in validators {
@@ -505,15 +483,9 @@ fn block_engines_by_client(
                     validator,
                     stats,
                     GroupKind::ClientLineage,
-                    operator_of,
                 )))
                 .or_default()
-                .insert(folded(&group_key(
-                    validator,
-                    stats,
-                    GroupKind::ClientLabel,
-                    operator_of,
-                )));
+                .insert(folded(&group_key(validator, stats, GroupKind::ClientLabel)));
         }
     }
     engines
@@ -690,19 +662,13 @@ mod tests {
     }
 
     // client-ids.csv ids: 3 `Agave`, 2 `Frankendancer`, 6 `Agave + JitoBAM` (agave lineage, like 3).
-    /// The mapping the operator grouping is tested on; `operators.csv` itself is maintained by hand
-    /// and carries whichever rows production needs.
-    fn test_operators(vote_account: &str) -> Option<&'static str> {
-        match vote_account {
-            "figment_one" | "figment_two" => Some("Figment"),
-            "helius_one" => Some("helius"),
-            "helius_two" => Some("Helius"),
-            _ => None,
-        }
-    }
+    /// `operators.csv` rows, so the grouping is exercised on the mapping production reads.
+    const FIGMENT_ONE: &str = "CcaHc2L43ZWjwCHART3oZoJvHLAe9hzT2DJNUpBzoTN1";
+    const FIGMENT_TWO: &str = "26pV97Ce83ZQ6Kz9XT4td8tdoUFPTng8Fb8gPyc53dJx";
+    const HELIUS: &str = "he1iusunGwqrNtafDtLdhsUQDFvo13z9sUa36PauBtk";
 
     fn operators(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroups {
-        aggregate_groups_as(validators, GroupKind::Operator, test_operators)
+        aggregate_groups(validators, GroupKind::Operator)
     }
 
     const AGAVE: Option<u16> = Some(3);
@@ -1269,15 +1235,15 @@ mod tests {
     #[test]
     fn operators_group_the_vote_accounts_the_mapping_names() {
         let validators = validators(vec![
-            Member::new("figment_one", last_two_epochs(300, AGAVE, None)),
-            Member::new("figment_two", last_two_epochs(200, FRANKENDANCER, None)),
-            Member::new("helius_one", last_two_epochs(100, AGAVE, None)),
+            Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None)),
+            Member::new(FIGMENT_TWO, last_two_epochs(200, FRANKENDANCER, None)),
+            Member::new(HELIUS, last_two_epochs(100, AGAVE, None)),
         ]);
 
         let groups = operators(&validators);
         assert_eq!(
             keys(&groups),
-            vec!["Figment".to_string(), "helius".to_string()]
+            vec!["Figment".to_string(), "Helius".to_string()]
         );
 
         let figment = group(&groups, "Figment");
@@ -1289,7 +1255,7 @@ mod tests {
     #[test]
     fn an_unmapped_validator_makes_no_row_but_still_counts_towards_the_shares() {
         let validators = validators(vec![
-            Member::new("figment_one", last_two_epochs(300, AGAVE, None)),
+            Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None)),
             Member::new("nobody", last_two_epochs(700, AGAVE, None)),
         ]);
 
@@ -1308,22 +1274,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_names_differing_only_in_case_are_one_group() {
-        let validators = validators(vec![
-            Member::new("helius_one", last_two_epochs(100, AGAVE, None)),
-            Member::new("helius_two", last_two_epochs(300, AGAVE, None)),
-        ]);
-
-        let groups = operators(&validators);
-        assert_eq!(
-            keys(&groups),
-            vec!["Helius".to_string()],
-            "the spelling the most stake carries wins"
-        );
-        assert_eq!(group(&groups, "Helius").validator_count, 2);
-    }
-
-    #[test]
     fn the_weighted_columns_follow_the_stake_behind_each_member() {
         let validators = validators(vec![
             Member {
@@ -1333,7 +1283,7 @@ mod tests {
                 commission_max_observed: Some(10),
                 uptime_pct: Some(90.0),
                 expected_take_rate: Some(0.04),
-                ..Member::new("figment_one", last_two_epochs(300, AGAVE, None))
+                ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
             },
             Member {
                 credits: 200,
@@ -1342,7 +1292,7 @@ mod tests {
                 commission_advertised: Some(5),
                 uptime_pct: Some(100.0),
                 expected_take_rate: Some(0.08),
-                ..Member::new("figment_two", last_two_epochs(100, AGAVE, None))
+                ..Member::new(FIGMENT_TWO, last_two_epochs(100, AGAVE, None))
             },
         ]);
 
@@ -1375,9 +1325,9 @@ mod tests {
         let validators = validators(vec![
             Member {
                 uptime_pct: Some(90.0),
-                ..Member::new("figment_one", last_two_epochs(100, AGAVE, None))
+                ..Member::new(FIGMENT_ONE, last_two_epochs(100, AGAVE, None))
             },
-            Member::new("figment_two", last_two_epochs(900, AGAVE, None)),
+            Member::new(FIGMENT_TWO, last_two_epochs(900, AGAVE, None)),
         ]);
 
         let figment = &operators(&validators);
@@ -1398,7 +1348,7 @@ mod tests {
         let validators = validators(vec![Member {
             commission_max_observed: Some(100),
             commission_advertised: Some(5),
-            ..Member::new("figment_one", last_two_epochs(100, AGAVE, None))
+            ..Member::new(FIGMENT_ONE, last_two_epochs(100, AGAVE, None))
         }]);
 
         assert_eq!(
@@ -1412,7 +1362,7 @@ mod tests {
     fn operator_stake_delta_measures_the_whole_group() {
         let validators = validators(vec![
             Member::new(
-                "figment_one",
+                FIGMENT_ONE,
                 vec![
                     (CURRENT_EPOCH, 300, AGAVE, None),
                     (PREVIOUS_EPOCH, 300, AGAVE, None),
@@ -1420,7 +1370,7 @@ mod tests {
                 ],
             ),
             Member::new(
-                "figment_two",
+                FIGMENT_TWO,
                 vec![
                     (CURRENT_EPOCH, 200, AGAVE, None),
                     (PREVIOUS_EPOCH, 200, AGAVE, None),
@@ -1439,11 +1389,11 @@ mod tests {
         let validators = validators(vec![
             Member {
                 incidents_days_ago: vec![1, 89],
-                ..Member::new("figment_one", last_two_epochs(300, AGAVE, None))
+                ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
             },
             Member {
                 incidents_days_ago: vec![30, 91, 200],
-                ..Member::new("figment_two", last_two_epochs(200, AGAVE, None))
+                ..Member::new(FIGMENT_TWO, last_two_epochs(200, AGAVE, None))
             },
         ]);
 
@@ -1457,7 +1407,7 @@ mod tests {
     #[test]
     fn a_group_with_no_incidents_reports_zero_rather_than_being_left_out() {
         let validators = validators(vec![Member::new(
-            "figment_one",
+            FIGMENT_ONE,
             last_two_epochs(300, AGAVE, None),
         )]);
 

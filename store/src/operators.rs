@@ -4,11 +4,7 @@ use std::sync::OnceLock;
 
 const OPERATORS_CSV: &str = include_str!("../operators.csv");
 
-/// Injected rather than read from `operators.csv` directly, so the aggregation can be tested on a
-/// mapping of its own instead of on whichever rows the file happens to carry.
-pub type OperatorLookup = fn(&str) -> Option<&'static str>;
-
-/// `#` starts a comment, so the file can carry provenance next to the rows it explains.
+/// `#` starts a comment; the file groups its rows under one per operator.
 fn reader() -> csv::Reader<&'static [u8]> {
     csv::ReaderBuilder::new()
         .comment(Some(b'#'))
