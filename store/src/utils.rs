@@ -1071,6 +1071,7 @@ pub async fn load_validators(
         log::info!("Aggregating validator records...");
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
+        let mut projected_node_metadata: HashSet<String> = Default::default();
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1122,11 +1123,15 @@ pub async fn load_validators(
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
+            let version: Option<String> = row.get("version");
+            let stored_client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
             let client_id_raw: Option<String> = row.get("client_id_raw");
-            let client_id = effective_client_id(
-                row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                client_id_raw.as_deref(),
-            );
+            let client_id = effective_client_id(stored_client_id, client_id_raw.as_deref());
+            let feature_set = row.get::<_, Option<i64>>("feature_set").map(|n| n as u32);
+            let shred_version = row.get::<_, Option<i32>>("shred_version").map(|n| n as u16);
+            let rpc_public: Option<bool> = row.get("rpc_public");
+            let pubsub_public: Option<bool> = row.get("pubsub_public");
+            let gossip_port = row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16);
 
             let record = records
                 .entry(vote_account.clone())
@@ -1158,18 +1163,18 @@ pub async fn load_validators(
                     commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
-                    version: row.get("version"),
+                    version: version.clone(),
                     client_id,
                     client_name: client_name(client_id),
                     client_label: client_label(client_id),
                     client_vendor: client_vendor(client_id),
                     client_lineage: client_lineage(client_id),
                     client_id_raw: client_id_raw.clone(),
-                    feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                    shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                    gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                    rpc_public: row.get("rpc_public"),
-                    pubsub_public: row.get("pubsub_public"),
+                    feature_set,
+                    shred_version,
+                    gossip_port,
+                    rpc_public,
+                    pubsub_public,
                     activated_stake: row.get::<_, Decimal>("activated_stake"),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                     foundation_stake: row.get::<_, Decimal>("foundation_stake"),
@@ -1202,6 +1207,34 @@ pub async fn load_validators(
                     rugged_commission_info: Vec::new(),
                     rugged_commission_occurrences: 0,
                 });
+
+            // Rows are newest-first, so project all node metadata from the first usable row.
+            let has_node_metadata = rpc_public.is_some()
+                || pubsub_public.is_some()
+                || gossip_port.is_some()
+                || version.is_some()
+                || stored_client_id.is_some()
+                || client_id_raw.is_some()
+                || feature_set.is_some()
+                || shred_version.is_some();
+            if has_node_metadata
+                && row.get::<_, &str>("identity") == record.identity
+                && !projected_node_metadata.contains(&vote_account)
+            {
+                record.version = version.clone();
+                record.client_id = client_id;
+                record.client_name = client_name(client_id);
+                record.client_label = client_label(client_id);
+                record.client_vendor = client_vendor(client_id);
+                record.client_lineage = client_lineage(client_id);
+                record.client_id_raw = client_id_raw.clone();
+                record.feature_set = feature_set;
+                record.shred_version = shred_version;
+                record.gossip_port = gossip_port;
+                record.rpc_public = rpc_public;
+                record.pubsub_public = pubsub_public;
+                projected_node_metadata.insert(vote_account.clone());
+            }
 
             let seeding_epoch = *seeding_epochs.entry(vote_account.clone()).or_insert(epoch);
             // Gating all three on max_observed keeps them from one row; stopping one epoch below the record's own is what makes that row the newest closed epoch rather than whichever older row still happens to have the column. commission_advertised deliberately stays on the open epoch that seeded the record.
@@ -1250,7 +1283,7 @@ pub async fn load_validators(
                 commission_effective: row
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
-                version: row.get("version"),
+                version,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),
@@ -1263,11 +1296,11 @@ pub async fn load_validators(
                 client_vendor: client_vendor(client_id),
                 client_lineage: client_lineage(client_id),
                 client_id_raw,
-                feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                rpc_public: row.get("rpc_public"),
-                pubsub_public: row.get("pubsub_public"),
+                feature_set,
+                shred_version,
+                gossip_port,
+                rpc_public,
+                pubsub_public,
                 activated_stake: row.get::<_, Decimal>("activated_stake"),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                 foundation_stake: row.get::<_, Decimal>("foundation_stake"),
