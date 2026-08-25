@@ -1,5 +1,7 @@
 pub mod dto;
 pub mod groups;
+pub mod ip_info;
+pub mod node_observations;
 pub mod rewards;
 pub mod scoring;
 pub mod utils;
