@@ -18,6 +18,7 @@ pub mod reports_scoring;
 pub mod reports_scoring_html;
 pub mod reports_staking;
 pub mod rewards;
+pub mod take_rates;
 pub mod unstake_hints;
 pub mod uptimes;
 pub mod validator_groups;

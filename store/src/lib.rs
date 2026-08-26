@@ -4,6 +4,7 @@ pub mod ip_info;
 pub mod node_observations;
 pub mod rewards;
 pub mod scoring;
+pub mod take_rates;
 pub mod utils;
 pub mod validators;
 pub mod validators_block_rewards;
