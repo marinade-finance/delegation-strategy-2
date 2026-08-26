@@ -29,7 +29,8 @@ pub struct ResponseValidators {
     /// Operator rows, ordered by `order_field`, present only under `with_operator_groups`.
     #[serde(skip_serializing_if = "Option::is_none")]
     operators: Option<Vec<ValidatorGroupRecord>>,
-    /// Number of validators matching the query and filters, before `offset`/`limit`.
+    /// Number of rows matching the query and filters, before `offset`/`limit`: validators, or
+    /// top-level rows under `with_operator_groups`.
     total_count: usize,
     /// When validator-bonds last answered for the `verified`/`protected` flags. Older than a few minutes means the flags are being reused because that API is failing.
     bond_flags_updated_at: Option<DateTime<Utc>>,
@@ -64,7 +65,7 @@ pub struct QueryParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. The array is never filtered and never paged; `offset`/`limit` cut `validators` alone.
+    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. `offset`/`limit` then cut those top-level rows rather than validators, so an operator arrives with all of its validators or not at all, and `total_count` counts rows. The `operators` array itself is never filtered and never paged.
     with_operator_groups: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -99,7 +100,8 @@ pub struct GetValidatorsConfig {
 pub struct ValidatorsPage {
     pub validators: Vec<ValidatorRecord>,
     pub operators: Option<Vec<ValidatorGroupRecord>>,
-    /// Number of validators matching the query and filters, before `offset`/`limit`.
+    /// Number of rows matching the query and filters, before `offset`/`limit`: validators, or
+    /// top-level rows under `with_operator_groups`.
     pub total_count: usize,
     pub bond_flags_updated_at: Option<DateTime<Utc>>,
     pub net_apy_updated_at: Option<DateTime<Utc>>,
@@ -122,19 +124,6 @@ pub async fn get_validators(
     };
 
     let validators = filter_validators(validators, &config);
-    let total_count = validators.len();
-
-    let operators = operator_groups
-        .map(|groups| sort_groups(groups.groups, config.order_field, &config.order_direction));
-    let validators = match &operators {
-        Some(operators) => sort_validators_with_operator_grouping(
-            validators,
-            operators,
-            config.order_field,
-            &config.order_direction,
-        ),
-        None => sort_validators(validators, config.order_field, &config.order_direction),
-    };
     // Measured over the whole match rather than the page, so every page reads the same window.
     let min_epoch = epoch_window_floor(
         validators
@@ -146,10 +135,12 @@ pub async fn get_validators(
         config.epochs,
     );
 
+    let operators = operator_groups
+        .map(|groups| sort_groups(groups.groups, config.order_field, &config.order_direction));
+    let (validators, total_count) = page_validators(validators, operators.as_deref(), &config);
+
     let page = validators
         .into_iter()
-        .skip(config.offset)
-        .take(config.limit)
         .map(|mut v| {
             match config.query_from_date {
                 Some(from_date) => v.epoch_stats.retain(|es| {
@@ -201,26 +192,21 @@ fn top_level_row(validator: &ValidatorRecord) -> TopLevelRow {
     }
 }
 
-/// Operator rows and validators belonging to none, ranked against each other on the same column.
+/// The rows `validators` occupies, ranked against each other on the same column. An operator no
+/// validator here belongs to is not a row, so a page of rows never comes back empty.
 fn top_level_ranks(
     validators: &[ValidatorRecord],
     operators: &[ValidatorGroupRecord],
     order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> TopLevelRanks {
+    let aggregated: HashMap<String, &ValidatorGroupRecord> = operators
+        .iter()
+        .map(|operator| (operator.name.to_lowercase(), operator))
+        .collect();
+
     let mut rows: Vec<(TopLevelRow, Option<Decimal>, String)> = Vec::new();
     let mut placed: HashSet<TopLevelRow> = HashSet::new();
-
-    for operator in operators {
-        let row = TopLevelRow::Operator(operator.name.to_lowercase());
-        if placed.insert(row.clone()) {
-            rows.push((
-                row,
-                group_column(operator, order_field),
-                operator.name.clone(),
-            ));
-        }
-    }
 
     for validator in validators {
         let row = top_level_row(validator);
@@ -228,8 +214,15 @@ fn top_level_ranks(
             continue;
         }
         match &validator.operator {
-            // No row for this operator, so no column value: the block sorts at the tail.
-            Some(operator) => rows.push((row, None, operator.clone())),
+            Some(operator) => match aggregated.get(&operator.to_lowercase()) {
+                Some(aggregate) => rows.push((
+                    row,
+                    group_column(aggregate, order_field),
+                    aggregate.name.clone(),
+                )),
+                // No row for this operator, so no column value: the block sorts at the tail.
+                None => rows.push((row, None, operator.clone())),
+            },
             None => {
                 let standalone = singleton_group(validator);
                 rows.push((row, group_column(&standalone, order_field), standalone.name));
@@ -254,23 +247,57 @@ fn top_level_ranks(
         .collect()
 }
 
-pub fn sort_validators(
+/// The page and its total count. With `operators`, both are in top-level rows: an operator's
+/// validators arrive whole or not at all.
+fn page_validators(
+    validators: Vec<ValidatorRecord>,
+    operators: Option<&[ValidatorGroupRecord]>,
+    config: &GetValidatorsConfig,
+) -> (Vec<ValidatorRecord>, usize) {
+    let Some(operators) = operators else {
+        let validators = sort_validators(validators, config.order_field, &config.order_direction);
+        let total_count = validators.len();
+
+        return (
+            validators
+                .into_iter()
+                .skip(config.offset)
+                .take(config.limit)
+                .collect(),
+            total_count,
+        );
+    };
+
+    let ranks = top_level_ranks(
+        &validators,
+        operators,
+        config.order_field,
+        &config.order_direction,
+    );
+    let rows = config.offset..config.offset.saturating_add(config.limit);
+    let page = sort_validators_ranked(
+        validators,
+        Some(&ranks),
+        config.order_field,
+        &config.order_direction,
+    )
+    .into_iter()
+    .filter(|validator| {
+        ranks
+            .get(&top_level_row(validator))
+            .is_some_and(|rank| rows.contains(rank))
+    })
+    .collect();
+
+    (page, ranks.len())
+}
+
+fn sort_validators(
     validators: Vec<ValidatorRecord>,
     order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorRecord> {
     sort_validators_ranked(validators, None, order_field, order_direction)
-}
-
-/// Ordered by `order_field`, but under the operator each validator belongs to.
-pub fn sort_validators_with_operator_grouping(
-    validators: Vec<ValidatorRecord>,
-    operators: &[ValidatorGroupRecord],
-    order_field: OrderField,
-    order_direction: &OrderDirection,
-) -> Vec<ValidatorRecord> {
-    let ranks = top_level_ranks(&validators, operators, order_field, order_direction);
-    sort_validators_ranked(validators, Some(&ranks), order_field, order_direction)
 }
 
 fn sort_validators_ranked(
@@ -286,16 +313,40 @@ fn sort_validators_ranked(
             .and_then(|ranks| ranks.get(&top_level_row(validator)).copied())
             .unwrap_or(usize::MAX)
     };
+    // `Name` is a name, not a number, so it orders on its own key rather than through the extractor.
+    let named = matches!(order_field, OrderField::Name);
     // Keyed up front: sort_by would otherwise re-extract on both sides of every one of n·log n comparisons.
-    let mut keyed: Vec<(usize, Option<Decimal>, ValidatorRecord)> = validators
+    let mut keyed: Vec<(usize, Option<Decimal>, String, ValidatorRecord)> = validators
         .into_iter()
-        .map(|validator| (rank(&validator), field_extractor(&validator), validator))
+        .map(|validator| {
+            let name = if named {
+                validator
+                    .info_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&validator.vote_account)
+                    .to_lowercase()
+            } else {
+                String::new()
+            };
+            (
+                rank(&validator),
+                field_extractor(&validator),
+                name,
+                validator,
+            )
+        })
         .collect();
-    keyed.sort_by(|(a_rank, a_key, a), (b_rank, b_key, b)| {
+    keyed.sort_by(|(a_rank, a_key, a_name, a), (b_rank, b_key, b_name, b)| {
         // Ascending in both directions: the direction is already spent on the operator order.
         a_rank
             .cmp(b_rank)
             .then_with(|| {
+                if named {
+                    return directed(a_name.cmp(b_name), order_direction);
+                }
+
                 // A missing value is not a zero one, so it stays last whichever way the present ones go.
                 match (a_key, b_key) {
                     (None, None) => Ordering::Equal,
@@ -308,10 +359,7 @@ fn sort_validators_ranked(
             // cache refresh and makes offset pages overlap or skip rows.
             .then_with(|| a.vote_account.cmp(&b.vote_account))
     });
-    keyed
-        .into_iter()
-        .map(|(_, _, validator)| validator)
-        .collect()
+    keyed.into_iter().map(|(.., validator)| validator).collect()
 }
 
 // None means the record has no value for the field, not that it has a zero one.
@@ -927,13 +975,106 @@ pub mod tests {
         order_direction: &OrderDirection,
     ) -> Vec<String> {
         let operators = sort_groups(operators, order_field, order_direction);
-        let validators = sort_validators_with_operator_grouping(
+        let ranks = top_level_ranks(&validators, &operators, order_field, order_direction);
+        order(sort_validators_ranked(
             validators,
-            &operators,
+            Some(&ranks),
             order_field,
             order_direction,
+        ))
+    }
+
+    /// The page and the `total_count` beside it.
+    fn paged(
+        validators: Vec<ValidatorRecord>,
+        operators: Option<Vec<ValidatorGroupRecord>>,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<String>, usize) {
+        let config = GetValidatorsConfig {
+            offset,
+            limit,
+            with_operator_groups: operators.is_some(),
+            ..config()
+        };
+        let operators = operators
+            .map(|operators| sort_groups(operators, config.order_field, &config.order_direction));
+        let (page, total_count) = page_validators(validators, operators.as_deref(), &config);
+
+        (order(page), total_count)
+    }
+
+    fn two_operators() -> (Vec<ValidatorRecord>, Vec<ValidatorGroupRecord>) {
+        (
+            vec![
+                operated("bigOfX", 400, Some("X")),
+                operated("smallOfX", 200, Some("X")),
+                operated("alone", 500, None),
+                operated("bigOfY", 200, Some("Y")),
+                operated("smallOfY", 100, Some("Y")),
+            ],
+            vec![operator("X", 600), operator("Y", 300)],
+        )
+    }
+
+    #[test]
+    fn paging_cuts_top_level_rows_and_never_an_operators_validators() {
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged(validators, Some(operators), 0, 1),
+            (vec!["bigOfX".to_string(), "smallOfX".to_string()], 3),
+            "one row is one operator with both of its validators, out of three rows"
         );
-        order(validators)
+
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged(validators, Some(operators), 1, 1),
+            (vec!["alone".to_string()], 3),
+            "the next row is the lone validator, and X does not repeat"
+        );
+
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged(validators, Some(operators), 2, 1),
+            (vec!["bigOfY".to_string(), "smallOfY".to_string()], 3)
+        );
+    }
+
+    #[test]
+    fn a_row_offset_past_the_last_row_serves_nothing() {
+        let (validators, operators) = two_operators();
+        assert_eq!(paged(validators, Some(operators), 3, 10), (Vec::new(), 3));
+    }
+
+    #[test]
+    fn paging_without_the_operator_groups_cuts_validators() {
+        let (validators, _) = two_operators();
+        assert_eq!(
+            paged(validators, None, 1, 2),
+            (vec!["bigOfX".to_string(), "bigOfY".to_string()], 5),
+            "by stake: alone, bigOfX, bigOfY, smallOfX, smallOfY"
+        );
+
+        let (validators, _) = two_operators();
+        assert_eq!(
+            paged(validators, None, 0, 1),
+            (vec!["alone".to_string()], 5),
+            "the count is validators, and a page can hold one"
+        );
+    }
+
+    #[test]
+    fn an_operator_no_validator_in_the_page_belongs_to_is_not_a_row() {
+        assert_eq!(
+            paged(
+                vec![operated("onlyOne", 100, Some("X"))],
+                Some(vec![operator("X", 600), operator("Y", 300)]),
+                0,
+                100,
+            ),
+            (vec!["onlyOne".to_string()], 1),
+            "Y has no validator here, so it is not a row the pager can land on"
+        );
     }
 
     #[test]
@@ -1129,21 +1270,77 @@ pub mod tests {
 
     #[test]
     fn a_group_only_column_leaves_the_validators_on_the_vote_account_tiebreak() {
-        for order_field in [OrderField::Name, OrderField::Validators] {
+        assert_eq!(
+            by_operator(
+                vec![
+                    operated("bbb", 1, Some("Big")),
+                    operated("aaa", 900, Some("Big")),
+                ],
+                vec![operator("Big", 900)],
+                OrderField::Validators,
+                &OrderDirection::DESC,
+            ),
+            vec!["aaa", "bbb"],
+            "a validator count describes a group, so it must not order validators"
+        );
+    }
+
+    fn named(
+        vote_account: &str,
+        info_name: Option<&str>,
+        operator: Option<&str>,
+    ) -> ValidatorRecord {
+        ValidatorRecord {
+            info_name: info_name.map(str::to_string),
+            ..operated(vote_account, 100, operator)
+        }
+    }
+
+    #[test]
+    fn ordering_by_name_orders_an_operators_validators_by_the_name_each_reports() {
+        for (direction, expected) in [
+            (
+                OrderDirection::ASC,
+                vec!["zzzAcme", "mmmUnnamed", "aaaZulu"],
+            ),
+            (
+                OrderDirection::DESC,
+                vec!["aaaZulu", "mmmUnnamed", "zzzAcme"],
+            ),
+        ] {
             assert_eq!(
                 by_operator(
                     vec![
-                        operated("bbb", 1, Some("Big")),
-                        operated("aaa", 900, Some("Big")),
+                        named("aaaZulu", Some("Zulu"), Some("Big")),
+                        named("zzzAcme", Some("acme"), Some("Big")),
+                        // No name of its own, so it sorts as its vote account.
+                        named("mmmUnnamed", None, Some("Big")),
                     ],
                     vec![operator("Big", 900)],
-                    order_field,
-                    &OrderDirection::DESC,
+                    OrderField::Name,
+                    &direction,
                 ),
-                vec!["aaa", "bbb"],
-                "{order_field:?} describes a group, so it must not order validators"
+                expected,
+                "{direction:?}: the name folds case and beats the vote account"
             );
         }
+    }
+
+    #[test]
+    fn ordering_by_name_treats_a_blank_name_as_none() {
+        assert_eq!(
+            by_operator(
+                vec![
+                    named("aaaBlank", Some("   "), Some("Big")),
+                    named("zzzNamed", Some("bbb"), Some("Big")),
+                ],
+                vec![operator("Big", 900)],
+                OrderField::Name,
+                &OrderDirection::ASC,
+            ),
+            vec!["aaaBlank", "zzzNamed"],
+            "a blank name is no name, so the vote account orders it"
+        );
     }
 
     #[test]
