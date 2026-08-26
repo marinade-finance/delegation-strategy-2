@@ -552,7 +552,7 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
-        /// Days ago each downtime interval began.
+        /// Days ago each downtime interval began. Each lasts long enough to count.
         incidents_days_ago: Vec<i64>,
     }
 
@@ -610,7 +610,7 @@ mod tests {
                         epoch: CURRENT_EPOCH,
                         start_at: Utc::now() - Duration::days(*days_ago),
                         end_at: Utc::now() - Duration::days(*days_ago),
-                        downtime_seconds: 0,
+                        downtime_seconds: crate::utils::INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS,
                     })
                     .collect();
 
@@ -619,7 +619,11 @@ mod tests {
                     Utc::now() - Duration::days(crate::utils::INCIDENTS_COUNTED_DAYS);
                 let incident_count_3m = incidents
                     .iter()
-                    .filter(|incident| incident.start_at >= incidents_from)
+                    .filter(|incident| {
+                        incident.start_at >= incidents_from
+                            && incident.downtime_seconds
+                                >= crate::utils::INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
+                    })
                     .count() as u64;
 
                 (

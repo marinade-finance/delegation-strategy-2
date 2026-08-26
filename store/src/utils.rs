@@ -229,6 +229,9 @@ const INCIDENTS_LOADED_EPOCHS: u64 = 90;
 /// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
 pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
 
+/// Downtime an interval needs to count towards `incident_count_3m`.
+pub const INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS: u64 = 180;
+
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
@@ -1385,7 +1388,10 @@ pub async fn load_validators(
         record.incident_count_3m = record
             .incidents
             .iter()
-            .filter(|incident| incident.start_at >= incidents_from)
+            .filter(|incident| {
+                incident.start_at >= incidents_from
+                    && incident.downtime_seconds >= INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
+            })
             .count() as u64;
     }
 
