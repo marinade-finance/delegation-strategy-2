@@ -223,9 +223,11 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Window (in epochs) over which per-validator downtime incidents are collected for the
-/// `incidents` field on `/validators`.
-const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`.
+const INCIDENTS_LOADED_EPOCHS: u64 = 90;
+
+/// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
+pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
 
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
@@ -1376,8 +1378,8 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
-    let incidents_from = Utc::now() - chrono::Duration::days(crate::groups::INCIDENT_WINDOW_DAYS);
+    let incidents = load_incidents(psql_client, INCIDENTS_LOADED_EPOCHS).await?;
+    let incidents_from = Utc::now() - chrono::Duration::days(INCIDENTS_COUNTED_DAYS);
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
         record.incident_count_3m = record

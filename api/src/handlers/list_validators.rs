@@ -12,7 +12,7 @@ use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
-    dto::{ValidatorGroupRecord, ValidatorRecord, ValidatorsAggregated},
+    dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
     groups::{aggregate_operators, singleton_group},
     utils::{to_fixed_for_sort, worst_known_commission},
 };
@@ -30,6 +30,14 @@ pub struct ResponseValidators {
     /// under it.
     #[serde(skip_serializing_if = "Option::is_none")]
     operators: Option<Vec<ValidatorGroupRecord>>,
+    /// Activated stake of every validator matching the query, in lamports — the denominator behind the
+    /// operator rows' `stake_share`. Summing the rows does not recover it: a validator belonging to no
+    /// operator counts here and has no row. Present only under `with_operator_groups`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_activated_stake: Option<Decimal>,
+    /// Epoch the operator rows describe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_epoch: Option<u64>,
     /// Number of rows matching the query and filters, before `offset`/`limit`: validators, or
     /// top-level rows under `with_operator_groups`.
     total_count: usize,
@@ -100,7 +108,7 @@ pub struct GetValidatorsConfig {
 #[derive(Debug)]
 pub struct ValidatorsPage {
     pub validators: Vec<ValidatorRecord>,
-    pub operators: Option<Vec<ValidatorGroupRecord>>,
+    pub operators: Option<ValidatorGroups>,
     /// Number of rows matching the query and filters, before `offset`/`limit`: validators, or
     /// top-level rows under `with_operator_groups`.
     pub total_count: usize,
@@ -135,13 +143,24 @@ pub async fn get_validators(
     // Rows describe the validators this response serves, so they are aggregated per request.
     let operators = config.with_operator_groups.then(|| {
         let matching: Vec<&ValidatorRecord> = validators.iter().collect();
-        sort_groups(
-            aggregate_operators(&matching).groups,
-            config.order_field,
-            &config.order_direction,
-        )
+        let aggregated = aggregate_operators(&matching);
+
+        ValidatorGroups {
+            groups: sort_groups(
+                aggregated.groups,
+                config.order_field,
+                &config.order_direction,
+            ),
+            ..aggregated
+        }
     });
-    let (validators, total_count) = page_validators(validators, operators.as_deref(), &config);
+    let (validators, total_count) = page_validators(
+        validators,
+        operators
+            .as_ref()
+            .map(|operators| operators.groups.as_slice()),
+        &config,
+    );
 
     let page = validators
         .into_iter()
@@ -528,11 +547,21 @@ pub async fn handler(
     Ok(match validators {
         Ok(page) => {
             let validators_aggregated = store::utils::aggregate_validators(&page.validators);
+            let (operators, total_activated_stake, current_epoch) = match page.operators {
+                Some(operators) => (
+                    Some(operators.groups),
+                    Some(operators.total_activated_stake),
+                    operators.current_epoch,
+                ),
+                None => (None, None, None),
+            };
             warp::reply::with_status(
                 json(&ResponseValidators {
                     validators: page.validators,
                     validators_aggregated,
-                    operators: page.operators,
+                    operators,
+                    total_activated_stake,
+                    current_epoch,
                     total_count: page.total_count,
                     bond_flags_updated_at: page.bond_flags_updated_at,
                     net_apy_updated_at: page.net_apy_updated_at,

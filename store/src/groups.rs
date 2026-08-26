@@ -8,10 +8,6 @@ use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commi
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-/// Window `incident_count_3m` describes. `load_incidents` reaches back 90 epochs, so this is a cut
-/// of what is already loaded rather than a second query.
-pub const INCIDENT_WINDOW_DAYS: i64 = 90;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GroupKind {
     /// The client with the block engine it runs, `Agave + Jito`.
@@ -619,7 +615,8 @@ mod tests {
                     .collect();
 
                 // Stamped the way `load_validators` does, which is what the aggregation sums.
-                let incidents_from = Utc::now() - Duration::days(INCIDENT_WINDOW_DAYS);
+                let incidents_from =
+                    Utc::now() - Duration::days(crate::utils::INCIDENTS_COUNTED_DAYS);
                 let incident_count_3m = incidents
                     .iter()
                     .filter(|incident| incident.start_at >= incidents_from)
