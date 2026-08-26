@@ -4,30 +4,36 @@ use std::sync::OnceLock;
 
 const OPERATORS_CSV: &str = include_str!("../operators.csv");
 
-/// `#` starts a comment; the file groups its rows under one per operator.
-fn reader() -> csv::Reader<&'static [u8]> {
-    csv::ReaderBuilder::new()
-        .comment(Some(b'#'))
-        .from_reader(OPERATORS_CSV.as_bytes())
-}
-
 fn registry() -> &'static HashMap<String, String> {
     static REGISTRY: OnceLock<HashMap<String, String>> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let mut operators = HashMap::new();
-        let mut reader = reader();
-        for record in reader.records().flatten() {
-            let (Some(vote_account), Some(operator)) = (record.get(0), record.get(1)) else {
-                continue;
-            };
-            let (vote_account, operator) = (vote_account.trim(), operator.trim());
-            if vote_account.is_empty() || operator.is_empty() {
-                continue;
-            }
-            operators.insert(vote_account.to_string(), operator.to_string());
-        }
-        operators
-    })
+    REGISTRY.get_or_init(|| parse(OPERATORS_CSV))
+}
+
+/// `#` starts a comment; the file groups its rows under one per operator.
+///
+/// Panics if format wrong.
+fn parse(csv: &str) -> HashMap<String, String> {
+    let mut operators = HashMap::new();
+    let mut reader = csv::ReaderBuilder::new()
+        .comment(Some(b'#'))
+        .from_reader(csv.as_bytes());
+
+    for record in reader.records() {
+        let record = record.unwrap_or_else(|err| panic!("operators.csv: {err}"));
+        let (Some(vote_account), Some(operator)) = (record.get(0), record.get(1)) else {
+            panic!("operators.csv: {record:?} is not a vote_account,operator pair");
+        };
+
+        let (vote_account, operator) = (vote_account.trim(), operator.trim());
+        assert!(
+            !vote_account.is_empty() && !operator.is_empty(),
+            "operators.csv: {record:?} leaves the vote account or the operator blank"
+        );
+
+        operators.insert(vote_account.to_string(), operator.to_string());
+    }
+
+    operators
 }
 
 pub fn operator_of(vote_account: &str) -> Option<&'static str> {

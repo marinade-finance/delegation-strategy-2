@@ -18,7 +18,7 @@ use store::{
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
-pub const DEFAULT_EPOCHS: usize = 15;
+const DEFAULT_EPOCHS: usize = 15;
 const DEFAULT_LIMIT: usize = 100;
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -123,15 +123,14 @@ pub async fn get_validators(
 
     let validators = filter_validators(validators, &config);
     // Measured over the whole match rather than the page, so every page reads the same window.
-    let min_epoch = epoch_window_floor(
-        validators
-            .iter()
-            .flat_map(|validator| &validator.epoch_stats)
-            .map(|epoch_stat| epoch_stat.epoch)
-            .max()
-            .unwrap_or(0),
-        config.epochs,
-    );
+    let newest_epoch = validators
+        .iter()
+        .flat_map(|validator| &validator.epoch_stats)
+        .map(|epoch_stat| epoch_stat.epoch)
+        .max()
+        .unwrap_or(0);
+    // `epochs` counts the newest epoch itself.
+    let min_epoch = (newest_epoch + 1).saturating_sub(config.epochs as u64);
 
     // Rows describe the validators this response serves, so they are aggregated per request.
     let operators = config.with_operator_groups.then(|| {
@@ -152,7 +151,7 @@ pub async fn get_validators(
                     es.epoch_start_at
                         .is_some_and(|start_at| start_at > from_date)
                 }),
-                None => trim_epoch_stats(&mut v, min_epoch),
+                None => v.epoch_stats.retain(|stats| stats.epoch >= min_epoch),
             }
 
             v
@@ -166,17 +165,6 @@ pub async fn get_validators(
         bond_flags_updated_at,
         net_apy_updated_at,
     })
-}
-
-/// Oldest epoch an `epochs`-wide window reaching back from `max_epoch` keeps.
-pub fn epoch_window_floor(max_epoch: u64, epochs: usize) -> u64 {
-    (max_epoch + 1).saturating_sub(epochs as u64)
-}
-
-pub fn trim_epoch_stats(validator: &mut ValidatorRecord, min_epoch: u64) {
-    validator
-        .epoch_stats
-        .retain(|stats| stats.epoch >= min_epoch);
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
@@ -560,12 +548,12 @@ pub async fn handler(
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
     use std::collections::HashMap;
     use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
 
-    pub fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
+    fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
             epoch,
             epoch_start_at: None,
@@ -616,7 +604,7 @@ pub mod tests {
         }
     }
 
-    pub fn validator(
+    fn validator(
         vote_account: &str,
         stake: i64,
         warnings: Vec<ValidatorWarning>,
