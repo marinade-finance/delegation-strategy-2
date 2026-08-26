@@ -1,9 +1,9 @@
 use crate::context::WrappedContext;
-use crate::handlers::order::{
+use crate::metrics;
+use crate::utils::order::{
     OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
-use crate::handlers::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
-use crate::metrics;
+use crate::utils::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};

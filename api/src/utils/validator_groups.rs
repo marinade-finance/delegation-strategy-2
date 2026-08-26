@@ -1,4 +1,4 @@
-use crate::handlers::order::{directed, OrderDirection, OrderField};
+use crate::utils::order::{compare_keys, OrderDirection, OrderField, SortKey};
 use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -24,83 +24,75 @@ pub struct GroupsPage {
     pub current_epoch: Option<u64>,
 }
 
-type FieldExtractor = fn(&ValidatorGroupRecord) -> Option<Decimal>;
+type FieldExtractor = fn(&ValidatorGroupRecord) -> SortKey;
 
 fn field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        OrderField::Name => |_: &ValidatorGroupRecord| None,
-        OrderField::Stake => |group: &ValidatorGroupRecord| Some(group.total_stake),
-        OrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d,
-        OrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d,
+        OrderField::Name => |group: &ValidatorGroupRecord| SortKey::Text(group.key.to_lowercase()),
+        OrderField::Stake => |group: &ValidatorGroupRecord| SortKey::Number(group.total_stake),
+        OrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d.into(),
+        OrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d.into(),
         OrderField::NetApy => {
-            |group: &ValidatorGroupRecord| group.net_apy.and_then(Decimal::from_f64_retain)
+            |group: &ValidatorGroupRecord| group.net_apy.and_then(Decimal::from_f64_retain).into()
         }
         OrderField::TakeRate => {
-            |group: &ValidatorGroupRecord| group.take_rate.and_then(Decimal::from_f64_retain)
+            |group: &ValidatorGroupRecord| group.take_rate.and_then(Decimal::from_f64_retain).into()
         }
         OrderField::Credits => {
-            |group: &ValidatorGroupRecord| group.credits.and_then(Decimal::from_f64_retain)
+            |group: &ValidatorGroupRecord| group.credits.and_then(Decimal::from_f64_retain).into()
         }
-        OrderField::MarinadeScore => {
-            |group: &ValidatorGroupRecord| group.marinade_score.and_then(Decimal::from_f64_retain)
-        }
+        OrderField::MarinadeScore => |group: &ValidatorGroupRecord| {
+            group
+                .marinade_score
+                .and_then(Decimal::from_f64_retain)
+                .into()
+        },
         OrderField::Apy => {
-            |group: &ValidatorGroupRecord| group.apy.and_then(Decimal::from_f64_retain)
+            |group: &ValidatorGroupRecord| group.apy.and_then(Decimal::from_f64_retain).into()
         }
-        OrderField::Commission => {
-            |group: &ValidatorGroupRecord| group.commission.and_then(Decimal::from_f64_retain)
-        }
-        OrderField::Uptime => {
-            |group: &ValidatorGroupRecord| group.uptime_pct.and_then(Decimal::from_f64_retain)
-        }
+        OrderField::Commission => |group: &ValidatorGroupRecord| {
+            group.commission.and_then(Decimal::from_f64_retain).into()
+        },
+        OrderField::Uptime => |group: &ValidatorGroupRecord| {
+            group.uptime_pct.and_then(Decimal::from_f64_retain).into()
+        },
         OrderField::ExpectedTakeRate => |group: &ValidatorGroupRecord| {
-            group.expected_take_rate.and_then(Decimal::from_f64_retain)
+            group
+                .expected_take_rate
+                .and_then(Decimal::from_f64_retain)
+                .into()
         },
         OrderField::Validators => {
-            |group: &ValidatorGroupRecord| Some(Decimal::from(group.validator_count))
+            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.validator_count))
         }
-        OrderField::DelegationRelationships => {
-            |group: &ValidatorGroupRecord| group.delegation_relationship_count.map(Decimal::from)
-        }
+        OrderField::DelegationRelationships => |group: &ValidatorGroupRecord| {
+            group
+                .delegation_relationship_count
+                .map(Decimal::from)
+                .into()
+        },
         OrderField::Incidents => {
-            |group: &ValidatorGroupRecord| Some(Decimal::from(group.incident_count_3m))
+            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.incident_count_3m))
         }
     }
 }
 
-/// What the sort column reads off one row; `None` when the row has no value for it.
-pub fn group_column(group: &ValidatorGroupRecord, order_field: OrderField) -> Option<Decimal> {
+pub fn group_column(group: &ValidatorGroupRecord, order_field: OrderField) -> SortKey {
     field_extractor(order_field)(group)
 }
 
-/// Orders two rows on their already-extracted column value, then on their name. `Name` carries no
-/// column value, so the direction lands on the name itself instead.
+/// Orders two rows on their already-extracted column, then on their name.
 pub fn compare_group_rows(
-    (a_column, a_name): (&Option<Decimal>, &str),
-    (b_column, b_name): (&Option<Decimal>, &str),
-    order_field: OrderField,
+    (a_column, a_name): (&SortKey, &str),
+    (b_column, b_name): (&SortKey, &str),
     order_direction: &OrderDirection,
 ) -> Ordering {
-    let by_name = || {
+    compare_keys(a_column, b_column, order_direction).then_with(|| {
         a_name
             .to_lowercase()
             .cmp(&b_name.to_lowercase())
             .then_with(|| a_name.cmp(b_name))
-    };
-
-    if let OrderField::Name = order_field {
-        return directed(by_name(), order_direction);
-    }
-
-    // A missing value is not a zero one, so it stays last whichever way the present ones go.
-    let by_column = match (a_column, b_column) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
-    };
-
-    by_column.then_with(by_name)
+    })
 }
 
 pub fn sort_groups(
@@ -109,18 +101,13 @@ pub fn sort_groups(
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorGroupRecord> {
     // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
-    let mut keyed: Vec<(Option<Decimal>, ValidatorGroupRecord)> = groups
+    let mut keyed: Vec<(SortKey, ValidatorGroupRecord)> = groups
         .into_iter()
         .map(|group| (group_column(&group, order_field), group))
         .collect();
 
     keyed.sort_by(|(a_column, a), (b_column, b)| {
-        compare_group_rows(
-            (a_column, &a.key),
-            (b_column, &b.key),
-            order_field,
-            order_direction,
-        )
+        compare_group_rows((a_column, &a.key), (b_column, &b.key), order_direction)
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
@@ -257,8 +244,8 @@ mod tests {
 
     fn config() -> GetGroupsConfig {
         GetGroupsConfig {
-            order_field: crate::handlers::order::DEFAULT_ORDER_FIELD,
-            order_direction: crate::handlers::order::DEFAULT_ORDER_DIRECTION,
+            order_field: crate::utils::order::DEFAULT_ORDER_FIELD,
+            order_direction: crate::utils::order::DEFAULT_ORDER_DIRECTION,
             offset: 0,
             limit: DEFAULT_LIMIT,
             query: None,

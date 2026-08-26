@@ -1,13 +1,12 @@
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::context::WrappedContext;
-use crate::handlers::order::{
-    directed, OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
-};
-use crate::handlers::validator_groups::{compare_group_rows, group_column, sort_groups};
 use crate::metrics;
-use crate::utils::response_error_500;
+use crate::utils::order::{
+    compare_keys, OrderDirection, OrderField, SortKey, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
+};
+use crate::utils::response::response_error_500;
+use crate::utils::validator_groups::{compare_group_rows, group_column, sort_groups};
 use chrono::{DateTime, Utc};
 use log::error;
 use rust_decimal::prelude::*;
@@ -211,7 +210,7 @@ fn top_level_ranks(
         .map(|operator| (operator.key.to_lowercase(), operator))
         .collect();
 
-    let mut rows: Vec<(TopLevelRow, Option<Decimal>, String)> = Vec::new();
+    let mut rows: Vec<(TopLevelRow, SortKey, String)> = Vec::new();
     let mut placed: HashSet<TopLevelRow> = HashSet::new();
 
     for validator in validators {
@@ -227,7 +226,7 @@ fn top_level_ranks(
                     aggregate.key.clone(),
                 )),
                 // No row for this operator, so no column value: the block sorts at the tail.
-                None => rows.push((row, None, operator.clone())),
+                None => rows.push((row, SortKey::Missing, operator.clone())),
             },
             None => {
                 let standalone = singleton_group(validator);
@@ -237,14 +236,9 @@ fn top_level_ranks(
     }
 
     rows.sort_by(|(a_row, a_column, a_name), (b_row, b_column, b_name)| {
-        compare_group_rows(
-            (a_column, a_name),
-            (b_column, b_name),
-            order_field,
-            order_direction,
-        )
-        // Names collide across the two kinds of row, and the list is paged, so the order has to be total.
-        .then_with(|| a_row.cmp(b_row))
+        compare_group_rows((a_column, a_name), (b_column, b_name), order_direction)
+            // Names collide across the two kinds of row, and the list is paged, so the order has to be total.
+            .then_with(|| a_row.cmp(b_row))
     });
 
     rows.into_iter()
@@ -319,48 +313,16 @@ fn sort_validators_ranked(
             .and_then(|ranks| ranks.get(&top_level_row(validator)).copied())
             .unwrap_or(usize::MAX)
     };
-    // `Name` is a name, not a number, so it orders on its own key rather than through the extractor.
-    let named = matches!(order_field, OrderField::Name);
     // Keyed up front: sort_by would otherwise re-extract on both sides of every one of n·log n comparisons.
-    let mut keyed: Vec<(usize, Option<Decimal>, String, ValidatorRecord)> = validators
+    let mut keyed: Vec<(usize, SortKey, ValidatorRecord)> = validators
         .into_iter()
-        .map(|validator| {
-            let name = if named {
-                validator
-                    .info_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(&validator.vote_account)
-                    .to_lowercase()
-            } else {
-                String::new()
-            };
-            (
-                rank(&validator),
-                field_extractor(&validator),
-                name,
-                validator,
-            )
-        })
+        .map(|validator| (rank(&validator), field_extractor(&validator), validator))
         .collect();
-    keyed.sort_by(|(a_rank, a_key, a_name, a), (b_rank, b_key, b_name, b)| {
+    keyed.sort_by(|(a_rank, a_key, a), (b_rank, b_key, b)| {
         // Ascending in both directions: the direction is already spent on the operator order.
         a_rank
             .cmp(b_rank)
-            .then_with(|| {
-                if named {
-                    return directed(a_name.cmp(b_name), order_direction);
-                }
-
-                // A missing value is not a zero one, so it stays last whichever way the present ones go.
-                match (a_key, b_key) {
-                    (None, None) => Ordering::Equal,
-                    (None, Some(_)) => Ordering::Greater,
-                    (Some(_), None) => Ordering::Less,
-                    (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
-                }
-            })
+            .then_with(|| compare_keys(a_key, b_key, order_direction))
             // Without this tiebreak ties inherit HashMap iteration order, which changes on every
             // cache refresh and makes offset pages overlap or skip rows.
             .then_with(|| a.vote_account.cmp(&b.vote_account))
@@ -368,22 +330,25 @@ fn sort_validators_ranked(
     keyed.into_iter().map(|(.., validator)| validator).collect()
 }
 
-// None means the record has no value for the field, not that it has a zero one.
-type FieldExtractor = fn(&ValidatorRecord) -> Option<Decimal>;
+type FieldExtractor = fn(&ValidatorRecord) -> SortKey;
 
 // Commission and Uptime keep worst-case sentinels: for those two unknown means risk, not no-data.
 fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        OrderField::Stake => |a: &ValidatorRecord| Some(a.activated_stake),
-        OrderField::Credits => |a: &ValidatorRecord| Some(Decimal::from(a.credits)),
-        OrderField::MarinadeScore => {
-            |a: &ValidatorRecord| a.score.and_then(to_fixed_for_sort).map(Decimal::from)
-        }
+        OrderField::Stake => |a: &ValidatorRecord| SortKey::Number(a.activated_stake),
+        OrderField::Credits => |a: &ValidatorRecord| SortKey::Number(Decimal::from(a.credits)),
+        OrderField::MarinadeScore => |a: &ValidatorRecord| {
+            a.score
+                .and_then(to_fixed_for_sort)
+                .map(Decimal::from)
+                .into()
+        },
         // Shares NetApy's `ratio^n - 1` derivation but is computed here instead of served by apy-api, so an unrepresentable value sinks rather than being crowned.
         OrderField::Apy => |a: &ValidatorRecord| {
             a.avg_apy
                 .filter(|apy| *apy >= 0.0)
                 .and_then(Decimal::from_f64_retain)
+                .into()
         },
         // Deliberately not to_fixed_for_sort: rounding a fraction-valued APY to 4 decimals is what
         // collapses hundreds of validators into one bucket and makes the column look unsorted.
@@ -391,16 +356,17 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::NetApy => |a: &ValidatorRecord| {
             a.net_apy
                 .map(|net_apy| Decimal::from_f64_retain(net_apy).unwrap_or(Decimal::MAX))
+                .into()
         },
         // Same input as expected_take_rate: sorting on the closed-epoch ceiling alone would rank a validator that already declared a raise this epoch among the cheaper ones.
         OrderField::Commission => |a: &ValidatorRecord| {
-            Some(Decimal::from(
+            SortKey::Number(Decimal::from(
                 worst_known_commission(a.commission_max_observed, a.commission_advertised)
                     .unwrap_or(100),
             ))
         },
         OrderField::Uptime => |a: &ValidatorRecord| {
-            Some(Decimal::from(
+            SortKey::Number(Decimal::from(
                 a.avg_uptime_pct.and_then(to_fixed_for_sort).unwrap_or(0),
             ))
         },
@@ -409,21 +375,35 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
             a.avg_take_rate
                 .filter(|rate| *rate >= 0.0)
                 .and_then(Decimal::from_f64_retain)
+                .into()
         },
         OrderField::ExpectedTakeRate => |a: &ValidatorRecord| {
             a.expected_take_rate
                 .filter(|rate| *rate >= 0.0)
                 .and_then(Decimal::from_f64_retain)
+                .into()
         },
         OrderField::DelegationRelationships => {
-            |a: &ValidatorRecord| a.unique_delegators.map(Decimal::from)
+            |a: &ValidatorRecord| a.unique_delegators.map(Decimal::from).into()
         }
-        OrderField::Incidents => |a: &ValidatorRecord| Some(Decimal::from(a.incident_count_3m)),
-        OrderField::StakeDelta7d => |a: &ValidatorRecord| a.stake_delta_7d,
-        OrderField::StakeDelta30d => |a: &ValidatorRecord| a.stake_delta_30d,
-        // Group-only columns: they order the operator rows, never the validators inside one.
-        OrderField::Name => |_: &ValidatorRecord| None,
-        OrderField::Validators => |_: &ValidatorRecord| None,
+        OrderField::Incidents => {
+            |a: &ValidatorRecord| SortKey::Number(Decimal::from(a.incident_count_3m))
+        }
+        OrderField::StakeDelta7d => |a: &ValidatorRecord| a.stake_delta_7d.into(),
+        OrderField::StakeDelta30d => |a: &ValidatorRecord| a.stake_delta_30d.into(),
+        // The name the list shows: what it reports for itself, or its vote account when it reports none.
+        OrderField::Name => |a: &ValidatorRecord| {
+            SortKey::Text(
+                a.info_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&a.vote_account)
+                    .to_lowercase(),
+            )
+        },
+        // A validator is one validator, so it ranks against an operator's count as such.
+        OrderField::Validators => |_: &ValidatorRecord| SortKey::Number(Decimal::ONE),
     }
 }
 
@@ -1275,7 +1255,7 @@ pub mod tests {
     }
 
     #[test]
-    fn a_group_only_column_leaves_the_validators_on_the_vote_account_tiebreak() {
+    fn every_validator_counts_as_one_so_a_count_leaves_them_on_the_vote_account_tiebreak() {
         assert_eq!(
             by_operator(
                 vec![
@@ -1286,8 +1266,28 @@ pub mod tests {
                 OrderField::Validators,
                 &OrderDirection::DESC,
             ),
-            vec!["aaa", "bbb"],
-            "a validator count describes a group, so it must not order validators"
+            vec!["aaa", "bbb"]
+        );
+    }
+
+    #[test]
+    fn a_count_ranks_an_operator_above_the_validators_standing_alone() {
+        let mut big = operator("Big", 900);
+        big.validator_count = 2;
+
+        assert_eq!(
+            by_operator(
+                vec![
+                    operated("ofBig", 100, Some("Big")),
+                    operated("alsoOfBig", 100, Some("Big")),
+                    operated("alone", 900, None),
+                ],
+                vec![big],
+                OrderField::Validators,
+                &OrderDirection::DESC,
+            ),
+            vec!["alsoOfBig", "ofBig", "alone"],
+            "two validators outrank one, however much stake the lone one holds"
         );
     }
 
