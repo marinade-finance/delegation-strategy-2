@@ -36,7 +36,7 @@ pub struct TakeRatesParams {
     from_epoch: Option<u64>,
 }
 
-const DATA_VERSION: u16 = 1;
+pub const DATA_VERSION: u16 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidatorRewardsSnapshot {

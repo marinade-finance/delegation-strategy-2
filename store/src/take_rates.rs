@@ -1,6 +1,6 @@
 use crate::dto::TakeRateRecord;
 use chrono::{DateTime, Utc};
-use collect::take_rates::ValidatorRewardsSnapshot;
+use collect::take_rates::{ValidatorRewardsSnapshot, DATA_VERSION};
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
@@ -40,6 +40,12 @@ pub async fn store_take_rates(
         .map_err(|e| anyhow::anyhow!("Failed to open snapshot take rates file '{path}': {e}"))?;
     let snapshot: ValidatorRewardsSnapshot = serde_yaml::from_reader(snapshot_file)
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot take rates file '{path}': {e}"))?;
+
+    anyhow::ensure!(
+        snapshot.version == DATA_VERSION,
+        "Snapshot take rates file '{path}' has version {}, expected {DATA_VERSION}",
+        snapshot.version
+    );
 
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
