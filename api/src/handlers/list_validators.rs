@@ -202,7 +202,7 @@ fn top_level_ranks(
 ) -> TopLevelRanks {
     let aggregated: HashMap<String, &ValidatorGroupRecord> = operators
         .iter()
-        .map(|operator| (operator.name.to_lowercase(), operator))
+        .map(|operator| (operator.key.to_lowercase(), operator))
         .collect();
 
     let mut rows: Vec<(TopLevelRow, Option<Decimal>, String)> = Vec::new();
@@ -218,14 +218,14 @@ fn top_level_ranks(
                 Some(aggregate) => rows.push((
                     row,
                     group_column(aggregate, order_field),
-                    aggregate.name.clone(),
+                    aggregate.key.clone(),
                 )),
                 // No row for this operator, so no column value: the block sorts at the tail.
                 None => rows.push((row, None, operator.clone())),
             },
             None => {
                 let standalone = singleton_group(validator);
-                rows.push((row, group_column(&standalone, order_field), standalone.name));
+                rows.push((row, group_column(&standalone, order_field), standalone.key));
             }
         }
     }
@@ -952,9 +952,9 @@ pub mod tests {
         }
     }
 
-    fn operator(name: &str, stake: i64) -> ValidatorGroupRecord {
+    fn operator(key: &str, stake: i64) -> ValidatorGroupRecord {
         ValidatorGroupRecord {
-            name: name.to_string(),
+            key: key.to_string(),
             total_stake: Decimal::from(stake),
             ..Default::default()
         }

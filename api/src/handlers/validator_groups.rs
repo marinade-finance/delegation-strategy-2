@@ -116,8 +116,8 @@ pub fn sort_groups(
 
     keyed.sort_by(|(a_column, a), (b_column, b)| {
         compare_group_rows(
-            (a_column, &a.name),
-            (b_column, &b.name),
+            (a_column, &a.key),
+            (b_column, &b.key),
             order_field,
             order_direction,
         )
@@ -136,7 +136,7 @@ fn filter_groups(
 
     groups
         .into_iter()
-        .filter(|group| group.name.to_lowercase().contains(&query))
+        .filter(|group| group.key.to_lowercase().contains(&query))
         .collect()
 }
 
@@ -183,7 +183,7 @@ pub struct TreePage {
 fn matches_query(node: &ValidatorGroupNode, query: &str) -> bool {
     let matches = |name: &str| name.to_lowercase().contains(query);
 
-    matches(&node.group.name) || node.children.iter().any(|child| matches(&child.name))
+    matches(&node.group.key) || node.children.iter().any(|child| matches(&child.key))
 }
 
 pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage {
@@ -203,9 +203,9 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .collect();
     let total_count = matching.len();
 
-    let mut children_by_name: HashMap<String, Vec<ValidatorGroupRecord>> = matching
+    let mut children_by_key: HashMap<String, Vec<ValidatorGroupRecord>> = matching
         .iter()
-        .map(|node| (node.group.name.clone(), node.children.clone()))
+        .map(|node| (node.group.key.clone(), node.children.clone()))
         .collect();
     let parents = sort_groups(
         matching.into_iter().map(|node| node.group).collect(),
@@ -218,7 +218,7 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .skip(config.offset)
         .take(config.limit)
         .map(|group| {
-            let children = children_by_name.remove(&group.name).unwrap_or_default();
+            let children = children_by_key.remove(&group.key).unwrap_or_default();
             ValidatorGroupNode {
                 children: sort_groups(children, config.order_field, &config.order_direction),
                 group,
@@ -239,9 +239,9 @@ mod tests {
     use super::*;
     use store::groups::UNKNOWN_GROUP;
 
-    fn group(name: &str, stake: i64) -> ValidatorGroupRecord {
+    fn group(key: &str, stake: i64) -> ValidatorGroupRecord {
         ValidatorGroupRecord {
-            name: name.to_string(),
+            key: key.to_string(),
             total_stake: Decimal::from(stake),
             ..Default::default()
         }
@@ -266,7 +266,7 @@ mod tests {
     }
 
     fn keys(page: &GroupsPage) -> Vec<String> {
-        page.groups.iter().map(|group| group.name.clone()).collect()
+        page.groups.iter().map(|group| group.key.clone()).collect()
     }
 
     fn named(keys: &[&str]) -> Vec<String> {
@@ -291,18 +291,18 @@ mod tests {
     fn parent_keys(page: &TreePage) -> Vec<String> {
         page.nodes
             .iter()
-            .map(|node| node.group.name.clone())
+            .map(|node| node.group.key.clone())
             .collect()
     }
 
     fn child_keys(page: &TreePage, parent: &str) -> Vec<String> {
         page.nodes
             .iter()
-            .find(|node| node.group.name == parent)
+            .find(|node| node.group.key == parent)
             .unwrap_or_else(|| panic!("no {parent} in {:?}", parent_keys(page)))
             .children
             .iter()
-            .map(|child| child.name.clone())
+            .map(|child| child.key.clone())
             .collect()
     }
 

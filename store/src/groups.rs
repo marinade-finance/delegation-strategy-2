@@ -205,7 +205,7 @@ impl Accumulator {
         };
 
         ValidatorGroupRecord {
-            name: self.name().unwrap_or_else(|| UNKNOWN_GROUP.to_string()),
+            key: self.name().unwrap_or_else(|| UNKNOWN_GROUP.to_string()),
             validator_count: self.validator_count,
             total_stake: self.total_stake,
             stake_share: if total_activated_stake.is_zero() {
@@ -239,7 +239,7 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
     let finite = |value: Option<f64>| value.filter(|value: &f64| value.is_finite());
 
     ValidatorGroupRecord {
-        name: validator
+        key: validator
             .info_name
             .clone()
             .filter(|name| !name.trim().is_empty())
@@ -409,8 +409,8 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
     rows.sort_by(|(_, a), (_, b)| {
         b.total_stake
             .cmp(&a.total_stake)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.key.to_lowercase().cmp(&b.key.to_lowercase()))
+            .then_with(|| a.key.cmp(&b.key))
     });
 
     KeyedGroups {
@@ -640,7 +640,7 @@ mod tests {
         groups
             .groups
             .iter()
-            .map(|group| group.name.clone())
+            .map(|group| group.key.clone())
             .collect()
     }
 
@@ -648,7 +648,7 @@ mod tests {
         groups
             .groups
             .iter()
-            .find(|group| group.name == name)
+            .find(|group| group.key == name)
             .unwrap_or_else(|| panic!("no group for {name:?} in {:?}", keys(groups)))
     }
 
@@ -974,7 +974,7 @@ mod tests {
             all.clients
                 .nodes
                 .iter()
-                .map(|node| node.group.name.clone())
+                .map(|node| node.group.key.clone())
                 .collect::<Vec<_>>(),
             vec!["Agave".to_string()],
             "the idle validator's client has no live stake, so it has no row"
@@ -1046,12 +1046,12 @@ mod tests {
             clients
                 .groups
                 .iter()
-                .map(|group| group.name.clone())
+                .map(|group| group.key.clone())
                 .collect::<Vec<_>>(),
             all.clients
                 .nodes
                 .iter()
-                .map(|node| node.group.name.clone())
+                .map(|node| node.group.key.clone())
                 .collect::<Vec<_>>(),
             "the tree's parents are the client grouping"
         );
@@ -1090,7 +1090,7 @@ mod tests {
     fn child_keys(node: &ValidatorGroupNode) -> Vec<String> {
         node.children
             .iter()
-            .map(|child| child.name.clone())
+            .map(|child| child.key.clone())
             .collect()
     }
 
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(
             tree.nodes
                 .iter()
-                .map(|node| node.group.name.clone())
+                .map(|node| node.group.key.clone())
                 .collect::<Vec<_>>(),
             vec![
                 "Agave".to_string(),
@@ -1174,7 +1174,7 @@ mod tests {
         let unclassified = tree
             .nodes
             .iter()
-            .find(|node| node.group.name == UNKNOWN_GROUP)
+            .find(|node| node.group.key == UNKNOWN_GROUP)
             .expect("the unclassified parent has to be served, or its stake vanishes");
         assert_eq!(
             child_keys(unclassified),
@@ -1207,7 +1207,7 @@ mod tests {
 
         let tree = tree(&validators);
         let agave = &tree.nodes[0];
-        assert_eq!(agave.group.name, "Agave".to_string());
+        assert_eq!(agave.group.key, "Agave".to_string());
         assert_eq!(
             agave.group.stake_delta_7d,
             Some(Decimal::ZERO),
@@ -1333,7 +1333,7 @@ mod tests {
         assert_eq!(
             singleton_group(&validator),
             ValidatorGroupRecord {
-                name: FIGMENT_ONE.to_string(),
+                key: FIGMENT_ONE.to_string(),
                 stake_share: 0.0,
                 ..figment
             },

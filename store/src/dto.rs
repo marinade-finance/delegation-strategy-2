@@ -566,7 +566,7 @@ pub struct FeatureSetStats {
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorGroupRecord {
     /// Name of the group or `Unknown`
-    pub name: String,
+    pub key: String,
     pub validator_count: u64,
     pub total_stake: Decimal,
     pub stake_share: f64,
