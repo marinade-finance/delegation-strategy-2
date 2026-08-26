@@ -195,8 +195,8 @@ impl Accumulator {
         self,
         folded_key: &FoldedKey,
         total_activated_stake: Decimal,
-        stake_7d: Option<&ReferenceStake>,
-        stake_30d: Option<&ReferenceStake>,
+        baseline_7d: Option<&ReferenceStake>,
+        baseline_30d: Option<&ReferenceStake>,
     ) -> ValidatorGroupRecord {
         let delta = |reference: Option<&ReferenceStake>| {
             reference.map(|group_stake| {
@@ -215,8 +215,8 @@ impl Accumulator {
                     .to_f64()
                     .unwrap_or_default()
             },
-            stake_delta_7d: delta(stake_7d),
-            stake_delta_30d: delta(stake_30d),
+            stake_delta_7d: delta(baseline_7d),
+            stake_delta_30d: delta(baseline_30d),
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
@@ -365,8 +365,9 @@ fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
 fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
     let current_epoch = population.current_epoch;
     let (delta_7d_epoch, delta_30d_epoch) = delta_epochs(population.all.iter().copied());
-    let stake_7d = delta_7d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
-    let stake_30d = delta_30d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
+    let baseline_7d = delta_7d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
+    let baseline_30d =
+        delta_30d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
 
     let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
     for validator in &population.eligible {
@@ -397,8 +398,8 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
             let record = accumulator.finish(
                 &folded_key,
                 total_activated_stake,
-                stake_7d.as_ref(),
-                stake_30d.as_ref(),
+                baseline_7d.as_ref(),
+                baseline_30d.as_ref(),
             );
             (folded_key, record)
         })
@@ -814,16 +815,16 @@ mod tests {
     /// Epoch 100 is current, 96 is ~8 days old and 85 ~30 days old, so both windows resolve.
     fn epochs_spanning_both_windows(
         stake_now: i64,
-        stake_7d: i64,
-        stake_30d: i64,
+        stake_7d_ago: i64,
+        stake_30d_ago: i64,
         client: Option<u16>,
         client_then: Option<u16>,
     ) -> Vec<EpochSpec> {
         vec![
             (CURRENT_EPOCH, stake_now, client, None),
             (PREVIOUS_EPOCH, stake_now, client, None),
-            (96, stake_7d, client_then, None),
-            (85, stake_30d, client_then, None),
+            (96, stake_7d_ago, client_then, None),
+            (85, stake_30d_ago, client_then, None),
         ]
     }
 
