@@ -317,7 +317,13 @@ struct Population<'a> {
 
 impl<'a> Population<'a> {
     fn new(validators: &'a HashMap<String, ValidatorRecord>) -> Option<Self> {
-        let eligible = eligible(validators);
+        Self::over(eligible(validators), validators.values().collect())
+    }
+
+    /// `rows` are the validators the rows describe; `baselines` also carries the ones only the stake
+    /// deltas read, which is every validator the cache holds when the rows describe the whole set.
+    fn over(rows: Vec<&'a ValidatorRecord>, baselines: Vec<&'a ValidatorRecord>) -> Option<Self> {
+        let eligible = rows;
         let current_epoch = eligible
             .iter()
             .flat_map(|validator| &validator.epoch_stats)
@@ -336,10 +342,19 @@ impl<'a> Population<'a> {
 
         Some(Self {
             eligible,
-            all: validators.values().collect(),
+            all: baselines,
             current_epoch,
             eligible_stake,
         })
+    }
+}
+
+/// Operator rows over just these validators, so a filtered list gets rows describing the validators
+/// it actually serves. `stake_share` is a share of them, not of the cluster.
+pub fn aggregate_operators(validators: &[&ValidatorRecord]) -> ValidatorGroups {
+    match Population::over(validators.to_vec(), validators.to_vec()) {
+        Some(population) => aggregate_kind(&population, GroupKind::Operator),
+        None => Default::default(),
     }
 }
 
@@ -487,7 +502,6 @@ pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> Validator
     ValidatorGroupings {
         clients: aggregate_client_tree(&population),
         providers: aggregate_kind(&population, GroupKind::ProviderAso),
-        operators: aggregate_kind(&population, GroupKind::Operator),
     }
 }
 
@@ -495,7 +509,6 @@ pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> Validator
 pub struct ValidatorGroupings {
     pub clients: ValidatorGroupTree,
     pub providers: ValidatorGroups,
-    pub operators: ValidatorGroups,
 }
 
 #[cfg(test)]
@@ -1238,6 +1251,43 @@ mod tests {
         assert_eq!(figment.validator_count, 2);
         assert_eq!(figment.total_stake, Decimal::from(500));
         assert!((figment.stake_share - 500.0 / 600.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn operator_rows_describe_only_the_validators_they_are_aggregated_over() {
+        let validators = validators(vec![
+            Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None)),
+            Member::new(FIGMENT_TWO, last_two_epochs(200, FRANKENDANCER, None)),
+            Member::new(HELIUS, last_two_epochs(900, AGAVE, None)),
+        ]);
+        let whole: Vec<&ValidatorRecord> = validators.values().collect();
+        let one_figment: Vec<&ValidatorRecord> = validators
+            .values()
+            .filter(|validator| validator.vote_account == FIGMENT_ONE)
+            .collect();
+
+        let all = aggregate_operators(&whole);
+        assert_eq!(
+            keys(&all),
+            vec!["Helius".to_string(), "Figment".to_string()]
+        );
+        assert_eq!(group(&all, "Figment").validator_count, 2);
+        assert_eq!(group(&all, "Figment").total_stake, Decimal::from(500));
+
+        let filtered = aggregate_operators(&one_figment);
+        assert_eq!(
+            keys(&filtered),
+            vec!["Figment".to_string()],
+            "an operator none of these validators belongs to has no row"
+        );
+        let figment = group(&filtered, "Figment");
+        assert_eq!(figment.validator_count, 1);
+        assert_eq!(figment.total_stake, Decimal::from(300));
+        assert!(
+            (figment.stake_share - 1.0).abs() < 1e-12,
+            "the share is of the validators aggregated over, got {}",
+            figment.stake_share
+        );
     }
 
     #[test]

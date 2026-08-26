@@ -163,10 +163,6 @@ impl Cache {
         self.validator_groups.providers.clone()
     }
 
-    pub fn get_operator_groups(&self) -> ValidatorGroups {
-        self.validator_groups.operators.clone()
-    }
-
     // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
     pub fn bond_flags_updated_at(&self) -> Option<SystemTime> {
         let verified = self.bond_flags.verified.last_success?;

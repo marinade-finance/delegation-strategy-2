@@ -14,7 +14,7 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorGroupRecord, ValidatorRecord, ValidatorsAggregated},
-    groups::singleton_group,
+    groups::{aggregate_operators, singleton_group},
     utils::{to_fixed_for_sort, worst_known_commission},
 };
 use warp::{http::StatusCode, reply::json, Reply};
@@ -26,7 +26,9 @@ const DEFAULT_LIMIT: usize = 100;
 pub struct ResponseValidators {
     validators: Vec<ValidatorRecord>,
     validators_aggregated: Vec<ValidatorsAggregated>,
-    /// Operator rows, ordered by `order_field`, present only under `with_operator_groups`.
+    /// Operator rows, ordered by `order_field`, present only under `with_operator_groups`. Aggregated
+    /// over the validators matching the query and filters, so a row describes the validators served
+    /// under it.
     #[serde(skip_serializing_if = "Option::is_none")]
     operators: Option<Vec<ValidatorGroupRecord>>,
     /// Number of rows matching the query and filters, before `offset`/`limit`: validators, or
@@ -65,7 +67,7 @@ pub struct QueryParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. `offset`/`limit` then cut those top-level rows rather than validators, so an operator arrives with all of its validators or not at all, and `total_count` counts rows. The `operators` array itself is never filtered and never paged.
+    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. `offset`/`limit` then cut those top-level rows rather than validators, so an operator arrives with all of its validators or not at all, and `total_count` counts rows. The `operators` rows are aggregated over the validators matching the query and filters, and are never paged.
     with_operator_groups: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -111,13 +113,10 @@ pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
 ) -> anyhow::Result<ValidatorsPage> {
-    let (validators, operator_groups, bond_flags_updated_at, net_apy_updated_at) = {
+    let (validators, bond_flags_updated_at, net_apy_updated_at) = {
         let cache = &context.read().await.cache;
         (
             cache.get_validators(),
-            config
-                .with_operator_groups
-                .then(|| cache.get_operator_groups()),
             cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
             cache.net_apy_updated_at().map(DateTime::<Utc>::from),
         )
@@ -135,8 +134,15 @@ pub async fn get_validators(
         config.epochs,
     );
 
-    let operators = operator_groups
-        .map(|groups| sort_groups(groups.groups, config.order_field, &config.order_direction));
+    // Rows describe the validators this response serves, so they are aggregated per request.
+    let operators = config.with_operator_groups.then(|| {
+        let matching: Vec<&ValidatorRecord> = validators.iter().collect();
+        sort_groups(
+            aggregate_operators(&matching).groups,
+            config.order_field,
+            &config.order_direction,
+        )
+    });
     let (validators, total_count) = page_validators(validators, operators.as_deref(), &config);
 
     let page = validators
