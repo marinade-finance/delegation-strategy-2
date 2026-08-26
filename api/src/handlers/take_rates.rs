@@ -42,7 +42,8 @@ impl QueryParams {
     responses(
         (status = 200, body = ResponseTakeRates),
         (status = 400, description = "Both query parameters given, or query_from_date outside the recorded epoch range"),
-        (status = 404, description = "No validator found for the given vote account or identity")
+        (status = 404, description = "No validator found for the given vote account or identity"),
+        (status = 500, description = "Failed to fetch records")
     )
 )]
 pub async fn handler(

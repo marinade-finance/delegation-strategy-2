@@ -1,6 +1,6 @@
 use crate::dto::TakeRateRecord;
 use chrono::{DateTime, Utc};
-use collect::take_rates::{ValidatorRewardsSnapshot, DATA_VERSION};
+use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
@@ -9,6 +9,8 @@ use structopt::StructOpt;
 use tokio_postgres::Client;
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
+
+const SUPPORTED_DATA_VERSION: u16 = 1;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreTakeRatesParams {
@@ -42,8 +44,8 @@ pub async fn store_take_rates(
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot take rates file '{path}': {e}"))?;
 
     anyhow::ensure!(
-        snapshot.version == DATA_VERSION,
-        "Snapshot take rates file '{path}' has version {}, expected {DATA_VERSION}",
+        snapshot.version == SUPPORTED_DATA_VERSION,
+        "Snapshot take rates file '{path}' has version {}, expected {SUPPORTED_DATA_VERSION}",
         snapshot.version
     );
 
