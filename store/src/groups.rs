@@ -3,14 +3,11 @@ use crate::dto::{
     ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
 use crate::operators;
+use crate::stake_deltas::delta_epochs;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
-use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-/// Windows the groups' stake deltas describe.
-const DELTA_SHORT_DAYS: i64 = 7;
-const DELTA_LONG_DAYS: i64 = 30;
 /// Window `incident_count_3m` describes. `load_incidents` reaches back 90 epochs, so this is a cut
 /// of what is already loaded rather than a second query.
 pub const INCIDENT_WINDOW_DAYS: i64 = 90;
@@ -198,12 +195,12 @@ impl Accumulator {
         self,
         folded_key: &FoldedKey,
         total_activated_stake: Decimal,
-        stake_short: Option<&ReferenceStake>,
-        stake_long: Option<&ReferenceStake>,
+        stake_7d: Option<&ReferenceStake>,
+        stake_30d: Option<&ReferenceStake>,
     ) -> ValidatorGroupRecord {
         let delta = |reference: Option<&ReferenceStake>| {
-            reference.map(|stake_by_key| {
-                self.total_stake - stake_by_key.get(folded_key).copied().unwrap_or_default()
+            reference.map(|group_stake| {
+                self.total_stake - group_stake.get(folded_key).copied().unwrap_or_default()
             })
         };
 
@@ -218,8 +215,8 @@ impl Accumulator {
                     .to_f64()
                     .unwrap_or_default()
             },
-            stake_delta_7d: delta(stake_short),
-            stake_delta_30d: delta(stake_long),
+            stake_delta_7d: delta(stake_7d),
+            stake_delta_30d: delta(stake_30d),
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
@@ -234,70 +231,63 @@ impl Accumulator {
     }
 }
 
-struct Epochs {
-    current: u64,
-    delta_7d: Option<u64>,
-    delta_30d: Option<u64>,
-}
+/// The row a validator belonging to no group stands for on its own. Ordered against the aggregated
+/// rows, so it has to read the same fields `Accumulator::add` does. `stake_share` is left at zero;
+/// the row is only ever sorted, never served.
+pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
+    // Dropped the way `StakeWeighted::add` drops them.
+    let finite = |value: Option<f64>| value.filter(|value: &f64| value.is_finite());
 
-fn epochs(validators: &[&ValidatorRecord], now: DateTime<Utc>) -> Option<Epochs> {
-    let mut current = None;
-    let mut ends: HashMap<u64, DateTime<Utc>> = Default::default();
-
-    for stats in validators
-        .iter()
-        .flat_map(|validator| &validator.epoch_stats)
-    {
-        current = current.max(Some(stats.epoch));
-        if let Some(epoch_end_at) = stats.epoch_end_at {
-            ends.insert(stats.epoch, epoch_end_at);
-        }
+    ValidatorGroupRecord {
+        name: validator
+            .info_name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| validator.vote_account.clone()),
+        validator_count: 1,
+        total_stake: validator.activated_stake,
+        stake_share: 0.0,
+        stake_delta_7d: validator.stake_delta_7d,
+        stake_delta_30d: validator.stake_delta_30d,
+        net_apy: finite(validator.net_apy),
+        take_rate: finite(validator.avg_take_rate),
+        credits: Some(validator.credits as f64),
+        marinade_score: finite(validator.score),
+        apy: finite(validator.avg_apy),
+        commission: worst_known_commission(
+            validator.commission_max_observed,
+            validator.commission_advertised,
+        )
+        .map(|commission| commission as f64),
+        uptime_pct: finite(validator.avg_uptime_pct),
+        expected_take_rate: finite(validator.expected_take_rate),
+        delegation_relationship_count: validator.unique_delegators,
+        incident_count_3m: validator.incident_count_3m,
     }
-
-    Some(Epochs {
-        current: current?,
-        delta_7d: reference_epoch(&ends, now, DELTA_SHORT_DAYS),
-        delta_30d: reference_epoch(&ends, now, DELTA_LONG_DAYS),
-    })
-}
-
-/// Newest epoch that had already ended `days` ago; `None` when history does not reach back.
-fn reference_epoch(
-    epoch_ends: &HashMap<u64, DateTime<Utc>>,
-    now: DateTime<Utc>,
-    days: i64,
-) -> Option<u64> {
-    let cutoff = now - Duration::days(days);
-    epoch_ends
-        .iter()
-        .filter(|(_, epoch_end_at)| **epoch_end_at <= cutoff)
-        .map(|(epoch, _)| *epoch)
-        .max()
 }
 
 type ReferenceStake = HashMap<FoldedKey, Decimal>;
 
-/// Stake per group as it stood in `epoch`, over every validator the cache holds and not only those
-/// eligible today, bucketed by that epoch's own client and provider values.
-/// `None` when that epoch classified nothing; client ids reach back only to epoch 1011.
-fn stake_by_key_at(
+/// Stake each `kind` group held in `epoch`, bucketed by the keys that epoch's own rows resolve to.
+/// `None` when none of them resolved a key.
+fn group_stake_at(
     validators: &[&ValidatorRecord],
     epoch: u64,
     kind: GroupKind,
 ) -> Option<ReferenceStake> {
-    let mut stake_by_key: ReferenceStake = Default::default();
+    let mut group_stake: ReferenceStake = Default::default();
     for validator in validators {
         if let Some(stats) = validator.epoch_stats.iter().find(|s| s.epoch == epoch) {
-            *stake_by_key
+            *group_stake
                 .entry(folded(&group_key(validator, stats, kind)))
                 .or_default() += stats.activated_stake;
         }
     }
 
-    stake_by_key
+    group_stake
         .keys()
         .any(|key| key.is_some())
-        .then_some(stake_by_key)
+        .then_some(group_stake)
 }
 
 /// One grouping on its own, which only the tests read; `aggregate_all` is what the cache warms.
@@ -318,7 +308,7 @@ fn aggregate_groups(
 struct Population<'a> {
     eligible: Vec<&'a ValidatorRecord>,
     all: Vec<&'a ValidatorRecord>,
-    epochs: Epochs,
+    current_epoch: u64,
     /// Denominator behind every grouping's `stake_share`. Taken over the whole eligible set rather
     /// than over the rows, so a grouping that drops its unclassified members still reports shares
     /// of the cluster.
@@ -327,16 +317,19 @@ struct Population<'a> {
 
 impl<'a> Population<'a> {
     fn new(validators: &'a HashMap<String, ValidatorRecord>) -> Option<Self> {
-        let now = Utc::now();
         let eligible = eligible(validators);
-        let epochs = epochs(&eligible, now)?;
+        let current_epoch = eligible
+            .iter()
+            .flat_map(|validator| &validator.epoch_stats)
+            .map(|stats| stats.epoch)
+            .max()?;
         let eligible_stake = eligible
             .iter()
             .filter_map(|validator| {
                 validator
                     .epoch_stats
                     .iter()
-                    .find(|stats| stats.epoch == epochs.current)
+                    .find(|stats| stats.epoch == current_epoch)
             })
             .map(|stats| stats.activated_stake)
             .sum();
@@ -344,7 +337,7 @@ impl<'a> Population<'a> {
         Some(Self {
             eligible,
             all: validators.values().collect(),
-            epochs,
+            current_epoch,
             eligible_stake,
         })
     }
@@ -370,15 +363,10 @@ fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
 }
 
 fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
-    let current_epoch = population.epochs.current;
-    let stake_short = population
-        .epochs
-        .delta_7d
-        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
-    let stake_long = population
-        .epochs
-        .delta_30d
-        .and_then(|epoch| stake_by_key_at(&population.all, epoch, kind));
+    let current_epoch = population.current_epoch;
+    let (delta_7d_epoch, delta_30d_epoch) = delta_epochs(population.all.iter().copied());
+    let stake_7d = delta_7d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
+    let stake_30d = delta_30d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
 
     let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
     for validator in &population.eligible {
@@ -409,8 +397,8 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
             let record = accumulator.finish(
                 &folded_key,
                 total_activated_stake,
-                stake_short.as_ref(),
-                stake_long.as_ref(),
+                stake_7d.as_ref(),
+                stake_30d.as_ref(),
             );
             (folded_key, record)
         })
@@ -437,8 +425,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
 fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
     let clients = aggregate_keyed(population, GroupKind::ClientLineage);
     let block_engines = aggregate_keyed(population, GroupKind::ClientLabel);
-    let engines_by_client =
-        block_engines_by_client(&population.eligible, population.epochs.current);
+    let engines_by_client = block_engines_by_client(&population.eligible, population.current_epoch);
 
     let nodes = clients
         .rows
@@ -514,11 +501,12 @@ pub struct ValidatorGroupings {
 mod tests {
     use super::*;
     use crate::dto::IncidentRecord;
+    use chrono::{DateTime, Duration, Utc};
 
     const EPOCH_SECONDS: i64 = 2 * 24 * 3600;
 
-    fn epoch_end(epoch: u64, last_epoch: u64) -> DateTime<Utc> {
-        Utc::now() - Duration::seconds((last_epoch - epoch) as i64 * EPOCH_SECONDS)
+    fn epoch_end(epoch: u64, last_epoch: u64, now: DateTime<Utc>) -> DateTime<Utc> {
+        now - Duration::seconds((last_epoch - epoch) as i64 * EPOCH_SECONDS)
     }
 
     /// `(epoch, stake, client_id, dc_aso)`.
@@ -585,6 +573,8 @@ mod tests {
             .flat_map(|member| member.epochs.iter().map(|(epoch, ..)| *epoch))
             .max()
             .unwrap_or_default();
+        // One instant for every row: the delta windows land on exact epoch boundaries.
+        let now = Utc::now();
 
         members
             .into_iter()
@@ -594,7 +584,7 @@ mod tests {
                     .iter()
                     .map(|(epoch, stake, client_id, dc_aso)| ValidatorEpochStats {
                         epoch: *epoch,
-                        epoch_end_at: Some(epoch_end(*epoch, last_epoch)),
+                        epoch_end_at: Some(epoch_end(*epoch, last_epoch, now)),
                         activated_stake: Decimal::from(*stake),
                         client_id: *client_id,
                         client_id_raw: member.client_id_raw.map(str::to_string),
@@ -824,16 +814,16 @@ mod tests {
     /// Epoch 100 is current, 96 is ~8 days old and 85 ~30 days old, so both windows resolve.
     fn epochs_spanning_both_windows(
         stake_now: i64,
-        stake_short: i64,
-        stake_long: i64,
+        stake_7d: i64,
+        stake_30d: i64,
         client: Option<u16>,
         client_then: Option<u16>,
     ) -> Vec<EpochSpec> {
         vec![
             (CURRENT_EPOCH, stake_now, client, None),
             (PREVIOUS_EPOCH, stake_now, client, None),
-            (96, stake_short, client_then, None),
-            (85, stake_long, client_then, None),
+            (96, stake_7d, client_then, None),
+            (85, stake_30d, client_then, None),
         ]
     }
 
@@ -1087,12 +1077,9 @@ mod tests {
             ],
         )]);
 
-        let eligible = eligible(&validators);
-        let epochs = epochs(&eligible, Utc::now()).unwrap();
-        assert_eq!(epochs.current, 100);
+        assert_eq!(Population::new(&validators).unwrap().current_epoch, 100);
         // Epochs run ~2 days: 96 ended ~8 days ago, 95 ~10, so 96 is the newest one old enough.
-        assert_eq!(epochs.delta_7d, Some(96));
-        assert_eq!(epochs.delta_30d, Some(85));
+        assert_eq!(delta_epochs(validators.values()), (Some(96), Some(85)));
     }
 
     fn tree(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroupTree {
@@ -1318,6 +1305,39 @@ mod tests {
                 "{column} reads {value}, not {expected}"
             );
         }
+    }
+
+    #[test]
+    fn a_lone_validator_reads_the_same_columns_as_a_group_holding_only_it() {
+        let validators = validators(vec![Member {
+            credits: 100,
+            marinade_score: Some(0.2),
+            apy: Some(0.05),
+            net_apy: Some(0.06),
+            take_rate: Some(0.03),
+            commission_max_observed: Some(10),
+            commission_advertised: Some(5),
+            uptime_pct: Some(0.99),
+            expected_take_rate: Some(0.04),
+            unique_delegators: Some(12),
+            incidents_days_ago: vec![1],
+            ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
+        }]);
+        let figment = group(&operators(&validators), "Figment").clone();
+
+        let validator = ValidatorRecord {
+            activated_stake: Decimal::from(300),
+            ..validators.get(FIGMENT_ONE).unwrap().clone()
+        };
+        assert_eq!(
+            singleton_group(&validator),
+            ValidatorGroupRecord {
+                name: FIGMENT_ONE.to_string(),
+                stake_share: 0.0,
+                ..figment
+            },
+            "the two are ordered against each other, so every column has to agree"
+        );
     }
 
     #[test]

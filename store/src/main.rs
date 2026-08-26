@@ -61,6 +61,7 @@ pub mod ip_info;
 pub mod ls_open_epochs;
 pub mod node_observations;
 pub mod operators;
+pub mod stake_deltas;
 pub mod uptime;
 pub mod utils;
 pub mod validators;

@@ -5,6 +5,7 @@ pub mod node_observations;
 pub mod operators;
 pub mod rewards;
 pub mod scoring;
+pub mod stake_deltas;
 pub mod utils;
 pub mod validators;
 pub mod validators_block_rewards;

@@ -366,6 +366,12 @@ pub struct ValidatorRecord {
     /// Node operator from operators.csv; null for a vote account the file does not list.
     #[serde(default)]
     pub operator: Option<String>,
+    /// Stake gained since the epoch the group rows measure their own 7-day delta against, so the two
+    /// reconcile. Null when history does not reach back that far.
+    #[serde(default)]
+    pub stake_delta_7d: Option<Decimal>,
+    #[serde(default)]
+    pub stake_delta_30d: Option<Decimal>,
     #[serde(default)]
     pub verified: bool,
     /// As listed by the validator-bonds `/validators/protected` endpoint, which owns the rule.
@@ -557,7 +563,7 @@ pub struct FeatureSetStats {
 }
 
 /// Group can be a hosting provider, validator client or node operator
-#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorGroupRecord {
     /// Name of the group or `Unknown`
     pub name: String,

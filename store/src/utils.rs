@@ -1200,6 +1200,8 @@ pub async fn load_validators(
                     incidents: Vec::new(),
                     incident_count_3m: 0,
                     operator: None,
+                    stake_delta_7d: None,
+                    stake_delta_30d: None,
                     verified: false,
                     protected: false,
                     has_last_epoch_stats: false,
@@ -1387,6 +1389,9 @@ pub async fn load_validators(
 
     log::info!("Updating operators...");
     crate::operators::stamp_operators(records.values_mut());
+
+    log::info!("Updating stake deltas...");
+    crate::stake_deltas::stamp_stake_deltas(records.values_mut());
 
     log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {

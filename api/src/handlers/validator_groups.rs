@@ -68,54 +68,62 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
     }
 }
 
+/// What the sort column reads off one row; `None` when the row has no value for it.
+pub fn group_column(group: &ValidatorGroupRecord, order_field: OrderField) -> Option<Decimal> {
+    field_extractor(order_field)(group)
+}
+
+/// Orders two rows on their already-extracted column value, then on their name. `Name` carries no
+/// column value, so the direction lands on the name itself instead.
+pub fn compare_group_rows(
+    (a_column, a_name): (&Option<Decimal>, &str),
+    (b_column, b_name): (&Option<Decimal>, &str),
+    order_field: OrderField,
+    order_direction: &OrderDirection,
+) -> Ordering {
+    let by_name = || {
+        a_name
+            .to_lowercase()
+            .cmp(&b_name.to_lowercase())
+            .then_with(|| a_name.cmp(b_name))
+    };
+
+    if let OrderField::Name = order_field {
+        return directed(by_name(), order_direction);
+    }
+
+    // A missing value is not a zero one, so it stays last whichever way the present ones go.
+    let by_column = match (a_column, b_column) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
+    };
+
+    by_column.then_with(by_name)
+}
+
 pub fn sort_groups(
-    mut groups: Vec<ValidatorGroupRecord>,
+    groups: Vec<ValidatorGroupRecord>,
     order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorGroupRecord> {
-    if let OrderField::Name = order_field {
-        groups.sort_by(|a, b| {
-            directed(
-                a.name
-                    .to_lowercase()
-                    .cmp(&b.name.to_lowercase())
-                    .then_with(|| a.name.cmp(&b.name)),
-                order_direction,
-            )
-        });
-        return groups;
-    }
-
-    let extract = field_extractor(order_field);
+    // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
     let mut keyed: Vec<(Option<Decimal>, ValidatorGroupRecord)> = groups
         .into_iter()
-        .map(|group| (extract(&group), group))
+        .map(|group| (group_column(&group, order_field), group))
         .collect();
 
-    keyed.sort_by(|(a_key, a), (b_key, b)| {
-        let ordering = match (a_key, b_key) {
-            (None, None) => Ordering::Equal,
-            (None, Some(_)) => Ordering::Greater,
-            (Some(_), None) => Ordering::Less,
-            (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
-        };
-        ordering
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-            .then_with(|| a.name.cmp(&b.name))
+    keyed.sort_by(|(a_column, a), (b_column, b)| {
+        compare_group_rows(
+            (a_column, &a.name),
+            (b_column, &b.name),
+            order_field,
+            order_direction,
+        )
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
-}
-
-/// Position of each operator in the order asked for.
-pub type OperatorRanks = HashMap<String, usize>;
-
-pub fn operator_ranks(operators: &[ValidatorGroupRecord]) -> OperatorRanks {
-    operators
-        .iter()
-        .enumerate()
-        .map(|(rank, group)| (group.name.to_lowercase(), rank))
-        .collect()
 }
 
 fn filter_groups(
@@ -236,34 +244,6 @@ mod tests {
             name: name.to_string(),
             total_stake: Decimal::from(stake),
             ..Default::default()
-        }
-    }
-
-    #[test]
-    fn operator_ranks_follow_the_order_asked_for_and_fold_the_name() {
-        let rows = vec![
-            group("Figment", 100),
-            group("Hetzner", 500),
-            group("Helius", 900),
-        ];
-
-        for (order_direction, expected) in [
-            (OrderDirection::DESC, [("helius", 0), ("figment", 2)]),
-            (OrderDirection::ASC, [("helius", 2), ("figment", 0)]),
-        ] {
-            let ranks = operator_ranks(&sort_groups(
-                rows.clone(),
-                OrderField::Stake,
-                &order_direction,
-            ));
-            for (name, rank) in expected {
-                assert_eq!(
-                    ranks.get(name),
-                    Some(&rank),
-                    "{name} under {order_direction:?}"
-                );
-            }
-            assert_eq!(ranks.len(), 3);
         }
     }
 

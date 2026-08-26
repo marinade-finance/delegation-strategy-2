@@ -1,11 +1,11 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::context::WrappedContext;
 use crate::handlers::order::{
     directed, OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
-use crate::handlers::validator_groups::{operator_ranks, sort_groups, OperatorRanks};
+use crate::handlers::validator_groups::{compare_group_rows, group_column, sort_groups};
 use crate::metrics;
 use crate::utils::response_error_500;
 use chrono::{DateTime, Utc};
@@ -14,6 +14,7 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorGroupRecord, ValidatorRecord, ValidatorsAggregated},
+    groups::singleton_group,
     utils::{to_fixed_for_sort, worst_known_commission},
 };
 use warp::{http::StatusCode, reply::json, Reply};
@@ -63,7 +64,7 @@ pub struct QueryParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` also returns the `operators` array and groups the validators by operator: operators ordered by `order_field`, validators by their operator's position and then the same column, those with no operator last. The array is never filtered and never paged; `offset`/`limit` cut `validators` alone.
+    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. The array is never filtered and never paged; `offset`/`limit` cut `validators` alone.
     with_operator_groups: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -104,7 +105,6 @@ pub struct ValidatorsPage {
     pub net_apy_updated_at: Option<DateTime<Utc>>,
 }
 
-// One guard for the records, the operator rows and the timestamps: read apart, a warm landing in between makes them describe an epoch this response does not carry.
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
@@ -127,9 +127,9 @@ pub async fn get_validators(
     let operators = operator_groups
         .map(|groups| sort_groups(groups.groups, config.order_field, &config.order_direction));
     let validators = match &operators {
-        Some(operators) => sort_validators_by_operator(
+        Some(operators) => sort_validators_with_operator_grouping(
             validators,
-            &operator_ranks(operators),
+            operators,
             config.order_field,
             &config.order_direction,
         ),
@@ -183,8 +183,77 @@ pub fn trim_epoch_stats(validator: &mut ValidatorRecord, min_epoch: u64) {
         .retain(|stats| stats.epoch >= min_epoch);
 }
 
-// Tiebreak on vote_account: ties inherit HashMap iteration order otherwise, which changes
-// on every cache refresh and makes offset pages overlap or skip rows.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
+enum TopLevelRow {
+    /// Case-folded operator name.
+    Operator(String),
+    /// Vote account of a validator belonging to no operator.
+    Standalone(String),
+}
+
+/// Position of each top-level row in the order asked for.
+type TopLevelRanks = HashMap<TopLevelRow, usize>;
+
+fn top_level_row(validator: &ValidatorRecord) -> TopLevelRow {
+    match &validator.operator {
+        Some(operator) => TopLevelRow::Operator(operator.to_lowercase()),
+        None => TopLevelRow::Standalone(validator.vote_account.clone()),
+    }
+}
+
+/// Operator rows and validators belonging to none, ranked against each other on the same column.
+fn top_level_ranks(
+    validators: &[ValidatorRecord],
+    operators: &[ValidatorGroupRecord],
+    order_field: OrderField,
+    order_direction: &OrderDirection,
+) -> TopLevelRanks {
+    let mut rows: Vec<(TopLevelRow, Option<Decimal>, String)> = Vec::new();
+    let mut placed: HashSet<TopLevelRow> = HashSet::new();
+
+    for operator in operators {
+        let row = TopLevelRow::Operator(operator.name.to_lowercase());
+        if placed.insert(row.clone()) {
+            rows.push((
+                row,
+                group_column(operator, order_field),
+                operator.name.clone(),
+            ));
+        }
+    }
+
+    for validator in validators {
+        let row = top_level_row(validator);
+        if !placed.insert(row.clone()) {
+            continue;
+        }
+        match &validator.operator {
+            // No row for this operator, so no column value: the block sorts at the tail.
+            Some(operator) => rows.push((row, None, operator.clone())),
+            None => {
+                let standalone = singleton_group(validator);
+                rows.push((row, group_column(&standalone, order_field), standalone.name));
+            }
+        }
+    }
+
+    rows.sort_by(|(a_row, a_column, a_name), (b_row, b_column, b_name)| {
+        compare_group_rows(
+            (a_column, a_name),
+            (b_column, b_name),
+            order_field,
+            order_direction,
+        )
+        // Names collide across the two kinds of row, and the list is paged, so the order has to be total.
+        .then_with(|| a_row.cmp(b_row))
+    });
+
+    rows.into_iter()
+        .enumerate()
+        .map(|(rank, (row, ..))| (row, rank))
+        .collect()
+}
+
 pub fn sort_validators(
     validators: Vec<ValidatorRecord>,
     order_field: OrderField,
@@ -193,32 +262,28 @@ pub fn sort_validators(
     sort_validators_ranked(validators, None, order_field, order_direction)
 }
 
-pub fn sort_validators_by_operator(
+/// Ordered by `order_field`, but under the operator each validator belongs to.
+pub fn sort_validators_with_operator_grouping(
     validators: Vec<ValidatorRecord>,
-    operator_ranks: &OperatorRanks,
+    operators: &[ValidatorGroupRecord],
     order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorRecord> {
-    sort_validators_ranked(
-        validators,
-        Some(operator_ranks),
-        order_field,
-        order_direction,
-    )
+    let ranks = top_level_ranks(&validators, operators, order_field, order_direction);
+    sort_validators_ranked(validators, Some(&ranks), order_field, order_direction)
 }
 
 fn sort_validators_ranked(
     validators: Vec<ValidatorRecord>,
-    operator_ranks: Option<&OperatorRanks>,
+    top_level_ranks: Option<&TopLevelRanks>,
     order_field: OrderField,
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorRecord> {
     let field_extractor = get_field_extractor(order_field);
-    // Unranked, whether unmapped or an operator with no row, sorts last in both directions.
+    // Ungrouped, every validator keys the same, so the rank drops out of the comparison.
     let rank = |validator: &ValidatorRecord| {
-        operator_ranks
-            .zip(validator.operator.as_ref())
-            .and_then(|(ranks, operator)| ranks.get(&operator.to_lowercase()).copied())
+        top_level_ranks
+            .and_then(|ranks| ranks.get(&top_level_row(validator)).copied())
             .unwrap_or(usize::MAX)
     };
     // Keyed up front: sort_by would otherwise re-extract on both sides of every one of n·log n comparisons.
@@ -239,6 +304,8 @@ fn sort_validators_ranked(
                     (Some(x), Some(y)) => directed(x.cmp(y), order_direction),
                 }
             })
+            // Without this tiebreak ties inherit HashMap iteration order, which changes on every
+            // cache refresh and makes offset pages overlap or skip rows.
             .then_with(|| a.vote_account.cmp(&b.vote_account))
     });
     keyed
@@ -298,10 +365,10 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
             |a: &ValidatorRecord| a.unique_delegators.map(Decimal::from)
         }
         OrderField::Incidents => |a: &ValidatorRecord| Some(Decimal::from(a.incident_count_3m)),
+        OrderField::StakeDelta7d => |a: &ValidatorRecord| a.stake_delta_7d,
+        OrderField::StakeDelta30d => |a: &ValidatorRecord| a.stake_delta_30d,
         // Group-only columns: they order the operator rows, never the validators inside one.
         OrderField::Name => |_: &ValidatorRecord| None,
-        OrderField::StakeDelta7d => |_: &ValidatorRecord| None,
-        OrderField::StakeDelta30d => |_: &ValidatorRecord| None,
         OrderField::Validators => |_: &ValidatorRecord| None,
     }
 }
@@ -585,6 +652,8 @@ pub mod tests {
             incidents: Vec::new(),
             incident_count_3m: 0,
             operator: None,
+            stake_delta_7d: None,
+            stake_delta_30d: None,
             verified: false,
             protected: false,
         }
@@ -858,9 +927,9 @@ pub mod tests {
         order_direction: &OrderDirection,
     ) -> Vec<String> {
         let operators = sort_groups(operators, order_field, order_direction);
-        let validators = sort_validators_by_operator(
+        let validators = sort_validators_with_operator_grouping(
             validators,
-            &operator_ranks(&operators),
+            &operators,
             order_field,
             order_direction,
         );
@@ -903,34 +972,164 @@ pub mod tests {
     }
 
     #[test]
-    fn a_validator_no_operator_row_names_sorts_last_in_both_directions() {
-        for direction in [OrderDirection::ASC, OrderDirection::DESC] {
-            assert_eq!(
-                by_operator(
-                    vec![
-                        // An operator with no row: unclassified ones are never aggregated.
-                        operated("dropped", 900, Some("Gone")),
-                        operated("unmapped", 900, None),
-                        operated("mapped", 1, Some("Big")),
-                    ],
-                    vec![operator("Big", 900)],
-                    OrderField::Stake,
-                    &direction,
-                ),
-                vec!["mapped", "dropped", "unmapped"],
-                "direction {direction:?}"
-            );
-        }
+    fn a_validator_with_no_operator_ranks_between_the_operators_it_outweighs_and_the_rest() {
+        assert_eq!(
+            by_operator(
+                vec![
+                    operated("bigOfX", 400, Some("X")),
+                    operated("smallOfX", 200, Some("X")),
+                    operated("alone", 500, None),
+                    operated("bigOfY", 200, Some("Y")),
+                    operated("smallOfY", 100, Some("Y")),
+                ],
+                vec![operator("X", 600), operator("Y", 300)],
+                OrderField::Stake,
+                &OrderDirection::DESC,
+            ),
+            vec!["bigOfX", "smallOfX", "alone", "bigOfY", "smallOfY"],
+            "500 on its own belongs between the 600 and the 300 operator, not behind both"
+        );
+    }
+
+    #[test]
+    fn the_direction_turns_the_operators_and_the_lone_validators_as_one_list() {
+        assert_eq!(
+            by_operator(
+                vec![
+                    operated("bigOfX", 400, Some("X")),
+                    operated("smallOfX", 200, Some("X")),
+                    operated("alone", 500, None),
+                    operated("bigOfY", 200, Some("Y")),
+                    operated("smallOfY", 100, Some("Y")),
+                ],
+                vec![operator("X", 600), operator("Y", 300)],
+                OrderField::Stake,
+                &OrderDirection::ASC,
+            ),
+            vec!["smallOfY", "bigOfY", "alone", "smallOfX", "bigOfX"]
+        );
+    }
+
+    #[test]
+    fn a_standalone_validator_ranks_on_the_column_the_operators_rank_on() {
+        // Equal stake throughout, so only the rate can be placing the rows.
+        assert_eq!(
+            by_operator(
+                vec![
+                    ValidatorRecord {
+                        net_apy: Some(0.05),
+                        ..operated("ofHigh", 100, Some("High"))
+                    },
+                    ValidatorRecord {
+                        net_apy: Some(0.07),
+                        ..operated("alone", 100, None)
+                    },
+                    ValidatorRecord {
+                        net_apy: Some(0.02),
+                        ..operated("ofLow", 100, Some("Low"))
+                    },
+                ],
+                vec![
+                    ValidatorGroupRecord {
+                        net_apy: Some(0.09),
+                        ..operator("High", 100)
+                    },
+                    ValidatorGroupRecord {
+                        net_apy: Some(0.02),
+                        ..operator("Low", 100)
+                    },
+                ],
+                OrderField::NetApy,
+                &OrderDirection::DESC,
+            ),
+            vec!["ofHigh", "alone", "ofLow"]
+        );
+    }
+
+    #[test]
+    fn ordering_by_name_places_a_lone_validator_by_the_name_the_list_shows_for_it() {
+        assert_eq!(
+            by_operator(
+                vec![
+                    operated("ofAcme", 100, Some("Acme")),
+                    ValidatorRecord {
+                        info_name: Some("Bravo".to_string()),
+                        ..operated("named", 900, None)
+                    },
+                    operated("ofCharlie", 100, Some("Charlie")),
+                    operated("zzzUnnamed", 900, None),
+                ],
+                vec![operator("Acme", 100), operator("Charlie", 100)],
+                OrderField::Name,
+                &OrderDirection::ASC,
+            ),
+            vec!["ofAcme", "named", "ofCharlie", "zzzUnnamed"],
+            "a validator with no name of its own is shown as its vote account, so it sorts as one"
+        );
+    }
+
+    /// `Gone` has no row: unclassified validators are never aggregated.
+    fn dropped_operator_rows(direction: OrderDirection) -> Vec<String> {
+        by_operator(
+            vec![
+                operated("bigOfGone", 900, Some("Gone")),
+                operated("smallOfGone", 800, Some("Gone")),
+                operated("alone", 1, None),
+                operated("mapped", 2, Some("Big")),
+            ],
+            vec![operator("Big", 2)],
+            OrderField::Stake,
+            &direction,
+        )
+    }
+
+    #[test]
+    fn an_operator_with_no_row_keeps_its_validators_together_at_the_tail() {
+        assert_eq!(
+            dropped_operator_rows(OrderDirection::DESC),
+            vec!["mapped", "alone", "bigOfGone", "smallOfGone"]
+        );
+        assert_eq!(
+            dropped_operator_rows(OrderDirection::ASC),
+            vec!["alone", "mapped", "smallOfGone", "bigOfGone"],
+            "the block stays last whichever way the sort runs, and stays contiguous"
+        );
+    }
+
+    #[test]
+    fn the_stake_delta_columns_order_the_validators_and_the_operators_alike() {
+        let with_delta = |vote_account: &str, delta: i64, operator: Option<&str>| ValidatorRecord {
+            stake_delta_7d: Some(Decimal::from(delta)),
+            ..operated(vote_account, 100, operator)
+        };
+        assert_eq!(
+            by_operator(
+                vec![
+                    with_delta("grewOfX", 400, Some("X")),
+                    with_delta("shrankOfX", -100, Some("X")),
+                    with_delta("alone", 200, None),
+                    with_delta("ofY", 50, Some("Y")),
+                ],
+                vec![
+                    ValidatorGroupRecord {
+                        stake_delta_7d: Some(Decimal::from(300)),
+                        ..operator("X", 100)
+                    },
+                    ValidatorGroupRecord {
+                        stake_delta_7d: Some(Decimal::from(50)),
+                        ..operator("Y", 100)
+                    },
+                ],
+                OrderField::StakeDelta7d,
+                &OrderDirection::DESC,
+            ),
+            vec!["grewOfX", "shrankOfX", "alone", "ofY"]
+        );
     }
 
     #[test]
     fn a_group_only_column_leaves_the_validators_on_the_vote_account_tiebreak() {
-        for order_field in [
-            OrderField::Name,
-            OrderField::StakeDelta7d,
-            OrderField::StakeDelta30d,
-            OrderField::Validators,
-        ] {
+        for order_field in [OrderField::Name, OrderField::Validators] {
             assert_eq!(
                 by_operator(
                     vec![
@@ -970,7 +1169,7 @@ pub mod tests {
             order(sort_validators(
                 vec![with_incidents("quiet", 0), with_incidents("noisy", 3)],
                 OrderField::Incidents,
-                &OrderDirection::DESC,
+                &OrderDirection::DESC
             )),
             vec!["noisy", "quiet"]
         );
@@ -987,7 +1186,7 @@ pub mod tests {
                     with_delegators("many", Some(900)),
                 ],
                 OrderField::DelegationRelationships,
-                &OrderDirection::DESC,
+                &OrderDirection::DESC
             )),
             vec!["many", "few", "unmeasured"],
             "a validator with no count is not one with none"
