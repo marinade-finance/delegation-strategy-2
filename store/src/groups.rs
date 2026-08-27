@@ -237,9 +237,11 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
     ValidatorGroupRecord {
         key: validator
             .info_name
-            .clone()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| validator.vote_account.clone()),
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&validator.vote_account)
+            .to_string(),
         validator_count: 1,
         total_stake: validator.activated_stake,
         stake_share: 0.0,
