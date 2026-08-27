@@ -2,7 +2,7 @@ use crate::context::WrappedContext;
 use lazy_static::lazy_static;
 use log::{error, info};
 use regex::Regex;
-use warp::{http, http::StatusCode, hyper, Reply};
+use warp::{http::header::CONTENT_TYPE, http::StatusCode, reply, Reply};
 
 #[utoipa::path(
     get,
@@ -26,11 +26,9 @@ pub async fn handler(
     }
 
     if !VALID_SCORING_RUN_UI_ID.is_match(&scoring_ui_id) {
-        return Ok(http::response::Builder::new()
-            .status(StatusCode::BAD_REQUEST)
-            .header(hyper::header::CONTENT_TYPE, "text/plain")
-            .body(hyper::Body::from("Invalid scoring ID"))
-            .unwrap());
+        return Ok(
+            reply::with_status("Invalid scoring ID", StatusCode::BAD_REQUEST).into_response(),
+        );
     }
 
     let report_remote_url = format!("https://raw.githubusercontent.com/marinade-finance/delegation-strategy-pipeline/master/scoring/{scoring_ui_id}/report.html");
@@ -39,20 +37,19 @@ pub async fn handler(
         Ok(response) => response,
         Err(err) => {
             error!("Failed to fetch the HTML ({report_remote_url}) from the remote: {err}");
-            return Ok(http::response::Builder::new()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(hyper::header::CONTENT_TYPE, "text/plain")
-                .body(hyper::Body::from("Failed to fetch the HTML report"))
-                .unwrap());
+            return Ok(reply::with_status(
+                "Failed to fetch the HTML report",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .into_response());
         }
     };
 
     let status = response.status();
-    let body = hyper::Body::wrap_stream(response.bytes_stream());
+    let body = reply::stream(response.bytes_stream());
 
-    Ok(http::response::Builder::new()
-        .status(status.as_u16())
-        .header(hyper::header::CONTENT_TYPE, "text/html")
-        .body(body)
-        .unwrap())
+    Ok(
+        reply::with_status(reply::with_header(body, CONTENT_TYPE, "text/html"), status)
+            .into_response(),
+    )
 }
