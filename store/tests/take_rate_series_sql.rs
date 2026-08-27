@@ -56,7 +56,12 @@ async fn insert_reward_components(
             "INSERT INTO validators_rewards (
                 vote_account, epoch, validator_rewards, total_rewards, inflation_rewards,
                 mev_rewards, block_rewards, take_rate, created_at, updated_at
-            ) VALUES ($1, $2, 0, $3 + $4 + $5, $3, $4, $5, 0, NOW(), NOW())",
+            ) VALUES (
+                $1, $2, 0,
+                $3::NUMERIC + $4::NUMERIC + $5::NUMERIC,
+                $3::NUMERIC, $4::NUMERIC, $5::NUMERIC,
+                0, NOW(), NOW()
+            )",
             &[
                 &vote_account,
                 &Decimal::from(epoch),
