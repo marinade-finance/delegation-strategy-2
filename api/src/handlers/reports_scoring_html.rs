@@ -51,7 +51,7 @@ pub async fn handler(
     let body = hyper::Body::wrap_stream(response.bytes_stream());
 
     Ok(http::response::Builder::new()
-        .status(status)
+        .status(status.as_u16())
         .header(hyper::header::CONTENT_TYPE, "text/html")
         .body(body)
         .unwrap())

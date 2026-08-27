@@ -18,7 +18,7 @@ use solana_client::{
     rpc_response::RpcVoteAccountStatus,
 };
 use solana_commitment_config::CommitmentConfig;
-use solana_config_program::{get_config_data, ConfigKeys};
+use solana_config_program_client::{get_config_data, ConfigKeys};
 use solana_program::{
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
@@ -461,7 +461,7 @@ fn parse_validator_info(
     pubkey: &Pubkey,
     account: &Account,
 ) -> anyhow::Result<(Pubkey, ValidatorInfo)> {
-    if account.owner != solana_config_program::id() {
+    if account.owner != solana_config_program_client::ID {
         anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
@@ -487,7 +487,7 @@ pub fn get_validators_info(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
     info!("Getting validator info");
-    let validator_info = rpc_client.get_program_accounts(&solana_config_program::id())?;
+    let validator_info = rpc_client.get_program_accounts(&solana_config_program_client::ID)?;
 
     let mut validator_info_map = HashMap::new();
     if validator_info.is_empty() {
