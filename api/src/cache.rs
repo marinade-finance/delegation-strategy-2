@@ -15,7 +15,7 @@ use store::dto::{
 use store::groups::ValidatorGroupings;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-use store::utils::{TakeRates, ValidatorOverlays};
+use store::utils::{RewardMixShares, TakeRates, ValidatorOverlays};
 
 pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
@@ -23,7 +23,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 6;
+const WARM_STEPS: usize = 7;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Client and provider aggregates, derived from the validators they are published with.
@@ -32,6 +32,7 @@ type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
+type CachedEpochRewardMix = HashMap<u64, RewardMixShares>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {
@@ -76,6 +77,7 @@ pub struct Cache {
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
+    pub epoch_reward_mix: CachedEpochRewardMix,
     pub validators_single_run_scores: CachedSingleRunScores,
     pub validators_multi_run_scores: CachedMultiRunScores,
     pub per_epoch: Option<PerEpochCache>,
@@ -190,6 +192,10 @@ impl Cache {
 
     pub fn get_uptimes(&self, vote_account: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(vote_account).cloned()
+    }
+
+    pub fn get_epoch_reward_mix(&self) -> &CachedEpochRewardMix {
+        &self.epoch_reward_mix
     }
 
     pub fn get_validators_multi_run_scores(&self) -> CachedMultiRunScores {
@@ -478,6 +484,21 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
 
     Ok(())
 }
+pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading epoch reward mix from DB");
+    let warmup_timer = Instant::now();
+    let epoch_reward_mix =
+        store::take_rates::load_epoch_reward_mix(&context.read().await.psql_client).await?;
+
+    let epochs_len = epoch_reward_mix.len();
+    context.write().await.cache.epoch_reward_mix = epoch_reward_mix;
+    info!(
+        "Loaded epoch reward mix for {epochs_len} epochs to cache in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
 pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading scores from DB");
     let warmup_timer = Instant::now();
@@ -555,6 +576,9 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("commissions", |c| Box::pin(warm_commissions_cache(c))),
         ("uptimes", |c| Box::pin(warm_uptimes_cache(c))),
         ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
+        ("epoch_reward_mix", |c| {
+            Box::pin(warm_epoch_reward_mix_cache(c))
+        }),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
     ]
 }

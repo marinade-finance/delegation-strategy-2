@@ -1,4 +1,5 @@
 use crate::dto::TakeRateRecord;
+use crate::utils::{expected_take_rate, worst_known_commission, RewardMixShares};
 use chrono::{DateTime, Utc};
 use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
@@ -168,20 +169,84 @@ pub async fn store_take_rates(
     Ok(())
 }
 
+/// Cluster reward mix per epoch. Epochs that paid nothing are absent, not zero-weighted.
+pub async fn load_epoch_reward_mix(
+    psql_client: &Client,
+) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
+    let rows = psql_client
+        .query(
+            &format!(
+                "
+        SELECT
+            epoch,
+            SUM(inflation_rewards) AS inflation,
+            SUM(mev_rewards) AS mev,
+            SUM(block_rewards) AS block
+        FROM {VALIDATORS_REWARDS_TABLE}
+        GROUP BY epoch
+        "
+            ),
+            &[],
+        )
+        .await?;
+
+    let mut mix = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+        let inflation: Decimal = row.get("inflation");
+        let mev: Decimal = row.get("mev");
+        let block: Decimal = row.get("block");
+
+        let total = inflation + mev + block;
+        if total.is_zero() {
+            continue;
+        }
+
+        // Divided in Decimal: cluster-wide lamport sums reach f64's exact-integer ceiling.
+        let share = |component: Decimal| (component / total).to_f64().unwrap_or_default();
+        mix.insert(
+            epoch,
+            RewardMixShares {
+                inflation: share(inflation),
+                mev: share(mev),
+                block: share(block),
+            },
+        );
+    }
+
+    Ok(mix)
+}
+
 pub async fn get_take_rate_series(
     psql_client: &Client,
     vote_account: &str,
     from_epoch: Option<u64>,
+    reward_mix: &HashMap<u64, RewardMixShares>,
 ) -> anyhow::Result<Vec<TakeRateRecord>> {
     let from_epoch = from_epoch.map(Decimal::from);
     let query = format!(
         "
         SELECT
-            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate, created_at,
-            epochs.start_at AS epoch_start, epochs.end_at AS epoch_end
+            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate AS realized_take_rate, created_at,
+            epochs.start_at AS epoch_start, epochs.end_at AS epoch_end,
+            validators.commission_max_observed, validators.commission_advertised,
+            mev.mev_commission AS mev_commission_bps,
+            jpf.validator_commission AS priority_commission_bps
         FROM {VALIDATORS_REWARDS_TABLE}
         LEFT JOIN epochs ON {VALIDATORS_REWARDS_TABLE}.epoch = epochs.epoch
-        WHERE vote_account = $1
+        LEFT JOIN validators
+            ON validators.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
+            AND validators.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
+        -- Both filters stay inside the subqueries; moved to the join they scan every validator's snapshots.
+        LEFT JOIN (
+            SELECT DISTINCT ON (epoch) epoch, mev_commission
+            FROM mev WHERE vote_account = $1 ORDER BY epoch, created_at DESC
+        ) mev ON mev.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
+        LEFT JOIN (
+            SELECT DISTINCT ON (epoch) epoch, validator_commission
+            FROM jito_priority_fee WHERE vote_account = $1 ORDER BY epoch, created_at DESC
+        ) jpf ON jpf.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
+        WHERE {VALIDATORS_REWARDS_TABLE}.vote_account = $1
           AND ($2::NUMERIC IS NULL OR {VALIDATORS_REWARDS_TABLE}.epoch >= $2::NUMERIC)
         ORDER BY {VALIDATORS_REWARDS_TABLE}.epoch ASC
         "
@@ -192,13 +257,25 @@ pub async fn get_take_rate_series(
 
     let mut records = Vec::with_capacity(rows.len());
     for row in rows {
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
         // Null where `epochs` has no row: `store close-epoch` has not run for it yet, or a
         // `--from-epoch` backfill reached past the stored epoch history.
         records.push(TakeRateRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
+            epoch,
             epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
             epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
-            take_rate: row.get("take_rate"),
+            realized_take_rate: row.get("realized_take_rate"),
+            expected_take_rate: reward_mix.get(&epoch).and_then(|shares| {
+                expected_take_rate(
+                    *shares,
+                    worst_known_commission(
+                        row.get::<_, Option<i32>>("commission_max_observed"),
+                        row.get::<_, Option<i32>>("commission_advertised"),
+                    ),
+                    row.get::<_, Option<i32>>("mev_commission_bps"),
+                    row.get::<_, Option<i32>>("priority_commission_bps"),
+                )
+            }),
             created_at: row.get("created_at"),
         })
     }
