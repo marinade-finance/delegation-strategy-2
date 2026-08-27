@@ -345,8 +345,9 @@ impl<'a> Population<'a> {
     }
 }
 
-/// Operator rows over just these validators, so a filtered list gets rows describing the validators
-/// it actually serves. `stake_share` is a share of them, not of the cluster.
+/// Aggregates only the validators passed in, not the whole cluster: `stake_share` is a share of
+/// them, and the stake deltas read the same list on both sides, so a validator missing from it does
+/// not show up as a loss.
 pub fn aggregate_operators(validators: &[&ValidatorRecord]) -> ValidatorGroups {
     match Population::over(validators.to_vec(), validators.to_vec()) {
         Some(population) => aggregate_kind(&population, GroupKind::Operator),
