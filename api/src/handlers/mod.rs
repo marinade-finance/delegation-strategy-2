@@ -21,7 +21,6 @@ pub mod rewards;
 pub mod take_rates;
 pub mod unstake_hints;
 pub mod uptimes;
-pub mod validator_groups;
 pub mod validator_score_breakdown;
 pub mod validator_score_breakdowns;
 pub mod validator_scores;

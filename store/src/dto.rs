@@ -360,6 +360,18 @@ pub struct ValidatorRecord {
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
+    /// How many of `incidents` started within the last 90 days and lasted at least 3 minutes.
+    #[serde(default)]
+    pub incident_count_3m: u64,
+    /// Node operator from operators.csv; null for a vote account the file does not list.
+    #[serde(default)]
+    pub operator: Option<String>,
+    /// Stake gained since the epoch the group rows measure their own 7-day delta against, so the two
+    /// reconcile. Null when history does not reach back that far.
+    #[serde(default)]
+    pub stake_delta_7d: Option<Decimal>,
+    #[serde(default)]
+    pub stake_delta_30d: Option<Decimal>,
     #[serde(default)]
     pub verified: bool,
     /// As listed by the validator-bonds `/validators/protected` endpoint, which owns the rule.
@@ -559,9 +571,8 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
-/// One hosting provider or one validator client, aggregated over every validator running it in the
-/// last epoch.
-#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+/// Group can be a hosting provider, validator client or node operator
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorGroupRecord {
     /// Name of the group or `Unknown`
     pub key: String,
@@ -572,9 +583,14 @@ pub struct ValidatorGroupRecord {
     pub stake_delta_30d: Option<Decimal>,
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
-    /// Stake authorities summed over the group's members, so one authority delegating to several of
-    /// them counts once per validator.
+    pub credits: Option<f64>,
+    pub marinade_score: Option<f64>,
+    pub apy: Option<f64>,
+    pub commission: Option<f64>,
+    pub uptime_pct: Option<f64>,
+    pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
+    pub incident_count_3m: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]

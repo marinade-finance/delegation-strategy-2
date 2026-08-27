@@ -1,5 +1,5 @@
 use crate::context::WrappedContext;
-use crate::utils::{resolve_from_epoch, response_error};
+use crate::utils::response::{resolve_from_epoch, response_error};
 use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};

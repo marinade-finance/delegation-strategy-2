@@ -1,5 +1,5 @@
 use crate::{
-    cache::CachedSingleRunScores, context::WrappedContext, metrics, utils::response_error,
+    cache::CachedSingleRunScores, context::WrappedContext, metrics, utils::response::response_error,
 };
 use log::{error, info, warn};
 use serde::Serialize;

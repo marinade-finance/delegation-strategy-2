@@ -155,8 +155,6 @@ impl Cache {
         self.validators.clone()
     }
 
-    // Aggregated once per refresh rather than per request: the rows are a few dozen, while the set
-    // they are derived from is every validator with every cached epoch.
     pub fn get_client_groups(&self) -> ValidatorGroupTree {
         self.validator_groups.clients.clone()
     }
@@ -598,7 +596,7 @@ async fn warm_pending(context: &WrappedContext, steps: &[WarmStep], pending: &mu
                 pending[index] = false;
                 record_success(name);
             }
-            Ok(Err(err)) => error!("Failed to update the {name}: {err}"),
+            Ok(Err(err)) => error!("Failed to update the {name}: {err:?}"),
             Err(_) => error!("Gave up on the {name} after {WARM_STEP_TIMEOUT_S} s"),
         }
     }

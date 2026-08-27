@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 
 use crate::metrics;
-use crate::utils::response_error;
+use crate::utils::response::response_error;
 use crate::{cache::CachedMultiRunScores, context::WrappedContext};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;

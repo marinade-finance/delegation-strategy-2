@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::response_error_500;
+use crate::utils::response::response_error_500;
 use log::error;
 use serde::{Deserialize, Serialize};
 use warp::Reply;

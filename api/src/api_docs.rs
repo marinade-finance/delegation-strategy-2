@@ -2,9 +2,8 @@ use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    take_rates, unstake_hints, uptimes, validator_groups, validator_score_breakdown,
-    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
-    versions, workflow_metrics_upload,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -29,8 +28,8 @@ use utoipa::OpenApi;
         schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
         schemas(list_clients::ResponseClients),
         schemas(list_providers::ResponseProviders),
-        schemas(list_validators::OrderDirection),
-        schemas(list_validators::OrderField),
+        schemas(crate::utils::order::OrderDirection),
+        schemas(crate::utils::order::OrderField),
         schemas(list_validators::ResponseValidators),
         schemas(reports_commission_changes::CommissionChange),
         schemas(reports_commission_changes::ResponseCommissionChanges),
@@ -70,7 +69,6 @@ use utoipa::OpenApi;
         schemas(unstake_hints::ResponseUnstakeHints),
         schemas(uptimes::ResponseUptimes),
         schemas(events::ResponseEvents),
-        schemas(validator_groups::GroupOrderField),
         schemas(validator_score_breakdown::ResponseScoreBreakdown),
         schemas(validator_score_breakdown::ScoreBreakdown),
         schemas(validator_score_breakdowns::ResponseScoreBreakdowns),

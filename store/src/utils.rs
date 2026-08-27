@@ -224,12 +224,17 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Window (in epochs) over which per-validator downtime incidents are collected for the
-/// `incidents` field on `/validators`.
-const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`.
+const INCIDENTS_LOADED_EPOCHS: u64 = 90;
+
+/// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
+pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
+
+/// Downtime an interval needs to count towards `incident_count_3m`.
+pub const INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS: u64 = 180;
 
 // Keep default cached epochs at least the size of the incidents window.
-const _: () = assert!(DEFAULT_INCIDENTS_WINDOW_EPOCHS <= DEFAULT_CACHE_EPOCHS);
+const _: () = assert!(INCIDENTS_LOADED_EPOCHS <= DEFAULT_CACHE_EPOCHS);
 
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
@@ -1129,6 +1134,10 @@ pub async fn load_validators(
                     expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
+                    incident_count_3m: 0,
+                    operator: None,
+                    stake_delta_7d: None,
+                    stake_delta_30d: None,
                     verified: false,
                     protected: false,
                     has_last_epoch_stats: false,
@@ -1303,10 +1312,25 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    let incidents = load_incidents(psql_client, INCIDENTS_LOADED_EPOCHS).await?;
+    let incidents_from = Utc::now() - chrono::Duration::days(INCIDENTS_COUNTED_DAYS);
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+        record.incident_count_3m = record
+            .incidents
+            .iter()
+            .filter(|incident| {
+                incident.start_at >= incidents_from
+                    && incident.downtime_seconds >= INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
+            })
+            .count() as u64;
     }
+
+    log::info!("Updating operators...");
+    crate::operators::stamp_operators(records.values_mut());
+
+    log::info!("Updating stake deltas...");
+    crate::stake_deltas::stamp_stake_deltas(records.values_mut());
 
     log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
