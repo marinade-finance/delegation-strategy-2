@@ -74,7 +74,7 @@ pub struct QueryParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` also returns the `operators` array and groups the validators by operator: operator blocks and validators with no operator interleaved by `order_field`, an operator ranked on its aggregate row and a lone validator on its own value, an operator's validators contiguous and ordered by the same column. `offset`/`limit` then cut those top-level rows rather than validators, so an operator arrives with all of its validators or not at all, and `total_count` counts rows. The `operators` rows are aggregated over the validators matching the query and filters, and are never paged.
+    /// `true` groups the validators into operator blocks, returns the `operators` aggregates beside them, and pages over those top-level rows rather than validators.
     with_operator_groups: Option<bool>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -141,7 +141,7 @@ pub async fn get_validators(
     let min_epoch = (newest_epoch + 1).saturating_sub(config.epochs as u64);
 
     // Rows describe the validators this response serves, so they are aggregated per request.
-    let operators = config.with_operator_groups.then(|| {
+    let mut operators = config.with_operator_groups.then(|| {
         let matching: Vec<&ValidatorRecord> = validators.iter().collect();
         let aggregated = aggregate_operators(&matching);
 
@@ -156,9 +156,7 @@ pub async fn get_validators(
     });
     let (validators, total_count) = page_validators(
         validators,
-        operators
-            .as_ref()
-            .map(|operators| operators.groups.as_slice()),
+        operators.as_mut().map(|operators| &mut operators.groups),
         &config,
     );
 
@@ -255,10 +253,11 @@ fn top_level_ranks(
 }
 
 /// The page and its total count. With `operators`, both are in top-level rows: an operator's
-/// validators arrive whole or not at all.
+/// validators arrive whole or not at all, and the rows no validator on the page belongs to are
+/// dropped from `operators`.
 fn page_validators(
     validators: Vec<ValidatorRecord>,
-    operators: Option<&[ValidatorGroupRecord]>,
+    operators: Option<&mut Vec<ValidatorGroupRecord>>,
     config: &GetValidatorsConfig,
 ) -> (Vec<ValidatorRecord>, usize) {
     let Some(operators) = operators else {
@@ -282,7 +281,7 @@ fn page_validators(
         &config.order_direction,
     );
     let rows = config.offset..config.offset.saturating_add(config.limit);
-    let page = sort_validators_ranked(
+    let page: Vec<ValidatorRecord> = sort_validators_ranked(
         validators,
         Some(&ranks),
         config.order_field,
@@ -295,6 +294,13 @@ fn page_validators(
             .is_some_and(|rank| rows.contains(rank))
     })
     .collect();
+
+    let on_page: HashSet<String> = page
+        .iter()
+        .filter_map(|validator| validator.operator.as_ref())
+        .map(|operator| operator.to_lowercase())
+        .collect();
+    operators.retain(|operator| on_page.contains(&operator.key.to_lowercase()));
 
     (page, ranks.len())
 }
@@ -410,7 +416,7 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
             )
         },
         // Only relevant for grouping by operator and sorting by validator count (query param `with_operator_groups`).
-        // This `Decimal::ONE` is here for completeness, individual validators tie-break on vote account. 
+        // This `Decimal::ONE` is here for completeness, individual validators tie-break on vote account.
         OrderField::Validators => |_: &ValidatorRecord| SortKey::Number(Decimal::ONE),
     }
 }
@@ -1001,11 +1007,30 @@ mod tests {
             with_operator_groups: operators.is_some(),
             ..config()
         };
-        let operators = operators
+        let mut operators = operators
             .map(|operators| sort_groups(operators, config.order_field, &config.order_direction));
-        let (page, total_count) = page_validators(validators, operators.as_deref(), &config);
+        let (page, total_count) = page_validators(validators, operators.as_mut(), &config);
 
         (order(page), total_count)
+    }
+
+    /// The operator rows served beside a page, in order.
+    fn paged_operators(
+        validators: Vec<ValidatorRecord>,
+        operators: Vec<ValidatorGroupRecord>,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<String> {
+        let config = GetValidatorsConfig {
+            offset,
+            limit,
+            with_operator_groups: true,
+            ..config()
+        };
+        let mut groups = sort_groups(operators, config.order_field, &config.order_direction);
+        page_validators(validators, Some(&mut groups), &config);
+
+        groups.into_iter().map(|group| group.key).collect()
     }
 
     fn two_operators() -> (Vec<ValidatorRecord>, Vec<ValidatorGroupRecord>) {
@@ -1078,6 +1103,44 @@ mod tests {
             ),
             (vec!["onlyOne".to_string()], 1),
             "Y has no validator here, so it is not a row the pager can land on"
+        );
+    }
+
+    #[test]
+    fn the_operators_beside_a_page_are_the_ones_on_it() {
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged_operators(validators, operators, 0, 1),
+            vec!["X".to_string()],
+            "row 0 is X, so Y does not ride along"
+        );
+
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged_operators(validators, operators, 1, 1),
+            Vec::<String>::new(),
+            "row 1 is the lone validator, which is no operator's row"
+        );
+
+        let (validators, operators) = two_operators();
+        assert_eq!(
+            paged_operators(validators, operators, 0, 3),
+            vec!["X".to_string(), "Y".to_string()],
+            "a page holding every row still serves both, in the ordered position"
+        );
+    }
+
+    #[test]
+    fn an_operator_is_kept_beside_its_page_whatever_the_case_it_is_spelled_in() {
+        assert_eq!(
+            paged_operators(
+                vec![operated("onlyOne", 100, Some("acme ops"))],
+                vec![operator("ACME Ops", 100)],
+                0,
+                100,
+            ),
+            vec!["ACME Ops".to_string()],
+            "rows are bucketed case-folded, so the served key need not match the validator's"
         );
     }
 
