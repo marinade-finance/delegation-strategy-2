@@ -7,14 +7,17 @@ use crate::utils::order::{
 };
 use crate::utils::response::response_error_500;
 use crate::utils::validator_groups::{compare_group_rows, group_column, sort_groups};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
     groups::{aggregate_operators, singleton_group},
-    utils::{to_fixed_for_sort, worst_known_commission},
+    utils::{
+        to_fixed_for_sort, worst_known_commission, INCIDENTS_COUNTED_DAYS,
+        INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS,
+    },
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -66,7 +69,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// Evaluated over the last 90 epochs of incidents, regardless of `epochs` and `query_from_date`.
     query_incident_free: Option<bool>,
-    /// Minimum downtime in seconds for a `DOWN` interval to count as an incident for `query_incident_free`. Shorter intervals are restart noise. Ignored unless `query_incident_free` is set, and never filters the returned `incidents` array.
+    /// Minimum downtime in seconds for a `DOWN` interval to count as an incident for `query_incident_free`. Shorter intervals are restart noise. Defaults to the floor `incident_count_3m` uses, and like that count only intervals from the last 90 days are read. Ignored unless `query_incident_free` is set, and never filters the returned `incidents` array.
     min_incident_downtime_seconds: Option<u64>,
     query_verified: Option<bool>,
     query_protected: Option<bool>,
@@ -475,12 +478,15 @@ pub fn filter_validators(
     }
 
     if let Some(query_incident_free) = config.query_incident_free {
-        let min_incident_downtime = config.min_incident_downtime_seconds.unwrap_or(0);
+        // Same floor and window as `incident_count_3m`, so `query_incident_free=true` means that count is 0.
+        let min_incident_downtime = config
+            .min_incident_downtime_seconds
+            .unwrap_or(INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS);
+        let incidents_from = Utc::now() - Duration::days(INCIDENTS_COUNTED_DAYS);
         validators.retain(|_, v| {
-            let has_incident = v
-                .incidents
-                .iter()
-                .any(|i| i.downtime_seconds >= min_incident_downtime);
+            let has_incident = v.incidents.iter().any(|i| {
+                i.start_at >= incidents_from && i.downtime_seconds >= min_incident_downtime
+            });
             has_incident != query_incident_free
         });
     }
@@ -863,9 +869,10 @@ mod tests {
     }
 
     #[test]
-    fn incident_free_without_floor_counts_every_incident() {
+    fn incident_free_without_a_floor_reads_the_one_the_count_uses() {
         let validators = map(vec![
             validator_with_incidents("blip", &[1]),
+            validator_with_incidents("outage", &[INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS]),
             validator_with_incidents("clean", &[]),
         ]);
         let config = GetValidatorsConfig {
@@ -874,7 +881,8 @@ mod tests {
         };
         assert_eq!(
             vote_accounts(filter_validators(validators, &config)),
-            vec!["clean".to_string()]
+            vec!["blip".to_string(), "clean".to_string()],
+            "a one-second blip is not an incident_count_3m incident either"
         );
     }
 
