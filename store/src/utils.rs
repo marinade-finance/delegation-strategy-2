@@ -24,7 +24,7 @@ use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
-pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
+pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
 
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
@@ -227,6 +227,9 @@ async fn get_apy_calculators(
 /// Window (in epochs) over which per-validator downtime incidents are collected for the
 /// `incidents` field on `/validators`.
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+
+// Keep default cached epochs at least the size of the incidents window.
+const _: () = assert!(DEFAULT_INCIDENTS_WINDOW_EPOCHS <= DEFAULT_CACHE_EPOCHS);
 
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
@@ -1686,7 +1689,7 @@ pub async fn load_block_production_stats(
                     COALESCE(SUM(leader_slots), 0) leader_slots,
                     COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
                 FROM validators
-                WHERE epoch > $1
+                WHERE epoch >= $1
                 GROUP BY epoch ORDER BY epoch DESC",
                 &[&Decimal::from(first_epoch)],
             )

@@ -16,7 +16,7 @@ pub struct ResponseEvents {
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
-    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the last 80 epochs.
+    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the last 90 epochs.
     query_from_epoch: Option<u64>,
     /// Lower-bound date (RFC3339), resolved to the first epoch ending on/after it. Mutually exclusive with `query_from_epoch`.
     query_from_date: Option<DateTime<Utc>>,
