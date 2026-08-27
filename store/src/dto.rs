@@ -484,7 +484,7 @@ pub struct TakeRateRecord {
     pub epoch_start_at: Option<DateTime<Utc>>,
     pub epoch_end_at: Option<DateTime<Utc>>,
     pub realized_take_rate: f64,
-    /// This epoch's commissions weighted by this epoch's reward mix, against `realized_take_rate`'s measured figure. Inflation side is the worse of the epoch's `commission_max_observed` and `commission_advertised`, so any mid-epoch move reads high. Not the same window as `/validators`'s `expected_take_rate`, which pairs the current rate with a trailing 30-day mix. Null when the epoch has no commission recorded.
+    /// Take rate implied by the epoch's commissions, weighted by the epoch's reward mix.
     pub expected_take_rate: Option<f64>,
     pub created_at: DateTime<Utc>,
 }

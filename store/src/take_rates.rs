@@ -201,15 +201,14 @@ pub async fn load_epoch_reward_mix(
         if total.is_zero() {
             continue;
         }
+        let total = total.to_f64().unwrap_or_default();
 
-        // Divided in Decimal: cluster-wide lamport sums reach f64's exact-integer ceiling.
-        let share = |component: Decimal| (component / total).to_f64().unwrap_or_default();
         mix.insert(
             epoch,
             RewardMixShares {
-                inflation: share(inflation),
-                mev: share(mev),
-                block: share(block),
+                inflation: inflation.to_f64().unwrap_or_default() / total,
+                mev: mev.to_f64().unwrap_or_default() / total,
+                block: block.to_f64().unwrap_or_default() / total,
             },
         );
     }
