@@ -409,7 +409,8 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
                     .to_lowercase(),
             )
         },
-        // A validator is one validator, so it ranks against an operator's count as such.
+        // Only relevant for grouping by operator and sorting by validator count (query param `with_operator_groups`).
+        // This `Decimal::ONE` is here for completeness, individual validators tie-break on vote account. 
         OrderField::Validators => |_: &ValidatorRecord| SortKey::Number(Decimal::ONE),
     }
 }
