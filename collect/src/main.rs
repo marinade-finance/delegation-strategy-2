@@ -1,4 +1,5 @@
 use collect::common::*;
+use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
 use collect::validators::*;
 use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
 use collect::validators_events::{collect_validator_events_info, EventsParams};
@@ -28,6 +29,7 @@ enum CollectCommand {
     JitoPriority(JitoParams),
     ValidatorsBlockRewards(BlockRewardsParams),
     ValidatorsEvents(EventsParams),
+    TakeRates(TakeRatesParams),
 }
 
 impl Display for CollectCommand {
@@ -39,6 +41,7 @@ impl Display for CollectCommand {
             CollectCommand::JitoPriority(_) => write!(f, "jito-priority"),
             CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
             CollectCommand::ValidatorsEvents(_) => write!(f, "validators-events"),
+            CollectCommand::TakeRates(_) => write!(f, "take-rates"),
         }
     }
 }
@@ -71,6 +74,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::ValidatorsEvents(events_params) => {
             collect_validator_events_info(params.common, events_params)
+        }
+        CollectCommand::TakeRates(take_rates_params) => {
+            collect_take_rates_info(params.common, take_rates_params)
         }
     };
 
