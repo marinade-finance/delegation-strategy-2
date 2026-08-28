@@ -1,6 +1,6 @@
 use crate::metrics;
-use crate::utils::response_error;
-use crate::{context::WrappedContext, utils::response_error_500};
+use crate::utils::response::response_error;
+use crate::{context::WrappedContext, utils::response::response_error_500};
 use bytes::BufMut;
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};

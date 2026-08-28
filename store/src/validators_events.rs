@@ -133,6 +133,7 @@ pub async fn get_events_with_context(
             last_epoch
                 .and_then(|e| e.to_u64())
                 .unwrap_or(0)
+                .saturating_add(1)
                 .saturating_sub(DEFAULT_CACHE_EPOCHS)
         }
     };

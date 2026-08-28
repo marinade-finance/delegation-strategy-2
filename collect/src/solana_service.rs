@@ -5,7 +5,7 @@ use crate::validators::*;
 use bincode::deserialize;
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
@@ -60,10 +60,8 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
     )?)
 }
 
-pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_credits(vote_accounts: &RpcVoteAccountStatus, epoch: Epoch) -> HashMap<String, u64> {
     info!("Getting credits");
-    let vote_accounts = rpc_client.get_vote_accounts()?;
-
     let mut credits = HashMap::new();
 
     for vote_account in vote_accounts
@@ -81,7 +79,7 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
         }
     }
 
-    Ok(credits)
+    credits
 }
 
 const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");
@@ -228,7 +226,7 @@ fn is_plausible_node_version(version: &str) -> bool {
         })
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeContact {
     pub ip: Option<String>,
     pub gossip_port: Option<u16>,

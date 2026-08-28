@@ -8,6 +8,7 @@ use crate::dto::{
 };
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
+use collect::take_rates::query_validator_rewards;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -23,7 +24,7 @@ use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
-pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
+pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
 
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
@@ -223,9 +224,17 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Window (in epochs) over which per-validator downtime incidents are collected for the
-/// `incidents` field on `/validators`.
-const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
+/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`.
+const INCIDENTS_LOADED_EPOCHS: u64 = 90;
+
+/// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
+pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
+
+/// Downtime an interval needs to count towards `incident_count_3m`.
+pub const INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS: u64 = 180;
+
+// Keep default cached epochs at least the size of the incidents window.
+const _: () = assert!(INCIDENTS_LOADED_EPOCHS <= DEFAULT_CACHE_EPOCHS);
 
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
@@ -714,11 +723,9 @@ pub struct TakeRates {
     pub shares: Option<RewardMixShares>,
 }
 
-/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, computed directly from BigQuery
-/// reward tables: `validator_rewards / total_rewards` where validator = inflation + MEV + block
-/// commission and total = staker + validator rewards. Windowed by `epochs.epoch_end_time` (same as
-/// apy-api). Reward tables are epoch-partitioned, so the resolved lower epoch is filtered on each.
-/// Also returns the cluster reward mix, which the same scan already has to compute.
+/// Per-validator take rate over the last `TAKE_RATE_WINDOW_DAYS`, collapsed from the per-epoch rows
+/// `query_validator_rewards` returns, plus the cluster reward mix those same rows sum to. Windowed by
+/// `epochs.epoch_end_time` (same as apy-api).
 pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
@@ -739,114 +746,43 @@ pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
         None => return Ok(Default::default()),
     };
 
-    let query = format!(
-        "SELECT
-            vote_account,
-            CAST(take_rate AS STRING) AS take_rate,
-            CAST(inflation_share AS STRING) AS inflation_share,
-            CAST(mev_share AS STRING) AS mev_share,
-            CAST(block_share AS STRING) AS block_share
-        FROM (
-            WITH stakers AS (
-                SELECT
-                    stakes.vote_account AS vote_account,
-                    stakes.epoch AS epoch,
-                    SUM(COALESCE(inflation.amount, 0)) AS staker_inflation,
-                    SUM(COALESCE(mev.amount, 0)) AS staker_mev,
-                    SUM(COALESCE(prio.amount, 0)) AS staker_blocks
-                FROM `{ds}.stakes` stakes
-                LEFT JOIN `{ds}.rewards_inflation` inflation
-                    ON stakes.stake_account = inflation.stake_account
-                    AND stakes.epoch = inflation.epoch AND inflation.epoch >= {min_epoch}
-                LEFT JOIN `{ds}.rewards_mev` mev
-                    ON stakes.stake_account = mev.stake_account
-                    AND stakes.epoch = mev.epoch AND mev.epoch >= {min_epoch}
-                -- rewards_validators_blocks is gross, so what Jito's PriorityFeeDistribution passed through has to come off the validator's keep rather than add to the pot.
-                LEFT JOIN `{ds}.rewards_jito_priority_fee` prio
-                    ON stakes.stake_account = prio.stake_account
-                    AND stakes.epoch = prio.epoch AND prio.epoch >= {min_epoch}
-                WHERE stakes.vote_account IS NOT NULL AND stakes.epoch >= {min_epoch}
-                GROUP BY stakes.vote_account, stakes.epoch
-            ),
-            per_validator AS (
-                SELECT
-                    stakers.vote_account AS vote_account,
-                    SUM(staker_inflation + COALESCE(vi.amount, 0)) AS inflation_total,
-                    SUM(staker_mev + COALESCE(vm.amount, 0)) AS mev_total,
-                    SUM(COALESCE(vb.amount, 0)) AS block_total,
-                    -- GREATEST guards the epochs where the two tables attribute one distribution to different sides of a boundary.
-                    SUM(COALESCE(vi.amount, 0) + COALESCE(vm.amount, 0)
-                        + GREATEST(COALESCE(vb.amount, 0) - staker_blocks, 0)) AS validator_total
-                FROM stakers
-                -- Pre-aggregate to one row per (vote_account, epoch) so raw duplicate keys can't fan out the SUM().
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_inflation`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vi
-                    ON stakers.vote_account = vi.vote_account AND stakers.epoch = vi.epoch
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_mev`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vm
-                    ON stakers.vote_account = vm.vote_account AND stakers.epoch = vm.epoch
-                LEFT JOIN (
-                    SELECT vote_account, epoch, SUM(amount) AS amount
-                    FROM `{ds}.rewards_validators_blocks`
-                    WHERE epoch >= {min_epoch}
-                    GROUP BY vote_account, epoch
-                ) vb
-                    ON stakers.vote_account = vb.vote_account AND stakers.epoch = vb.epoch
-                GROUP BY stakers.vote_account
-            )
-            SELECT
-                vote_account,
-                SAFE_DIVIDE(validator_total, inflation_total + mev_total + block_total) AS take_rate,
-                -- Windowed over the already-grouped rows, so the cluster mix costs no extra scan.
-                SAFE_DIVIDE(SUM(inflation_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS inflation_share,
-                SAFE_DIVIDE(SUM(mev_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS mev_share,
-                SAFE_DIVIDE(SUM(block_total) OVER (), SUM(inflation_total + mev_total + block_total) OVER ())
-                    AS block_share
-            FROM per_validator
-        )
-        WHERE take_rate IS NOT NULL"
-    );
+    let rows = query_validator_rewards(&bq_client, min_epoch).await?;
 
-    let request = QueryRequest {
-        query,
-        use_legacy_sql: false,
-        ..Default::default()
-    };
+    // Lamports summed over every validator and epoch in the window; u128 so the cluster-wide
+    // accumulation is not what overflows.
+    let mut per_validator: HashMap<String, (u128, u128)> = Default::default();
+    let mut cluster_inflation: u128 = 0;
+    let mut cluster_mev: u128 = 0;
+    let mut cluster_block: u128 = 0;
 
-    let mut iter = bq_client
-        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
-        .await?;
-
-    let mut measured: HashMap<String, f64> = Default::default();
-    // Identical on every row by construction, so the last one read is the cluster mix.
-    let mut shares = None;
-    while let Some(row) = iter.next().await? {
-        let vote_account = row.column::<String>(0)?;
-        let take_rate_str = row.column::<String>(1)?;
-        measured.insert(vote_account, take_rate_str.parse()?);
-        shares = match (
-            row.column::<Option<String>>(2)?,
-            row.column::<Option<String>>(3)?,
-            row.column::<Option<String>>(4)?,
-        ) {
-            (Some(inflation), Some(mev), Some(block)) => Some(RewardMixShares {
-                inflation: inflation.parse()?,
-                mev: mev.parse()?,
-                block: block.parse()?,
-            }),
-            _ => shares,
-        };
+    for row in &rows {
+        let (validator_rewards, total_rewards) =
+            per_validator.entry(row.vote_account.clone()).or_default();
+        *validator_rewards += u128::from(row.validator_rewards);
+        *total_rewards += u128::from(row.total_rewards);
+        cluster_inflation += u128::from(row.inflation_rewards);
+        cluster_mev += u128::from(row.mev_rewards);
+        cluster_block += u128::from(row.block_rewards);
     }
+
+    // Ratio of sums, not a mean of the per-epoch rates: a big epoch has to weigh more than a small one.
+    let measured = per_validator
+        .into_iter()
+        .filter(|(_, (_, total_rewards))| *total_rewards > 0)
+        .map(|(vote_account, (validator_rewards, total_rewards))| {
+            (
+                vote_account,
+                validator_rewards as f64 / total_rewards as f64,
+            )
+        })
+        .collect();
+
+    let cluster_total = cluster_inflation + cluster_mev + cluster_block;
+    let shares = (cluster_total > 0).then(|| RewardMixShares {
+        inflation: cluster_inflation as f64 / cluster_total as f64,
+        mev: cluster_mev as f64 / cluster_total as f64,
+        block: cluster_block as f64 / cluster_total as f64,
+    });
 
     Ok(TakeRates { measured, shares })
 }
@@ -854,13 +790,19 @@ pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
 /// What the validator's own fee settings imply it keeps, weighted by the cluster reward mix.
 /// Renormalized over the components it actually earns: a validator not running Jito receives no MEV
 /// at all, so crediting it a 0% MEV commission would dilute the rate it takes on what it does earn.
-/// None when the inflation commission is unknown, which is the one component no validator can opt out of.
+/// None when the inflation commission is unknown, or when the mix carries no inflation to weight it by.
+/// Inflation is the one component no validator can opt out of.
 pub fn expected_take_rate(
     shares: RewardMixShares,
     inflation_commission_pct: Option<i32>,
     mev_commission_bps: Option<i32>,
     priority_commission_bps: Option<i32>,
 ) -> Option<f64> {
+    // An in-progress epoch has paid no inflation or MEV yet, leaving a mix of pure block rewards.
+    if shares.inflation <= 0.0 {
+        return None;
+    }
+
     let mut weighted = (f64::from(inflation_commission_pct?) / 100.0) * shares.inflation;
     let mut weight = shares.inflation;
 
@@ -873,7 +815,7 @@ pub fn expected_take_rate(
     weighted += priority_commission_bps.map_or(1.0, |bps| f64::from(bps) / 10_000.0) * shares.block;
     weight += shares.block;
 
-    (weight > 0.0).then_some(weighted / weight)
+    Some(weighted / weight)
 }
 
 /// The higher of the last closed epoch's observed ceiling and what is advertised now: a validator moving its commission inside an epoch advertises the low end, so a rise counts at once while a cut waits for the epoch to close.
@@ -1071,6 +1013,7 @@ pub async fn load_validators(
         log::info!("Aggregating validator records...");
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
+        let mut projected_node_metadata: HashSet<String> = Default::default();
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1122,11 +1065,15 @@ pub async fn load_validators(
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
 
+            let version: Option<String> = row.get("version");
+            let stored_client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
             let client_id_raw: Option<String> = row.get("client_id_raw");
-            let client_id = effective_client_id(
-                row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                client_id_raw.as_deref(),
-            );
+            let client_id = effective_client_id(stored_client_id, client_id_raw.as_deref());
+            let feature_set = row.get::<_, Option<i64>>("feature_set").map(|n| n as u32);
+            let shred_version = row.get::<_, Option<i32>>("shred_version").map(|n| n as u16);
+            let rpc_public: Option<bool> = row.get("rpc_public");
+            let pubsub_public: Option<bool> = row.get("pubsub_public");
+            let gossip_port = row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16);
 
             let record = records
                 .entry(vote_account.clone())
@@ -1158,18 +1105,18 @@ pub async fn load_validators(
                     commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_aggregated: None,
-                    version: row.get("version"),
+                    version: version.clone(),
                     client_id,
                     client_name: client_name(client_id),
                     client_label: client_label(client_id),
                     client_vendor: client_vendor(client_id),
                     client_lineage: client_lineage(client_id),
                     client_id_raw: client_id_raw.clone(),
-                    feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                    shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                    gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                    rpc_public: row.get("rpc_public"),
-                    pubsub_public: row.get("pubsub_public"),
+                    feature_set,
+                    shred_version,
+                    gossip_port,
+                    rpc_public,
+                    pubsub_public,
                     activated_stake: row.get::<_, Decimal>("activated_stake"),
                     marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                     foundation_stake: row.get::<_, Decimal>("foundation_stake"),
@@ -1193,6 +1140,10 @@ pub async fn load_validators(
                     expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
+                    incident_count_3m: 0,
+                    operator: None,
+                    stake_delta_7d: None,
+                    stake_delta_30d: None,
                     verified: false,
                     protected: false,
                     has_last_epoch_stats: false,
@@ -1200,6 +1151,34 @@ pub async fn load_validators(
                     rugged_commission_info: Vec::new(),
                     rugged_commission_occurrences: 0,
                 });
+
+            // Rows are newest-first, so project all node metadata from the first usable row.
+            let has_node_metadata = rpc_public.is_some()
+                || pubsub_public.is_some()
+                || gossip_port.is_some()
+                || version.is_some()
+                || stored_client_id.is_some()
+                || client_id_raw.is_some()
+                || feature_set.is_some()
+                || shred_version.is_some();
+            if has_node_metadata
+                && row.get::<_, &str>("identity") == record.identity
+                && !projected_node_metadata.contains(&vote_account)
+            {
+                record.version = version.clone();
+                record.client_id = client_id;
+                record.client_name = client_name(client_id);
+                record.client_label = client_label(client_id);
+                record.client_vendor = client_vendor(client_id);
+                record.client_lineage = client_lineage(client_id);
+                record.client_id_raw = client_id_raw.clone();
+                record.feature_set = feature_set;
+                record.shred_version = shred_version;
+                record.gossip_port = gossip_port;
+                record.rpc_public = rpc_public;
+                record.pubsub_public = pubsub_public;
+                projected_node_metadata.insert(vote_account.clone());
+            }
 
             let seeding_epoch = *seeding_epochs.entry(vote_account.clone()).or_insert(epoch);
             // Gating all three on max_observed keeps them from one row; stopping one epoch below the record's own is what makes that row the newest closed epoch rather than whichever older row still happens to have the column. commission_advertised deliberately stays on the open epoch that seeded the record.
@@ -1248,7 +1227,7 @@ pub async fn load_validators(
                 commission_effective: row
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
-                version: row.get("version"),
+                version,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),
@@ -1261,11 +1240,11 @@ pub async fn load_validators(
                 client_vendor: client_vendor(client_id),
                 client_lineage: client_lineage(client_id),
                 client_id_raw,
-                feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                rpc_public: row.get("rpc_public"),
-                pubsub_public: row.get("pubsub_public"),
+                feature_set,
+                shred_version,
+                gossip_port,
+                rpc_public,
+                pubsub_public,
                 activated_stake: row.get::<_, Decimal>("activated_stake"),
                 marinade_stake: row.get::<_, Decimal>("marinade_stake"),
                 foundation_stake: row.get::<_, Decimal>("foundation_stake"),
@@ -1339,10 +1318,25 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    let incidents = load_incidents(psql_client, INCIDENTS_LOADED_EPOCHS).await?;
+    let incidents_from = Utc::now() - chrono::Duration::days(INCIDENTS_COUNTED_DAYS);
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+        record.incident_count_3m = record
+            .incidents
+            .iter()
+            .filter(|incident| {
+                incident.start_at >= incidents_from
+                    && incident.downtime_seconds >= INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
+            })
+            .count() as u64;
     }
+
+    log::info!("Updating operators...");
+    crate::operators::stamp_operators(records.values_mut());
+
+    log::info!("Updating stake deltas...");
+    crate::stake_deltas::stamp_stake_deltas(records.values_mut());
 
     log::info!("Updating validator-bonds flags...");
     for (vote_account, record) in records.iter_mut() {
@@ -1725,7 +1719,7 @@ pub async fn load_block_production_stats(
                     COALESCE(SUM(leader_slots), 0) leader_slots,
                     COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
                 FROM validators
-                WHERE epoch > $1
+                WHERE epoch >= $1
                 GROUP BY epoch ORDER BY epoch DESC",
                 &[&Decimal::from(first_epoch)],
             )
@@ -2406,6 +2400,21 @@ mod tests {
             block: 0.0,
         };
         assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
+    }
+
+    #[test]
+    fn expected_take_rate_is_unknown_for_a_mix_that_has_paid_only_block_rewards() {
+        // The in-progress epoch's shape: inflation and MEV pay at the boundary, block rewards accrue.
+        let accruing = RewardMixShares {
+            inflation: 0.0,
+            mev: 0.0,
+            block: 1.0,
+        };
+        assert_eq!(
+            expected_take_rate(accruing, Some(5), None, None),
+            None,
+            "weighting a 5% validator by a pure block mix would read it at 100%"
+        );
     }
 
     #[test]

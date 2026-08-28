@@ -21,16 +21,22 @@ pub struct IpInfo {
 pub struct WhoisClient {
     host: String,
     bearer_token: Option<String>,
+    // Held, not built per call: the connection pool lives on the client, so a fresh one per address re-does the TLS handshake for every lookup of a cluster-sized sweep.
+    client: reqwest::blocking::Client,
 }
 impl WhoisClient {
-    pub fn new(host: String, bearer_token: Option<String>) -> Self {
-        Self { host, bearer_token }
+    pub fn new(host: String, bearer_token: Option<String>) -> anyhow::Result<Self> {
+        Ok(Self {
+            host,
+            bearer_token,
+            client: reqwest::blocking::Client::builder().build()?,
+        })
     }
 
     pub fn get_ip_info(&self, ip: &String) -> anyhow::Result<IpInfo> {
         debug!("Fetching info about data centers: {}", &ip);
-        let client = reqwest::blocking::Client::builder().build()?;
-        let body = client
+        let body = self
+            .client
             .get(format!("{}/ip/{}", self.host.clone(), ip))
             .header(
                 "Authorization",
@@ -39,7 +45,9 @@ impl WhoisClient {
                     self.bearer_token.clone().unwrap_or("none".to_string())
                 ),
             )
-            .send()?;
+            .send()?
+            // Every IpInfo field is optional, so an error body would deserialize into an all-None answer indistinguishable from a genuinely unknown address.
+            .error_for_status()?;
         Ok(body.json()?)
     }
 }

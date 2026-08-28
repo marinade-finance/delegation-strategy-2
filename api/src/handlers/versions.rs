@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::response_error;
+use crate::utils::response::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::VersionRecord;

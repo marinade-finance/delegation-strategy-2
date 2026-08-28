@@ -6,7 +6,7 @@ use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
     validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use clap::Parser;
@@ -219,6 +219,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(commissions::handler);
 
+    let route_take_rates = warp::path!("validators" / String / "take-rates")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<take_rates::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(take_rates::handler);
+
     let route_glossary = warp::path!("static" / "glossary.md")
         .and(warp::path::end())
         .and(warp::get())
@@ -324,6 +331,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_events)
         .or(route_versions)
         .or(route_commissions)
+        .or(route_take_rates)
         .or(route_glossary)
         .or(route_jito_mev)
         .or(route_jito_priority_fee)
