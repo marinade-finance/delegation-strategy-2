@@ -11,9 +11,6 @@ Chorus6Kis8tFHA7AowrPMcRJk3LbApHTYpgSNXzY5KE,Bitwise
 CpfvLiiPALdzZTP3fUrALg2TXwEDSAknRh1sn5JCt9Sr,Bitwise
 EogKVYgic8LKAuV1kR9nRqJaS5zpwCvSMfqoehzmAMpK,Bitwise
 
-# Bybit
-8hPk5CbKDoM7dN9LssTdVkFhDykeq7A8CZurA5AQSFJH,Bybit
-
 # Coinbase
 3ZYJxzCeweSoh2Jj7oCgencFs9y27iKmXJeqYapje1cj,Coinbase
 G9x1mqewTeVnXLmv3FamYD5tq1AdS395RHH3MLQPj6TY,Coinbase
@@ -69,8 +66,13 @@ FnAPJkzf19s87sm24Qhv6bHZMZvZ43gjNUBRgjwXpD4v,MAVAN
 
 # P2P
 FKsC411dik9ktS6xPADxs4Fk2SCENvAiuccQHLAPndvk,P2P
+8hPk5CbKDoM7dN9LssTdVkFhDykeq7A8CZurA5AQSFJH,P2P
 xBLpiTwufjcuFCjbk4aCmFy7HUY5D9xy8L1EX2rBwmC,P2P
 7qTwituXJJ5dtUwBZXjMNgtAyXJbx3X8V4B9gXFRjK9d,P2P
+BN6EvLCeuYdrTjGaHCyugF7sSH5uckoVoy3Kg2TkyuDW,P2P
+2Bgb4T6Zdy9iy2S3xxDRpwdgQHpitoDnZt5aBnCwv3Ez,P2P
+8n9ZTVwH2ZMTmCNmAgT54TUUJbLRLCDDy77nBpVzGEcE,P2P
+55L7AV93xRmx5F7rX1GCfsHxfYWNu4bKsG6f8tG6dFRo,P2P
 
 # Phantom
 BU5CXmHhXwZfSYwFjCjqAqdbu7MTUsiKLUj45RSXiPsE,Phantom
@@ -78,24 +80,18 @@ J2nUHEAgZFRyuJbFjdqPrAa9gyWDuc7hErtDQHPhsYRp,Phantom
 
 # Sanctum
 LSTmLs1DENX82ihc7jU134mydiV3NDEPXsRrekAY6Ys,Sanctum
+685Njwvpn3t5a8cAfVj7R65AfCJ6XoBpca9qy15XFiTd,Sanctum
 
 # SolStrategies
-SKRuTecmFDZHjs2DxRTJNEK7m7hunKGTWJiaZ3tMVVA,SolStrategies
 CogentC52e7kktFfWHwsqSmr8LiS1yAtfqhHcftCPcBJ,SolStrategies
 oRAnGeU5h8h2UkvbfnE5cjXnnAa4rBoaxmS4kbFymSe,SolStrategies
 GE6atKoWiQ2pt3zL7N13pjNHjdLVys8LinG8qeJLcAiL,SolStrategies
 punK4RDD3pFbcum79ACHatYPLLE1hr5UNnQVUGNfeyP,SolStrategies
-pENgUh4K9zNacyU3PXVE9KugW98XCqZsWpEvA8d8wzX,SolStrategies
-
-# Solana Beach
-BeachiopjxQxL7CaHNSZsynApiZCKx9QFVtcWNz3jDBo,Solana Beach
 
 # Staking Facilities
 DumiCKHVqoCQKD8roLApzR5Fit8qGV5fVQsJV9sTZk4a,Staking Facilities
 Ehdn9LdjTAURQSMoDPERXLehtvzy7QD762wwPkzGT7RS,Staking Facilities
-
-# Sygnum
-BN6EvLCeuYdrTjGaHCyugF7sSH5uckoVoy3Kg2TkyuDW,Sygnum
+BeachiopjxQxL7CaHNSZsynApiZCKx9QFVtcWNz3jDBo,Staking Facilities
 
 # Private operator
 # No published name; grouped by the withdraw authority of their vote accounts.
@@ -117,9 +113,3 @@ BjREhubbyR597w8tK9NUCLY74Zct2VuhvrNhyLinVc2e,Private operator
 5cJyfCLBfghRtoCuVJNreJgNCStqXLrhHmRhSRYtbgtr,Private operator
 6zzAPhyFZgS6rdknHNZLcsoooZ744GtVmTDyfvRmN37Q,Private operator
 ASifxiwxht8FvsiV3VcLngsCBMw4E6zw3QMWoJTbM4Uf,Private operator
-# 8JS6XsMPo2u3EyeeY3p2jvzHEhdUtCKgarHpJ3PAonyv
-685Njwvpn3t5a8cAfVj7R65AfCJ6XoBpca9qy15XFiTd,Private operator
-# HMeuTNWrsRiZBAvvXENVMFTgtEcdkaqgHMEvn1DY8nKD
-2Bgb4T6Zdy9iy2S3xxDRpwdgQHpitoDnZt5aBnCwv3Ez,Private operator
-8n9ZTVwH2ZMTmCNmAgT54TUUJbLRLCDDy77nBpVzGEcE,Private operator
-55L7AV93xRmx5F7rX1GCfsHxfYWNu4bKsG6f8tG6dFRo,Private operator

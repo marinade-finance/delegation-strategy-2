@@ -16,12 +16,12 @@ enum GroupKind {
     ClientLineage,
     /// The hosting organisation, `Hetzner`.
     ProviderAso,
-    /// The node operator, `Figment`, from operators.csv.
+    /// The node operator, `Figment`, from the operators CSV.
     Operator,
 }
 
 impl GroupKind {
-    /// A vote account absent from operators.csv belongs to no operator, where a missing client or
+    /// A vote account absent from the operators CSV belongs to no operator, where a missing client or
     /// provider still describes a validator that is running somewhere.
     fn drops_unclassified(self) -> bool {
         matches!(self, GroupKind::Operator)
@@ -670,7 +670,7 @@ mod tests {
     }
 
     // client-ids.csv ids: 3 `Agave`, 2 `Frankendancer`, 6 `Agave + JitoBAM` (agave lineage, like 3).
-    /// `operators.csv` rows, so the grouping is exercised on the mapping production reads.
+    /// `operators.example.csv` rows, so the grouping is exercised on a real mapping.
     const FIGMENT_ONE: &str = "CcaHc2L43ZWjwCHART3oZoJvHLAe9hzT2DJNUpBzoTN1";
     const FIGMENT_TWO: &str = "26pV97Ce83ZQ6Kz9XT4td8tdoUFPTng8Fb8gPyc53dJx";
     const HELIUS: &str = "he1iusunGwqrNtafDtLdhsUQDFvo13z9sUa36PauBtk";

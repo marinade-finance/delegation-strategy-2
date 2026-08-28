@@ -363,7 +363,7 @@ pub struct ValidatorRecord {
     /// How many of `incidents` started within the last 90 days and lasted at least 3 minutes.
     #[serde(default)]
     pub incident_count_3m: u64,
-    /// Node operator from operators.csv; null for a vote account the file does not list.
+    /// Node operator from the operators CSV; null for a vote account the file does not list.
     #[serde(default)]
     pub operator: Option<String>,
     /// Stake gained since the epoch the group rows measure their own 7-day delta against, so the two

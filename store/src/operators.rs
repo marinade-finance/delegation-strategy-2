@@ -2,32 +2,47 @@ use crate::dto::ValidatorRecord;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-const OPERATORS_CSV: &str = include_str!("../operators.csv");
-
 fn registry() -> &'static HashMap<String, String> {
     static REGISTRY: OnceLock<HashMap<String, String>> = OnceLock::new();
-    REGISTRY.get_or_init(|| parse(OPERATORS_CSV))
+    REGISTRY.get_or_init(|| {
+        let path = std::env::var_os("OPERATORS_CSV")
+            .expect("OPERATORS_CSV is unset; point it at an operators CSV");
+        let csv = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("OPERATORS_CSV {path:?}: {err}"));
+        parse(&path.to_string_lossy(), &csv)
+    })
 }
 
 /// `#` starts a comment; the file groups its rows under one per operator.
 ///
 /// Panics if format wrong.
-fn parse(csv: &str) -> HashMap<String, String> {
+fn parse(source: &str, csv: &str) -> HashMap<String, String> {
     let mut operators = HashMap::new();
     let mut reader = csv::ReaderBuilder::new()
         .comment(Some(b'#'))
         .from_reader(csv.as_bytes());
 
+    let header = reader
+        .headers()
+        .unwrap_or_else(|err| panic!("{source}: {err}"))
+        .clone();
+    // Without this a headerless file loses its first row to the header, dropping one validator.
+    assert_eq!(
+        header.iter().collect::<Vec<_>>(),
+        ["vote_account", "operator"],
+        "{source}: first line must be the vote_account,operator header"
+    );
+
     for record in reader.records() {
-        let record = record.unwrap_or_else(|err| panic!("operators.csv: {err}"));
+        let record = record.unwrap_or_else(|err| panic!("{source}: {err}"));
         let (Some(vote_account), Some(operator)) = (record.get(0), record.get(1)) else {
-            panic!("operators.csv: {record:?} is not a vote_account,operator pair");
+            panic!("{source}: {record:?} is not a vote_account,operator pair");
         };
 
         let (vote_account, operator) = (vote_account.trim(), operator.trim());
         assert!(
             !vote_account.is_empty() && !operator.is_empty(),
-            "operators.csv: {record:?} leaves the vote account or the operator blank"
+            "{source}: {record:?} leaves the vote account or the operator blank"
         );
 
         operators.insert(vote_account.to_string(), operator.to_string());

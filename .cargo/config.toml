@@ -1,0 +1,5 @@
+# `OPERATORS_CSV` is required at runtime and has no in-code default. Cargo sets it here so tests
+# and local runs resolve; the container sets the real one, and a binary run outside cargo fails
+# loudly when it is unset.
+[env]
+OPERATORS_CSV = { value = "store/operators.example.csv", relative = true }
