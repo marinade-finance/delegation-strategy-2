@@ -670,7 +670,7 @@ mod tests {
     }
 
     // client-ids.csv ids: 3 `Agave`, 2 `Frankendancer`, 6 `Agave + JitoBAM` (agave lineage, like 3).
-    /// `operators.example.csv` rows, so the grouping is exercised on a real mapping.
+    /// `operators.default.csv` rows, so the grouping is exercised on a real mapping.
     const FIGMENT_ONE: &str = "CcaHc2L43ZWjwCHART3oZoJvHLAe9hzT2DJNUpBzoTN1";
     const FIGMENT_TWO: &str = "26pV97Ce83ZQ6Kz9XT4td8tdoUFPTng8Fb8gPyc53dJx";
     const HELIUS: &str = "he1iusunGwqrNtafDtLdhsUQDFvo13z9sUa36PauBtk";

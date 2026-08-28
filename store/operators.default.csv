@@ -1,3 +1,4 @@
+# Stale snapshot; up-to-date config lives in ops-infra. Override with OPERATORS_CSV.
 vote_account,operator
 
 # Binance

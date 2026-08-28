@@ -3,14 +3,18 @@ use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+const DEFAULT_CSV: &str = include_str!("../operators.default.csv");
+
 fn registry() -> &'static HashMap<String, String> {
     static REGISTRY: OnceLock<HashMap<String, String>> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let path = std::env::var_os("OPERATORS_CSV")
-            .expect("OPERATORS_CSV is unset; point it at an operators CSV");
-        let csv = std::fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("OPERATORS_CSV {path:?}: {err}"));
-        parse(&csv).unwrap_or_else(|err| panic!("parse {path:?} failed: {err:#}"))
+    REGISTRY.get_or_init(|| match std::env::var_os("OPERATORS_CSV") {
+        Some(path) => {
+            let csv = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {path:?} failed: {err}"));
+            parse(&csv).unwrap_or_else(|err| panic!("parse {path:?} failed: {err:#}"))
+        }
+        None => parse(DEFAULT_CSV)
+            .unwrap_or_else(|err| panic!("parse operators.default.csv failed: {err:#}")),
     })
 }
 
