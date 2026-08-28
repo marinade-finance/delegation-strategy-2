@@ -1,6 +1,6 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, ValidatorEpochStats, ValidatorGroupNode,
-    ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
+    client_label, client_lineage, effective_client_id, GroupIncidentRecord, ValidatorEpochStats,
+    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -24,6 +24,12 @@ impl GroupKind {
     /// A vote account absent from operators.csv belongs to no operator, where a missing client or
     /// provider still describes a validator that is running somewhere.
     fn drops_unclassified(self) -> bool {
+        matches!(self, GroupKind::Operator)
+    }
+
+    /// Only operator rows carry their members' incidents. A client or provider row spans most of
+    /// the cluster, so it would serve thousands of records nobody asked for.
+    fn carries_incidents(self) -> bool {
         matches!(self, GroupKind::Operator)
     }
 }
@@ -130,10 +136,18 @@ struct Accumulator {
     uptime_pct: StakeWeighted,
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
-    incident_count_3m: u64,
+    carries_incidents: bool,
+    incidents: Vec<GroupIncidentRecord>,
 }
 
 impl Accumulator {
+    fn new(kind: GroupKind) -> Self {
+        Self {
+            carries_incidents: kind.carries_incidents(),
+            ..Default::default()
+        }
+    }
+
     fn name(&self) -> Option<String> {
         self.spellings
             .iter()
@@ -153,7 +167,14 @@ impl Accumulator {
     ) {
         self.validator_count += 1;
         self.total_stake += stats.activated_stake;
-        self.incident_count_3m += validator.incident_count_3m;
+        if self.carries_incidents {
+            self.incidents.extend(
+                validator
+                    .incidents
+                    .iter()
+                    .map(|incident| GroupIncidentRecord::new(&validator.vote_account, incident)),
+            );
+        }
 
         if let Some(name) = name {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
@@ -222,7 +243,16 @@ impl Accumulator {
             uptime_pct: self.uptime_pct.mean(),
             expected_take_rate: self.expected_take_rate.mean(),
             delegation_relationship_count: self.delegation_relationship_count,
-            incident_count_3m: self.incident_count_3m,
+            incidents: {
+                let mut incidents = self.incidents;
+                // Members arrive in hash order, so ties break on the member to keep pages stable.
+                incidents.sort_by(|a, b| {
+                    a.start_at
+                        .cmp(&b.start_at)
+                        .then_with(|| a.validator.cmp(&b.validator))
+                });
+                incidents
+            },
         }
     }
 }
@@ -260,7 +290,11 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         uptime_pct: finite(validator.avg_uptime_pct),
         expected_take_rate: finite(validator.expected_take_rate),
         delegation_relationship_count: validator.unique_delegators,
-        incident_count_3m: validator.incident_count_3m,
+        incidents: validator
+            .incidents
+            .iter()
+            .map(|incident| GroupIncidentRecord::new(&validator.vote_account, incident))
+            .collect(),
     }
 }
 
@@ -400,7 +434,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
 
         accumulators
             .entry(folded(&key))
-            .or_default()
+            .or_insert_with(|| Accumulator::new(kind))
             .add(validator, stats, key.as_ref());
     }
 
@@ -513,7 +547,6 @@ pub struct ValidatorGroupings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dto::IncidentRecord;
     use chrono::{DateTime, Duration, Utc};
 
     const EPOCH_SECONDS: i64 = 2 * 24 * 3600;
@@ -555,7 +588,7 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
-        /// Days ago each downtime interval began. Each lasts long enough to count.
+        /// Days ago each downtime interval began. Each lasts long enough to clear any floor.
         incidents_days_ago: Vec<i64>,
     }
 
@@ -609,25 +642,13 @@ mod tests {
                 let incidents: Vec<_> = member
                     .incidents_days_ago
                     .iter()
-                    .map(|days_ago| IncidentRecord {
+                    .map(|days_ago| crate::dto::IncidentRecord {
                         epoch: CURRENT_EPOCH,
                         start_at: Utc::now() - Duration::days(*days_ago),
                         end_at: Utc::now() - Duration::days(*days_ago),
-                        downtime_seconds: crate::utils::INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS,
+                        downtime_seconds: 600,
                     })
                     .collect();
-
-                // Stamped the way `load_validators` does, which is what the aggregation sums.
-                let incidents_from =
-                    Utc::now() - Duration::days(crate::utils::INCIDENTS_COUNTED_DAYS);
-                let incident_count_3m = incidents
-                    .iter()
-                    .filter(|incident| {
-                        incident.start_at >= incidents_from
-                            && incident.downtime_seconds
-                                >= crate::utils::INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
-                    })
-                    .count() as u64;
 
                 (
                     member.vote_account.to_string(),
@@ -645,7 +666,6 @@ mod tests {
                         expected_take_rate: member.expected_take_rate,
                         unique_delegators: member.unique_delegators,
                         incidents,
-                        incident_count_3m,
                         ..Default::default()
                     },
                 )
@@ -1460,35 +1480,63 @@ mod tests {
     }
 
     #[test]
-    fn incidents_count_only_those_inside_the_window() {
+    fn a_group_carries_every_member_incident_oldest_first() {
         let validators = validators(vec![
             Member {
                 incidents_days_ago: vec![1, 89],
                 ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
             },
             Member {
-                incidents_days_ago: vec![30, 91, 200],
+                incidents_days_ago: vec![30, 200],
                 ..Member::new(FIGMENT_TWO, last_two_epochs(200, AGAVE, None))
             },
         ]);
 
+        let figment = operators(&validators);
+        let incidents = &group(&figment, "Figment").incidents;
+        assert_eq!(incidents.len(), 4);
+        assert!(incidents
+            .windows(2)
+            .all(|pair| pair[0].start_at <= pair[1].start_at));
         assert_eq!(
-            group(&operators(&validators), "Figment").incident_count_3m,
-            3,
-            "the two beyond 90 days must not count"
+            incidents
+                .iter()
+                .map(|incident| incident.validator.as_str())
+                .collect::<Vec<_>>(),
+            vec![FIGMENT_TWO, FIGMENT_ONE, FIGMENT_TWO, FIGMENT_ONE],
+            "each incident names the member that was down"
         );
     }
 
     #[test]
-    fn a_group_with_no_incidents_reports_zero_rather_than_being_left_out() {
+    fn only_operator_rows_carry_incidents() {
+        let validators = validators(vec![Member {
+            incidents_days_ago: vec![1, 2],
+            ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
+        }]);
+
+        for kind in [
+            GroupKind::ClientLineage,
+            GroupKind::ClientLabel,
+            GroupKind::ProviderAso,
+        ] {
+            let groups = aggregate_groups(&validators, kind);
+            assert!(
+                groups.groups.iter().all(|group| group.incidents.is_empty()),
+                "{kind:?} rows span most of the cluster"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_with_no_incidents_reports_an_empty_array_rather_than_being_left_out() {
         let validators = validators(vec![Member::new(
             FIGMENT_ONE,
             last_two_epochs(300, AGAVE, None),
         )]);
 
-        assert_eq!(
-            group(&operators(&validators), "Figment").incident_count_3m,
-            0
-        );
+        assert!(group(&operators(&validators), "Figment")
+            .incidents
+            .is_empty());
     }
 }

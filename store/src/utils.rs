@@ -224,17 +224,12 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`.
-const INCIDENTS_LOADED_EPOCHS: u64 = 90;
-
-/// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
-pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
-
-/// Downtime an interval needs to count towards `incident_count_3m`.
-pub const INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS: u64 = 180;
+/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`, and the widest
+/// window anything reads incidents over: `query_incident_free` only narrows within it.
+pub const INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 
 // Keep default cached epochs at least the size of the incidents window.
-const _: () = assert!(INCIDENTS_LOADED_EPOCHS <= DEFAULT_CACHE_EPOCHS);
+const _: () = assert!(INCIDENTS_WINDOW_EPOCHS <= DEFAULT_CACHE_EPOCHS);
 
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
@@ -1140,7 +1135,6 @@ pub async fn load_validators(
                     expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
-                    incident_count_3m: 0,
                     operator: None,
                     stake_delta_7d: None,
                     stake_delta_30d: None,
@@ -1318,18 +1312,9 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, INCIDENTS_LOADED_EPOCHS).await?;
-    let incidents_from = Utc::now() - chrono::Duration::days(INCIDENTS_COUNTED_DAYS);
+    let incidents = load_incidents(psql_client, INCIDENTS_WINDOW_EPOCHS).await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
-        record.incident_count_3m = record
-            .incidents
-            .iter()
-            .filter(|incident| {
-                incident.start_at >= incidents_from
-                    && incident.downtime_seconds >= INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
-            })
-            .count() as u64;
     }
 
     log::info!("Updating operators...");

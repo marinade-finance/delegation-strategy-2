@@ -3,6 +3,7 @@ use crate::metrics;
 use crate::utils::order::{
     OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
+use crate::utils::response::response_error;
 use crate::utils::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -51,6 +52,13 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_PROVIDERS.inc();
+
+    if query_params.order_field == Some(OrderField::Incidents) {
+        return Ok(response_error(
+            StatusCode::BAD_REQUEST,
+            "order_field=incidents is not available for providers".into(),
+        ));
+    }
 
     let config = GetGroupsConfig {
         order_field: query_params.order_field.unwrap_or(DEFAULT_ORDER_FIELD),

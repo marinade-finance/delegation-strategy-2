@@ -360,9 +360,6 @@ pub struct ValidatorRecord {
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
-    /// How many of `incidents` started within the last 90 days and lasted at least 3 minutes.
-    #[serde(default)]
-    pub incident_count_3m: u64,
     /// Node operator from operators.csv; null for a vote account the file does not list.
     #[serde(default)]
     pub operator: Option<String>,
@@ -390,7 +387,7 @@ pub struct UptimeRecord {
 }
 
 /// A single downtime incident (one DOWN interval from the uptimes table).
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 pub struct IncidentRecord {
     pub epoch: u64,
     pub start_at: DateTime<Utc>,
@@ -592,7 +589,31 @@ pub struct ValidatorGroupRecord {
     pub uptime_pct: Option<f64>,
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
-    pub incident_count_3m: u64,
+    /// Every member's incidents, oldest first. Two members down at once are two records here.
+    pub incidents: Vec<GroupIncidentRecord>,
+}
+
+/// A member's downtime incident as its group carries it.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct GroupIncidentRecord {
+    /// Vote account of the member that was down.
+    pub validator: String,
+    pub epoch: u64,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+    pub downtime_seconds: u64,
+}
+
+impl GroupIncidentRecord {
+    pub fn new(validator: &str, incident: &IncidentRecord) -> Self {
+        Self {
+            validator: validator.to_string(),
+            epoch: incident.epoch,
+            start_at: incident.start_at,
+            end_at: incident.end_at,
+            downtime_seconds: incident.downtime_seconds,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]

@@ -72,7 +72,7 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
                 .into()
         },
         OrderField::Incidents => {
-            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.incident_count_3m))
+            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.incidents.len()))
         }
     }
 }
@@ -224,7 +224,19 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use store::dto::GroupIncidentRecord;
     use store::groups::UNKNOWN_GROUP;
+
+    fn long_incident() -> GroupIncidentRecord {
+        GroupIncidentRecord {
+            validator: "vote".to_string(),
+            epoch: 100,
+            start_at: Utc::now(),
+            end_at: Utc::now(),
+            downtime_seconds: 600,
+        }
+    }
 
     fn group(key: &str, stake: i64) -> ValidatorGroupRecord {
         ValidatorGroupRecord {
@@ -542,7 +554,7 @@ mod tests {
                 ..group("relationships", 100)
             },
             ValidatorGroupRecord {
-                incident_count_3m: 900,
+                incidents: vec![long_incident(); 900],
                 ..group("incidents", 100)
             },
             ValidatorGroupRecord {
