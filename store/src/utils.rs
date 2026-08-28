@@ -224,13 +224,6 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`, and the widest
-/// window anything reads incidents over: `query_incident_free` only narrows within it.
-pub const INCIDENTS_WINDOW_EPOCHS: u64 = 90;
-
-// Keep default cached epochs at least the size of the incidents window.
-const _: () = assert!(INCIDENTS_WINDOW_EPOCHS <= DEFAULT_CACHE_EPOCHS);
-
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
@@ -1312,7 +1305,7 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, INCIDENTS_WINDOW_EPOCHS).await?;
+    let incidents = load_incidents(psql_client, DEFAULT_CACHE_EPOCHS).await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
