@@ -147,7 +147,8 @@ Query parameters, mutually exclusive; without either one the whole stored histor
 Such an epoch is still returned by both query modes, including the open one.
 
 `realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
-commissions that epoch implied it would, `null` where no commission was recorded.
+commissions that epoch implied it would. It is `null` where no commission was recorded, and for
+the in-progress epoch, which has paid no inflation rewards to weight them by.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
