@@ -360,7 +360,7 @@ pub struct ValidatorRecord {
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
-    /// Node operator from operators.csv; null for a vote account the file does not list.
+    /// Node operator from the operators CSV; null for a vote account the file does not list.
     #[serde(default)]
     pub operator: Option<String>,
     /// Stake gained since the epoch the group rows measure their own 7-day delta against, so the two
