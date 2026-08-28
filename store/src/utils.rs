@@ -229,16 +229,15 @@ async fn get_apy_calculators(
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
+/// validator from `from_epoch` onwards. Each `DOWN` row is one incident and includes
 /// length of downtime.
 pub async fn load_incidents(
     psql_client: &Client,
-    epochs: u64,
+    from_epoch: u64,
 ) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
                 vote_account,
                 uptimes.epoch,
@@ -246,10 +245,9 @@ pub async fn load_incidents(
                 end_at,
                 EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
             FROM uptimes
-            CROSS JOIN cluster
-            WHERE status = 'DOWN' AND uptimes.epoch > cluster.last_epoch - $1::NUMERIC
+            WHERE status = 'DOWN' AND uptimes.epoch >= $1::NUMERIC
             ORDER BY start_at ASC",
-            &[&Decimal::from(epochs)],
+            &[&Decimal::from(from_epoch)],
         )
         .await?;
 
@@ -1305,7 +1303,13 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, DEFAULT_CACHE_EPOCHS).await?;
+    // Anchored to the epoch the records report, which is the head the API measures its own window
+    // from; `cluster_info` can sit an epoch either side of it.
+    let incidents = load_incidents(
+        psql_client,
+        (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
+    )
+    .await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
