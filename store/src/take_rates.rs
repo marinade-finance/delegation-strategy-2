@@ -169,7 +169,8 @@ pub async fn store_take_rates(
     Ok(())
 }
 
-/// Cluster reward mix per epoch. Epochs that paid nothing are absent, not zero-weighted.
+/// Cluster reward mix per epoch. Epochs that paid no inflation are absent: the in-progress one has
+/// only accruing block rewards, and nothing else pays out before the epoch closes.
 pub async fn load_epoch_reward_mix(
     psql_client: &Client,
 ) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
@@ -184,6 +185,7 @@ pub async fn load_epoch_reward_mix(
             SUM(block_rewards) AS block
         FROM {VALIDATORS_REWARDS_TABLE}
         GROUP BY epoch
+        HAVING SUM(inflation_rewards) > 0
         "
             ),
             &[],
@@ -197,11 +199,7 @@ pub async fn load_epoch_reward_mix(
         let mev: Decimal = row.get("mev");
         let block: Decimal = row.get("block");
 
-        let total = inflation + mev + block;
-        if total.is_zero() {
-            continue;
-        }
-        let total = total.to_f64().unwrap_or_default();
+        let total = (inflation + mev + block).to_f64().unwrap_or_default();
 
         mix.insert(
             epoch,

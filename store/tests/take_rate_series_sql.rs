@@ -307,6 +307,7 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     insert_reward_components(&client, "voteOther", 2001, 40, 0, 0).await;
     insert_reward_components(&client, VOTE, 2002, 50, 25, 25).await;
     insert_reward_components(&client, VOTE, 2003, 0, 0, 0).await;
+    insert_reward_components(&client, VOTE, 2004, 0, 0, 50).await;
 
     let mix = load_epoch_reward_mix(&client).await.unwrap();
 
@@ -327,6 +328,11 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     assert!(
         !mix.contains_key(&2003),
         "an epoch that paid nothing has no mix to weight by"
+    );
+
+    assert!(
+        !mix.contains_key(&2004),
+        "an in-progress epoch has only accruing block rewards, which would weight out every commission"
     );
 
     client

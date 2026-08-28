@@ -785,13 +785,19 @@ pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
 /// What the validator's own fee settings imply it keeps, weighted by the cluster reward mix.
 /// Renormalized over the components it actually earns: a validator not running Jito receives no MEV
 /// at all, so crediting it a 0% MEV commission would dilute the rate it takes on what it does earn.
-/// None when the inflation commission is unknown, which is the one component no validator can opt out of.
+/// None when the inflation commission is unknown, or when the mix carries no inflation to weight it by.
+/// Inflation is the one component no validator can opt out of.
 pub fn expected_take_rate(
     shares: RewardMixShares,
     inflation_commission_pct: Option<i32>,
     mev_commission_bps: Option<i32>,
     priority_commission_bps: Option<i32>,
 ) -> Option<f64> {
+    // An in-progress epoch has paid no inflation or MEV yet, leaving a mix of pure block rewards.
+    if shares.inflation <= 0.0 {
+        return None;
+    }
+
     let mut weighted = (f64::from(inflation_commission_pct?) / 100.0) * shares.inflation;
     let mut weight = shares.inflation;
 
@@ -804,7 +810,7 @@ pub fn expected_take_rate(
     weighted += priority_commission_bps.map_or(1.0, |bps| f64::from(bps) / 10_000.0) * shares.block;
     weight += shares.block;
 
-    (weight > 0.0).then_some(weighted / weight)
+    Some(weighted / weight)
 }
 
 /// The higher of the last closed epoch's observed ceiling and what is advertised now: a validator moving its commission inside an epoch advertises the low end, so a rise counts at once while a cut waits for the epoch to close.
@@ -2370,6 +2376,21 @@ mod tests {
             block: 0.0,
         };
         assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
+    }
+
+    #[test]
+    fn expected_take_rate_is_unknown_for_a_mix_that_has_paid_only_block_rewards() {
+        // The in-progress epoch's shape: inflation and MEV pay at the boundary, block rewards accrue.
+        let accruing = RewardMixShares {
+            inflation: 0.0,
+            mev: 0.0,
+            block: 1.0,
+        };
+        assert_eq!(
+            expected_take_rate(accruing, Some(5), None, None),
+            None,
+            "weighting a 5% validator by a pure block mix would read it at 100%"
+        );
     }
 
     #[test]
