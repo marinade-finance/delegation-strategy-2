@@ -27,8 +27,6 @@ impl GroupKind {
         matches!(self, GroupKind::Operator)
     }
 
-    /// Only operator rows carry their members' incidents. A client or provider row spans most of
-    /// the cluster, so it would serve thousands of records nobody asked for.
     fn carries_incidents(self) -> bool {
         matches!(self, GroupKind::Operator)
     }
