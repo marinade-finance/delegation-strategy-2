@@ -495,7 +495,9 @@ pub struct TakeRateRecord {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
     pub epoch_end_at: Option<DateTime<Utc>>,
-    pub take_rate: f64,
+    pub realized_take_rate: f64,
+    /// Take rate implied by the epoch's commissions, weighted by the epoch's reward mix.
+    pub expected_take_rate: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 

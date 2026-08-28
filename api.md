@@ -145,6 +145,10 @@ Query parameters, mutually exclusive; without either one the whole stored histor
 
 `epoch_start_at` and `epoch_end_at` are `null` for epochs whose boundaries are not recorded.
 Such an epoch is still returned by both query modes, including the open one.
+
+`realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
+commissions that epoch implied it would. It is `null` where no commission was recorded, and for
+the in-progress epoch, which has paid no inflation rewards to weight them by.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
@@ -155,7 +159,8 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "epoch": 378,
       "epoch_start_at": "2022-11-27T19:45:05.669098Z",
       "epoch_end_at": "2022-11-29T19:45:05.669098Z",
-      "take_rate": 0.0812,
+      "realized_take_rate": 0.0812,
+      "expected_take_rate": 0.1052,
       "created_at": "2022-11-30T15:58:04.038843Z"
     }
   ]
