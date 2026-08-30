@@ -12,7 +12,7 @@ log = { workspace = true }
 env_logger = { workspace = true }
 rust_decimal = { workspace = true }
 solana-client = { workspace = true }
-structopt = { workspace = true }
+clap = { workspace = true }
 tokio-postgres = { workspace = true }
 openssl = { workspace = true }
 postgres-openssl = { workspace = true }

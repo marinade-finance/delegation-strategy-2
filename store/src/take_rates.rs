@@ -1,21 +1,21 @@
 use crate::dto::TakeRateRecord;
 use crate::utils::{expected_take_rate, worst_known_commission, RewardMixShares};
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::HashMap;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
 
 const SUPPORTED_DATA_VERSION: u16 = 1;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreTakeRatesParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

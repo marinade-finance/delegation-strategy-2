@@ -1,5 +1,6 @@
 use crate::{common::*, solana_service::solana_client_with_timeout};
 use anyhow::Context;
+use clap::Parser;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -8,28 +9,27 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_sdk::clock::Epoch;
 use std::time::Duration;
-use structopt::StructOpt;
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct TakeRatesParams {
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(
+    #[arg(
         long = "epochs-back",
         help = "How many epochs back from the current epoch to (re-)query. Reward data can arrive a little late, so a small window is re-queried each run; already-stored epochs are idempotently upserted.",
         default_value = "2"
     )]
     epochs_back: u64,
 
-    #[structopt(
+    #[arg(
         long = "from-epoch",
         help = "Query take rates from this epoch onwards. Overrides --epochs-back (use for historical backfill)."
     )]

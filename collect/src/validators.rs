@@ -6,52 +6,52 @@ use crate::validators_performance::{validators_performance, ValidatorPerformance
 use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
+use clap::Parser;
 use log::info;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::time::Duration;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct ValidatorsParams {
-    #[structopt(long = "whois", help = "Base URL for whois API.")]
+    #[arg(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
-    #[structopt(
+    #[arg(
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
     whois_bearer_token: Option<String>,
 
-    #[structopt(
+    #[arg(
         long = "bonds-url",
         default_value = "https://validator-bonds-api.marinade.finance/bonds/bidding"
     )]
     pub bonds_url: String,
 
-    #[structopt(
+    #[arg(
         long = "allow-zero-funded-bonds",
         help = "When set (or ALLOW_ZERO_FUNDED_BONDS=true), if all bonds have funded_amount == 0, log a warning instead of failing."
     )]
     pub allow_zero_funded_bonds: bool,
 
-    #[structopt(
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
     )]
     rpc_attempts: usize,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
+    #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
 }
 

@@ -1,10 +1,10 @@
 // Each tests/*.rs is its own crate and pulls in this whole module, so helpers only some of them need read as dead there.
 #![allow(dead_code)]
 
+use clap::Parser;
 use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::ValidatorPerformance;
 use store::validators::{store_validators, StoreValidatorsParams};
-use structopt::StructOpt;
 use tokio_postgres::{Client, NoTls};
 
 pub const POSTGRES_URL_ENV: &str = "DS_TEST_POSTGRES_URL";
@@ -106,7 +106,7 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
 pub async fn store_snapshot(client: &mut Client, name: &str, snapshot: &Snapshot) {
     let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
     store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         client,
     )
     .await

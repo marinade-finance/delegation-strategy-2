@@ -1,18 +1,18 @@
 use crate::dto::{ValidatorBlockReward, ValidatorBlockRewardsRecord};
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_block_rewards::ValidatorsBlockRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::HashMap;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
 pub const VALIDATORS_BLOCK_REWARDS_TABLE: &str = "validators_block_rewards";
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreBlockRewardsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

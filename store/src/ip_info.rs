@@ -1,30 +1,30 @@
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::whois_service::{IpInfo, WhoisClient};
 use log::{info, warn};
 use std::net::IpAddr;
 use std::sync::Arc;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreIpInfoParams {
-    #[structopt(long = "whois", help = "Base URL for whois API.")]
+    #[arg(long = "whois", help = "Base URL for whois API.")]
     whois: String,
 
-    #[structopt(
+    #[arg(
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
     whois_bearer_token: Option<String>,
 
-    #[structopt(
+    #[arg(
         long = "refresh-limit",
         help = "How many already known IPs to re-fetch per run, oldest first.",
         default_value = "21"
     )]
     refresh_limit: i64,
 
-    #[structopt(
+    #[arg(
         long = "in-use-days",
         help = "How recently an IP must have been observed to be worth re-fetching.",
         default_value = "7"

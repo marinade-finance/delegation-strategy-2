@@ -1,37 +1,37 @@
 use crate::validators_jito::{check_jito, ValidatorsJitoCheckParams};
 use check::validators_block_rewards::{check_block_rewards, BlockRewardsCheckParams};
+use clap::Parser;
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use log::info;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CommonParams {
-    #[structopt(long = "postgres-url")]
+    #[arg(long = "postgres-url")]
     postgres_url: String,
 
-    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
+    #[arg(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
     pub postgres_ssl_root_cert: String,
 
-    #[structopt(short = "u", long = "rpc-url", env = "RPC_URL")]
+    #[arg(short = 'u', long = "rpc-url", env = "RPC_URL")]
     pub rpc_url: String,
 
-    #[structopt(short = "c", long = "commitment", default_value = "finalized")]
+    #[arg(short = 'c', long = "commitment", default_value = "finalized")]
     pub commitment: String,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Params {
-    #[structopt(flatten)]
+    #[command(flatten)]
     common: CommonParams,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: StoreCommand,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 enum StoreCommand {
     JitoMev(ValidatorsJitoCheckParams),
     JitoPriority(ValidatorsJitoCheckParams),
@@ -58,7 +58,7 @@ async fn main() {
 }
 
 async fn run() -> anyhow::Result<bool> {
-    let params = Params::from_args();
+    let params = Params::parse();
     info!(
         "Running check command {:?} with commitment {}",
         params.command, params.common.commitment

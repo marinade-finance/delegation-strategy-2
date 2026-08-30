@@ -1,8 +1,8 @@
 use anyhow::Context;
+use clap::Parser;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::epoch_info::EpochInfo;
 use std::{thread, time::Duration};
-use structopt::StructOpt;
 
 /// Below this the epoch is too young to measure against block time's one-second granularity.
 const MIN_SLOTS_TO_MEASURE: u64 = 1000;
@@ -10,12 +10,12 @@ const MIN_SLOTS_TO_MEASURE: u64 = 1000;
 /// Skew between the container clock and the cluster's block time is a fixed offset, so only a long window dilutes it.
 const MIN_SECONDS_TO_MEASURE: u64 = 600;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CommonParams {
-    #[structopt(short = "u", long = "url", env = "RPC_URL")]
+    #[arg(short = 'u', long = "url", env = "RPC_URL")]
     pub rpc_url: String,
 
-    #[structopt(short = "c", long = "commitment", default_value = "finalized")]
+    #[arg(short = 'c', long = "commitment", default_value = "finalized")]
     pub commitment: String,
 }
 

@@ -1,12 +1,12 @@
 mod common;
 
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
 use collect::solana_service::NodeContact;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use common::{migrated_client, skip_without_database, write_yaml};
 use store::node_observations::{store_node_observations, StoreNodeObservationsParams};
-use structopt::StructOpt;
 use tokio_postgres::{Client, Row};
 
 const EPOCH: u64 = 1000;
@@ -50,7 +50,7 @@ fn snapshot(
 async fn run(client: &mut Client, name: &str, snapshot: &ValidatorsPerformanceSnapshot) {
     let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
     store_node_observations(
-        StoreNodeObservationsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreNodeObservationsParams::parse_from(["store", "--snapshot-file", &path]),
         client,
     )
     .await

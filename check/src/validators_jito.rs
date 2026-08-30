@@ -1,14 +1,14 @@
+use clap::Parser;
 use log::{debug, info};
 use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
 use collect::common::measure_milliseconds_per_slot;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct ValidatorsJitoCheckParams {
-    #[structopt(
+    #[arg(
         long = "execution-interval",
         help = "What should be number of slots between executions",
         default_value = "120000" // 13 hours

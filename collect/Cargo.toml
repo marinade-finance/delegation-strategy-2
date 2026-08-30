@@ -10,7 +10,7 @@ publish = false
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-structopt = { workspace = true }
+clap = { workspace = true }
 solana-client = { workspace = true }
 solana-vote-program = { workspace = true }
 solana-stake-interface = { workspace = true }
@@ -18,7 +18,7 @@ rust_decimal = { workspace = true }
 solana-sdk = { workspace = true }
 solana-program = { workspace = true }
 solana-account-decoder = { workspace = true }
-solana-config-program = { workspace = true }
+solana-config-program-client = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-feature-gate-interface = { workspace = true }
 csv = { workspace = true }

@@ -1,9 +1,9 @@
+use clap::Parser;
 use log::info;
 use rust_decimal::prelude::*;
-use structopt::StructOpt;
 use tokio_postgres::Client;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct LsOpenEpochsParams {}
 
 pub async fn list_open_epochs(psql_client: &Client) -> anyhow::Result<()> {

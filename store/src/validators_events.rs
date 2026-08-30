@@ -10,9 +10,9 @@ use tokio_postgres::Client;
 
 pub const VALIDATORS_EVENTS_TABLE: &str = "validators_events";
 
-#[derive(Debug, structopt::StructOpt)]
+#[derive(Debug, clap::Parser)]
 pub struct StoreEventsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 
