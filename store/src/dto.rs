@@ -589,7 +589,7 @@ pub struct ValidatorGroupRecord {
     pub uptime_pct: Option<f64>,
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
-    /// Every member's incidents, oldest first. Two members down at once are two records here.
+    /// Every member's incidents, oldest first; only operator rows populate this, `/clients` and `/providers` always answer empty. Two members down at once are two records here.
     pub incidents: Vec<GroupIncidentRecord>,
 }
 
