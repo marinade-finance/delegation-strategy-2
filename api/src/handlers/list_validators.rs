@@ -534,11 +534,11 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATORS.inc();
     if let Some(window) = query_params.incident_window_epochs {
-        if window == 0 || window > DEFAULT_INCIDENTS_WINDOW_EPOCHS {
+        if window == 0 || window > DEFAULT_CACHE_EPOCHS {
             return Ok(response_error(
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "incident_window_epochs must be between 1 and {DEFAULT_INCIDENTS_WINDOW_EPOCHS}"
+                    "incident_window_epochs must be between 1 and {DEFAULT_CACHE_EPOCHS}"
                 ),
             ));
         }
