@@ -256,8 +256,7 @@ impl Accumulator {
 }
 
 /// The row a validator belonging to no group stands for on its own. Ordered against the aggregated
-/// rows, so it has to read the same fields `Accumulator::add` does. `stake_share` is left at zero;
-/// the row is only ever sorted, never served.
+/// rows, so it has to read the same fields `Accumulator::add` does.
 pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
     // Dropped the way `StakeWeighted::add` drops them.
     let finite = |value: Option<f64>| value.filter(|value: &f64| value.is_finite());
