@@ -1,7 +1,8 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::order::{
-    OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
+    incidents_order_rejection, OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION,
+    DEFAULT_ORDER_FIELD,
 };
 use crate::utils::response::response_error;
 use crate::utils::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
@@ -53,11 +54,8 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_PROVIDERS.inc();
 
-    if query_params.order_field == Some(OrderField::Incidents) {
-        return Ok(response_error(
-            StatusCode::BAD_REQUEST,
-            "order_field=incidents is not available for providers".into(),
-        ));
+    if let Some(message) = incidents_order_rejection(query_params.order_field, "providers") {
+        return Ok(response_error(StatusCode::BAD_REQUEST, message));
     }
 
     let config = GetGroupsConfig {

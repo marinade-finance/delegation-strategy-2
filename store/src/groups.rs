@@ -120,8 +120,10 @@ impl StakeWeighted {
     }
 }
 
-#[derive(Default)]
+// Deliberately not `Default`: the kind decides whether incidents are carried, so an accumulator
+// that never saw one cannot be constructed.
 struct Accumulator {
+    kind: GroupKind,
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -134,15 +136,26 @@ struct Accumulator {
     uptime_pct: StakeWeighted,
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
-    carries_incidents: bool,
     incidents: Vec<GroupIncidentRecord>,
 }
 
 impl Accumulator {
     fn new(kind: GroupKind) -> Self {
         Self {
-            carries_incidents: kind.carries_incidents(),
-            ..Default::default()
+            kind,
+            spellings: Default::default(),
+            validator_count: 0,
+            total_stake: Decimal::ZERO,
+            net_apy: Default::default(),
+            take_rate: Default::default(),
+            credits: Default::default(),
+            marinade_score: Default::default(),
+            apy: Default::default(),
+            commission: Default::default(),
+            uptime_pct: Default::default(),
+            expected_take_rate: Default::default(),
+            delegation_relationship_count: None,
+            incidents: Vec::new(),
         }
     }
 
@@ -165,7 +178,7 @@ impl Accumulator {
     ) {
         self.validator_count += 1;
         self.total_stake += stats.activated_stake;
-        if self.carries_incidents {
+        if self.kind.carries_incidents() {
             self.incidents.extend(
                 validator
                     .incidents

@@ -537,9 +537,7 @@ pub async fn handler(
         if window == 0 || window > DEFAULT_CACHE_EPOCHS {
             return Ok(response_error(
                 StatusCode::BAD_REQUEST,
-                format!(
-                    "incident_window_epochs must be between 1 and {DEFAULT_CACHE_EPOCHS}"
-                ),
+                format!("incident_window_epochs must be between 1 and {DEFAULT_CACHE_EPOCHS}"),
             ));
         }
     }

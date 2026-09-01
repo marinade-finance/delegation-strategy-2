@@ -69,3 +69,40 @@ pub fn compare_keys(a: &SortKey, b: &SortKey, order_direction: &OrderDirection) 
         }
     }
 }
+
+/// The message `/clients` and `/providers` answer 400 with; only operator rows aggregate incidents,
+/// so ordering the others on that column would sort every row on an empty vector.
+pub fn incidents_order_rejection(order_field: Option<OrderField>, group: &str) -> Option<String> {
+    (order_field == Some(OrderField::Incidents))
+        .then(|| format!("order_field=incidents is not available for {group}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordering_on_incidents_is_rejected_by_name() {
+        assert_eq!(
+            incidents_order_rejection(Some(OrderField::Incidents), "clients"),
+            Some("order_field=incidents is not available for clients".to_string())
+        );
+        assert_eq!(
+            incidents_order_rejection(Some(OrderField::Incidents), "providers"),
+            Some("order_field=incidents is not available for providers".to_string())
+        );
+    }
+
+    #[test]
+    fn every_other_column_is_left_alone() {
+        assert_eq!(incidents_order_rejection(None, "clients"), None);
+        assert_eq!(
+            incidents_order_rejection(Some(DEFAULT_ORDER_FIELD), "clients"),
+            None
+        );
+        assert_eq!(
+            incidents_order_rejection(Some(OrderField::Validators), "providers"),
+            None
+        );
+    }
+}

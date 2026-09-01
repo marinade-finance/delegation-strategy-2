@@ -387,7 +387,7 @@ pub struct UptimeRecord {
 }
 
 /// A single downtime incident (one DOWN interval from the uptimes table).
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct IncidentRecord {
     pub epoch: u64,
     pub start_at: DateTime<Utc>,
