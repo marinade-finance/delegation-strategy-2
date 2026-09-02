@@ -1,5 +1,5 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, GroupIncidentRecord, ValidatorEpochStats,
+    client_label, client_lineage, effective_client_id, GroupIncidents, ValidatorEpochStats,
     ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
 use crate::operators;
@@ -27,7 +27,7 @@ impl GroupKind {
         matches!(self, GroupKind::Operator)
     }
 
-    fn carries_incidents(self) -> bool {
+    fn carries_incidents_as_records(self) -> bool {
         matches!(self, GroupKind::Operator)
     }
 }
@@ -120,10 +120,8 @@ impl StakeWeighted {
     }
 }
 
-// Deliberately not `Default`: the kind decides whether incidents are carried, so an accumulator
-// that never saw one cannot be constructed.
+// Not `Default`: `incidents` takes its shape from the kind.
 struct Accumulator {
-    kind: GroupKind,
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -136,13 +134,12 @@ struct Accumulator {
     uptime_pct: StakeWeighted,
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
-    incidents: Vec<GroupIncidentRecord>,
+    incidents: GroupIncidents,
 }
 
 impl Accumulator {
     fn new(kind: GroupKind) -> Self {
         Self {
-            kind,
             spellings: Default::default(),
             validator_count: 0,
             total_stake: Decimal::ZERO,
@@ -155,7 +152,11 @@ impl Accumulator {
             uptime_pct: Default::default(),
             expected_take_rate: Default::default(),
             delegation_relationship_count: None,
-            incidents: Vec::new(),
+            incidents: if kind.carries_incidents_as_records() {
+                GroupIncidents::empty_records()
+            } else {
+                GroupIncidents::empty_count()
+            },
         }
     }
 
@@ -178,14 +179,8 @@ impl Accumulator {
     ) {
         self.validator_count += 1;
         self.total_stake += stats.activated_stake;
-        if self.kind.carries_incidents() {
-            self.incidents.extend(
-                validator
-                    .incidents
-                    .iter()
-                    .map(|incident| GroupIncidentRecord::new(&validator.vote_account, incident)),
-            );
-        }
+        self.incidents
+            .add(&validator.vote_account, &validator.incidents);
 
         if let Some(name) = name {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
@@ -256,12 +251,7 @@ impl Accumulator {
             delegation_relationship_count: self.delegation_relationship_count,
             incidents: {
                 let mut incidents = self.incidents;
-                // Members arrive in hash order, so ties break on the member to keep pages stable.
-                incidents.sort_by(|a, b| {
-                    a.start_at
-                        .cmp(&b.start_at)
-                        .then_with(|| a.validator.cmp(&b.validator))
-                });
+                incidents.sort();
                 incidents
             },
         }
@@ -300,11 +290,8 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         uptime_pct: finite(validator.avg_uptime_pct),
         expected_take_rate: finite(validator.expected_take_rate),
         delegation_relationship_count: validator.unique_delegators,
-        incidents: validator
-            .incidents
-            .iter()
-            .map(|incident| GroupIncidentRecord::new(&validator.vote_account, incident))
-            .collect(),
+        // `top_level_ranks` reads nothing off this row but the sort key and the name.
+        incidents: GroupIncidents::Count(validator.incidents.len() as u64),
     }
 }
 
@@ -598,7 +585,7 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
-        /// Days ago each downtime interval began. Each lasts long enough to clear any floor.
+        /// Days ago each incident interval began. Each lasts long enough to clear any floor.
         incidents_days_ago: Vec<i64>,
     }
 
@@ -1409,6 +1396,7 @@ mod tests {
             ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
         }]);
         let figment = group(&operators(&validators), "Figment").clone();
+        let figment_incidents = figment.incidents.count();
 
         let validator = ValidatorRecord {
             activated_stake: Decimal::from(300),
@@ -1419,10 +1407,14 @@ mod tests {
             ValidatorGroupRecord {
                 key: FIGMENT_ONE.to_string(),
                 stake_share: 0.0,
+                // The lone row is never served, only sorted, so it carries the count the
+                // aggregate's records are ordered on rather than the records themselves.
+                incidents: GroupIncidents::Count(figment_incidents),
                 ..figment
             },
             "the two are ordered against each other, so every column has to agree"
         );
+        assert_eq!(figment_incidents, 1);
     }
 
     #[test]
@@ -1503,7 +1495,9 @@ mod tests {
         ]);
 
         let figment = operators(&validators);
-        let incidents = &group(&figment, "Figment").incidents;
+        let GroupIncidents::Records(incidents) = &group(&figment, "Figment").incidents else {
+            panic!("operator rows carry the records themselves");
+        };
         assert_eq!(incidents.len(), 4);
         assert!(incidents
             .windows(2)
@@ -1519,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn only_operator_rows_carry_incidents() {
+    fn only_operator_rows_carry_the_records_the_rest_carry_the_count() {
         let validators = validators(vec![Member {
             incidents_days_ago: vec![1, 2],
             ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
@@ -1532,8 +1526,20 @@ mod tests {
         ] {
             let groups = aggregate_groups(&validators, kind);
             assert!(
-                groups.groups.iter().all(|group| group.incidents.is_empty()),
+                groups
+                    .groups
+                    .iter()
+                    .all(|group| matches!(group.incidents, GroupIncidents::Count(_))),
                 "{kind:?} rows span most of the cluster"
+            );
+            assert_eq!(
+                groups
+                    .groups
+                    .iter()
+                    .map(|group| group.incidents.count())
+                    .sum::<u64>(),
+                2,
+                "{kind:?} counts the same downtime the operator row lists"
             );
         }
     }
@@ -1545,8 +1551,9 @@ mod tests {
             last_two_epochs(300, AGAVE, None),
         )]);
 
-        assert!(group(&operators(&validators), "Figment")
-            .incidents
-            .is_empty());
+        assert_eq!(
+            group(&operators(&validators), "Figment").incidents,
+            GroupIncidents::Records(Vec::new())
+        );
     }
 }

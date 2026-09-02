@@ -51,6 +51,7 @@ use utoipa::OpenApi;
         schemas(store::dto::UptimeRecord),
         schemas(store::dto::IncidentRecord),
         schemas(store::dto::GroupIncidentRecord),
+        schemas(store::dto::GroupIncidents),
         schemas(store::dto::EventEpochRecord),
         schemas(store::dto::SettlementRecord),
         schemas(store::dto::PerformanceRecord),

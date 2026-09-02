@@ -1,10 +1,8 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::order::{
-    incidents_order_rejection, OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION,
-    DEFAULT_ORDER_FIELD,
+    OrderDirection, OrderField, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
-use crate::utils::response::response_error;
 use crate::utils::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT};
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -53,10 +51,6 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_PROVIDERS.inc();
-
-    if let Some(message) = incidents_order_rejection(query_params.order_field, "providers") {
-        return Ok(response_error(StatusCode::BAD_REQUEST, message));
-    }
 
     let config = GetGroupsConfig {
         order_field: query_params.order_field.unwrap_or(DEFAULT_ORDER_FIELD),

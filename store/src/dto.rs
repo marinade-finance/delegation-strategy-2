@@ -589,8 +589,60 @@ pub struct ValidatorGroupRecord {
     pub uptime_pct: Option<f64>,
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
-    /// Every member's incidents, oldest first; only operator rows populate this, `/clients` and `/providers` always answer empty. Two members down at once are two records here.
-    pub incidents: Vec<GroupIncidentRecord>,
+    pub incidents: GroupIncidents,
+}
+
+/// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum GroupIncidents {
+    Records(Vec<GroupIncidentRecord>),
+    Count(u64),
+}
+
+impl GroupIncidents {
+    pub fn empty_records() -> Self {
+        Self::Records(Vec::new())
+    }
+
+    pub fn empty_count() -> Self {
+        Self::Count(0)
+    }
+
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Records(records) => records.len() as u64,
+            Self::Count(count) => *count,
+        }
+    }
+
+    pub fn add(&mut self, validator: &str, incidents: &[IncidentRecord]) {
+        match self {
+            Self::Records(records) => records.extend(
+                incidents
+                    .iter()
+                    .map(|incident| GroupIncidentRecord::new(validator, incident)),
+            ),
+            Self::Count(count) => *count += incidents.len() as u64,
+        }
+    }
+
+    /// Members arrive in hash order, so ties break on the member to keep pages stable.
+    pub fn sort(&mut self) {
+        if let Self::Records(records) = self {
+            records.sort_by(|a, b| {
+                a.start_at
+                    .cmp(&b.start_at)
+                    .then_with(|| a.validator.cmp(&b.validator))
+            });
+        }
+    }
+}
+
+impl Default for GroupIncidents {
+    fn default() -> Self {
+        Self::empty_records()
+    }
 }
 
 /// A member's downtime incident as its group carries it.
@@ -787,5 +839,63 @@ where
             Unexpected::Unsigned(other as u64),
             &"zero or one",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn incident() -> GroupIncidentRecord {
+        GroupIncidentRecord {
+            validator: "vote".to_string(),
+            epoch: 100,
+            start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            end_at: "2026-01-01T00:05:00Z".parse().unwrap(),
+            downtime_seconds: 300,
+        }
+    }
+
+    // Consumers switch on the JSON type, so the enum must never leak a variant name or wrapper object.
+    #[test]
+    fn incidents_serialize_as_an_array_or_a_number() {
+        let records = serde_json::to_value(GroupIncidents::Records(vec![incident()])).unwrap();
+        assert!(records.is_array());
+        assert_eq!(records.as_array().unwrap().len(), 1);
+        assert_eq!(records[0]["validator"], "vote");
+
+        assert_eq!(
+            serde_json::to_value(GroupIncidents::Records(Vec::new())).unwrap(),
+            serde_json::json!([])
+        );
+        assert_eq!(
+            serde_json::to_value(GroupIncidents::Count(7)).unwrap(),
+            serde_json::json!(7)
+        );
+    }
+
+    #[test]
+    fn incidents_read_back_into_the_variant_the_json_type_names() {
+        for (json, expected) in [
+            ("7", GroupIncidents::Count(7)),
+            ("[]", GroupIncidents::Records(Vec::new())),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<GroupIncidents>(json).unwrap(),
+                expected
+            );
+        }
+
+        let records: GroupIncidents =
+            serde_json::from_value(serde_json::to_value(vec![incident()]).unwrap()).unwrap();
+        assert_eq!(records, GroupIncidents::Records(vec![incident()]));
+    }
+
+    // The count is the sort key both shapes are ordered on, so the two have to report it alike.
+    #[test]
+    fn both_shapes_report_the_same_count() {
+        assert_eq!(GroupIncidents::Records(vec![incident(); 3]).count(), 3);
+        assert_eq!(GroupIncidents::Count(3).count(), 3);
+        assert_eq!(GroupIncidents::default().count(), 0);
     }
 }
