@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 pub const DEFAULT_ORDER_FIELD: OrderField = OrderField::Stake;
 pub const DEFAULT_ORDER_DIRECTION: OrderDirection = OrderDirection::DESC;
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, utoipa::ToSchema)]
 pub enum OrderField {
     Name,
     Stake,
@@ -23,6 +23,7 @@ pub enum OrderField {
     ExpectedTakeRate,
     Validators,
     DelegationRelationships,
+    /// Orders on how many incidents the row covers.
     Incidents,
 }
 

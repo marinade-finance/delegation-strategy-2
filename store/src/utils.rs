@@ -224,33 +224,21 @@ async fn get_apy_calculators(
     Ok(result)
 }
 
-/// Epochs `load_incidents` reaches back for the `incidents` array on `/validators`.
-const INCIDENTS_LOADED_EPOCHS: u64 = 90;
-
-/// Days `incident_count_3m` counts over, a cut of what `INCIDENTS_LOADED_EPOCHS` already loaded.
-pub const INCIDENTS_COUNTED_DAYS: i64 = 90;
-
-/// Downtime an interval needs to count towards `incident_count_3m`.
-pub const INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS: u64 = 180;
-
-// Keep default cached epochs at least the size of the incidents window.
-const _: () = assert!(INCIDENTS_LOADED_EPOCHS <= DEFAULT_CACHE_EPOCHS);
-
 /// How far back to accept a validator's latest Jito commissions. Wide enough to survive an epoch
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
-/// length of downtime.
+/// validator, over the closed epoch range `from_epoch..=last_epoch`. Each `DOWN` row is one
+/// incident and includes length of downtime.
 pub async fn load_incidents(
     psql_client: &Client,
-    epochs: u64,
+    from_epoch: u64,
+    last_epoch: u64,
 ) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
     let rows = psql_client
         .query(
             "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
             SELECT
                 vote_account,
                 uptimes.epoch,
@@ -258,10 +246,11 @@ pub async fn load_incidents(
                 end_at,
                 EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
             FROM uptimes
-            CROSS JOIN cluster
-            WHERE status = 'DOWN' AND uptimes.epoch > cluster.last_epoch - $1::NUMERIC
+            WHERE status = 'DOWN'
+              AND uptimes.epoch >= $1::NUMERIC
+              AND uptimes.epoch <= $2::NUMERIC
             ORDER BY start_at ASC",
-            &[&Decimal::from(epochs)],
+            &[&Decimal::from(from_epoch), &Decimal::from(last_epoch)],
         )
         .await?;
 
@@ -1140,7 +1129,6 @@ pub async fn load_validators(
                     expected_take_rate: None,
                     net_apy: None,
                     incidents: Vec::new(),
-                    incident_count_3m: 0,
                     operator: None,
                     stake_delta_7d: None,
                     stake_delta_30d: None,
@@ -1318,18 +1306,16 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, INCIDENTS_LOADED_EPOCHS).await?;
-    let incidents_from = Utc::now() - chrono::Duration::days(INCIDENTS_COUNTED_DAYS);
+    // Anchored to the epoch the records report, which is the head the API measures its own window
+    // from; `cluster_info` can sit an epoch either side of it.
+    let incidents = load_incidents(
+        psql_client,
+        (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
+        last_epoch,
+    )
+    .await?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
-        record.incident_count_3m = record
-            .incidents
-            .iter()
-            .filter(|incident| {
-                incident.start_at >= incidents_from
-                    && incident.downtime_seconds >= INCIDENTS_COUNTED_MIN_DOWNTIME_SECONDS
-            })
-            .count() as u64;
     }
 
     log::info!("Updating operators...");
