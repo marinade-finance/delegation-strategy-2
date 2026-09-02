@@ -1407,8 +1407,6 @@ mod tests {
             ValidatorGroupRecord {
                 key: FIGMENT_ONE.to_string(),
                 stake_share: 0.0,
-                // The lone row is never served, only sorted, so it carries the count the
-                // aggregate's records are ordered on rather than the records themselves.
                 incidents: GroupIncidents::Count(figment_incidents),
                 ..figment
             },
