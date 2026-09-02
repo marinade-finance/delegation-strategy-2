@@ -229,11 +229,12 @@ async fn get_apy_calculators(
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator from `from_epoch` onwards. Each `DOWN` row is one incident and includes
-/// length of downtime.
+/// validator, over the closed epoch range `from_epoch..=last_epoch`. Each `DOWN` row is one
+/// incident and includes length of downtime.
 pub async fn load_incidents(
     psql_client: &Client,
     from_epoch: u64,
+    last_epoch: u64,
 ) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
     let rows = psql_client
         .query(
@@ -245,9 +246,11 @@ pub async fn load_incidents(
                 end_at,
                 EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
             FROM uptimes
-            WHERE status = 'DOWN' AND uptimes.epoch >= $1::NUMERIC
+            WHERE status = 'DOWN'
+              AND uptimes.epoch >= $1::NUMERIC
+              AND uptimes.epoch <= $2::NUMERIC
             ORDER BY start_at ASC",
-            &[&Decimal::from(from_epoch)],
+            &[&Decimal::from(from_epoch), &Decimal::from(last_epoch)],
         )
         .await?;
 
@@ -1308,6 +1311,7 @@ pub async fn load_validators(
     let incidents = load_incidents(
         psql_client,
         (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
+        last_epoch,
     )
     .await?;
     for (vote_account, record) in records.iter_mut() {

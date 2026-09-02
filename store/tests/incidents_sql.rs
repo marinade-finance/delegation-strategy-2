@@ -73,9 +73,42 @@ async fn the_window_starts_on_from_epoch_itself() {
     )
     .await;
 
-    let incidents = load_incidents(&client, 100).await.unwrap();
+    let incidents = load_incidents(&client, 100, 101).await.unwrap();
 
     assert_eq!(epochs(&incidents["voteA"]), vec![100, 101]);
+}
+
+// `uptimes` is written every minute and `validators` hourly, so after an epoch rollover a DOWN row
+// sits above the head the window is anchored to. Serving it would make the window one epoch wider
+// than the caller asked for, but only for the hour it takes the validator write to catch up.
+#[tokio::test]
+async fn the_window_ends_on_last_epoch_itself() {
+    let schema = "ds_test_incidents_head";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    down(
+        &client,
+        "voteA",
+        100,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:05:00Z",
+    )
+    .await;
+    down(
+        &client,
+        "voteA",
+        101,
+        "2026-02-01T00:00:00Z",
+        "2026-02-01T00:05:00Z",
+    )
+    .await;
+
+    let incidents = load_incidents(&client, 100, 100).await.unwrap();
+
+    assert_eq!(epochs(&incidents["voteA"]), vec![100]);
 }
 
 #[tokio::test]
@@ -96,7 +129,7 @@ async fn an_up_interval_is_not_an_incident() {
     )
     .await;
 
-    assert!(load_incidents(&client, 100).await.unwrap().is_empty());
+    assert!(load_incidents(&client, 100, 100).await.unwrap().is_empty());
 }
 
 // Every filter the API applies afterwards reads `downtime_seconds`, including the restart-noise floor.
@@ -117,7 +150,7 @@ async fn downtime_seconds_is_the_length_of_the_interval() {
     )
     .await;
 
-    let incidents = load_incidents(&client, 100).await.unwrap();
+    let incidents = load_incidents(&client, 100, 100).await.unwrap();
 
     assert_eq!(incidents["voteA"][0].downtime_seconds, 200);
 }
@@ -155,7 +188,7 @@ async fn each_down_row_is_its_own_incident_oldest_first() {
     )
     .await;
 
-    let incidents = load_incidents(&client, 100).await.unwrap();
+    let incidents = load_incidents(&client, 100, 102).await.unwrap();
 
     assert_eq!(epochs(&incidents["voteA"]), vec![100, 101, 102]);
 }
@@ -193,7 +226,7 @@ async fn incidents_are_keyed_by_the_validator_that_was_down() {
     )
     .await;
 
-    let incidents = load_incidents(&client, 100).await.unwrap();
+    let incidents = load_incidents(&client, 100, 101).await.unwrap();
 
     assert_eq!(incidents.len(), 2);
     assert_eq!(epochs(&incidents["voteA"]), vec![100, 101]);
