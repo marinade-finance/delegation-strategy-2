@@ -54,39 +54,39 @@ pub fn cluster_skip_rates<'a>(
         .collect()
 }
 
-/// How one epoch breached the block production rule. `None` where it passed, where the validator
-/// held too few leader slots to be judged, or where the epoch has no cluster figure to judge it
-/// against.
-pub fn breach(
-    stats: &ValidatorEpochStats,
-    cluster_skip_rates: &HashMap<u64, f64>,
-) -> Option<BlockProductionDetail> {
-    let cluster_skip_rate = cluster_skip_rates.get(&stats.epoch).copied()?;
-    if stats.leader_slots < MIN_LEADER_SLOTS {
-        return None;
-    }
+impl BlockProductionDetail {
+    /// How one epoch breached the block production rule, given the cluster's own skip rate that
+    /// epoch. `None` where it passed, or where the validator held too few leader slots to be judged.
+    pub fn qualifies_as_breach(
+        stats: &ValidatorEpochStats,
+        cluster_skip_rate: f64,
+    ) -> Option<Self> {
+        if stats.leader_slots < MIN_LEADER_SLOTS {
+            return None;
+        }
 
-    let missed_slots = stats.leader_slots.saturating_sub(stats.blocks_produced);
-    if missed_slots < MIN_MISSED_SLOTS {
-        return None;
-    }
+        let missed_slots = stats.leader_slots.saturating_sub(stats.blocks_produced);
+        if missed_slots < MIN_MISSED_SLOTS {
+            return None;
+        }
 
-    let skip_rate = missed_slots as f64 / stats.leader_slots as f64;
-    let threshold = threshold(cluster_skip_rate);
-    if skip_rate < threshold {
-        return None;
-    }
+        let skip_rate = missed_slots as f64 / stats.leader_slots as f64;
+        let threshold = threshold(cluster_skip_rate);
+        if skip_rate < threshold {
+            return None;
+        }
 
-    Some(BlockProductionDetail {
-        leader_slots: stats.leader_slots,
-        blocks_produced: stats.blocks_produced,
-        missed_slots,
-        skip_rate,
-        cluster_skip_rate,
-        threshold,
-        cluster_skip_rate_multiple: (cluster_skip_rate > 0.0)
-            .then(|| skip_rate / cluster_skip_rate),
-    })
+        Some(Self {
+            leader_slots: stats.leader_slots,
+            blocks_produced: stats.blocks_produced,
+            missed_slots,
+            skip_rate,
+            cluster_skip_rate,
+            threshold,
+            cluster_skip_rate_multiple: (cluster_skip_rate > 0.0)
+                .then(|| skip_rate / cluster_skip_rate),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -114,9 +114,9 @@ mod tests {
         blocks_produced: u64,
         cluster_skip_rate: f64,
     ) -> Option<BlockProductionDetail> {
-        breach(
+        BlockProductionDetail::qualifies_as_breach(
             &stats(100, leader_slots, blocks_produced),
-            &HashMap::from([(100, cluster_skip_rate)]),
+            cluster_skip_rate,
         )
     }
 
@@ -136,11 +136,6 @@ mod tests {
     #[test]
     fn an_epoch_under_the_leader_slot_gate_is_not_evaluated() {
         assert!(breached(63, 0, 0.0).is_none());
-    }
-
-    #[test]
-    fn an_epoch_with_no_cluster_figure_is_not_evaluated() {
-        assert!(breach(&stats(100, 64, 0), &HashMap::new()).is_none());
     }
 
     #[test]

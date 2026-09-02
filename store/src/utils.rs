@@ -1,10 +1,10 @@
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
-    BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
-    DCConcentrationStats, FeatureSetStats, IncidentDetail, IncidentRecord, RugInfo, RuggerRecord,
-    ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
-    ValidatorsAggregated, VersionRecord,
+    BlockProductionDetail, BlockProductionStats, ClientDiversityStats, ClientLineageStats,
+    ClusterStats, CommissionRecord, DCConcentrationStats, FeatureSetStats, IncidentDetail,
+    IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat,
+    ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord, ValidatorScoreV2Record,
+    ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
@@ -284,7 +284,12 @@ pub async fn load_incidents(
             .iter()
             .filter(|stats| (from_epoch..=last_epoch).contains(&stats.epoch))
         {
-            let Some(block_production) = crate::incidents::breach(stats, &cluster_skip_rates)
+            let Some(block_production) =
+                cluster_skip_rates
+                    .get(&stats.epoch)
+                    .and_then(|cluster_skip_rate| {
+                        BlockProductionDetail::qualifies_as_breach(stats, *cluster_skip_rate)
+                    })
             else {
                 continue;
             };
