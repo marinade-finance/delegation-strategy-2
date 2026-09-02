@@ -57,8 +57,8 @@ fn is_unknown_placeholder(value: &str) -> bool {
 }
 
 /// The client the node reported, for one absent from client-ids.csv.
-fn reported_client(stats: &ValidatorEpochStats) -> Option<String> {
-    normalized(stats.client_id_raw.clone())
+fn reported_client(client_id_raw: Option<String>) -> Option<String> {
+    normalized(client_id_raw)
 }
 
 /// The registry renders a client lowercase (`agave`); block engine labels are title-cased.
@@ -82,10 +82,26 @@ fn group_key(
             normalized(operators::operator_of(&validator.vote_account).map(str::to_string))
         }
         GroupKind::ProviderAso => normalized(stats.dc_aso.clone()),
-        GroupKind::ClientLabel => {
-            normalized(Some(client_label(client_id))).or_else(|| reported_client(stats))
-        }
+        GroupKind::ClientLabel => normalized(Some(client_label(client_id)))
+            .or_else(|| reported_client(stats.client_id_raw.clone())),
         GroupKind::ClientLineage => normalized(client_lineage(client_id)).map(as_client_name),
+    }
+}
+
+/// Keys for the epoch being served.
+fn current_group_key(
+    validator: &ValidatorRecord,
+    stats: &ValidatorEpochStats,
+    kind: GroupKind,
+) -> Option<String> {
+    match kind {
+        GroupKind::ClientLabel => normalized(Some(validator.client_label.clone()))
+            .or_else(|| reported_client(validator.client_id_raw.clone())),
+        GroupKind::ClientLineage => {
+            normalized(validator.client_lineage.clone()).map(as_client_name)
+        }
+        // Neither is projected onto the record, so both read the epoch as stored.
+        GroupKind::Operator | GroupKind::ProviderAso => group_key(validator, stats, kind),
     }
 }
 
@@ -393,7 +409,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
             continue;
         };
 
-        let key = group_key(validator, stats, kind);
+        let key = current_group_key(validator, stats, kind);
         if key.is_none() && kind.drops_unclassified() {
             continue;
         }
@@ -481,13 +497,17 @@ fn block_engines_by_client(
             .find(|stats| stats.epoch == current_epoch)
         {
             engines
-                .entry(folded(&group_key(
+                .entry(folded(&current_group_key(
                     validator,
                     stats,
                     GroupKind::ClientLineage,
                 )))
                 .or_default()
-                .insert(folded(&group_key(validator, stats, GroupKind::ClientLabel)));
+                .insert(folded(&current_group_key(
+                    validator,
+                    stats,
+                    GroupKind::ClientLabel,
+                )));
         }
     }
     engines
@@ -513,7 +533,7 @@ pub struct ValidatorGroupings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dto::IncidentRecord;
+    use crate::dto::{client_name, client_vendor, IncidentRecord};
     use chrono::{DateTime, Duration, Utc};
 
     const EPOCH_SECONDS: i64 = 2 * 24 * 3600;
@@ -629,10 +649,28 @@ mod tests {
                     })
                     .count() as u64;
 
+                // `load_validators` projects the node columns off the newest row that reported
+                // any of them, so the record keeps a client the epoch being served has not
+                // observed yet. The fixture's raw rendering is the member's, so a row counts as
+                // reporting when it carries either half.
+                let projected_client_id = member
+                    .epochs
+                    .iter()
+                    .find(|(_, _, client_id, _)| {
+                        client_id.is_some() || member.client_id_raw.is_some()
+                    })
+                    .and_then(|(_, _, client_id, _)| *client_id);
+
                 (
                     member.vote_account.to_string(),
                     ValidatorRecord {
                         vote_account: member.vote_account.to_string(),
+                        client_id: projected_client_id,
+                        client_id_raw: member.client_id_raw.map(str::to_string),
+                        client_name: client_name(projected_client_id),
+                        client_label: client_label(projected_client_id),
+                        client_vendor: client_vendor(projected_client_id),
+                        client_lineage: client_lineage(projected_client_id),
                         epoch_stats,
                         net_apy: member.net_apy,
                         avg_take_rate: member.take_rate,
@@ -722,6 +760,64 @@ mod tests {
             assert_eq!(keys(&groups), vec![UNKNOWN_GROUP.to_string()], "{kind:?}");
             assert_eq!(group(&groups, UNKNOWN_GROUP).validator_count, 3, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn a_node_not_yet_crawled_this_epoch_keeps_the_client_it_last_reported() {
+        let validators = validators(vec![Member::new(
+            "uncrawled",
+            vec![
+                (CURRENT_EPOCH, 100, None, None),
+                (PREVIOUS_EPOCH, 100, JITO_BAM, None),
+            ],
+        )]);
+
+        assert_eq!(
+            keys(&aggregate_groups(&validators, GroupKind::ClientLabel)),
+            vec!["Agave + JitoBAM".to_string()],
+            "gossip lags the epoch boundary; a missing observation is not a client change"
+        );
+        assert_eq!(
+            keys(&aggregate_groups(&validators, GroupKind::ClientLineage)),
+            vec!["Agave".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_client_observed_this_epoch_wins_over_an_older_one() {
+        let validators = validators(vec![Member::new(
+            "switched",
+            vec![
+                (CURRENT_EPOCH, 100, FRANKENDANCER, None),
+                (PREVIOUS_EPOCH, 100, JITO_BAM, None),
+            ],
+        )]);
+
+        assert_eq!(
+            keys(&aggregate_groups(&validators, GroupKind::ClientLabel)),
+            vec!["Frankendancer".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_unregistered_client_reported_this_epoch_stays_unclassified() {
+        // What `/clients` serves for a node reporting a gossip id absent from client-ids.csv.
+        let validators = validators(vec![Member {
+            client_id_raw: Some("Unknown(11040)"),
+            ..Member::new(
+                "unregistered",
+                vec![
+                    (CURRENT_EPOCH, 100, None, None),
+                    (PREVIOUS_EPOCH, 100, AGAVE, None),
+                ],
+            )
+        }]);
+
+        assert_eq!(
+            keys(&aggregate_groups(&validators, GroupKind::ClientLabel)),
+            vec![UNKNOWN_GROUP.to_string()],
+            "the node did report, with an id the registry does not know: not a missing observation"
+        );
     }
 
     #[test]
