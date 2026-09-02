@@ -230,8 +230,7 @@ impl Validator {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-#[cfg_attr(test, derive(Default))]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema, Default)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
@@ -287,8 +286,7 @@ pub struct ValidatorEpochStats {
     pub rank_apy: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-#[cfg_attr(test, derive(Default))]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema, Default)]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -386,13 +384,77 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-/// A single downtime incident (one DOWN interval from the uptimes table).
+/// One incident on a validator in one epoch. `incident_type` says which kind, and which of the
+/// remaining fields are present.
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct IncidentRecord {
     pub epoch: u64,
-    pub start_at: DateTime<Utc>,
-    pub end_at: DateTime<Utc>,
-    pub downtime_seconds: u64,
+    #[serde(flatten)]
+    pub detail: IncidentDetail,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+#[serde(tag = "incident_type")]
+pub enum IncidentDetail {
+    /// One DOWN interval from the uptimes table.
+    Downtime {
+        start_at: DateTime<Utc>,
+        end_at: DateTime<Utc>,
+        downtime_seconds: u64,
+        /// Set when the same epoch also breached the block production rule: the two are one event
+        /// with two symptoms, so they are not served as two incidents.
+        #[serde(default)]
+        block_production: Option<BlockProductionDetail>,
+    },
+    /// An epoch the validator was up for but produced too few of its leader slots in.
+    BlockProduction {
+        epoch_start_at: Option<DateTime<Utc>>,
+        epoch_end_at: Option<DateTime<Utc>>,
+        block_production: BlockProductionDetail,
+    },
+}
+
+/// Why one epoch breached the block production rule, with the numbers behind it.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct BlockProductionDetail {
+    pub leader_slots: u64,
+    pub blocks_produced: u64,
+    pub missed_slots: u64,
+    /// `missed_slots / leader_slots`, as a fraction.
+    pub skip_rate: f64,
+    /// The epoch's cluster-wide skip rate, over the validators that were evaluable that epoch.
+    pub cluster_skip_rate: f64,
+    /// The bar `skip_rate` had to clear that epoch, as a fraction.
+    pub threshold: f64,
+    /// How many times the cluster's own skip rate this validator skipped. Null in an epoch the
+    /// cluster skipped nothing.
+    pub cluster_skip_rate_multiple: Option<f64>,
+}
+
+impl IncidentDetail {
+    /// When the incident started, for ordering: a downtime interval when it went down, a block
+    /// production epoch when that epoch ended. `None` for an epoch with no end on record, which is
+    /// the running one.
+    pub fn started_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Downtime { start_at, .. } => Some(*start_at),
+            Self::BlockProduction { epoch_end_at, .. } => *epoch_end_at,
+        }
+    }
+
+    /// Whether the incident is one worth serving: over the downtime floor where it has downtime to
+    /// measure. Restart noise is under the floor; a block production incident has no downtime side
+    /// and is never noise.
+    pub fn is_over_downtime_floor(&self, min_downtime_seconds: u64) -> bool {
+        match self {
+            Self::Downtime {
+                downtime_seconds,
+                block_production,
+                ..
+            } => *downtime_seconds >= min_downtime_seconds || block_production.is_some(),
+            Self::BlockProduction { .. } => true,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -631,8 +693,9 @@ impl GroupIncidents {
     pub fn sort(&mut self) {
         if let Self::Records(records) = self {
             records.sort_by(|a, b| {
-                a.start_at
-                    .cmp(&b.start_at)
+                a.detail
+                    .started_at()
+                    .cmp(&b.detail.started_at())
                     .then_with(|| a.validator.cmp(&b.validator))
             });
         }
@@ -645,15 +708,14 @@ impl Default for GroupIncidents {
     }
 }
 
-/// A member's downtime incident as its group carries it.
+/// A member's incident as its group carries it, `incident_type` and all.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 pub struct GroupIncidentRecord {
-    /// Vote account of the member that was down.
+    /// Vote account of the member the incident is on.
     pub validator: String,
     pub epoch: u64,
-    pub start_at: DateTime<Utc>,
-    pub end_at: DateTime<Utc>,
-    pub downtime_seconds: u64,
+    #[serde(flatten)]
+    pub detail: IncidentDetail,
 }
 
 impl GroupIncidentRecord {
@@ -661,9 +723,7 @@ impl GroupIncidentRecord {
         Self {
             validator: validator.to_string(),
             epoch: incident.epoch,
-            start_at: incident.start_at,
-            end_at: incident.end_at,
-            downtime_seconds: incident.downtime_seconds,
+            detail: incident.detail.clone(),
         }
     }
 }
@@ -850,9 +910,12 @@ mod tests {
         GroupIncidentRecord {
             validator: "vote".to_string(),
             epoch: 100,
-            start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
-            end_at: "2026-01-01T00:05:00Z".parse().unwrap(),
-            downtime_seconds: 300,
+            detail: IncidentDetail::Downtime {
+                start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+                end_at: "2026-01-01T00:05:00Z".parse().unwrap(),
+                downtime_seconds: 300,
+                block_production: None,
+            },
         }
     }
 

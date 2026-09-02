@@ -1,8 +1,8 @@
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
-    DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    DCConcentrationStats, FeatureSetStats, IncidentDetail, IncidentRecord, RugInfo, RuggerRecord,
+    ScoringRunRecord, UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
     ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
     ValidatorsAggregated, VersionRecord,
 };
@@ -228,13 +228,15 @@ async fn get_apy_calculators(
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
-/// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator, over the closed epoch range `from_epoch..=last_epoch`. Each `DOWN` row is one
-/// incident and includes length of downtime.
+/// Loads every incident per validator over the closed epoch range `from_epoch..=last_epoch`. A
+/// downtime incident is one `DOWN` interval in the `uptimes` table and carries its length; a block
+/// production incident is one epoch of `records`' own stats that breached the block production
+/// rule. An epoch with both is one incident carrying both symptoms.
 pub async fn load_incidents(
     psql_client: &Client,
     from_epoch: u64,
     last_epoch: u64,
+    records: &HashMap<String, ValidatorRecord>,
 ) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
     let rows = psql_client
         .query(
@@ -254,21 +256,71 @@ pub async fn load_incidents(
         )
         .await?;
 
-    let mut records: HashMap<String, Vec<IncidentRecord>> = Default::default();
+    let mut incidents: HashMap<String, Vec<IncidentRecord>> = Default::default();
     for row in rows {
         let vote_account: String = row.get("vote_account");
-        records
+        incidents
             .entry(vote_account)
             .or_default()
             .push(IncidentRecord {
                 epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                start_at: row.get("start_at"),
-                end_at: row.get("end_at"),
-                downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+                detail: IncidentDetail::Downtime {
+                    start_at: row.get("start_at"),
+                    end_at: row.get("end_at"),
+                    downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+                    block_production: None,
+                },
             });
     }
 
-    Ok(records)
+    // Read off the same epoch stats the incidents are handed back for, so the cluster figure and
+    // the validator it judges come from one snapshot.
+    let cluster_skip_rates = crate::incidents::cluster_skip_rates(records.values());
+
+    for (vote_account, record) in records {
+        // Same window the query above read.
+        for stats in record
+            .epoch_stats
+            .iter()
+            .filter(|stats| (from_epoch..=last_epoch).contains(&stats.epoch))
+        {
+            let Some(block_production) = crate::incidents::breach(stats, &cluster_skip_rates)
+            else {
+                continue;
+            };
+
+            let incidents = incidents.entry(vote_account.clone()).or_default();
+            // An epoch that also went down is one event with two symptoms, so the numbers ride on
+            // that incident rather than opening a second one.
+            match incidents.iter_mut().find(|incident| {
+                incident.epoch == stats.epoch
+                    && matches!(incident.detail, IncidentDetail::Downtime { .. })
+            }) {
+                Some(IncidentRecord {
+                    detail:
+                        IncidentDetail::Downtime {
+                            block_production: downtime_block_production,
+                            ..
+                        },
+                    ..
+                }) => *downtime_block_production = Some(block_production),
+                _ => incidents.push(IncidentRecord {
+                    epoch: stats.epoch,
+                    detail: IncidentDetail::BlockProduction {
+                        epoch_start_at: stats.epoch_start_at,
+                        epoch_end_at: stats.epoch_end_at,
+                        block_production,
+                    },
+                }),
+            }
+        }
+
+        if let Some(incidents) = incidents.get_mut(vote_account) {
+            incidents.sort_by_key(|incident| (incident.epoch, incident.detail.started_at()));
+        }
+    }
+
+    Ok(incidents)
 }
 
 pub async fn load_uptimes(
@@ -1308,14 +1360,15 @@ pub async fn load_validators(
     log::info!("Updating incidents...");
     // Anchored to the epoch the records report, which is the head the API measures its own window
     // from; `cluster_info` can sit an epoch either side of it.
-    let incidents = load_incidents(
+    let mut incidents = load_incidents(
         psql_client,
         (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
         last_epoch,
+        &records,
     )
     .await?;
     for (vote_account, record) in records.iter_mut() {
-        record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
+        record.incidents = incidents.remove(vote_account).unwrap_or_default();
     }
 
     log::info!("Updating operators...");

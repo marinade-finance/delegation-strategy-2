@@ -71,7 +71,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `min_incident_downtime_seconds` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
     query_incident_free: Option<bool>,
-    /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`.
+    /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Block production incidents have no downtime to measure and are kept whatever this is set to.
     min_incident_downtime_seconds: Option<u64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
@@ -450,7 +450,10 @@ pub fn filter_validators(
     );
     for validator in validators.values_mut() {
         validator.incidents.retain(|incident| {
-            incident.epoch >= from_epoch && incident.downtime_seconds >= min_incident_downtime
+            incident.epoch >= from_epoch
+                && incident
+                    .detail
+                    .is_over_downtime_floor(min_incident_downtime)
         });
     }
 
@@ -614,7 +617,10 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{
+        BlockProductionDetail, IncidentDetail, IncidentRecord, ValidatorEpochStats,
+        ValidatorWarning, UNKNOWN_CLIENT_NAME,
+    };
 
     fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
@@ -876,9 +882,41 @@ mod tests {
         let end_at = Utc::now();
         IncidentRecord {
             epoch,
-            start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
-            end_at,
-            downtime_seconds,
+            detail: IncidentDetail::Downtime {
+                start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
+                end_at,
+                downtime_seconds,
+                block_production: None,
+            },
+        }
+    }
+
+    fn block_production_incident(epoch: u64) -> IncidentRecord {
+        let epoch_end_at = Utc::now();
+        IncidentRecord {
+            epoch,
+            detail: IncidentDetail::BlockProduction {
+                epoch_start_at: Some(epoch_end_at - chrono::Duration::days(2)),
+                epoch_end_at: Some(epoch_end_at),
+                block_production: BlockProductionDetail {
+                    leader_slots: 6392,
+                    blocks_produced: 5844,
+                    missed_slots: 548,
+                    skip_rate: 0.0857,
+                    cluster_skip_rate: 0.001_57,
+                    threshold: 0.015_7,
+                    cluster_skip_rate_multiple: Some(54.6),
+                },
+            },
+        }
+    }
+
+    fn downtime_seconds(incident: &IncidentRecord) -> u64 {
+        match incident.detail {
+            IncidentDetail::Downtime {
+                downtime_seconds, ..
+            } => downtime_seconds,
+            IncidentDetail::BlockProduction { .. } => 0,
         }
     }
 
@@ -1032,6 +1070,56 @@ mod tests {
     }
 
     #[test]
+    fn a_block_production_incident_is_not_incident_free() {
+        let validators = map(vec![
+            ValidatorRecord {
+                incidents: vec![block_production_incident(100)],
+                ..validator("skipper", 100, vec![])
+            },
+            validator("clean", 100, vec![]),
+        ]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["clean".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_downtime_floor_does_not_reach_block_production_incidents() {
+        let validators = map(vec![ValidatorRecord {
+            incidents: vec![block_production_incident(100)],
+            ..validator("skipper", 100, vec![])
+        }]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_downtime_seconds: Some(u64::MAX),
+            ..config()
+        };
+        assert!(filter_validators(validators, &config).is_empty());
+    }
+
+    #[test]
+    fn a_block_production_incident_outside_the_window_is_dropped_like_any_other() {
+        // The fixtures report up to epoch 100, so the default window opens at epoch 11.
+        let validators = map(vec![ValidatorRecord {
+            incidents: vec![block_production_incident(10)],
+            ..validator("skipper", 100, vec![])
+        }]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["skipper".to_string()]
+        );
+    }
+
+    #[test]
     fn min_incident_downtime_alone_keeps_every_validator_but_trims_their_arrays() {
         let validators = map(vec![
             validator_with_incidents("blip", &[179]),
@@ -1060,7 +1148,7 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| incident.downtime_seconds)
+                .map(downtime_seconds)
                 .collect::<Vec<_>>(),
             vec![180]
         );
