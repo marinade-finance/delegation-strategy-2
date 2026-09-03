@@ -896,7 +896,7 @@ mod tests {
         IncidentRecord {
             epoch,
             detail: IncidentDetail::BlockProduction {
-                epoch_start_at: Some(epoch_end_at - chrono::Duration::days(2)),
+                epoch_start_at: epoch_end_at - chrono::Duration::days(2),
                 epoch_end_at: Some(epoch_end_at),
                 block_production: BlockProductionDetail {
                     leader_slots: 6392,

@@ -408,7 +408,8 @@ pub enum IncidentDetail {
     },
     /// An epoch the validator was up for but produced too few of its leader slots in.
     BlockProduction {
-        epoch_start_at: Option<DateTime<Utc>>,
+        epoch_start_at: DateTime<Utc>,
+        /// None until the epoch closes: the `epochs` row carrying the boundaries is written then.
         epoch_end_at: Option<DateTime<Utc>>,
         block_production: BlockProductionDetail,
     },

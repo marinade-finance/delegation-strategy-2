@@ -283,6 +283,10 @@ pub async fn load_incidents(
             .iter()
             .filter(|stats| (from_epoch..=last_epoch).contains(&stats.epoch))
         {
+            // The running epoch has no `epochs` row yet, so nothing to anchor an incident to.
+            let Some(epoch_start_at) = stats.epoch_start_at else {
+                continue;
+            };
             let Some(block_production) =
                 cluster_skip_rates
                     .get(&stats.epoch)
@@ -311,7 +315,7 @@ pub async fn load_incidents(
                 _ => incidents.push(IncidentRecord {
                     epoch: stats.epoch,
                     detail: IncidentDetail::BlockProduction {
-                        epoch_start_at: stats.epoch_start_at,
+                        epoch_start_at,
                         epoch_end_at: stats.epoch_end_at,
                         block_production,
                     },
