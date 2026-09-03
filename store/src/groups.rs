@@ -60,11 +60,6 @@ fn is_unknown_placeholder(value: &str) -> bool {
     }
 }
 
-/// The client the node reported, for one absent from client-ids.csv.
-fn reported_client(client_id_raw: Option<String>) -> Option<String> {
-    normalized(client_id_raw)
-}
-
 /// The registry renders a client lowercase (`agave`); block engine labels are title-cased.
 fn as_client_name(client: String) -> String {
     let mut characters = client.chars();
@@ -86,8 +81,9 @@ fn group_key(
             normalized(operators::operator_of(&validator.vote_account).map(str::to_string))
         }
         GroupKind::ProviderAso => normalized(stats.dc_aso.clone()),
+        // The raw rendering is what the node reported, kept for a client absent from client-ids.csv.
         GroupKind::ClientLabel => normalized(Some(client_label(client_id)))
-            .or_else(|| reported_client(stats.client_id_raw.clone())),
+            .or_else(|| normalized(stats.client_id_raw.clone())),
         GroupKind::ClientLineage => normalized(client_lineage(client_id)).map(as_client_name),
     }
 }
@@ -100,7 +96,7 @@ fn current_group_key(
 ) -> Option<String> {
     match kind {
         GroupKind::ClientLabel => normalized(Some(validator.client_label.clone()))
-            .or_else(|| reported_client(validator.client_id_raw.clone())),
+            .or_else(|| normalized(validator.client_id_raw.clone())),
         GroupKind::ClientLineage => {
             normalized(validator.client_lineage.clone()).map(as_client_name)
         }
