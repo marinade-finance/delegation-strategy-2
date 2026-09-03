@@ -72,7 +72,7 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
                 .into()
         },
         OrderField::Incidents => {
-            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.incident_count_3m))
+            |group: &ValidatorGroupRecord| SortKey::Number(Decimal::from(group.incidents.count()))
         }
     }
 }
@@ -224,7 +224,19 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use store::dto::{GroupIncidentRecord, GroupIncidents};
     use store::groups::UNKNOWN_GROUP;
+
+    fn long_incident() -> GroupIncidentRecord {
+        GroupIncidentRecord {
+            validator: "vote".to_string(),
+            epoch: 100,
+            start_at: Utc::now(),
+            end_at: Utc::now(),
+            downtime_seconds: 600,
+        }
+    }
 
     fn group(key: &str, stake: i64) -> ValidatorGroupRecord {
         ValidatorGroupRecord {
@@ -542,7 +554,7 @@ mod tests {
                 ..group("relationships", 100)
             },
             ValidatorGroupRecord {
-                incident_count_3m: 900,
+                incidents: GroupIncidents::Records(vec![long_incident(); 900]),
                 ..group("incidents", 100)
             },
             ValidatorGroupRecord {
@@ -600,6 +612,40 @@ mod tests {
                 "{order_field:?} must lead with the row holding that field"
             );
         }
+    }
+
+    // `/validators` operator rows carry the records, `/clients` and `/providers` only the count;
+    // both are paged by the same sort, so the column has to read the same quantity off either.
+    #[test]
+    fn rows_carrying_records_and_rows_carrying_a_count_order_against_each_other() {
+        let page = page_groups(
+            groups(vec![
+                ValidatorGroupRecord {
+                    incidents: GroupIncidents::Count(2),
+                    ..group("countedTwo", 100)
+                },
+                ValidatorGroupRecord {
+                    incidents: GroupIncidents::Records(vec![long_incident(); 3]),
+                    ..group("listedThree", 100)
+                },
+                ValidatorGroupRecord {
+                    incidents: GroupIncidents::Count(9),
+                    ..group("countedNine", 100)
+                },
+                ValidatorGroupRecord {
+                    incidents: GroupIncidents::Records(vec![long_incident()]),
+                    ..group("listedOne", 100)
+                },
+            ]),
+            &GetGroupsConfig {
+                order_field: OrderField::Incidents,
+                ..config()
+            },
+        );
+        assert_eq!(
+            keys(&page),
+            named(&["countedNine", "listedThree", "countedTwo", "listedOne"])
+        );
     }
 
     fn providers() -> ValidatorGroups {
