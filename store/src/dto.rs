@@ -442,20 +442,6 @@ impl IncidentDetail {
             Self::BlockProduction { epoch_end_at, .. } => *epoch_end_at,
         }
     }
-
-    /// Whether the incident is one worth serving: over the downtime floor where it has downtime to
-    /// measure. Restart noise is under the floor; a block production incident has no downtime side
-    /// and is never noise.
-    pub fn is_over_downtime_floor(&self, min_downtime_seconds: u64) -> bool {
-        match self {
-            Self::Downtime {
-                downtime_seconds,
-                block_production,
-                ..
-            } => *downtime_seconds >= min_downtime_seconds || block_production.is_some(),
-            Self::BlockProduction { .. } => true,
-        }
-    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

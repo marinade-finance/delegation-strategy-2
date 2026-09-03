@@ -12,7 +12,10 @@ use log::error;
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
-    dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
+    dto::{
+        IncidentDetail, ValidatorGroupRecord, ValidatorGroups, ValidatorRecord,
+        ValidatorsAggregated,
+    },
     groups::{aggregate_operators, singleton_group},
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
@@ -450,10 +453,18 @@ pub fn filter_validators(
     );
     for validator in validators.values_mut() {
         validator.incidents.retain(|incident| {
-            incident.epoch >= from_epoch
-                && incident
-                    .detail
-                    .is_over_downtime_floor(min_incident_downtime)
+            if incident.epoch < from_epoch {
+                return false;
+            }
+            match &incident.detail {
+                // Restart noise is under the floor, unless the epoch also breached block production.
+                IncidentDetail::Downtime {
+                    downtime_seconds,
+                    block_production,
+                    ..
+                } => *downtime_seconds >= min_incident_downtime || block_production.is_some(),
+                _ => true,
+            }
         });
     }
 
@@ -908,15 +919,6 @@ mod tests {
                     cluster_skip_rate_multiple: Some(54.6),
                 },
             },
-        }
-    }
-
-    fn downtime_seconds(incident: &IncidentRecord) -> u64 {
-        match incident.detail {
-            IncidentDetail::Downtime {
-                downtime_seconds, ..
-            } => downtime_seconds,
-            IncidentDetail::BlockProduction { .. } => 0,
         }
     }
 
