@@ -228,10 +228,9 @@ async fn get_apy_calculators(
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
-/// Loads every incident per validator over the closed epoch range `from_epoch..=last_epoch`. A
-/// downtime incident is one `DOWN` interval in the `uptimes` table and carries its length; a block
-/// production incident is one epoch of `records`' own stats that breached the block production
-/// rule. An epoch with both is one incident carrying both symptoms.
+/// Loads every incident per validator over the given closed epoch range.
+/// If a given epoch has both downtime and a block production incident, this counts as 1 downtime event
+/// with block producgtion details also attached.
 pub async fn load_incidents(
     psql_client: &Client,
     from_epoch: u64,
