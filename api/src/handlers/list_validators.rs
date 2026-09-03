@@ -457,7 +457,6 @@ pub fn filter_validators(
                 return false;
             }
             match &incident.detail {
-                // Restart noise is under the floor, unless the epoch also breached block production.
                 IncidentDetail::Downtime {
                     downtime_seconds,
                     block_production,
