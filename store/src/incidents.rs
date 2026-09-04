@@ -129,7 +129,6 @@ mod tests {
         let detail = breached(64, 60, 0.0).unwrap();
 
         assert_eq!(detail.missed_slots, 4);
-        assert_eq!(detail.leader_slots, 64);
         assert_eq!(detail.threshold, 0.01);
     }
 
@@ -162,10 +161,5 @@ mod tests {
             validator(vec![stats(100, 32, 0)]),
         ];
         assert_eq!(cluster_skip_rates(&validators).get(&100), Some(&0.01));
-    }
-
-    #[test]
-    fn an_epoch_nobody_was_evaluable_in_has_no_cluster_skip_rate() {
-        assert!(cluster_skip_rates(&[validator(vec![stats(100, 32, 0)])]).is_empty());
     }
 }

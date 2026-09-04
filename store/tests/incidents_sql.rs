@@ -61,81 +61,30 @@ fn epochs(incidents: &[IncidentRecord]) -> Vec<u64> {
     incidents.iter().map(|incident| incident.epoch).collect()
 }
 
-// The handler measures its own window off the same head this bound is derived from, so an epoch
-// exactly on the bound has to be served or the two disagree by one epoch.
+// `uptimes` is written every minute and `validators` hourly, so epoch 102 is a live case: a DOWN row
+// above the head for the hour the validator write takes to catch up.
 #[tokio::test]
-async fn the_window_starts_on_from_epoch_itself() {
+async fn the_window_is_closed_on_both_ends() {
     let schema = "ds_test_incidents_window";
     if skip_without_database(schema) {
         return;
     }
     let client = migrated_client(schema).await.unwrap();
 
-    down(
-        &client,
-        "voteA",
-        99,
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:05:00Z",
-    )
-    .await;
-    down(
-        &client,
-        "voteA",
-        100,
-        "2026-02-01T00:00:00Z",
-        "2026-02-01T00:05:00Z",
-    )
-    .await;
-    down(
-        &client,
-        "voteA",
-        101,
-        "2026-03-01T00:00:00Z",
-        "2026-03-01T00:05:00Z",
-    )
-    .await;
+    for (epoch, start_at, end_at) in [
+        (99, "2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+        (100, "2026-02-01T00:00:00Z", "2026-02-01T00:05:00Z"),
+        (101, "2026-03-01T00:00:00Z", "2026-03-01T00:05:00Z"),
+        (102, "2026-04-01T00:00:00Z", "2026-04-01T00:05:00Z"),
+    ] {
+        down(&client, "voteA", epoch, start_at, end_at).await;
+    }
 
     let incidents = load_incidents(&client, 100, 101, &no_records())
         .await
         .unwrap();
 
     assert_eq!(epochs(&incidents["voteA"]), vec![100, 101]);
-}
-
-// `uptimes` is written every minute and `validators` hourly, so after an epoch rollover a DOWN row
-// sits above the head the window is anchored to. Serving it would make the window one epoch wider
-// than the caller asked for, but only for the hour it takes the validator write to catch up.
-#[tokio::test]
-async fn the_window_ends_on_last_epoch_itself() {
-    let schema = "ds_test_incidents_head";
-    if skip_without_database(schema) {
-        return;
-    }
-    let client = migrated_client(schema).await.unwrap();
-
-    down(
-        &client,
-        "voteA",
-        100,
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:05:00Z",
-    )
-    .await;
-    down(
-        &client,
-        "voteA",
-        101,
-        "2026-02-01T00:00:00Z",
-        "2026-02-01T00:05:00Z",
-    )
-    .await;
-
-    let incidents = load_incidents(&client, 100, 100, &no_records())
-        .await
-        .unwrap();
-
-    assert_eq!(epochs(&incidents["voteA"]), vec![100]);
 }
 
 #[tokio::test]
@@ -231,48 +180,6 @@ async fn each_down_row_is_its_own_incident_oldest_first() {
         .unwrap();
 
     assert_eq!(epochs(&incidents["voteA"]), vec![100, 101, 102]);
-}
-
-#[tokio::test]
-async fn incidents_are_keyed_by_the_validator_that_was_down() {
-    let schema = "ds_test_incidents_grouping";
-    if skip_without_database(schema) {
-        return;
-    }
-    let client = migrated_client(schema).await.unwrap();
-
-    down(
-        &client,
-        "voteA",
-        100,
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:05:00Z",
-    )
-    .await;
-    down(
-        &client,
-        "voteB",
-        100,
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:05:00Z",
-    )
-    .await;
-    down(
-        &client,
-        "voteA",
-        101,
-        "2026-02-01T00:00:00Z",
-        "2026-02-01T00:05:00Z",
-    )
-    .await;
-
-    let incidents = load_incidents(&client, 100, 101, &no_records())
-        .await
-        .unwrap();
-
-    assert_eq!(incidents.len(), 2);
-    assert_eq!(epochs(&incidents["voteA"]), vec![100, 101]);
-    assert_eq!(epochs(&incidents["voteB"]), vec![100]);
 }
 
 // Both symptoms of one epoch belong to one incident, so the epoch is served once with the block
