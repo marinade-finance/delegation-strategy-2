@@ -1148,7 +1148,12 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(downtime_seconds)
+                .map(|incident| match incident.detail {
+                    IncidentDetail::Downtime {
+                        downtime_seconds, ..
+                    } => downtime_seconds,
+                    _ => panic!("a downtime fixture is a downtime incident"),
+                })
                 .collect::<Vec<_>>(),
             vec![180]
         );
