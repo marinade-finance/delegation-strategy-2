@@ -658,9 +658,12 @@ mod tests {
                     .iter()
                     .map(|days_ago| crate::dto::IncidentRecord {
                         epoch: CURRENT_EPOCH,
-                        start_at: Utc::now() - Duration::days(*days_ago),
-                        end_at: Utc::now() - Duration::days(*days_ago),
-                        downtime_seconds: 600,
+                        detail: crate::dto::IncidentDetail::Downtime {
+                            start_at: Utc::now() - Duration::days(*days_ago),
+                            end_at: Utc::now() - Duration::days(*days_ago),
+                            downtime_seconds: 600,
+                            block_production: None,
+                        },
                     })
                     .collect();
 
@@ -1592,7 +1595,7 @@ mod tests {
         assert_eq!(incidents.len(), 4);
         assert!(incidents
             .windows(2)
-            .all(|pair| pair[0].start_at <= pair[1].start_at));
+            .all(|pair| pair[0].detail.started_at() <= pair[1].detail.started_at()));
         assert_eq!(
             incidents
                 .iter()
