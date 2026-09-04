@@ -514,7 +514,8 @@ pub fn filter_validators(
             };
             // Re-answered against the caller's floors, so what is served agrees with what is said.
             let counts_as_incident = block_production.is_some_and(|detail| {
-                detail.counts_as_incident = detail.counts_as_incident(min_missed_slots, min_leader_slots);
+                detail.counts_as_incident =
+                    detail.counts_as_incident(min_missed_slots, min_leader_slots);
                 detail.counts_as_incident
             });
             // Served when any symptom is asked for and over its own floor.
@@ -1360,7 +1361,9 @@ mod tests {
             min_incident_leader_slots: Some(FIXTURE_LEADER_SLOTS + 1),
             ..config()
         };
-        assert!(filter_validators(validators, &config)[0].incidents.is_empty());
+        assert!(filter_validators(validators, &config)[0]
+            .incidents
+            .is_empty());
     }
 
     #[test]

@@ -79,7 +79,11 @@ impl BlockProductionDetail {
     /// Whether the validator broke the block production rule that epoch.
     /// `min_missed_slots` defaults to `MIN_MISSED_SLOTS` (4) and cannot go under it.
     /// `min_leader_slots` defaults to `MIN_LEADER_SLOTS` (64) and cannot go under it.
-    pub fn counts_as_incident(&self, min_missed_slots: Option<u64>, min_leader_slots: Option<u64>) -> bool {
+    pub fn counts_as_incident(
+        &self,
+        min_missed_slots: Option<u64>,
+        min_leader_slots: Option<u64>,
+    ) -> bool {
         self.leader_slots >= min_leader_slots.unwrap_or(0).max(MIN_LEADER_SLOTS)
             && self.missed_slots >= min_missed_slots.unwrap_or(0).max(MIN_MISSED_SLOTS)
             && self.skip_rate >= self.threshold
