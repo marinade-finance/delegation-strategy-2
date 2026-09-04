@@ -287,7 +287,7 @@ async fn an_epoch_that_went_down_carries_its_block_production_even_when_it_passe
     let block_production = block_production.as_ref().expect("numbers ride along");
     assert_eq!(block_production.leader_slots, 64);
     assert_eq!(block_production.missed_slots, 0);
-    assert!(!block_production.breached(None));
+    assert!(!block_production.breached(None, None));
 }
 
 #[tokio::test]

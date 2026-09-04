@@ -74,9 +74,10 @@ impl BlockProductionDetail {
     }
 
     /// Whether the validator broke the block production rule that epoch.
-    /// `min_missed_slots` defaults to `MIN_MISSED_SLOTS` (4)
-    pub fn breached(&self, min_missed_slots: Option<u64>) -> bool {
-        self.leader_slots >= MIN_LEADER_SLOTS
+    /// `min_missed_slots` defaults to `MIN_MISSED_SLOTS` (4) and cannot go under it.
+    /// `min_leader_slots` defaults to `MIN_LEADER_SLOTS` (64) and cannot go under it.
+    pub fn breached(&self, min_missed_slots: Option<u64>, min_leader_slots: Option<u64>) -> bool {
+        self.leader_slots >= min_leader_slots.unwrap_or(0).max(MIN_LEADER_SLOTS)
             && self.missed_slots >= min_missed_slots.unwrap_or(0).max(MIN_MISSED_SLOTS)
             && self.skip_rate >= self.threshold
     }
@@ -120,7 +121,7 @@ mod tests {
         cluster_skip_rate: f64,
     ) -> Option<BlockProductionDetail> {
         detail(leader_slots, blocks_produced, cluster_skip_rate)
-            .filter(|detail| detail.breached(None))
+            .filter(|detail| detail.breached(None, None))
     }
 
     #[test]
@@ -134,17 +135,27 @@ mod tests {
         let detail = detail(8, 5, 0.0).unwrap();
 
         assert_eq!(detail.missed_slots, 3);
-        assert!(!detail.breached(None));
+        assert!(!detail.breached(None, None));
     }
 
     #[test]
-    fn a_caller_floor_tightens_the_rule_but_cannot_loosen_it() {
+    fn a_caller_missed_slot_floor_tightens_the_rule_but_cannot_loosen_it() {
         let detail = detail(64, 60, 0.0).unwrap();
 
-        assert!(detail.breached(None));
-        assert!(!detail.breached(Some(5)));
+        assert!(detail.breached(None, None));
+        assert!(!detail.breached(Some(5), None));
         // 4 missed is the rule's own floor, and no caller gets under it.
-        assert!(detail.breached(Some(0)));
+        assert!(detail.breached(Some(0), None));
+    }
+
+    #[test]
+    fn a_caller_leader_slot_floor_tightens_the_rule_but_cannot_loosen_it() {
+        let detail = detail(64, 60, 0.0).unwrap();
+
+        assert!(detail.breached(None, None));
+        assert!(!detail.breached(None, Some(65)));
+        // 64 slots is the rule's own floor, and no caller gets under it.
+        assert!(detail.breached(None, Some(8)));
     }
 
     #[test]

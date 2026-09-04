@@ -17,14 +17,13 @@ use store::{
         ValidatorsAggregated,
     },
     groups::{aggregate_operators, singleton_group},
-    incidents::MIN_MISSED_SLOTS,
+    incidents::{MIN_LEADER_SLOTS, MIN_MISSED_SLOTS},
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
 const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
-const DEFAULT_MIN_INCIDENT_MISSED_SLOTS: u64 = MIN_MISSED_SLOTS;
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 const DEFAULT_LIMIT: usize = 100;
 
@@ -103,6 +102,8 @@ pub struct QueryParams {
     min_incident_downtime_seconds: Option<u64>,
     /// Minimum missed leader slots for a skipped epoch to read as an incident. Defaults to 4, minimum 4.
     min_incident_missed_slots: Option<u64>,
+    /// Minimum leader slots an epoch needs before its block production is judged. Defaults to 64, minimum 64.
+    min_incident_leader_slots: Option<u64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
     query_verified: Option<bool>,
@@ -135,6 +136,7 @@ pub struct GetValidatorsConfig {
     pub query_incident_types: Option<Vec<IncidentType>>,
     pub min_incident_downtime_seconds: Option<u64>,
     pub min_incident_missed_slots: Option<u64>,
+    pub min_incident_leader_slots: Option<u64>,
     pub incident_window_epochs: Option<u64>,
     pub query_verified: Option<bool>,
     pub query_protected: Option<bool>,
@@ -474,9 +476,11 @@ pub fn filter_validators(
     let min_incident_downtime = config
         .min_incident_downtime_seconds
         .unwrap_or(DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS);
-    let min_missed_slots = config
-        .min_incident_missed_slots
-        .unwrap_or(DEFAULT_MIN_INCIDENT_MISSED_SLOTS);
+    // `breached` owns both defaults, so the caller's floors travel as they arrived.
+    let (min_missed_slots, min_leader_slots) = (
+        config.min_incident_missed_slots,
+        config.min_incident_leader_slots,
+    );
     let wants = |incident_type| {
         config
             .query_incident_types
@@ -513,7 +517,7 @@ pub fn filter_validators(
                 && downtime_seconds.is_some_and(|seconds| seconds >= min_incident_downtime))
                 || (wants_block_production
                     && block_production
-                        .is_some_and(|detail| detail.breached(Some(min_missed_slots))))
+                        .is_some_and(|detail| detail.breached(min_missed_slots, min_leader_slots)))
         });
     }
 
@@ -612,6 +616,14 @@ pub async fn handler(
             ));
         }
     }
+    if let Some(leader_slots) = query_params.min_incident_leader_slots {
+        if leader_slots < MIN_LEADER_SLOTS {
+            return Ok(response_error(
+                StatusCode::BAD_REQUEST,
+                format!("min_incident_leader_slots must be at least {MIN_LEADER_SLOTS}"),
+            ));
+        }
+    }
     let query_incident_types = match query_params.query_incident_types.as_deref() {
         Some(types) => match IncidentType::parse_list(types) {
             Ok(types) => Some(types),
@@ -651,6 +663,7 @@ pub async fn handler(
         query_incident_types,
         min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
         min_incident_missed_slots: query_params.min_incident_missed_slots,
+        min_incident_leader_slots: query_params.min_incident_leader_slots,
         incident_window_epochs: query_params.incident_window_epochs,
         query_verified: query_params.query_verified,
         query_protected: query_params.query_protected,
@@ -851,6 +864,7 @@ mod tests {
             query_incident_types: None,
             min_incident_downtime_seconds: None,
             min_incident_missed_slots: None,
+            min_incident_leader_slots: None,
             incident_window_epochs: None,
             query_verified: None,
             query_protected: None,
@@ -1304,6 +1318,20 @@ mod tests {
             ..config()
         };
         assert_eq!(filter_validators(validators, &config)[0].incidents.len(), 1);
+    }
+
+    #[test]
+    fn a_leader_slot_floor_above_the_default_drops_what_the_rule_admitted() {
+        let validators = map(vec![with_incidents(
+            "skipper",
+            vec![down_and_skipped(600, FIXTURE_MISSED_SLOTS)],
+        )]);
+        let config = GetValidatorsConfig {
+            query_incident_types: Some(vec![IncidentType::BlockProduction]),
+            min_incident_leader_slots: Some(FIXTURE_LEADER_SLOTS + 1),
+            ..config()
+        };
+        assert!(filter_validators(validators, &config)[0].incidents.is_empty());
     }
 
     #[test]
