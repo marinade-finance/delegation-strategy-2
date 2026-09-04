@@ -1,5 +1,6 @@
 mod common;
 
+use chrono::{DateTime, Utc};
 use common::{migrated_client, skip_without_database};
 use std::collections::HashMap;
 use store::dto::{IncidentDetail, IncidentRecord, ValidatorEpochStats, ValidatorRecord};
@@ -14,13 +15,32 @@ fn no_records() -> HashMap<String, ValidatorRecord> {
 /// One validator whose epoch produced too few of its leader slots to pass: 8 of 64 missed is 12.5%,
 /// over any bar the rule can set.
 fn skipped_epoch(vote_account: &str, epoch: u64) -> HashMap<String, ValidatorRecord> {
+    epoch_stats(vote_account, epoch, 64, 56)
+}
+
+/// A validator that produced every slot it was given, so nothing about the epoch breaches.
+fn clean_epoch(vote_account: &str, epoch: u64) -> HashMap<String, ValidatorRecord> {
+    epoch_stats(vote_account, epoch, 64, 64)
+}
+
+fn epoch_stats(
+    vote_account: &str,
+    epoch: u64,
+    leader_slots: u64,
+    blocks_produced: u64,
+) -> HashMap<String, ValidatorRecord> {
+    // A standalone block production incident anchors to these, so they have to be set as the
+    // `epochs` join would set them.
+    let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
     HashMap::from([(
         vote_account.to_string(),
         ValidatorRecord {
             epoch_stats: vec![ValidatorEpochStats {
                 epoch,
-                leader_slots: 64,
-                blocks_produced: 56,
+                leader_slots,
+                blocks_produced,
+                epoch_start_at: Some(epoch_start_at),
+                epoch_end_at: Some(epoch_start_at + chrono::Duration::days(2)),
                 ..Default::default()
             }],
             ..Default::default()
@@ -235,6 +255,90 @@ async fn an_epoch_that_only_skipped_is_its_own_incident() {
         incidents["voteA"][0].detail,
         IncidentDetail::BlockProduction { .. }
     ));
+}
+
+#[tokio::test]
+async fn an_epoch_that_went_down_carries_its_block_production_even_when_it_passed() {
+    let schema = "ds_test_incidents_informational";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    down(
+        &client,
+        "voteA",
+        100,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:05:00Z",
+    )
+    .await;
+
+    let incidents = load_incidents(&client, 100, 100, &clean_epoch("voteA", 100))
+        .await
+        .unwrap();
+
+    let IncidentDetail::Downtime {
+        block_production, ..
+    } = &incidents["voteA"][0].detail
+    else {
+        panic!("the downtime row is the one served");
+    };
+    let block_production = block_production.as_ref().expect("numbers ride along");
+    assert_eq!(block_production.leader_slots, 64);
+    assert_eq!(block_production.missed_slots, 0);
+    assert!(!block_production.breached(None));
+}
+
+#[tokio::test]
+async fn an_epoch_that_passed_opens_no_incident_of_its_own() {
+    let schema = "ds_test_incidents_informational_only";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    let incidents = load_incidents(&client, 100, 100, &clean_epoch("voteA", 100))
+        .await
+        .unwrap();
+
+    assert!(incidents.is_empty());
+}
+
+// Block production is an epoch-level fact, so intervals of one epoch cannot disagree about it.
+#[tokio::test]
+async fn every_downtime_of_an_epoch_carries_that_epoch_s_block_production() {
+    let schema = "ds_test_incidents_every_interval";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for (start_at, end_at) in [
+        ("2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z"),
+        ("2026-01-02T00:00:00Z", "2026-01-02T00:05:00Z"),
+        ("2026-01-03T00:00:00Z", "2026-01-03T00:05:00Z"),
+    ] {
+        down(&client, "voteA", 100, start_at, end_at).await;
+    }
+
+    let incidents = load_incidents(&client, 100, 100, &skipped_epoch("voteA", 100))
+        .await
+        .unwrap();
+
+    assert_eq!(incidents["voteA"].len(), 3);
+    for incident in &incidents["voteA"] {
+        let IncidentDetail::Downtime {
+            block_production, ..
+        } = &incident.detail
+        else {
+            panic!("a DOWN row is a downtime incident");
+        };
+        assert_eq!(
+            block_production.as_ref().map(|detail| detail.missed_slots),
+            Some(8)
+        );
+    }
 }
 
 // The window bound is the query's, so a skipped epoch older than it is not served either.

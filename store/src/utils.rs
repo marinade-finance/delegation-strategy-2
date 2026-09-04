@@ -228,9 +228,9 @@ async fn get_apy_calculators(
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
-/// Loads every incident per validator over the given closed epoch range.
-/// If a given epoch has both downtime and a block production incident, this counts as 1 downtime event
-/// with block producgtion details also attached.
+/// Loads every incident per validator over the given closed epoch range. A validator that both went
+/// down and skipped in one epoch reports one downtime incident carrying the block production numbers,
+/// not two incidents.
 pub async fn load_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -283,43 +283,53 @@ pub async fn load_incidents(
             .iter()
             .filter(|stats| (from_epoch..=last_epoch).contains(&stats.epoch))
         {
-            // The running epoch has no `epochs` row yet, so nothing to anchor an incident to.
-            let Some(epoch_start_at) = stats.epoch_start_at else {
-                continue;
-            };
+            // No cluster figure, no bar to measure against, so the epoch stays unjudged.
             let Some(block_production) =
                 cluster_skip_rates
                     .get(&stats.epoch)
                     .and_then(|cluster_skip_rate| {
-                        BlockProductionDetail::qualifies_as_breach(stats, *cluster_skip_rate)
+                        BlockProductionDetail::for_epoch(stats, *cluster_skip_rate)
                     })
             else {
                 continue;
             };
 
-            let incidents = incidents.entry(vote_account.clone()).or_default();
-            // An epoch that also went down is one event with two symptoms, so the numbers ride on
-            // that incident rather than opening a second one.
-            match incidents.iter_mut().find(|incident| {
-                incident.epoch == stats.epoch
-                    && matches!(incident.detail, IncidentDetail::Downtime { .. })
-            }) {
-                Some(IncidentRecord {
-                    detail:
-                        IncidentDetail::Downtime {
-                            block_production: downtime_block_production,
-                            ..
-                        },
+            // A validator that also went down that epoch has one event with 2 symptoms, so the
+            // numbers go onto the downtime records instead of opening another incident.
+            let mut carried = false;
+            for incident in incidents
+                .get_mut(vote_account)
+                .into_iter()
+                .flatten()
+                .filter(|incident| incident.epoch == stats.epoch)
+            {
+                if let IncidentDetail::Downtime {
+                    block_production: downtime_block_production,
                     ..
-                }) => *downtime_block_production = Some(block_production),
-                _ => incidents.push(IncidentRecord {
-                    epoch: stats.epoch,
-                    detail: IncidentDetail::BlockProduction {
-                        epoch_start_at,
-                        epoch_end_at: stats.epoch_end_at,
-                        block_production,
-                    },
-                }),
+                } = &mut incident.detail
+                {
+                    *downtime_block_production = Some(block_production.clone());
+                    carried = true;
+                }
+            }
+
+            // With no downtime record to attach to, check block production rule and classify as incident if breached.
+            if !carried && block_production.breached(None) {
+                // Without the `epochs` row there is nothing to anchor the incident to.
+                let Some(epoch_start_at) = stats.epoch_start_at else {
+                    continue;
+                };
+                incidents
+                    .entry(vote_account.clone())
+                    .or_default()
+                    .push(IncidentRecord {
+                        epoch: stats.epoch,
+                        detail: IncidentDetail::BlockProduction {
+                            epoch_start_at,
+                            epoch_end_at: stats.epoch_end_at,
+                            block_production,
+                        },
+                    });
             }
         }
 

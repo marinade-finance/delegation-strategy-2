@@ -49,36 +49,36 @@ pub fn cluster_skip_rates<'a>(
 }
 
 impl BlockProductionDetail {
-    /// How one epoch breached the block production rule, given the cluster's own skip rate that
-    /// epoch. `None` where it passed, or where the validator held too few leader slots to be judged.
-    pub fn qualifies_as_breach(
-        stats: &ValidatorEpochStats,
-        cluster_skip_rate: f64,
-    ) -> Option<Self> {
-        if stats.leader_slots < MIN_LEADER_SLOTS {
+    /// One epoch's block production, given the cluster's own skip rate that epoch. `None` where the
+    /// validator held no leader slots, which leaves nothing to divide by. Says nothing about whether
+    /// the validator fell short: that is `breached`.
+    pub fn for_epoch(stats: &ValidatorEpochStats, cluster_skip_rate: f64) -> Option<Self> {
+        if stats.leader_slots == 0 {
             return None;
         }
 
-        let missed_slots = stats.leader_slots.saturating_sub(stats.blocks_produced);
-        if missed_slots < MIN_MISSED_SLOTS {
-            return None;
-        }
-
-        let skip_rate = missed_slots as f64 / stats.leader_slots as f64;
-        let threshold = (CLUSTER_SKIP_RATE_MULTIPLIER * cluster_skip_rate)
-            .clamp(MIN_SKIP_RATE_THRESHOLD, MAX_SKIP_RATE_THRESHOLD);
-        if skip_rate < threshold {
-            return None;
-        }
+        // Matches the clamp in `cluster_skip_rates`: a node reporting more blocks than slots is
+        // upstream noise, and must not read as negative misses here either.
+        let blocks_produced = stats.blocks_produced.min(stats.leader_slots);
+        let missed_slots = stats.leader_slots - blocks_produced;
 
         Some(Self {
             leader_slots: stats.leader_slots,
-            blocks_produced: stats.blocks_produced,
+            blocks_produced,
             missed_slots,
-            skip_rate,
+            skip_rate: missed_slots as f64 / stats.leader_slots as f64,
             cluster_skip_rate,
-            threshold,
+            threshold: (CLUSTER_SKIP_RATE_MULTIPLIER * cluster_skip_rate)
+                .clamp(MIN_SKIP_RATE_THRESHOLD, MAX_SKIP_RATE_THRESHOLD),
         })
+    }
+
+    /// Whether the validator broke the block production rule that epoch.
+    /// `min_missed_slots` defaults to `MIN_MISSED_SLOTS` (4)
+    pub fn breached(&self, min_missed_slots: Option<u64>) -> bool {
+        self.leader_slots >= MIN_LEADER_SLOTS
+            && self.missed_slots >= min_missed_slots.unwrap_or(0).max(MIN_MISSED_SLOTS)
+            && self.skip_rate >= self.threshold
     }
 }
 
@@ -102,20 +102,62 @@ mod tests {
         }
     }
 
-    fn breached(
+    fn detail(
         leader_slots: u64,
         blocks_produced: u64,
         cluster_skip_rate: f64,
     ) -> Option<BlockProductionDetail> {
-        BlockProductionDetail::qualifies_as_breach(
+        BlockProductionDetail::for_epoch(
             &stats(100, leader_slots, blocks_produced),
             cluster_skip_rate,
         )
     }
 
+    /// The numbers, but only where they broke the rule: what the incidents themselves are built on.
+    fn breached(
+        leader_slots: u64,
+        blocks_produced: u64,
+        cluster_skip_rate: f64,
+    ) -> Option<BlockProductionDetail> {
+        detail(leader_slots, blocks_produced, cluster_skip_rate)
+            .filter(|detail| detail.breached(None))
+    }
+
     #[test]
     fn an_epoch_under_the_leader_slot_gate_is_not_evaluated() {
         assert!(breached(63, 0, 0.0).is_none());
+    }
+
+    #[test]
+    fn an_epoch_under_the_leader_slot_gate_still_reports_its_numbers() {
+        // The numbers ride along on a downtime incident; only the verdict needs the gate.
+        let detail = detail(8, 5, 0.0).unwrap();
+
+        assert_eq!(detail.missed_slots, 3);
+        assert!(!detail.breached(None));
+    }
+
+    #[test]
+    fn a_caller_floor_tightens_the_rule_but_cannot_loosen_it() {
+        let detail = detail(64, 60, 0.0).unwrap();
+
+        assert!(detail.breached(None));
+        assert!(!detail.breached(Some(5)));
+        // 4 missed is the rule's own floor, and no caller gets under it.
+        assert!(detail.breached(Some(0)));
+    }
+
+    #[test]
+    fn an_epoch_with_no_leader_slots_has_no_block_production() {
+        assert!(detail(0, 0, 0.0).is_none());
+    }
+
+    #[test]
+    fn more_blocks_than_slots_is_clamped_rather_than_wrapping() {
+        let detail = detail(64, 70, 0.0).unwrap();
+
+        assert_eq!(detail.blocks_produced, 64);
+        assert_eq!(detail.missed_slots, 0);
     }
 
     #[test]

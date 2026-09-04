@@ -17,14 +17,37 @@ use store::{
         ValidatorsAggregated,
     },
     groups::{aggregate_operators, singleton_group},
+    incidents::MIN_MISSED_SLOTS,
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
 const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
+const DEFAULT_MIN_INCIDENT_MISSED_SLOTS: u64 = MIN_MISSED_SLOTS;
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 const DEFAULT_LIMIT: usize = 100;
+
+/// Which kind of incident a caller wants served.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncidentType {
+    Downtime,
+    BlockProduction,
+}
+
+impl IncidentType {
+    /// Reads the names the response emits under `incident_type`, and their snake_case spellings.
+    fn parse_list(types: &str) -> Result<Vec<Self>, String> {
+        types
+            .split(',')
+            .map(|name| match name.trim().to_lowercase().as_str() {
+                "downtime" => Ok(Self::Downtime),
+                "block_production" | "blockproduction" => Ok(Self::BlockProduction),
+                other => Err(other.to_string()),
+            })
+            .collect()
+    }
+}
 
 // Incidents older than the cache reaches were never loaded, so a wider window would serve less than it says.
 const _: () = assert!(DEFAULT_INCIDENTS_WINDOW_EPOCHS <= DEFAULT_CACHE_EPOCHS);
@@ -72,10 +95,14 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
-    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `min_incident_downtime_seconds` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
+    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `query_incident_types`, `min_incident_downtime_seconds`, `min_incident_missed_slots` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
     query_incident_free: Option<bool>,
+    /// Comma-separated incident types to serve: `downtime`, `block_production`. Defaults to all of them. An epoch with more than one symptom is served under any of them.
+    query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
+    /// Minimum missed leader slots for a skipped epoch to read as an incident. Defaults to 4, minimum 4.
+    min_incident_missed_slots: Option<u64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
     query_verified: Option<bool>,
@@ -105,7 +132,9 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub query_incident_types: Option<Vec<IncidentType>>,
     pub min_incident_downtime_seconds: Option<u64>,
+    pub min_incident_missed_slots: Option<u64>,
     pub incident_window_epochs: Option<u64>,
     pub query_verified: Option<bool>,
     pub query_protected: Option<bool>,
@@ -445,6 +474,19 @@ pub fn filter_validators(
     let min_incident_downtime = config
         .min_incident_downtime_seconds
         .unwrap_or(DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS);
+    let min_missed_slots = config
+        .min_incident_missed_slots
+        .unwrap_or(DEFAULT_MIN_INCIDENT_MISSED_SLOTS);
+    let wants = |incident_type| {
+        config
+            .query_incident_types
+            .as_ref()
+            .is_none_or(|types| types.contains(&incident_type))
+    };
+    let (wants_downtime, wants_block_production) = (
+        wants(IncidentType::Downtime),
+        wants(IncidentType::BlockProduction),
+    );
     // The window counts `last_epoch` itself.
     let from_epoch = (last_epoch + 1).saturating_sub(
         config
@@ -456,14 +498,22 @@ pub fn filter_validators(
             if incident.epoch < from_epoch {
                 return false;
             }
-            match &incident.detail {
+            // Served when any symptom is asked for and over its own floor.
+            let (downtime_seconds, block_production) = match &incident.detail {
                 IncidentDetail::Downtime {
                     downtime_seconds,
                     block_production,
                     ..
-                } => *downtime_seconds >= min_incident_downtime || block_production.is_some(),
-                _ => true,
-            }
+                } => (Some(*downtime_seconds), block_production.as_ref()),
+                IncidentDetail::BlockProduction {
+                    block_production, ..
+                } => (None, Some(block_production)),
+            };
+            (wants_downtime
+                && downtime_seconds.is_some_and(|seconds| seconds >= min_incident_downtime))
+                || (wants_block_production
+                    && block_production
+                        .is_some_and(|detail| detail.breached(Some(min_missed_slots))))
         });
     }
 
@@ -554,6 +604,28 @@ pub async fn handler(
             ));
         }
     }
+    if let Some(missed_slots) = query_params.min_incident_missed_slots {
+        if missed_slots < MIN_MISSED_SLOTS {
+            return Ok(response_error(
+                StatusCode::BAD_REQUEST,
+                format!("min_incident_missed_slots must be at least {MIN_MISSED_SLOTS}"),
+            ));
+        }
+    }
+    let query_incident_types = match query_params.query_incident_types.as_deref() {
+        Some(types) => match IncidentType::parse_list(types) {
+            Ok(types) => Some(types),
+            Err(unknown) => {
+                return Ok(response_error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "query_incident_types does not know {unknown:?}, expected downtime or block_production"
+                    ),
+                ))
+            }
+        },
+        None => None,
+    };
     let config = GetValidatorsConfig {
         order_direction: query_params
             .order_direction
@@ -576,7 +648,9 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        query_incident_types,
         min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
+        min_incident_missed_slots: query_params.min_incident_missed_slots,
         incident_window_epochs: query_params.incident_window_epochs,
         query_verified: query_params.query_verified,
         query_protected: query_params.query_protected,
@@ -774,7 +848,9 @@ mod tests {
             query_with_names: None,
             query_sfdp: None,
             query_incident_free: None,
+            query_incident_types: None,
             min_incident_downtime_seconds: None,
+            min_incident_missed_slots: None,
             incident_window_epochs: None,
             query_verified: None,
             query_protected: None,
@@ -901,22 +977,54 @@ mod tests {
         }
     }
 
-    fn block_production_incident(epoch: u64) -> IncidentRecord {
+    const FIXTURE_LEADER_SLOTS: u64 = 6392;
+    const FIXTURE_MISSED_SLOTS: u64 = 548;
+
+    fn skipped(missed_slots: u64) -> BlockProductionDetail {
+        BlockProductionDetail {
+            leader_slots: FIXTURE_LEADER_SLOTS,
+            blocks_produced: FIXTURE_LEADER_SLOTS - missed_slots,
+            missed_slots,
+            skip_rate: missed_slots as f64 / FIXTURE_LEADER_SLOTS as f64,
+            cluster_skip_rate: 0.001_57,
+            threshold: 0.015_7,
+        }
+    }
+
+    fn block_production_incident_of(epoch: u64, missed_slots: u64) -> IncidentRecord {
         let epoch_end_at = Utc::now();
         IncidentRecord {
             epoch,
             detail: IncidentDetail::BlockProduction {
                 epoch_start_at: epoch_end_at - chrono::Duration::days(2),
                 epoch_end_at: Some(epoch_end_at),
-                block_production: BlockProductionDetail {
-                    leader_slots: 6392,
-                    blocks_produced: 5844,
-                    missed_slots: 548,
-                    skip_rate: 0.0857,
-                    cluster_skip_rate: 0.001_57,
-                    threshold: 0.015_7,
-                },
+                block_production: skipped(missed_slots),
             },
+        }
+    }
+
+    fn block_production_incident(epoch: u64) -> IncidentRecord {
+        block_production_incident_of(epoch, FIXTURE_MISSED_SLOTS)
+    }
+
+    /// One epoch that went down and also skipped: a downtime row carrying a symptom of each kind.
+    fn down_and_skipped(downtime_seconds: u64, missed_slots: u64) -> IncidentRecord {
+        let end_at = Utc::now();
+        IncidentRecord {
+            epoch: 100,
+            detail: IncidentDetail::Downtime {
+                start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
+                end_at,
+                downtime_seconds,
+                block_production: Some(skipped(missed_slots)),
+            },
+        }
+    }
+
+    fn with_incidents(vote_account: &str, incidents: Vec<IncidentRecord>) -> ValidatorRecord {
+        ValidatorRecord {
+            incidents,
+            ..validator(vote_account, 100, vec![])
         }
     }
 
@@ -1100,6 +1208,135 @@ mod tests {
             ..config()
         };
         assert!(filter_validators(validators, &config).is_empty());
+    }
+
+    #[test]
+    fn the_missed_slot_floor_trims_block_production_incidents() {
+        let validators = map(vec![with_incidents(
+            "skipper",
+            vec![block_production_incident_of(100, 548)],
+        )]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_missed_slots: Some(549),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &config)),
+            vec!["skipper".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_missed_slot_floor_does_not_reach_downtime_incidents() {
+        let validators = map(vec![validator_with_incidents("outage", &[600])]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_missed_slots: Some(u64::MAX),
+            ..config()
+        };
+        assert!(filter_validators(validators, &config).is_empty());
+    }
+
+    #[test]
+    fn each_incident_type_serves_only_its_own_kind() {
+        for (incident_type, served) in [
+            (IncidentType::Downtime, "outage"),
+            (IncidentType::BlockProduction, "skipper"),
+        ] {
+            let validators = map(vec![
+                validator_with_incidents("outage", &[600]),
+                with_incidents("skipper", vec![block_production_incident(100)]),
+            ]);
+            let config = GetValidatorsConfig {
+                query_incident_free: Some(false),
+                query_incident_types: Some(vec![incident_type]),
+                ..config()
+            };
+            assert_eq!(
+                vote_accounts(filter_validators(validators, &config)),
+                vec![served.to_string()],
+                "{incident_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_epoch_with_both_symptoms_is_served_under_either_type() {
+        for incident_type in [IncidentType::Downtime, IncidentType::BlockProduction] {
+            let validators = map(vec![with_incidents(
+                "both",
+                vec![down_and_skipped(600, 548)],
+            )]);
+            let config = GetValidatorsConfig {
+                query_incident_types: Some(vec![incident_type]),
+                ..config()
+            };
+            assert_eq!(
+                filter_validators(validators, &config)[0].incidents.len(),
+                1,
+                "{incident_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_downtime_carrying_numbers_that_did_not_breach_is_no_block_production_incident() {
+        // 5 of 6392 is 0.08%, under the bar: the numbers are information, not a verdict.
+        let validators = map(vec![with_incidents("blip", vec![down_and_skipped(600, 5)])]);
+        let config = GetValidatorsConfig {
+            query_incident_types: Some(vec![IncidentType::BlockProduction]),
+            ..config()
+        };
+        assert!(filter_validators(validators, &config)[0]
+            .incidents
+            .is_empty());
+    }
+
+    #[test]
+    fn a_downtime_carrying_numbers_that_breached_is_a_block_production_incident() {
+        let validators = map(vec![with_incidents(
+            "skipper",
+            vec![down_and_skipped(600, FIXTURE_MISSED_SLOTS)],
+        )]);
+        let config = GetValidatorsConfig {
+            query_incident_types: Some(vec![IncidentType::BlockProduction]),
+            ..config()
+        };
+        assert_eq!(filter_validators(validators, &config)[0].incidents.len(), 1);
+    }
+
+    #[test]
+    fn an_epoch_with_both_symptoms_under_both_floors_is_dropped() {
+        // Under the 180s floor and under one leader turn: no symptom carries it on its own.
+        let validators = map(vec![with_incidents("both", vec![down_and_skipped(30, 2)])]);
+        assert!(filter_validators(validators, &config())[0]
+            .incidents
+            .is_empty());
+    }
+
+    #[test]
+    fn an_epoch_that_only_skipped_enough_survives_the_downtime_floor() {
+        let validators = map(vec![with_incidents(
+            "both",
+            vec![down_and_skipped(30, 548)],
+        )]);
+        assert_eq!(
+            filter_validators(validators, &config())[0].incidents.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn incident_types_read_the_names_the_response_emits() {
+        assert_eq!(
+            IncidentType::parse_list("Downtime,block_production").unwrap(),
+            vec![IncidentType::Downtime, IncidentType::BlockProduction]
+        );
+        assert_eq!(
+            IncidentType::parse_list("uptime"),
+            Err("uptime".to_string())
+        );
     }
 
     #[test]

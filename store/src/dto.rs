@@ -401,8 +401,8 @@ pub enum IncidentDetail {
         start_at: DateTime<Utc>,
         end_at: DateTime<Utc>,
         downtime_seconds: u64,
-        /// Set when the same epoch also breached the block production rule: the two are one event
-        /// with two symptoms, so they are not served as two incidents.
+        /// The epoch's block production, whenever there was any to measure. Breach or not: this
+        /// record exists because the validator went down, and these are the numbers alongside it.
         #[serde(default)]
         block_production: Option<BlockProductionDetail>,
     },
@@ -415,7 +415,7 @@ pub enum IncidentDetail {
     },
 }
 
-/// Why one epoch breached the block production rule, with the numbers behind it.
+/// What a validator produced of its leader slots in one epoch, and the bar it was held to.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 pub struct BlockProductionDetail {
     pub leader_slots: u64,
