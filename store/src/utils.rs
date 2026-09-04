@@ -313,8 +313,8 @@ pub async fn load_incidents(
                 }
             }
 
-            // With no downtime record to attach to, check block production rule and classify as incident if breached.
-            if !carried && block_production.breached(None, None) {
+            // With no downtime record to attach to, check block production rule and classify as incident if counts_as_incident.
+            if !carried && block_production.counts_as_incident {
                 // Without the `epochs` row there is nothing to anchor the incident to.
                 let Some(epoch_start_at) = stats.epoch_start_at else {
                     continue;

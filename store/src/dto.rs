@@ -427,6 +427,9 @@ pub struct BlockProductionDetail {
     pub cluster_skip_rate: f64,
     /// The bar `skip_rate` had to clear that epoch, as a fraction.
     pub threshold: f64,
+    /// Whether these numbers count as an incident.
+    /// Affected by query params `min_incident_missed_slots` and `min_incident_leader_slots`.
+    pub counts_as_incident: bool,
 }
 
 impl IncidentDetail {

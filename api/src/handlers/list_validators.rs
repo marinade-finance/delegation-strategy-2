@@ -476,7 +476,7 @@ pub fn filter_validators(
     let min_incident_downtime = config
         .min_incident_downtime_seconds
         .unwrap_or(DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS);
-    // `breached` owns both defaults, so the caller's floors travel as they arrived.
+    // `counts_as_incident` owns both defaults, so the caller's floors travel as they arrived.
     let (min_missed_slots, min_leader_slots) = (
         config.min_incident_missed_slots,
         config.min_incident_leader_slots,
@@ -498,26 +498,29 @@ pub fn filter_validators(
             .unwrap_or(DEFAULT_INCIDENTS_WINDOW_EPOCHS),
     );
     for validator in validators.values_mut() {
-        validator.incidents.retain(|incident| {
+        validator.incidents.retain_mut(|incident| {
             if incident.epoch < from_epoch {
                 return false;
             }
-            // Served when any symptom is asked for and over its own floor.
-            let (downtime_seconds, block_production) = match &incident.detail {
+            let (downtime_seconds, block_production) = match &mut incident.detail {
                 IncidentDetail::Downtime {
                     downtime_seconds,
                     block_production,
                     ..
-                } => (Some(*downtime_seconds), block_production.as_ref()),
+                } => (Some(*downtime_seconds), block_production.as_mut()),
                 IncidentDetail::BlockProduction {
                     block_production, ..
                 } => (None, Some(block_production)),
             };
+            // Re-answered against the caller's floors, so what is served agrees with what is said.
+            let counts_as_incident = block_production.is_some_and(|detail| {
+                detail.counts_as_incident = detail.counts_as_incident(min_missed_slots, min_leader_slots);
+                detail.counts_as_incident
+            });
+            // Served when any symptom is asked for and over its own floor.
             (wants_downtime
                 && downtime_seconds.is_some_and(|seconds| seconds >= min_incident_downtime))
-                || (wants_block_production
-                    && block_production
-                        .is_some_and(|detail| detail.breached(min_missed_slots, min_leader_slots)))
+                || (wants_block_production && counts_as_incident)
         });
     }
 
@@ -995,14 +998,17 @@ mod tests {
     const FIXTURE_MISSED_SLOTS: u64 = 548;
 
     fn skipped(missed_slots: u64) -> BlockProductionDetail {
-        BlockProductionDetail {
+        let mut detail = BlockProductionDetail {
             leader_slots: FIXTURE_LEADER_SLOTS,
             blocks_produced: FIXTURE_LEADER_SLOTS - missed_slots,
             missed_slots,
             skip_rate: missed_slots as f64 / FIXTURE_LEADER_SLOTS as f64,
             cluster_skip_rate: 0.001_57,
             threshold: 0.015_7,
-        }
+            counts_as_incident: false,
+        };
+        detail.counts_as_incident = detail.counts_as_incident(None, None);
+        detail
     }
 
     fn block_production_incident_of(epoch: u64, missed_slots: u64) -> IncidentRecord {
@@ -1295,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_downtime_carrying_numbers_that_did_not_breach_is_no_block_production_incident() {
+    fn a_downtime_carrying_numbers_under_the_rule_is_no_block_production_incident() {
         // 5 of 6392 is 0.08%, under the bar: the numbers are information, not a verdict.
         let validators = map(vec![with_incidents("blip", vec![down_and_skipped(600, 5)])]);
         let config = GetValidatorsConfig {
@@ -1308,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_downtime_carrying_numbers_that_breached_is_a_block_production_incident() {
+    fn a_downtime_carrying_numbers_over_the_rule_is_a_block_production_incident() {
         let validators = map(vec![with_incidents(
             "skipper",
             vec![down_and_skipped(600, FIXTURE_MISSED_SLOTS)],
@@ -1318,6 +1324,29 @@ mod tests {
             ..config()
         };
         assert_eq!(filter_validators(validators, &config)[0].incidents.len(), 1);
+    }
+
+    // What is served has to agree with what it says about itself.
+    #[test]
+    fn a_caller_floor_rewrites_the_counts_as_incident_flag_it_is_served_with() {
+        let validators = map(vec![with_incidents(
+            "skipper",
+            vec![down_and_skipped(600, FIXTURE_MISSED_SLOTS)],
+        )]);
+        let config = GetValidatorsConfig {
+            min_incident_missed_slots: Some(FIXTURE_MISSED_SLOTS + 1),
+            ..config()
+        };
+
+        let served = filter_validators(validators, &config);
+        let IncidentDetail::Downtime {
+            block_production, ..
+        } = &served[0].incidents[0].detail
+        else {
+            panic!("a downtime fixture is a downtime incident");
+        };
+        // Kept by its downtime, but no longer a block production incident under this floor.
+        assert!(!block_production.as_ref().unwrap().counts_as_incident);
     }
 
     #[test]

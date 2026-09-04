@@ -18,7 +18,7 @@ fn skipped_epoch(vote_account: &str, epoch: u64) -> HashMap<String, ValidatorRec
     epoch_stats(vote_account, epoch, 64, 56)
 }
 
-/// A validator that produced every slot it was given, so nothing about the epoch breaches.
+/// A validator that produced every slot it was given, so nothing about the epoch is an incident.
 fn clean_epoch(vote_account: &str, epoch: u64) -> HashMap<String, ValidatorRecord> {
     epoch_stats(vote_account, epoch, 64, 64)
 }
@@ -287,7 +287,7 @@ async fn an_epoch_that_went_down_carries_its_block_production_even_when_it_passe
     let block_production = block_production.as_ref().expect("numbers ride along");
     assert_eq!(block_production.leader_slots, 64);
     assert_eq!(block_production.missed_slots, 0);
-    assert!(!block_production.breached(None, None));
+    assert!(!block_production.counts_as_incident);
 }
 
 #[tokio::test]

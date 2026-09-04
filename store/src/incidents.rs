@@ -51,7 +51,7 @@ pub fn cluster_skip_rates<'a>(
 impl BlockProductionDetail {
     /// One epoch's block production, given the cluster's own skip rate that epoch. `None` where the
     /// validator held no leader slots, which leaves nothing to divide by. Says nothing about whether
-    /// the validator fell short: that is `breached`.
+    /// the validator fell short: that is `counts_as_incident`.
     pub fn for_epoch(stats: &ValidatorEpochStats, cluster_skip_rate: f64) -> Option<Self> {
         if stats.leader_slots == 0 {
             return None;
@@ -62,7 +62,7 @@ impl BlockProductionDetail {
         let blocks_produced = stats.blocks_produced.min(stats.leader_slots);
         let missed_slots = stats.leader_slots - blocks_produced;
 
-        Some(Self {
+        let mut detail = Self {
             leader_slots: stats.leader_slots,
             blocks_produced,
             missed_slots,
@@ -70,13 +70,16 @@ impl BlockProductionDetail {
             cluster_skip_rate,
             threshold: (CLUSTER_SKIP_RATE_MULTIPLIER * cluster_skip_rate)
                 .clamp(MIN_SKIP_RATE_THRESHOLD, MAX_SKIP_RATE_THRESHOLD),
-        })
+            counts_as_incident: false,
+        };
+        detail.counts_as_incident = detail.counts_as_incident(None, None);
+        Some(detail)
     }
 
     /// Whether the validator broke the block production rule that epoch.
     /// `min_missed_slots` defaults to `MIN_MISSED_SLOTS` (4) and cannot go under it.
     /// `min_leader_slots` defaults to `MIN_LEADER_SLOTS` (64) and cannot go under it.
-    pub fn breached(&self, min_missed_slots: Option<u64>, min_leader_slots: Option<u64>) -> bool {
+    pub fn counts_as_incident(&self, min_missed_slots: Option<u64>, min_leader_slots: Option<u64>) -> bool {
         self.leader_slots >= min_leader_slots.unwrap_or(0).max(MIN_LEADER_SLOTS)
             && self.missed_slots >= min_missed_slots.unwrap_or(0).max(MIN_MISSED_SLOTS)
             && self.skip_rate >= self.threshold
@@ -115,18 +118,18 @@ mod tests {
     }
 
     /// The numbers, but only where they broke the rule: what the incidents themselves are built on.
-    fn breached(
+    fn counts_as_incident(
         leader_slots: u64,
         blocks_produced: u64,
         cluster_skip_rate: f64,
     ) -> Option<BlockProductionDetail> {
         detail(leader_slots, blocks_produced, cluster_skip_rate)
-            .filter(|detail| detail.breached(None, None))
+            .filter(|detail| detail.counts_as_incident)
     }
 
     #[test]
     fn an_epoch_under_the_leader_slot_gate_is_not_evaluated() {
-        assert!(breached(63, 0, 0.0).is_none());
+        assert!(counts_as_incident(63, 0, 0.0).is_none());
     }
 
     #[test]
@@ -135,27 +138,27 @@ mod tests {
         let detail = detail(8, 5, 0.0).unwrap();
 
         assert_eq!(detail.missed_slots, 3);
-        assert!(!detail.breached(None, None));
+        assert!(!detail.counts_as_incident);
     }
 
     #[test]
     fn a_caller_missed_slot_floor_tightens_the_rule_but_cannot_loosen_it() {
         let detail = detail(64, 60, 0.0).unwrap();
 
-        assert!(detail.breached(None, None));
-        assert!(!detail.breached(Some(5), None));
+        assert!(detail.counts_as_incident);
+        assert!(!detail.counts_as_incident(Some(5), None));
         // 4 missed is the rule's own floor, and no caller gets under it.
-        assert!(detail.breached(Some(0), None));
+        assert!(detail.counts_as_incident(Some(0), None));
     }
 
     #[test]
     fn a_caller_leader_slot_floor_tightens_the_rule_but_cannot_loosen_it() {
         let detail = detail(64, 60, 0.0).unwrap();
 
-        assert!(detail.breached(None, None));
-        assert!(!detail.breached(None, Some(65)));
+        assert!(detail.counts_as_incident);
+        assert!(!detail.counts_as_incident(None, Some(65)));
         // 64 slots is the rule's own floor, and no caller gets under it.
-        assert!(detail.breached(None, Some(8)));
+        assert!(detail.counts_as_incident(None, Some(8)));
     }
 
     #[test]
@@ -174,12 +177,12 @@ mod tests {
     #[test]
     fn a_sub_leader_turn_miss_is_not_an_incident() {
         // 3 of 64 is 4.7%, well over the bar, but under one full leader turn.
-        assert!(breached(64, 61, 0.0).is_none());
+        assert!(counts_as_incident(64, 61, 0.0).is_none());
     }
 
     #[test]
     fn a_full_leader_turn_missed_over_the_bar_is_an_incident() {
-        let detail = breached(64, 60, 0.0).unwrap();
+        let detail = counts_as_incident(64, 60, 0.0).unwrap();
 
         assert_eq!(detail.missed_slots, 4);
         assert_eq!(detail.threshold, 0.01);
@@ -188,20 +191,20 @@ mod tests {
     #[test]
     fn an_epoch_under_the_bar_is_no_incident_even_with_a_full_turn_missed() {
         // 4 of 800 is 0.5%, under the 1% bar.
-        assert!(breached(800, 796, 0.0).is_none());
+        assert!(counts_as_incident(800, 796, 0.0).is_none());
     }
 
     #[test]
     fn a_degraded_cluster_lifts_the_bar_out_from_under_a_validator() {
         // 2% skipped: an incident in a healthy epoch, not in one the cluster skipped 0.413% of.
-        assert!(breached(1000, 980, 0.0).is_some());
-        assert!(breached(1000, 980, 0.004_13).is_none());
+        assert!(counts_as_incident(1000, 980, 0.0).is_some());
+        assert!(counts_as_incident(1000, 980, 0.004_13).is_none());
     }
 
     #[test]
     fn the_cap_keeps_the_bar_physical_when_the_cluster_is_badly_degraded() {
         // Uncapped, 10 x 3.5% would be a 35% bar and this epoch would read as all clear.
-        let detail = breached(1000, 940, 0.035).unwrap();
+        let detail = counts_as_incident(1000, 940, 0.035).unwrap();
         assert_eq!(detail.threshold, MAX_SKIP_RATE_THRESHOLD);
     }
 
