@@ -6,7 +6,7 @@ use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tokio_postgres::Client;
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
@@ -62,7 +62,7 @@ pub async fn store_take_rates(
 
     // The BigQuery query already emits one row per (vote_account, epoch); dedup defensively so a
     // single upsert statement can never touch the same conflict target twice.
-    let rows: HashMap<(String, u64), ValidatorRewardsRow> = snapshot
+    let rows: BTreeMap<(String, u64), ValidatorRewardsRow> = snapshot
         .rewards
         .iter()
         .filter(|r| r.total_rewards > 0)
