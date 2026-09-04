@@ -915,7 +915,6 @@ mod tests {
                     skip_rate: 0.0857,
                     cluster_skip_rate: 0.001_57,
                     threshold: 0.015_7,
-                    cluster_skip_rate_multiple: Some(54.6),
                 },
             },
         }

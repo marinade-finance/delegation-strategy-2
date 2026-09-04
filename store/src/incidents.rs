@@ -19,12 +19,6 @@ pub const CLUSTER_SKIP_RATE_MULTIPLIER: f64 = 10.0;
 /// the 500-699 era would have moved it past 100%.
 pub const MAX_SKIP_RATE_THRESHOLD: f64 = 0.05;
 
-/// The skip rate an epoch's validators had to stay under to pass.
-pub fn threshold(cluster_skip_rate: f64) -> f64 {
-    (CLUSTER_SKIP_RATE_MULTIPLIER * cluster_skip_rate)
-        .clamp(MIN_SKIP_RATE_THRESHOLD, MAX_SKIP_RATE_THRESHOLD)
-}
-
 /// Total missed slots over total leader slots per epoch, across the validators that were evaluable
 /// that epoch. Epochs where nobody reached `MIN_LEADER_SLOTS` are left out.
 pub fn cluster_skip_rates<'a>(
@@ -71,7 +65,8 @@ impl BlockProductionDetail {
         }
 
         let skip_rate = missed_slots as f64 / stats.leader_slots as f64;
-        let threshold = threshold(cluster_skip_rate);
+        let threshold = (CLUSTER_SKIP_RATE_MULTIPLIER * cluster_skip_rate)
+            .clamp(MIN_SKIP_RATE_THRESHOLD, MAX_SKIP_RATE_THRESHOLD);
         if skip_rate < threshold {
             return None;
         }
@@ -83,8 +78,6 @@ impl BlockProductionDetail {
             skip_rate,
             cluster_skip_rate,
             threshold,
-            cluster_skip_rate_multiple: (cluster_skip_rate > 0.0)
-                .then(|| skip_rate / cluster_skip_rate),
         })
     }
 }
@@ -121,19 +114,6 @@ mod tests {
     }
 
     #[test]
-    fn threshold_sits_at_one_percent_in_a_healthy_epoch() {
-        assert_eq!(threshold(0.0), 0.01);
-        assert_eq!(threshold(0.000_5), 0.01);
-    }
-
-    #[test]
-    fn threshold_scales_with_a_degraded_cluster_up_to_the_cap() {
-        // Epoch 1015: a 0.413% cluster skip rate lifted the bar to 4.13%.
-        assert!((threshold(0.004_13) - 0.041_3).abs() < 1e-12);
-        assert_eq!(threshold(0.5), MAX_SKIP_RATE_THRESHOLD);
-    }
-
-    #[test]
     fn an_epoch_under_the_leader_slot_gate_is_not_evaluated() {
         assert!(breached(63, 0, 0.0).is_none());
     }
@@ -151,7 +131,6 @@ mod tests {
         assert_eq!(detail.missed_slots, 4);
         assert_eq!(detail.leader_slots, 64);
         assert_eq!(detail.threshold, 0.01);
-        assert_eq!(detail.cluster_skip_rate_multiple, None);
     }
 
     #[test]

@@ -427,9 +427,6 @@ pub struct BlockProductionDetail {
     pub cluster_skip_rate: f64,
     /// The bar `skip_rate` had to clear that epoch, as a fraction.
     pub threshold: f64,
-    /// How many times the cluster's own skip rate this validator skipped. Null in an epoch the
-    /// cluster skipped nothing.
-    pub cluster_skip_rate_multiple: Option<f64>,
 }
 
 impl IncidentDetail {
