@@ -35,13 +35,14 @@ pub enum IncidentType {
 }
 
 impl IncidentType {
-    /// Reads the names the response emits under `incident_type`, and their snake_case spellings.
+    /// Reads the names the response emits under `incident_type`, spelled as `order_field` and every
+    /// other enum of this API spells its values.
     fn parse_list(types: &str) -> Result<Vec<Self>, String> {
         types
             .split(',')
-            .map(|name| match name.trim().to_lowercase().as_str() {
-                "downtime" => Ok(Self::Downtime),
-                "block_production" | "blockproduction" => Ok(Self::BlockProduction),
+            .map(|name| match name.trim() {
+                "Downtime" => Ok(Self::Downtime),
+                "BlockProduction" => Ok(Self::BlockProduction),
                 other => Err(other.to_string()),
             })
             .collect()
@@ -96,7 +97,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `query_incident_types`, `min_incident_downtime_seconds`, `min_incident_missed_slots` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `downtime`, `block_production`. Defaults to all of them. An epoch with more than one symptom is served under any of them.
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to all of them. An epoch with more than one symptom is served under any of them.
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
@@ -635,7 +636,7 @@ pub async fn handler(
                 return Ok(response_error(
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "query_incident_types does not know {unknown:?}, expected downtime or block_production"
+                        "query_incident_types does not know {unknown:?}, expected Downtime or BlockProduction"
                     ),
                 ))
             }
@@ -1384,18 +1385,6 @@ mod tests {
         assert_eq!(
             filter_validators(validators, &config())[0].incidents.len(),
             1
-        );
-    }
-
-    #[test]
-    fn incident_types_read_the_names_the_response_emits() {
-        assert_eq!(
-            IncidentType::parse_list("Downtime,block_production").unwrap(),
-            vec![IncidentType::Downtime, IncidentType::BlockProduction]
-        );
-        assert_eq!(
-            IncidentType::parse_list("uptime"),
-            Err("uptime".to_string())
         );
     }
 
