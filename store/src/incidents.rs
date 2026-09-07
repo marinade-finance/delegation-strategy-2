@@ -23,6 +23,8 @@ pub const MAX_SKIP_RATE_THRESHOLD: f64 = 0.05;
 /// Under this many seconds a `DOWN` interval is restart noise, not an incident.
 pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 
+pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IncidentType {
     Downtime,

@@ -15,8 +15,8 @@ use store::{
     dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
     groups::{aggregate_operators, singleton_group},
     incidents::{
-        IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS,
-        MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
+        IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_INCIDENT_TYPES,
+        DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS, MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
     },
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
@@ -74,7 +74,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to all of them. An epoch with more than one symptom is served under any of them.
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to `Downtime`, since `BlockProduction` records carry different fields. An epoch with more than one symptom is served under any of them.
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
@@ -587,7 +587,7 @@ pub async fn handler(
                 ))
             }
         },
-        None => None,
+        None => Some(DEFAULT_INCIDENT_TYPES.to_vec()),
     };
     let config = GetValidatorsConfig {
         order_direction: query_params

@@ -13,7 +13,7 @@ use store::dto::{
     ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
 use store::groups::ValidatorGroupings;
-use store::incidents::{IncidentFilters, ValidatorIncidents};
+use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
 use store::utils::{RewardMixShares, TakeRates, ValidatorOverlays};
@@ -413,7 +413,10 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     let (validators, validator_incidents, validator_groups) =
         tokio::task::spawn_blocking(move || {
             // Initialize incidents with default filters that query params in `/validators` can override
-            let filters = IncidentFilters::default();
+            let filters = IncidentFilters {
+                types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
+                ..IncidentFilters::default()
+            };
             for (vote_account, record) in validators.iter_mut() {
                 record.incidents =
                     validator_incidents.into_response_incidents(vote_account, &filters);
