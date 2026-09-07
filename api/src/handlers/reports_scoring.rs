@@ -146,7 +146,7 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
     get,
     tag = "Scoring",
     operation_id = "List scoring reports",
-    path = "reports/scoring",
+    path = "/reports/scoring",
     responses(
         (status = 200, body = ResponseReportScoring)
     )

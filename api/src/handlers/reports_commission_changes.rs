@@ -23,7 +23,7 @@ pub struct CommissionChange {
     get,
     tag = "Validators",
     operation_id = "List commission changes",
-    path = "reports/commission-changes",
+    path = "/reports/commission-changes",
     responses(
         (status = 200, body = ResponseCommissionChanges)
     )
