@@ -14,12 +14,15 @@ use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
     groups::{aggregate_operators, singleton_group},
+    incidents::{
+        IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_INCIDENT_TYPES,
+        DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS, MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
+    },
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
 const DEFAULT_EPOCHS: usize = 15;
-const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 const DEFAULT_LIMIT: usize = 100;
 
@@ -69,10 +72,16 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
-    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `min_incident_downtime_seconds` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
+    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`.
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to `Downtime`, since `BlockProduction` records carry different fields. An epoch with more than one symptom is served under any of them.
+    query_incident_types: Option<String>,
+    /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
+    /// Minimum missed leader slots for a skipped epoch to read as an incident. Defaults to 4, minimum 4.
+    min_incident_missed_slots: Option<u64>,
+    /// Minimum leader slots an epoch needs before its block production is judged. Defaults to 64, minimum 64.
+    min_incident_leader_slots: Option<u64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
     query_verified: Option<bool>,
@@ -102,7 +111,10 @@ pub struct GetValidatorsConfig {
     pub query_with_names: Option<bool>,
     pub query_sfdp: Option<bool>,
     pub query_incident_free: Option<bool>,
+    pub query_incident_types: Option<Vec<IncidentType>>,
     pub min_incident_downtime_seconds: Option<u64>,
+    pub min_incident_missed_slots: Option<u64>,
+    pub min_incident_leader_slots: Option<u64>,
     pub incident_window_epochs: Option<u64>,
     pub query_verified: Option<bool>,
     pub query_protected: Option<bool>,
@@ -128,16 +140,17 @@ pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
 ) -> anyhow::Result<ValidatorsPage> {
-    let (validators, bond_flags_updated_at, net_apy_updated_at) = {
+    let (validators, incidents, bond_flags_updated_at, net_apy_updated_at) = {
         let cache = &context.read().await.cache;
         (
             cache.get_validators(),
+            cache.get_validator_incidents(),
             cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
             cache.net_apy_updated_at().map(DateTime::<Utc>::from),
         )
     };
 
-    let validators = filter_validators(validators, &config);
+    let validators = filter_validators(validators, &incidents, &config);
     // Measured over the whole match rather than the page, so every page reads the same window.
     let newest_epoch = validators
         .iter()
@@ -431,27 +444,32 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
 
 pub fn filter_validators(
     mut validators: HashMap<String, ValidatorRecord>,
+    incidents: &ValidatorIncidents,
     config: &GetValidatorsConfig,
 ) -> Vec<ValidatorRecord> {
     // Shared with the client and provider aggregates, so both describe the same population.
     let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
     validators.retain(|_, validator| store::utils::is_eligible_validator(validator, last_epoch));
 
-    // Everything downstream reads whatever survives here: the array served, the ordering,
+    // Everything downstream reads whatever this projection serves: the array itself, the ordering,
     // `query_incident_free`, and the operator rows aggregated off these records.
-    let min_incident_downtime = config
-        .min_incident_downtime_seconds
-        .unwrap_or(DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS);
-    // The window counts `last_epoch` itself.
-    let from_epoch = (last_epoch + 1).saturating_sub(
-        config
-            .incident_window_epochs
-            .unwrap_or(DEFAULT_INCIDENTS_WINDOW_EPOCHS),
-    );
-    for validator in validators.values_mut() {
-        validator.incidents.retain(|incident| {
-            incident.epoch >= from_epoch && incident.downtime_seconds >= min_incident_downtime
-        });
+    let filters = IncidentFilters {
+        // The window counts `last_epoch` itself.
+        from_epoch: (last_epoch + 1).saturating_sub(
+            config
+                .incident_window_epochs
+                .unwrap_or(DEFAULT_INCIDENTS_WINDOW_EPOCHS),
+        ),
+        min_downtime_seconds: config
+            .min_incident_downtime_seconds
+            .unwrap_or(DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS),
+        // `counts_as_incident` owns both defaults, so the caller's floors travel as they arrived.
+        min_missed_slots: config.min_incident_missed_slots,
+        min_leader_slots: config.min_incident_leader_slots,
+        types: config.query_incident_types.clone(),
+    };
+    for (vote_account, validator) in validators.iter_mut() {
+        validator.incidents = incidents.into_response_incidents(vote_account, &filters);
     }
 
     if config.query_sfdp.is_some() {
@@ -541,6 +559,36 @@ pub async fn handler(
             ));
         }
     }
+    if let Some(missed_slots) = query_params.min_incident_missed_slots {
+        if missed_slots < MIN_MISSED_SLOTS {
+            return Ok(response_error(
+                StatusCode::BAD_REQUEST,
+                format!("min_incident_missed_slots must be at least {MIN_MISSED_SLOTS}"),
+            ));
+        }
+    }
+    if let Some(leader_slots) = query_params.min_incident_leader_slots {
+        if leader_slots < MIN_LEADER_SLOTS {
+            return Ok(response_error(
+                StatusCode::BAD_REQUEST,
+                format!("min_incident_leader_slots must be at least {MIN_LEADER_SLOTS}"),
+            ));
+        }
+    }
+    let query_incident_types = match query_params.query_incident_types.as_deref() {
+        Some(types) => match IncidentType::parse_list(types) {
+            Ok(types) => Some(types),
+            Err(unknown) => {
+                return Ok(response_error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "query_incident_types does not know {unknown:?}, expected Downtime or BlockProduction"
+                    ),
+                ))
+            }
+        },
+        None => Some(DEFAULT_INCIDENT_TYPES.to_vec()),
+    };
     let config = GetValidatorsConfig {
         order_direction: query_params
             .order_direction
@@ -563,7 +611,10 @@ pub async fn handler(
         query_with_names: query_params.query_with_names,
         query_sfdp: query_params.query_sfdp,
         query_incident_free: query_params.query_incident_free,
+        query_incident_types,
         min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
+        min_incident_missed_slots: query_params.min_incident_missed_slots,
+        min_incident_leader_slots: query_params.min_incident_leader_slots,
         incident_window_epochs: query_params.incident_window_epochs,
         query_verified: query_params.query_verified,
         query_protected: query_params.query_protected,
@@ -614,7 +665,8 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::incidents::{DowntimeInterval, EpochBlockProduction};
 
     fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
@@ -758,7 +810,10 @@ mod tests {
             query_with_names: None,
             query_sfdp: None,
             query_incident_free: None,
+            query_incident_types: None,
             min_incident_downtime_seconds: None,
+            min_incident_missed_slots: None,
+            min_incident_leader_slots: None,
             incident_window_epochs: None,
             query_verified: None,
             query_protected: None,
@@ -793,7 +848,7 @@ mod tests {
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
             vec!["flagged".to_string()]
         );
     }
@@ -809,7 +864,7 @@ mod tests {
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
             vec!["clean".to_string()]
         );
     }
@@ -820,7 +875,10 @@ mod tests {
             validator("flagged", 100, vec![ValidatorWarning::Superminority]),
             validator("clean", 100, vec![]),
         ]);
-        assert_eq!(filter_validators(validators, &config()).len(), 2);
+        assert_eq!(
+            filter_validators(validators, &no_incidents(), &config()).len(),
+            2
+        );
     }
 
     fn protected_validator(vote_account: &str) -> ValidatorRecord {
@@ -841,7 +899,7 @@ mod tests {
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
             vec!["bonded".to_string()]
         );
     }
@@ -857,7 +915,7 @@ mod tests {
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
             vec!["unbonded".to_string()]
         );
     }
@@ -868,45 +926,94 @@ mod tests {
             protected_validator("bonded"),
             validator("unbonded", 100, vec![]),
         ]);
-        assert_eq!(filter_validators(validators, &config()).len(), 2);
+        assert_eq!(
+            filter_validators(validators, &no_incidents(), &config()).len(),
+            2
+        );
     }
 
-    // load_incidents derives downtime_seconds as EXTRACT(epoch FROM end_at - start_at).
-    fn incident_in_epoch(epoch: u64, downtime_seconds: u64) -> IncidentRecord {
-        let end_at = Utc::now();
-        IncidentRecord {
-            epoch,
-            start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
-            end_at,
-            downtime_seconds,
+    const FIXTURE_LEADER_SLOTS: u64 = 6392;
+    const FIXTURE_MISSED_SLOTS: u64 = 548;
+    /// Puts the bar at 1.57%, which `FIXTURE_MISSED_SLOTS` breaks at 8.6% and a few slots do not.
+    const FIXTURE_CLUSTER_SKIP_RATE: f64 = 0.001_57;
+
+    /// Raw incident material, as the store hands it to the projection. The fixture validators report
+    /// epoch stats up to epoch 100.
+    #[derive(Default)]
+    struct Material(ValidatorIncidents);
+
+    impl Material {
+        fn down(mut self, vote_account: &str, epoch: u64, downtime_seconds: u64) -> Self {
+            let end_at = Utc::now();
+            self.0
+                .records(vote_account)
+                .downtimes
+                .push(DowntimeInterval {
+                    epoch,
+                    start_at: end_at - chrono::Duration::seconds(downtime_seconds as i64),
+                    end_at,
+                    downtime_seconds,
+                });
+            self
+        }
+
+        fn produced(mut self, vote_account: &str, epoch: u64, missed_slots: u64) -> Self {
+            let epoch_end_at = Utc::now();
+            self.0
+                .records(vote_account)
+                .block_production
+                .push(EpochBlockProduction {
+                    epoch,
+                    epoch_start_at: epoch_end_at - chrono::Duration::days(2),
+                    epoch_end_at,
+                    leader_slots: FIXTURE_LEADER_SLOTS,
+                    blocks_produced: FIXTURE_LEADER_SLOTS - missed_slots,
+                    cluster_skip_rate: FIXTURE_CLUSTER_SKIP_RATE,
+                });
+            self
+        }
+
+        /// An epoch that broke the block production rule: 548 of 6392 missed is 8.6%.
+        fn skipped(self, vote_account: &str, epoch: u64) -> Self {
+            self.produced(vote_account, epoch, FIXTURE_MISSED_SLOTS)
+        }
+
+        fn build(self) -> ValidatorIncidents {
+            self.0
         }
     }
 
-    // The fixture validators report epoch_stats up to epoch 100.
-    fn incident(downtime_seconds: u64) -> IncidentRecord {
-        incident_in_epoch(100, downtime_seconds)
+    /// `DOWN` intervals of one validator in the epoch the fixtures report.
+    fn downtimes(vote_account: &str, seconds: &[u64]) -> ValidatorIncidents {
+        seconds
+            .iter()
+            .fold(Material::default(), |material, seconds| {
+                material.down(vote_account, 100, *seconds)
+            })
+            .build()
     }
 
-    fn validator_with_incidents(vote_account: &str, downtimes: &[u64]) -> ValidatorRecord {
-        ValidatorRecord {
-            incidents: downtimes.iter().copied().map(incident).collect(),
-            ..validator(vote_account, 100, vec![])
-        }
+    fn no_incidents() -> ValidatorIncidents {
+        ValidatorIncidents::default()
     }
 
     #[test]
     fn incident_free_without_a_floor_reads_the_default_one() {
         let validators = map(vec![
-            validator_with_incidents("blip", &[1]),
-            validator_with_incidents("outage", &[180]),
-            validator_with_incidents("clean", &[]),
+            validator("blip", 100, vec![]),
+            validator("outage", 100, vec![]),
+            validator("clean", 100, vec![]),
         ]);
+        let incidents = Material::default()
+            .down("blip", 100, 1)
+            .down("outage", 100, 180)
+            .build();
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &incidents, &config)),
             vec!["blip".to_string(), "clean".to_string()],
             "a one-second blip is restart noise, not an incident"
         );
@@ -915,38 +1022,34 @@ mod tests {
     #[test]
     fn the_default_window_reaches_ninety_epochs_back() {
         // The fixtures report up to epoch 100, so the window opens at epoch 11.
-        let stale = ValidatorRecord {
-            incidents: vec![incident_in_epoch(10, 600)],
-            ..validator("stale", 100, vec![])
-        };
-        let recent = ValidatorRecord {
-            incidents: vec![incident_in_epoch(11, 600)],
-            ..validator("recent", 100, vec![])
-        };
+        let validators = map(vec![
+            validator("stale", 100, vec![]),
+            validator("recent", 100, vec![]),
+        ]);
+        let incidents = Material::default()
+            .down("stale", 10, 600)
+            .down("recent", 11, 600)
+            .build();
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(map(vec![stale, recent]), &config)),
+            vote_accounts(filter_validators(validators, &incidents, &config)),
             vec!["stale".to_string()]
         );
     }
 
     #[test]
     fn incident_window_epochs_trims_the_array_and_the_filter_together() {
-        let validators = || {
-            map(vec![ValidatorRecord {
-                incidents: vec![incident_in_epoch(98, 600)],
-                ..validator("outage", 100, vec![])
-            }])
-        };
+        let validators = || map(vec![validator("outage", 100, vec![])]);
+        let incidents = Material::default().down("outage", 98, 600).build();
         let narrowed = GetValidatorsConfig {
             query_incident_free: Some(true),
             incident_window_epochs: Some(2),
             ..config()
         };
-        let filtered = filter_validators(validators(), &narrowed);
+        let filtered = filter_validators(validators(), &incidents, &narrowed);
         assert_eq!(
             vote_accounts(filtered.clone()),
             vec!["outage".to_string()],
@@ -961,20 +1064,21 @@ mod tests {
             incident_window_epochs: Some(3),
             ..narrowed
         };
-        assert!(filter_validators(validators(), &widened).is_empty());
+        assert!(filter_validators(validators(), &incidents, &widened).is_empty());
     }
 
     #[test]
     fn the_window_trims_the_array_without_query_incident_free() {
-        let validators = map(vec![ValidatorRecord {
-            incidents: vec![incident_in_epoch(98, 600), incident_in_epoch(100, 600)],
-            ..validator("outage", 100, vec![])
-        }]);
+        let validators = map(vec![validator("outage", 100, vec![])]);
+        let incidents = Material::default()
+            .down("outage", 98, 600)
+            .down("outage", 100, 600)
+            .build();
         let config = GetValidatorsConfig {
             incident_window_epochs: Some(2),
             ..config()
         };
-        let filtered = filter_validators(validators, &config);
+        let filtered = filter_validators(validators, &incidents, &config);
         assert_eq!(
             filtered[0]
                 .incidents
@@ -988,60 +1092,189 @@ mod tests {
     #[test]
     fn incident_free_ignores_downtime_below_the_floor() {
         let validators = map(vec![
-            validator_with_incidents("blip", &[179]),
-            validator_with_incidents("outage", &[180]),
+            validator("blip", 100, vec![]),
+            validator("outage", 100, vec![]),
         ]);
+        let incidents = Material::default()
+            .down("blip", 100, 179)
+            .down("outage", 100, 180)
+            .build();
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
             min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &incidents, &config)),
             vec!["blip".to_string()]
         );
     }
 
     #[test]
     fn incident_free_looks_at_every_incident_not_just_the_first() {
-        let validators = map(vec![validator_with_incidents("mixed", &[10, 600])]);
+        let validators = map(vec![validator("mixed", 100, vec![])]);
+        let incidents = downtimes("mixed", &[10, 600]);
         let config = GetValidatorsConfig {
             query_incident_free: Some(true),
             min_incident_downtime_seconds: Some(180),
             ..config()
         };
-        assert!(filter_validators(validators, &config).is_empty());
+        assert!(filter_validators(validators, &incidents, &config).is_empty());
     }
 
     #[test]
     fn incident_free_false_keeps_only_validators_over_the_floor() {
         let validators = map(vec![
-            validator_with_incidents("blip", &[179]),
-            validator_with_incidents("outage", &[180]),
-            validator_with_incidents("clean", &[]),
+            validator("blip", 100, vec![]),
+            validator("outage", 100, vec![]),
+            validator("clean", 100, vec![]),
         ]);
+        let incidents = Material::default()
+            .down("blip", 100, 179)
+            .down("outage", 100, 180)
+            .build();
         let config = GetValidatorsConfig {
             query_incident_free: Some(false),
             min_incident_downtime_seconds: Some(180),
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &config)),
+            vote_accounts(filter_validators(validators, &incidents, &config)),
             vec!["outage".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_block_production_incident_is_not_incident_free() {
+        let validators = map(vec![
+            validator("skipper", 100, vec![]),
+            validator("clean", 100, vec![]),
+        ]);
+        let incidents = Material::default().skipped("skipper", 100).build();
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &incidents, &config)),
+            vec!["clean".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_downtime_floor_does_not_reach_block_production_incidents() {
+        let validators = map(vec![validator("skipper", 100, vec![])]);
+        let incidents = Material::default().skipped("skipper", 100).build();
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_downtime_seconds: Some(u64::MAX),
+            ..config()
+        };
+        assert!(filter_validators(validators, &incidents, &config).is_empty());
+    }
+
+    #[test]
+    fn the_missed_slot_floor_trims_block_production_incidents() {
+        let validators = map(vec![validator("skipper", 100, vec![])]);
+        let incidents = Material::default().skipped("skipper", 100).build();
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_missed_slots: Some(FIXTURE_MISSED_SLOTS + 1),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &incidents, &config)),
+            vec!["skipper".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_missed_slot_floor_does_not_reach_downtime_incidents() {
+        let validators = map(vec![validator("outage", 100, vec![])]);
+        let incidents = downtimes("outage", &[600]);
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            min_incident_missed_slots: Some(u64::MAX),
+            ..config()
+        };
+        assert!(filter_validators(validators, &incidents, &config).is_empty());
+    }
+
+    #[test]
+    fn each_incident_type_serves_only_its_own_kind() {
+        let incidents = Material::default()
+            .down("outage", 100, 600)
+            .skipped("skipper", 100)
+            .build();
+        for (incident_type, served) in [
+            (IncidentType::Downtime, "outage"),
+            (IncidentType::BlockProduction, "skipper"),
+        ] {
+            let validators = map(vec![
+                validator("outage", 100, vec![]),
+                validator("skipper", 100, vec![]),
+            ]);
+            let config = GetValidatorsConfig {
+                query_incident_free: Some(false),
+                query_incident_types: Some(vec![incident_type]),
+                ..config()
+            };
+            assert_eq!(
+                vote_accounts(filter_validators(validators, &incidents, &config)),
+                vec![served.to_string()],
+                "{incident_type:?}"
+            );
+        }
+    }
+
+    // A restart under the floor is not served, so the epoch it happened in is served for its block
+    // production instead, under the type that says so.
+    #[test]
+    fn a_restart_under_the_floor_does_not_carry_its_epoch_s_block_production() {
+        let validators = map(vec![validator("flappy", 100, vec![])]);
+        let incidents = Material::default()
+            .down("flappy", 100, 12)
+            .skipped("flappy", 100)
+            .build();
+
+        let served = filter_validators(validators, &incidents, &config());
+        assert_eq!(served[0].incidents.len(), 1);
+        assert!(matches!(
+            served[0].incidents[0].detail,
+            IncidentDetail::BlockProduction { .. }
+        ));
+    }
+
+    #[test]
+    fn a_block_production_incident_outside_the_window_is_dropped_like_any_other() {
+        // The fixtures report up to epoch 100, so the default window opens at epoch 11.
+        let validators = map(vec![validator("skipper", 100, vec![])]);
+        let incidents = Material::default().skipped("skipper", 10).build();
+        let config = GetValidatorsConfig {
+            query_incident_free: Some(true),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &incidents, &config)),
+            vec!["skipper".to_string()]
         );
     }
 
     #[test]
     fn min_incident_downtime_alone_keeps_every_validator_but_trims_their_arrays() {
         let validators = map(vec![
-            validator_with_incidents("blip", &[179]),
-            validator_with_incidents("outage", &[180]),
+            validator("blip", 100, vec![]),
+            validator("outage", 100, vec![]),
         ]);
+        let incidents = Material::default()
+            .down("blip", 100, 179)
+            .down("outage", 100, 180)
+            .build();
         let config = GetValidatorsConfig {
             min_incident_downtime_seconds: Some(180),
             ..config()
         };
-        let filtered = filter_validators(validators, &config);
+        let filtered = filter_validators(validators, &incidents, &config);
         assert_eq!(filtered.len(), 2);
         assert_eq!(
             filtered
@@ -1054,13 +1287,18 @@ mod tests {
 
     #[test]
     fn the_incidents_array_drops_restart_noise_by_default() {
-        let validators = map(vec![validator_with_incidents("mixed", &[1, 180])]);
-        let filtered = filter_validators(validators, &config());
+        let validators = map(vec![validator("mixed", 100, vec![])]);
+        let filtered = filter_validators(validators, &downtimes("mixed", &[1, 180]), &config());
         assert_eq!(
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| incident.downtime_seconds)
+                .map(|incident| match incident.detail {
+                    IncidentDetail::Downtime {
+                        downtime_seconds, ..
+                    } => downtime_seconds,
+                    _ => panic!("a downtime fixture is a downtime incident"),
+                })
                 .collect::<Vec<_>>(),
             vec![180]
         );
@@ -1068,12 +1306,17 @@ mod tests {
 
     #[test]
     fn a_zero_floor_serves_every_interval() {
-        let validators = map(vec![validator_with_incidents("mixed", &[1, 600])]);
+        let validators = map(vec![validator("mixed", 100, vec![])]);
         let config = GetValidatorsConfig {
             min_incident_downtime_seconds: Some(0),
             ..config()
         };
-        assert_eq!(filter_validators(validators, &config)[0].incidents.len(), 2);
+        assert_eq!(
+            filter_validators(validators, &downtimes("mixed", &[1, 600]), &config)[0]
+                .incidents
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -1585,7 +1828,8 @@ mod tests {
     #[test]
     fn incidents_and_delegation_relationships_order_validators_too() {
         let with_incidents = |vote_account: &str, count: usize| ValidatorRecord {
-            incidents: vec![incident(600); count],
+            incidents: downtimes(vote_account, &vec![600; count])
+                .into_response_incidents(vote_account, &Default::default()),
             ..validator(vote_account, 100, vec![])
         };
         assert_eq!(

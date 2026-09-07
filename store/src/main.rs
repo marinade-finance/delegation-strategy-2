@@ -57,6 +57,7 @@ pub mod close_epoch;
 pub mod cluster_info;
 pub mod commissions;
 pub mod dto;
+pub mod incidents;
 pub mod ip_info;
 pub mod ls_open_epochs;
 pub mod node_observations;

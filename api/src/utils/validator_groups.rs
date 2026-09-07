@@ -225,16 +225,19 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
 mod tests {
     use super::*;
     use chrono::Utc;
-    use store::dto::{GroupIncidentRecord, GroupIncidents};
+    use store::dto::{GroupIncidentRecord, GroupIncidents, IncidentDetail};
     use store::groups::UNKNOWN_GROUP;
 
     fn long_incident() -> GroupIncidentRecord {
         GroupIncidentRecord {
             validator: "vote".to_string(),
             epoch: 100,
-            start_at: Utc::now(),
-            end_at: Utc::now(),
-            downtime_seconds: 600,
+            detail: IncidentDetail::Downtime {
+                start_at: Utc::now(),
+                end_at: Utc::now(),
+                downtime_seconds: 600,
+                block_production: None,
+            },
         }
     }
 
