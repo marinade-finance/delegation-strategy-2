@@ -13,6 +13,7 @@ use store::dto::{
     ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
 use store::groups::ValidatorGroupings;
+use store::incidents::{IncidentFilters, ValidatorIncidents};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
 use store::utils::{RewardMixShares, TakeRates, ValidatorOverlays};
@@ -26,6 +27,8 @@ const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
 const WARM_STEPS: usize = 7;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
+/// Raw incident material the served `incidents` arrays are projected from, per vote account.
+type CachedValidatorIncidents = ValidatorIncidents;
 /// Client and provider aggregates, derived from the validators they are published with.
 type CachedValidatorGroups = ValidatorGroupings;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
@@ -72,6 +75,7 @@ pub struct Cache {
     pub bond_flags: CachedBondFlags,
     pub net_apy: CachedNetApy,
     pub validators: CachedValidators,
+    pub validator_incidents: CachedValidatorIncidents,
     pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
@@ -155,6 +159,10 @@ impl Cache {
 
     pub fn get_validators(&self) -> CachedValidators {
         self.validators.clone()
+    }
+
+    pub fn get_validator_incidents(&self) -> CachedValidatorIncidents {
+        self.validator_incidents.clone()
     }
 
     pub fn get_client_groups(&self) -> ValidatorGroupTree {
@@ -371,7 +379,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         protected: bond_flags.protected.vote_accounts.clone(),
     };
 
-    let validators = store::utils::load_validators(
+    let mut validators = store::utils::load_validators(
         &context.read().await.psql_client,
         scoring_url,
         DEFAULT_CACHE_EPOCHS,
@@ -390,13 +398,30 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in DB, caching an empty set");
     }
 
-    // Off the executor thread: three walks of every cached epoch of every validator per grouping,
-    // over the three groupings the endpoints serve, each key resolved through the client registry.
-    let (validators, validator_groups) = tokio::task::spawn_blocking(move || {
-        let validator_groups = store::groups::aggregate_all(&validators);
-        (validators, validator_groups)
-    })
+    // The window ends at the newest epoch the validator records report, which is the same epoch the
+    // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.
+    let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
+    let validator_incidents = store::utils::load_validator_incidents(
+        &context.read().await.psql_client,
+        (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
+        last_epoch,
+        &validators,
+    )
     .await?;
+
+    // Off the executor thread: walks every cached epoch of every validator.
+    let (validators, validator_incidents, validator_groups) =
+        tokio::task::spawn_blocking(move || {
+            // Initialize incidents with default filters that query params in `/validators` can override
+            let filters = IncidentFilters::default();
+            for (vote_account, record) in validators.iter_mut() {
+                record.incidents =
+                    validator_incidents.into_response_incidents(vote_account, &filters);
+            }
+            let validator_groups = store::groups::aggregate_all(&validators);
+            (validators, validator_incidents, validator_groups)
+        })
+        .await?;
 
     let validators_len = validators.len();
     {
@@ -410,6 +435,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
+        ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
     }
 
