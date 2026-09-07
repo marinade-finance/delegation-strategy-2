@@ -433,11 +433,11 @@ pub struct BlockProductionDetail {
 
 impl IncidentDetail {
     /// When the incident started, for ordering: a downtime interval when it went down, a block
-    /// production epoch when that epoch ended.
+    /// production epoch when the epoch began.
     pub fn started_at(&self) -> DateTime<Utc> {
         match self {
             Self::Downtime { start_at, .. } => *start_at,
-            Self::BlockProduction { epoch_end_at, .. } => *epoch_end_at,
+            Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
         }
     }
 }
