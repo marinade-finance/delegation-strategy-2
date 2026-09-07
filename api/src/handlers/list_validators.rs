@@ -1018,7 +1018,7 @@ mod tests {
             epoch,
             detail: IncidentDetail::BlockProduction {
                 epoch_start_at: epoch_end_at - chrono::Duration::days(2),
-                epoch_end_at: Some(epoch_end_at),
+                epoch_end_at,
                 block_production: skipped(missed_slots),
             },
         }

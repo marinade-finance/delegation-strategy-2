@@ -406,11 +406,10 @@ pub enum IncidentDetail {
         #[serde(default)]
         block_production: Option<BlockProductionDetail>,
     },
-    /// An epoch the validator was up for but produced too few of its leader slots in.
+    /// A closed epoch the validator was up for but produced too few of its leader slots in.
     BlockProduction {
         epoch_start_at: DateTime<Utc>,
-        /// None until the epoch closes: the `epochs` row carrying the boundaries is written then.
-        epoch_end_at: Option<DateTime<Utc>>,
+        epoch_end_at: DateTime<Utc>,
         block_production: BlockProductionDetail,
     },
 }
@@ -434,11 +433,10 @@ pub struct BlockProductionDetail {
 
 impl IncidentDetail {
     /// When the incident started, for ordering: a downtime interval when it went down, a block
-    /// production epoch when that epoch ended. `None` for an epoch with no end on record, which is
-    /// the running one.
-    pub fn started_at(&self) -> Option<DateTime<Utc>> {
+    /// production epoch when that epoch ended.
+    pub fn started_at(&self) -> DateTime<Utc> {
         match self {
-            Self::Downtime { start_at, .. } => Some(*start_at),
+            Self::Downtime { start_at, .. } => *start_at,
             Self::BlockProduction { epoch_end_at, .. } => *epoch_end_at,
         }
     }

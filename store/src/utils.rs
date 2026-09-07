@@ -313,10 +313,12 @@ pub async fn load_incidents(
                 }
             }
 
-            // With no downtime record to attach to, check block production rule and classify as incident if counts_as_incident.
             if !carried && block_production.counts_as_incident {
-                // Without the `epochs` row there is nothing to anchor the incident to.
-                let Some(epoch_start_at) = stats.epoch_start_at else {
+                // No `end_at` means the epoch is still running, and its block production covers
+                // just the leader slots so far: skip to not produce misleading/false incident
+                let (Some(epoch_start_at), Some(epoch_end_at)) =
+                    (stats.epoch_start_at, stats.epoch_end_at)
+                else {
                     continue;
                 };
                 incidents
@@ -326,7 +328,7 @@ pub async fn load_incidents(
                         epoch: stats.epoch,
                         detail: IncidentDetail::BlockProduction {
                             epoch_start_at,
-                            epoch_end_at: stats.epoch_end_at,
+                            epoch_end_at,
                             block_production,
                         },
                     });

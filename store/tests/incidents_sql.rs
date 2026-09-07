@@ -356,3 +356,24 @@ async fn a_skipped_epoch_before_from_epoch_is_left_out() {
 
     assert!(incidents.is_empty());
 }
+
+// The window runs up to MAX(epoch), so the running epoch is in it. Its skip rate is measured over
+// the slots elapsed so far, which is why it is not judged until it closes.
+#[tokio::test]
+async fn the_running_epoch_opens_no_incident_of_its_own() {
+    let schema = "ds_test_incidents_running_epoch";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // The same skipped epoch, without the `epochs.end_at` an epoch only gets once it ends.
+    let mut records = skipped_epoch("voteA", 100);
+    for record in records.values_mut() {
+        record.epoch_stats[0].epoch_end_at = None;
+    }
+
+    let incidents = load_incidents(&client, 100, 100, &records).await.unwrap();
+
+    assert!(incidents.is_empty());
+}
