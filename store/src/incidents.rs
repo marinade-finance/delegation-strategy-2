@@ -36,9 +36,9 @@ pub fn cluster_skip_rates<'a>(
         *blocks_produced += stats.blocks_produced.min(stats.leader_slots);
     }
 
+    // Every epoch in here cleared MIN_LEADER_SLOTS above, so there is no zero to divide by.
     totals
         .into_iter()
-        .filter(|(_, (leader_slots, _))| *leader_slots > 0)
         .map(|(epoch, (leader_slots, blocks_produced))| {
             (
                 epoch,
