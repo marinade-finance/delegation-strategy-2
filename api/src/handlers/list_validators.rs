@@ -28,7 +28,7 @@ const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 const DEFAULT_LIMIT: usize = 100;
 
 /// Which kind of incident a caller wants served.
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IncidentType {
     Downtime,
     BlockProduction,
@@ -95,7 +95,7 @@ pub struct QueryParams {
     query_marinade_stake: Option<bool>,
     query_with_names: Option<bool>,
     query_sfdp: Option<bool>,
-    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. It reads that array, so `query_incident_types`, `min_incident_downtime_seconds`, `min_incident_missed_slots` and `incident_window_epochs` shape it too, where `epochs` and `query_from_date` do not.
+    /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
     /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to all of them. An epoch with more than one symptom is served under any of them.
     query_incident_types: Option<String>,
