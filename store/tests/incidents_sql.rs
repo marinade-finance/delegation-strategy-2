@@ -3,8 +3,8 @@ mod common;
 use chrono::{DateTime, Utc};
 use common::{migrated_client, skip_without_database};
 use std::collections::HashMap;
-use store::dto::{ValidatorEpochStats, ValidatorRecord};
-use store::incidents::ValidatorIncidents;
+use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorRecord};
+use store::incidents::{IncidentFilters, ValidatorIncidents};
 use store::utils::load_validator_incidents;
 use tokio_postgres::Client;
 
@@ -15,23 +15,33 @@ fn no_records() -> HashMap<String, ValidatorRecord> {
 
 /// One validator that missed 8 of its 64 leader slots in the given epoch.
 fn epoch_stats(vote_account: &str, epoch: u64) -> HashMap<String, ValidatorRecord> {
+    records(&[vote_account], epoch)
+}
+
+/// 8 of 64 leader slots missed, for each of the given validators.
+fn records(vote_accounts: &[&str], epoch: u64) -> HashMap<String, ValidatorRecord> {
     // Block production is only recorded for a closed epoch, so the boundaries have to be set as
     // the `epochs` join would set them.
     let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
-    HashMap::from([(
-        vote_account.to_string(),
-        ValidatorRecord {
-            epoch_stats: vec![ValidatorEpochStats {
-                epoch,
-                leader_slots: 64,
-                blocks_produced: 56,
-                epoch_start_at: Some(epoch_start_at),
-                epoch_end_at: Some(epoch_start_at + chrono::Duration::days(2)),
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )])
+    vote_accounts
+        .iter()
+        .map(|vote_account| {
+            (
+                vote_account.to_string(),
+                ValidatorRecord {
+                    epoch_stats: vec![ValidatorEpochStats {
+                        epoch,
+                        leader_slots: 64,
+                        blocks_produced: 56,
+                        epoch_start_at: Some(epoch_start_at),
+                        epoch_end_at: Some(epoch_start_at + chrono::Duration::days(2)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
 }
 
 // `identity` and `vote_account` are the same string here; nothing the query reads distinguishes them.
@@ -244,4 +254,51 @@ async fn an_epoch_before_from_epoch_is_left_out() {
         .unwrap();
 
     assert!(incidents.is_empty());
+}
+
+// The `DOWN` rows are keyed by the row's vote account and the block production by the records key,
+// so a mix-up between the two would file one validator's epoch under the other.
+#[tokio::test]
+async fn each_validator_is_keyed_by_its_own_vote_account() {
+    let schema = "ds_test_incidents_keying";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    down(
+        &client,
+        "voteA",
+        100,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:10:00Z",
+    )
+    .await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &records(&["voteA", "voteB"], 100))
+        .await
+        .unwrap();
+
+    let down_only = incidents.get("voteA").unwrap();
+    assert_eq!(downtime_epochs(&incidents, "voteA"), vec![100]);
+    assert_eq!(down_only.block_production.len(), 1);
+
+    let skipped_only = incidents.get("voteB").unwrap();
+    assert!(skipped_only.downtimes.is_empty());
+    assert_eq!(skipped_only.block_production.len(), 1);
+
+    // Both breached, so the one that also went down reports it on its downtime record and the one
+    // that stayed up reports it on a record of its own.
+    let filters = IncidentFilters::default();
+    assert!(matches!(
+        incidents.into_response_incidents("voteA", &filters)[0].detail,
+        IncidentDetail::Downtime {
+            block_production: Some(_),
+            ..
+        }
+    ));
+    assert!(matches!(
+        incidents.into_response_incidents("voteB", &filters)[0].detail,
+        IncidentDetail::BlockProduction { .. }
+    ));
 }
