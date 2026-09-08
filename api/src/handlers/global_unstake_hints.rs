@@ -10,6 +10,7 @@ pub struct ResponseGlobalUnstakeHints {
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epoch: u64,
 }

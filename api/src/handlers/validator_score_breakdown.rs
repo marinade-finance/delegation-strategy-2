@@ -14,6 +14,7 @@ pub struct ResponseScoreBreakdown {
 }
 
 #[derive(Deserialize, Serialize, Debug, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     query_vote_account: String,
 }

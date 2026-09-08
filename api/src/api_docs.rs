@@ -121,6 +121,7 @@ pub struct ApiDoc;
 #[cfg(test)]
 mod tests {
     use super::ApiDoc;
+    use utoipa::openapi::path::ParameterIn;
     use utoipa::OpenApi;
 
     /// A `utoipa::path` without a leading slash still routes correctly but
@@ -139,6 +140,51 @@ mod tests {
         assert!(
             unslashed.is_empty(),
             "paths missing leading slash: {unslashed:?}"
+        );
+    }
+
+    /// A `parameter_in` left at its `Path` default documents a query parameter
+    /// as a path segment, which strict OpenAPI validators reject and which
+    /// tells consumers to build the wrong URL.
+    #[test]
+    fn every_path_parameter_has_a_matching_path_segment() {
+        let openapi = ApiDoc::openapi();
+
+        let mut orphans = Vec::new();
+
+        for (path, item) in &openapi.paths.paths {
+            let segments: Vec<&str> = path
+                .split('/')
+                .filter_map(|segment| segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
+                .collect();
+
+            let operations = [
+                &item.get,
+                &item.put,
+                &item.post,
+                &item.delete,
+                &item.options,
+                &item.head,
+                &item.patch,
+                &item.trace,
+            ];
+
+            for parameter in operations
+                .into_iter()
+                .flatten()
+                .flat_map(|operation| operation.parameters.iter().flatten())
+            {
+                if parameter.parameter_in == ParameterIn::Path
+                    && !segments.contains(&parameter.name.as_str())
+                {
+                    orphans.push(format!("{path}:{}", parameter.name));
+                }
+            }
+        }
+
+        assert!(
+            orphans.is_empty(),
+            "path parameters without a matching path segment: {orphans:?}"
         );
     }
 }

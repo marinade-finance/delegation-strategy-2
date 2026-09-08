@@ -8,6 +8,7 @@ use warp::Reply;
 const DEFAULT_EPOCHS: u64 = 10;
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epochs: Option<u64>,
     last_epoch: u64,
