@@ -117,3 +117,28 @@ use utoipa::OpenApi;
     )
 )]
 pub struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::OpenApi;
+
+    /// A `utoipa::path` without a leading slash still routes correctly but
+    /// produces a spec that strict OpenAPI validators reject, which breaks
+    /// client generators consuming /docs.json.
+    #[test]
+    fn every_documented_path_starts_with_a_slash() {
+        let unslashed: Vec<_> = ApiDoc::openapi()
+            .paths
+            .paths
+            .keys()
+            .filter(|path| !path.starts_with('/'))
+            .cloned()
+            .collect();
+
+        assert!(
+            unslashed.is_empty(),
+            "paths missing leading slash: {unslashed:?}"
+        );
+    }
+}
