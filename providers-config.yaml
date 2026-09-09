@@ -1,0 +1,7 @@
+# ASNs the geolocation source reports separately but that belong to one hosting company, keyed by
+# the parent ASN. A group is named after whichever member name holds the most stake, so no name goes
+# here. Spell the real ASN even above 2^31: `validators.dc_asn` stores those negative.
+asn_groups:
+  # Latitude.sh. AS262287 is reported as `Latitude.sh LTDA`.
+  396356:
+    - 262287

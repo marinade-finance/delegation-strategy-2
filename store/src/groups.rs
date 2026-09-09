@@ -3,6 +3,7 @@ use crate::dto::{
     ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
 use crate::operators;
+use crate::providers_config;
 use crate::stake_deltas::delta_epochs;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
 use rust_decimal::prelude::*;
@@ -110,6 +111,18 @@ type FoldedKey = Option<String>;
 
 fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
+}
+
+/// Bucket a validator lands in. Not `key`, which stays the name `Accumulator::name` ranks.
+fn group_identity(stats: &ValidatorEpochStats, kind: GroupKind, key: &Option<String>) -> FoldedKey {
+    match kind {
+        // Override the reported provider with the group parent's identifier if found. No ASO
+        // renders like `asn:24940`, so a group cannot collide with a name.
+        GroupKind::ProviderAso => providers_config::asn_group_of(stats.dc_asn)
+            .map(|asn| format!("asn:{asn}"))
+            .or_else(|| folded(key)),
+        _ => folded(key),
+    }
 }
 
 /// A member without the value is left out of both sums, so it neither dilutes the mean nor reads as zero.
@@ -319,8 +332,9 @@ fn group_stake_at(
     let mut group_stake: ReferenceStake = Default::default();
     for validator in validators {
         if let Some(stats) = validator.epoch_stats.iter().find(|s| s.epoch == epoch) {
+            let key = group_key(validator, stats, kind);
             *group_stake
-                .entry(folded(&group_key(validator, stats, kind)))
+                .entry(group_identity(stats, kind, &key))
                 .or_default() += stats.activated_stake;
         }
     }
@@ -442,7 +456,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
         }
 
         accumulators
-            .entry(folded(&key))
+            .entry(group_identity(stats, kind, &key))
             .or_insert_with(|| Accumulator::new(kind))
             .add(validator, stats, key.as_ref());
     }
@@ -602,6 +616,8 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
+        /// Held by the node, unlike the fixture's provider names, which are per epoch.
+        dc_asn: Option<u32>,
         /// Days ago each incident interval began. Each lasts long enough to clear any floor.
         incidents_days_ago: Vec<i64>,
     }
@@ -622,6 +638,7 @@ mod tests {
                 expected_take_rate: None,
                 unique_delegators: None,
                 client_id_raw: None,
+                dc_asn: None,
                 incidents_days_ago: Vec::new(),
             }
         }
@@ -649,6 +666,7 @@ mod tests {
                         client_id: *client_id,
                         client_id_raw: member.client_id_raw.map(str::to_string),
                         dc_aso: dc_aso.map(str::to_string),
+                        dc_asn: member.dc_asn.map(|asn| asn as i32),
                         ..Default::default()
                     })
                     .collect();
@@ -1064,6 +1082,107 @@ mod tests {
             group(&groups, "RETN Limited").total_stake,
             Decimal::from(400)
         );
+    }
+
+    /// `24940` hosts `213230`, and `16509` is left alone.
+    const ASN_GROUPS: &str = "asn_groups:\n  24940:\n    - 213230\n";
+
+    #[test]
+    fn aliased_asns_are_one_provider_named_after_the_heaviest() {
+        providers_config::with_config(ASN_GROUPS, || {
+            let validators = validators(vec![
+                Member {
+                    dc_asn: Some(24940),
+                    ..Member::new(
+                        "head",
+                        last_two_epochs(300, AGAVE, Some("Hetzner Online GmbH")),
+                    )
+                },
+                Member {
+                    dc_asn: Some(213230),
+                    ..Member::new(
+                        "downstream",
+                        last_two_epochs(100, AGAVE, Some("Cloudfanatic")),
+                    )
+                },
+                Member {
+                    dc_asn: Some(16509),
+                    ..Member::new("elsewhere", last_two_epochs(200, AGAVE, Some("Amazon")))
+                },
+            ]);
+
+            let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+            assert_eq!(
+                keys(&groups),
+                vec!["Hetzner Online GmbH".to_string(), "Amazon".to_string()],
+                "the merged group is named after the provider name most of its stake reports"
+            );
+
+            let hetzner = group(&groups, "Hetzner Online GmbH");
+            assert_eq!(hetzner.validator_count, 2);
+            assert_eq!(hetzner.total_stake, Decimal::from(400));
+            assert_eq!(group(&groups, "Amazon").validator_count, 1);
+        });
+    }
+
+    #[test]
+    fn an_aliased_asn_without_a_provider_name_joins_its_group() {
+        providers_config::with_config(ASN_GROUPS, || {
+            let validators = validators(vec![
+                Member {
+                    dc_asn: Some(24940),
+                    ..Member::new(
+                        "head",
+                        last_two_epochs(300, AGAVE, Some("Hetzner Online GmbH")),
+                    )
+                },
+                Member {
+                    dc_asn: Some(213230),
+                    ..Member::new("unnamed", last_two_epochs(100, AGAVE, None))
+                },
+            ]);
+
+            let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+            assert_eq!(keys(&groups), vec!["Hetzner Online GmbH".to_string()]);
+            assert_eq!(group(&groups, "Hetzner Online GmbH").validator_count, 2);
+        });
+    }
+
+    #[test]
+    fn a_merged_group_measures_its_delta_against_the_same_members() {
+        providers_config::with_config(ASN_GROUPS, || {
+            let validators = validators(vec![
+                Member {
+                    dc_asn: Some(24940),
+                    ..Member::new(
+                        "head",
+                        vec![
+                            (CURRENT_EPOCH, 300, AGAVE, Some("Hetzner Online GmbH")),
+                            (PREVIOUS_EPOCH, 300, AGAVE, Some("Hetzner Online GmbH")),
+                            (96, 300, AGAVE, Some("Hetzner Online GmbH")),
+                        ],
+                    )
+                },
+                Member {
+                    dc_asn: Some(213230),
+                    ..Member::new(
+                        "downstream",
+                        vec![
+                            (CURRENT_EPOCH, 100, AGAVE, Some("Cloudfanatic")),
+                            (PREVIOUS_EPOCH, 100, AGAVE, Some("Cloudfanatic")),
+                            (96, 20, AGAVE, Some("Cloudfanatic")),
+                        ],
+                    )
+                },
+            ]);
+
+            let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+            assert_eq!(
+                group(&groups, "Hetzner Online GmbH").stake_delta_7d,
+                Some(Decimal::from(80)),
+                "the baseline has to bucket the older epoch by the same merged identity"
+            );
+        });
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::dto::{
     VersionRecord,
 };
 use crate::incidents::{DowntimeInterval, EpochBlockProduction, ValidatorIncidents};
+use crate::providers_config;
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
@@ -1058,13 +1059,19 @@ pub async fn load_validators(
             let dc_full_city = row
                 .get::<_, Option<String>>("dc_full_city")
                 .unwrap_or("Unknown".into());
-            let dc_asn = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map(|dc_asn| dc_asn.to_string())
-                .unwrap_or("Unknown".into());
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".into());
+            // Override reported asn and aso with the group parent's identifier if found.
+            let asn = row.get::<_, Option<i32>>("dc_asn");
+            let group = providers_config::asn_group_of(asn);
+            let asn_key = match group {
+                Some(group) => format!("asn:{group}"),
+                None => asn.map_or("Unknown".to_string(), |asn| asn.to_string()),
+            };
+            let aso_key = match group {
+                Some(group) => format!("asn:{group}"),
+                None => row
+                    .get::<_, Option<String>>("dc_aso")
+                    .unwrap_or("Unknown".to_string()),
+            };
             let dc_country = row
                 .get::<_, Option<String>>("dc_country")
                 .unwrap_or("Unknown".into());
@@ -1074,10 +1081,10 @@ pub async fn load_validators(
                 .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
             let dcc_asn = concentrations
                 .as_ref()
-                .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
+                .and_then(|c| c.dc_concentration_by_asn.get(&asn_key).cloned());
             let dcc_aso = concentrations
                 .as_ref()
-                .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
+                .and_then(|c| c.dc_concentration_by_aso.get(&aso_key).cloned());
             let dcc_country = concentrations
                 .as_ref()
                 .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
@@ -1647,12 +1654,19 @@ pub async fn load_dc_concentration_stats(
 
         for row in rows.iter() {
             let activated_stake: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".to_string());
-            let dc_asn: String = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map_or("Unknown".to_string(), |dc_asn| dc_asn.to_string());
+            // Override reported asn and aso with the group parent's identifier if found.
+            let asn = row.get::<_, Option<i32>>("dc_asn");
+            let group = providers_config::asn_group_of(asn);
+            let aso_key = match group {
+                Some(group) => format!("asn:{group}"),
+                None => row
+                    .get::<_, Option<String>>("dc_aso")
+                    .unwrap_or("Unknown".to_string()),
+            };
+            let asn_key = match group {
+                Some(group) => format!("asn:{group}"),
+                None => asn.map_or("Unknown".to_string(), |asn| asn.to_string()),
+            };
             let dc_city: String = row
                 .get::<_, Option<String>>("dc_full_city")
                 .unwrap_or("Unknown".to_string());
@@ -1661,8 +1675,8 @@ pub async fn load_dc_concentration_stats(
                 .unwrap_or("Unknown".to_string());
 
             total_active_stake += activated_stake;
-            *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_aso.entry(aso_key).or_insert(Default::default())) += activated_stake;
+            *(dc_stake_by_asn.entry(asn_key).or_insert(Default::default())) += activated_stake;
             *(dc_stake_by_city
                 .entry(dc_city)
                 .or_insert(Default::default())) += activated_stake;

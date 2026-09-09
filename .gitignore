@@ -1,6 +1,7 @@
 target
 .env
 *.yaml
+!providers-config.yaml
 
 .idea
 

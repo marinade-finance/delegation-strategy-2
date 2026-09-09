@@ -4,6 +4,7 @@ pub mod incidents;
 pub mod ip_info;
 pub mod node_observations;
 pub mod operators;
+pub mod providers_config;
 pub mod rewards;
 pub mod scoring;
 pub mod stake_deltas;

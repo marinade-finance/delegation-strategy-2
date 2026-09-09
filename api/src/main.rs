@@ -9,6 +9,7 @@ use crate::handlers::{
     take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
     validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
+use anyhow::Context as _;
 use clap::Parser;
 use env_logger::Env;
 use log::{error, info};
@@ -57,6 +58,10 @@ pub struct Params {
     #[arg(long = "blacklist-path")]
     blacklist_path: String,
 
+    /// Read once at startup; a later edit needs a restart.
+    #[arg(long = "providers-config-path")]
+    providers_config_path: Option<String>,
+
     #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
@@ -70,6 +75,15 @@ async fn main() -> anyhow::Result<()> {
     info!("Launching API");
 
     let params = Params::parse();
+
+    match &params.providers_config_path {
+        Some(path) => {
+            store::providers_config::install_from_path(path)
+                .with_context(|| format!("loading the providers config from {path}"))?;
+            info!("Loaded the providers config from {path}");
+        }
+        None => info!("No providers config given, so the vendored one is used"),
+    }
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;
