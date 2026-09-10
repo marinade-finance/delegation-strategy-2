@@ -3,7 +3,7 @@ use crate::utils::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::ValidatorBlockRewardsRecord;
-use store::validators_block_rewards::{get_last_block_rewards, VALIDATORS_BLOCK_REWARDS_TABLE};
+use store::validators_block_rewards::get_last_block_rewards;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -31,13 +31,8 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching last validators block rewards");
 
-    let validators = match get_last_block_rewards(
-        &context.read().await.psql_client,
-        DEFAULT_EPOCHS,
-        VALIDATORS_BLOCK_REWARDS_TABLE,
-    )
-    .await
-    {
+    let warehouse = context.read().await.warehouse.clone();
+    let validators = match get_last_block_rewards(&*warehouse.read().await, DEFAULT_EPOCHS) {
         Ok(r) => r,
         Err(err) => {
             error!("Failed to fetch validators block rewards: {err}");

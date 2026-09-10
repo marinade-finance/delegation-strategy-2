@@ -1,7 +1,7 @@
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    cluster_stats, commissions, config, docs, events, global_unstake_hints, glossary, health, jito,
+    jito_mev, list_validators, readiness, reports_commission_changes, reports_scoring,
+    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -18,7 +18,6 @@ use utoipa::OpenApi;
         )
     ),
     components(
-        schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(cluster_stats::ResponseClusterStats),
         schemas(commissions::ResponseCommissions),
         schemas(config::ConfigStakes),
@@ -74,7 +73,6 @@ use utoipa::OpenApi;
         schemas(validators_block_rewards::ResponseValidatorsBlockRewards),
     ),
     paths(
-        admin_score_upload::handler,
         cluster_stats::handler,
         commissions::handler,
         config::handler,

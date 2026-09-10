@@ -9,6 +9,8 @@ use store::utils::{
 };
 use store::warehouse::Warehouse;
 
+mod common;
+
 const LAST_EPOCH: u64 = 1000;
 const EPOCHS: u64 = 7;
 const GAP_EPOCH: u64 = 997;
@@ -22,50 +24,14 @@ fn validator(
     client_id_raw: Option<&str>,
 ) -> Validator {
     Validator {
-        identity: format!("identity-{vote_account}"),
-        vote_account: vote_account.to_string(),
-        epoch: epoch.into(),
-        info_name: None,
-        info_url: None,
-        info_keybase: None,
-        info_icon_url: None,
-        node_ip: None,
-        dc_coordinates_lat: None,
-        dc_coordinates_lon: None,
-        dc_continent: None,
-        dc_country_iso: None,
-        dc_country: None,
-        dc_city: None,
-        dc_asn: None,
-        dc_aso: None,
-        commission_max_observed: None,
-        commission_min_observed: None,
-        commission_advertised: None,
-        commission_effective: None,
-        version: None,
-        client_id,
-        client_id_raw: client_id_raw.map(str::to_string),
-        feature_set: None,
-        shred_version: None,
-        gossip_port: None,
-        rpc_public: None,
-        pubsub_public: None,
         activated_stake: activated_stake.into(),
-        marinade_stake: 0.into(),
-        foundation_stake: 0.into(),
-        marinade_native_stake: 0.into(),
-        institutional_stake: 0.into(),
-        self_stake: 0.into(),
-        superminority: false,
-        stake_to_become_superminority: 0.into(),
         credits: credits.into(),
         leader_slots: 100.into(),
         blocks_produced: 100.into(),
-        skip_rate: 0f64,
-        uptime_pct: None,
-        uptime: None,
-        downtime: None,
+        client_id,
+        client_id_raw: client_id_raw.map(str::to_string),
         updated_at: Some(Utc::now()),
+        ..common::validator(vote_account, epoch)
     }
 }
 

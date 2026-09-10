@@ -19,24 +19,11 @@ fn at(moment: &str) -> DateTime<Utc> {
 
 fn validator(activated_stake: u64) -> Validator {
     Validator {
-        identity: "identityWarehouse".to_string(),
-        vote_account: VOTE_ACCOUNT.to_string(),
-        epoch: EPOCH.into(),
-        info_name: None,
-        info_url: None,
-        info_keybase: None,
-        info_icon_url: None,
-        node_ip: None,
-        dc_coordinates_lat: None,
-        dc_coordinates_lon: None,
         dc_continent: Some("Europe".to_string()),
-        dc_country_iso: None,
         dc_country: Some("Germany".to_string()),
         dc_city: Some("Berlin".to_string()),
         dc_asn: Some(24940),
         dc_aso: Some("Hetzner".to_string()),
-        commission_max_observed: None,
-        commission_min_observed: None,
         commission_advertised: Some(7),
         commission_effective: Some(8),
         version: Some("2.0.0".to_string()),
@@ -44,17 +31,7 @@ fn validator(activated_stake: u64) -> Validator {
         client_id_raw: Some("Agave".to_string()),
         feature_set: Some(123),
         shred_version: Some(456),
-        gossip_port: None,
-        rpc_public: None,
-        pubsub_public: None,
         activated_stake: activated_stake.into(),
-        marinade_stake: 0.into(),
-        foundation_stake: 0.into(),
-        marinade_native_stake: 0.into(),
-        institutional_stake: 0.into(),
-        self_stake: 0.into(),
-        superminority: false,
-        stake_to_become_superminority: 0.into(),
         credits: 100.into(),
         leader_slots: 100.into(),
         blocks_produced: 90.into(),
@@ -63,6 +40,7 @@ fn validator(activated_stake: u64) -> Validator {
         uptime: Some(3600.into()),
         downtime: Some(0.into()),
         updated_at: Some(at("2026-08-03T01:00:00Z")),
+        ..common::validator(VOTE_ACCOUNT, EPOCH)
     }
 }
 

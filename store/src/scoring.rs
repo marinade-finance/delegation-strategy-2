@@ -5,7 +5,6 @@ use crate::dto::{
 use crate::warehouse::Warehouse;
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
-use tokio_postgres::Client;
 
 const MAX_ALLOWED_COMMISSION: u8 = 10;
 const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
@@ -27,98 +26,107 @@ fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, Has
     ))
 }
 
-async fn voter_max_commission_in_epoch(
-    psql_client: &Client,
+/// The highest commission a validator was seen at in one epoch, over every
+/// observation of it: the changes, and the snapshot's own three columns.
+fn voter_max_commission_in_epoch(
+    warehouse: &Warehouse,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, u8>> {
     log::info!("Loading max commission per voter in epoch: {epoch}");
-    let mut commissions: HashMap<_, _> = Default::default();
+    let mut commissions: HashMap<String, u8> = Default::default();
 
-    let rows = psql_client
-        .query(
-            "SELECT
-                    validators.vote_account,
-                    MAX(GREATEST(
-                        commission,
-                        COALESCE(commission_effective, 0),
-                        COALESCE(commission_max_observed, 0),
-                        COALESCE(commission_advertised, 0)
-                    )) commission
-                FROM validators LEFT JOIN commissions on validators.vote_account = commissions.vote_account
-                WHERE commissions.epoch = $1 and validators.epoch = $1
-                GROUP BY validators.vote_account",
-            &[&Decimal::from(epoch)],
-        )
-        .await?;
+    let Some(snapshot) = warehouse.snapshots.get(&epoch) else {
+        return Ok(commissions);
+    };
+    let changes = warehouse.commissions_of(epoch);
 
-    for row in rows {
-        commissions.insert(
-            row.get("vote_account"),
-            row.get::<_, i32>("commission").try_into()?,
-        );
+    for (vote_account, validator) in snapshot.iter() {
+        // Only a validator with a commission observation of its own counts.
+        let Some(observed) = changes.get(vote_account) else {
+            continue;
+        };
+        let highest = observed
+            .iter()
+            .map(|change| change.commission)
+            .chain([
+                validator.commission_effective.unwrap_or_default(),
+                validator.commission_max_observed.unwrap_or_default(),
+                validator.commission_advertised.unwrap_or_default(),
+            ])
+            .max()
+            .unwrap_or_default();
+        commissions.insert(vote_account.clone(), highest.try_into()?);
     }
 
     Ok(commissions)
 }
 
-async fn voters_with_marinade_stake_in_epoch(
-    psql_client: &Client,
-    epoch: u64,
-) -> anyhow::Result<HashMap<String, f64>> {
+fn voters_with_marinade_stake_in_epoch(warehouse: &Warehouse, epoch: u64) -> HashMap<String, f64> {
     log::info!("Loading list of validators with Marinade stake in epoch: {epoch}");
-    Ok(psql_client
-        .query(
-            "SELECT
-                    vote_account,
-                    (marinade_stake / 1e9)::double precision AS marinade_stake
-                FROM validators
-                WHERE marinade_stake > 0 AND epoch = $1",
-            &[&Decimal::from(epoch)],
-        )
-        .await?
+    let Some(snapshot) = warehouse.snapshots.get(&epoch) else {
+        return Default::default();
+    };
+
+    snapshot
         .iter()
-        .map(|row| (row.get("vote_account"), row.get("marinade_stake")))
-        .collect())
+        .filter(|(_, validator)| validator.marinade_stake > Decimal::ZERO)
+        .map(|(vote_account, validator)| (vote_account.clone(), to_sol(validator.marinade_stake)))
+        .collect()
 }
 
-async fn voters_credits_performance_in_epoch(
-    psql_client: &Client,
-    epoch: u64,
-) -> anyhow::Result<HashMap<String, f64>> {
+fn voters_credits_performance_in_epoch(warehouse: &Warehouse, epoch: u64) -> HashMap<String, f64> {
     log::info!("Loading list of poor voters: {epoch}");
-    Ok(psql_client
-        .query(
-            "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) AS stake_weighted_avg_credits FROM validators WHERE epoch = $1)
-            SELECT
-                vote_account,
-                credits,
-                coalesce(credits / stake_weighted_avg_credits, 0)::double precision AS credits_performance
-            FROM validators LEFT JOIN stats ON 1 = 1
-            WHERE epoch = $1",
-            &[&Decimal::from(epoch)],
-        )
-        .await?
+    let Some(snapshot) = warehouse.snapshots.get(&epoch) else {
+        return Default::default();
+    };
+
+    let total_stake: Decimal = snapshot
+        .values()
+        .map(|validator| validator.activated_stake)
+        .sum();
+    let weighted_credits: Decimal = snapshot
+        .values()
+        .map(|validator| validator.activated_stake * validator.credits)
+        .sum();
+    let stake_weighted_avg_credits = match total_stake.is_zero() {
+        true => 0f64,
+        false => (weighted_credits / total_stake)
+            .to_f64()
+            .unwrap_or_default(),
+    };
+
+    snapshot
         .iter()
-        .map(|row| (row.get("vote_account"), row.get("credits_performance")))
-        .collect())
+        .map(|(vote_account, validator)| {
+            let performance = match stake_weighted_avg_credits {
+                0f64 => 0f64,
+                average => validator.credits.to_f64().unwrap_or_default() / average,
+            };
+            (vote_account.clone(), performance)
+        })
+        .collect()
 }
 
-pub async fn load_unstake_hints(
-    psql_client: &Client,
+fn to_sol(lamports: Decimal) -> f64 {
+    (lamports / Decimal::from(1_000_000_000u64))
+        .to_f64()
+        .unwrap_or_default()
+}
+
+pub fn load_unstake_hints(
+    warehouse: &Warehouse,
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<HashMap<String, HashSet<UnstakeHint>>> {
     log::info!("Loading unstake hints in epoch: {epoch}");
     let mut hints: HashMap<_, HashSet<_>> = Default::default();
 
-    let commissions_in_this_epoch = voter_max_commission_in_epoch(psql_client, epoch).await?;
-    let commissions_in_previous_epoch = if epoch > 0 {
-        voter_max_commission_in_epoch(psql_client, epoch - 1).await?
-    } else {
-        Default::default()
+    let commissions_in_this_epoch = voter_max_commission_in_epoch(warehouse, epoch)?;
+    let commissions_in_previous_epoch = match epoch > 0 {
+        true => voter_max_commission_in_epoch(warehouse, epoch - 1)?,
+        false => Default::default(),
     };
-    let voters_credits_performance =
-        voters_credits_performance_in_epoch(psql_client, epoch).await?;
+    let voters_credits_performance = voters_credits_performance_in_epoch(warehouse, epoch);
     let blacklist = load_blacklist(blacklist_path)?;
 
     for (vote_account, commission) in commissions_in_this_epoch {
@@ -158,17 +166,15 @@ pub async fn load_unstake_hints(
     Ok(hints)
 }
 
-pub async fn load_marinade_unstake_hint_records(
-    psql_client: &Client,
+pub fn load_marinade_unstake_hint_records(
+    warehouse: &Warehouse,
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<UnstakeHintRecord>> {
     log::info!("Loading Marinade unstake hint records in epoch: {epoch}");
 
-    let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
-
-    let marinade_staked_validators =
-        voters_with_marinade_stake_in_epoch(psql_client, epoch).await?;
+    let hints = load_unstake_hints(warehouse, blacklist_path, epoch)?;
+    let marinade_staked_validators = voters_with_marinade_stake_in_epoch(warehouse, epoch);
 
     Ok(marinade_staked_validators
         .into_iter()
@@ -185,14 +191,14 @@ pub async fn load_marinade_unstake_hint_records(
         .collect())
 }
 
-pub async fn load_global_unstake_hint_records(
-    psql_client: &Client,
+pub fn load_global_unstake_hint_records(
+    warehouse: &Warehouse,
     blacklist_path: &String,
     epoch: u64,
 ) -> anyhow::Result<Vec<GlobalUnstakeHintRecord>> {
     log::info!("Loading global unstake hint records in epoch: {epoch}");
 
-    let hints = load_unstake_hints(psql_client, blacklist_path, epoch).await?;
+    let hints = load_unstake_hints(warehouse, blacklist_path, epoch)?;
 
     Ok(hints
         .into_iter()

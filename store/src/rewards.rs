@@ -1,133 +1,84 @@
+use crate::docs::ClusterInfoSample;
 use crate::utils::SLOTS_IN_EPOCH;
-use crate::validators_block_rewards::VALIDATORS_BLOCK_REWARDS_TABLE;
-use rust_decimal::Decimal;
-use tokio_postgres::Client;
+use crate::warehouse::Warehouse;
+use rust_decimal::prelude::*;
+use std::collections::BTreeMap;
 
-/// Aggregates rewards by epoch, excluding epochs with too many NULLs in total_epoch_rewards
-/// to avoid not fully collected data
-async fn get_rewards_by_table(
-    psql_client: &Client,
-    table_name: &str,
-    amount_column_name: &str,
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+
+/// Rewards per epoch, newest first, skipping the epochs still missing too many
+/// amounts to count as fully collected.
+fn rewards_by_epoch<E>(
+    documents: &BTreeMap<u64, BTreeMap<String, E>>,
     epochs: u64,
-    limit_null_count: u8,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    let query = format!(
-        r#"
-        SELECT SUM(COALESCE({amount_column_name}, 0)) / 1e9 AS amount, epoch
-        FROM {table_name}
-        GROUP BY epoch
-        HAVING COUNT(CASE WHEN {amount_column_name} IS NULL THEN 1 END) < {limit_null_count}
-        ORDER BY epoch DESC LIMIT $1
-        "#
-    );
+    limit_null_count: usize,
+    amount: fn(&E) -> Option<Decimal>,
+) -> Vec<(u64, f64)> {
+    documents
+        .iter()
+        .rev()
+        .filter(|(_, entries)| !entries.is_empty())
+        .filter_map(|(epoch, entries)| {
+            let missing = entries.values().filter(|e| amount(e).is_none()).count();
+            if missing >= limit_null_count {
+                return None;
+            }
+            let total: Decimal = entries.values().filter_map(amount).sum();
+            let sol = total / Decimal::from(LAMPORTS_PER_SOL);
+            Some((*epoch, sol.to_f64().unwrap_or_default()))
+        })
+        .take(epochs as usize)
+        .collect()
+}
 
-    // amount_column_name may be NULL as data on commission is loaded at start of epoch
-    // when not run snapshot processing that updates data about rewards
-    // query ignores whole epoch if there is at least one NULL value
-    let rows = psql_client
-        .query(&query, &[&i64::try_from(epochs)?])
-        .await?;
+pub fn get_mev_rewards(warehouse: &Warehouse, epochs: u64) -> Vec<(u64, f64)> {
+    // limit_null_count: expecting there are many entries, we want to have at least 10 filled, then considering data is well loaded
+    rewards_by_epoch(&warehouse.mev, epochs, 10, |entry| {
+        entry.total_epoch_rewards
+    })
+}
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
+pub fn get_jito_priority_rewards(warehouse: &Warehouse, epochs: u64) -> Vec<(u64, f64)> {
+    // limit_null_count: expecting there are few entries, we want at least one filled to consider data is well loaded
+    rewards_by_epoch(&warehouse.priority_fees, epochs, 1, |entry| {
+        entry.total_epoch_rewards
+    })
+}
+
+pub fn get_block_rewards(warehouse: &Warehouse, epochs: u64) -> Vec<(u64, f64)> {
+    rewards_by_epoch(&warehouse.block_rewards, epochs, 10, |entry| {
+        Some(entry.amount)
+    })
+}
+
+/// Each estimate carries the nominal it was divided by, so the two can never disagree.
+pub fn get_estimated_inflation_rewards(warehouse: &Warehouse, epochs: u64) -> Vec<(u64, f64, f64)> {
+    warehouse
+        .epochs
+        .iter()
+        .rev()
+        .take(epochs as usize)
+        .map(|(epoch, record)| {
+            let nominal_epochs_per_year = record.slots_per_year / SLOTS_IN_EPOCH as f64;
+            let supply = record.supply.to_f64().unwrap_or_default();
             (
-                row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get::<_, Decimal>("amount").try_into().unwrap(),
+                *epoch,
+                supply * record.inflation / LAMPORTS_PER_SOL as f64 / nominal_epochs_per_year,
+                record.slots_per_year,
             )
         })
-        .collect())
+        .collect()
 }
 
-async fn get_jito_rewards_by_table(
-    psql_client: &Client,
-    table_name: &str,
-    epochs: u64,
-    limit_null_count: u8,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    get_rewards_by_table(
-        psql_client,
-        table_name,
-        "total_epoch_rewards",
-        epochs,
-        limit_null_count,
-    )
-    .await
-}
+/// The running epoch has no `epochs` document yet, so the cluster info samples
+/// are the only record of its regime.
+pub fn get_running_epoch_slots_per_year(warehouse: &Warehouse) -> Option<(u64, f64)> {
+    let last_closed = warehouse.epochs.keys().max().copied().unwrap_or(0);
+    let sealed = warehouse.cluster_info.values().flatten();
+    let sample: &ClusterInfoSample = sealed
+        .chain(warehouse.live.cluster_info.samples.iter())
+        .filter(|sample| sample.epoch > last_closed)
+        .max_by_key(|sample| (sample.epoch, sample.epoch_slot))?;
 
-pub async fn get_mev_rewards(psql_client: &Client, epochs: u64) -> anyhow::Result<Vec<(u64, f64)>> {
-    // limit_null_count: expecting there are many rows, we want to have at least 10 filled, then considering data is well loaded
-    get_jito_rewards_by_table(psql_client, "mev", epochs, 10).await
-}
-
-pub async fn get_jito_priority_rewards(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    // limit_null_count: expecting there are few rows, we want at least one filled to consider data is well loaded
-    get_jito_rewards_by_table(psql_client, "jito_priority_fee", epochs, 1).await
-}
-
-/// Each estimate carries the nominal it was divided by, from one scan, so the two can never disagree.
-pub async fn get_estimated_inflation_rewards(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64, f64)>> {
-    let query = format!(
-        "SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount, slots_per_year FROM epochs ORDER BY epoch DESC LIMIT $1"
-    );
-    let rows = psql_client
-        .query(&query, &[&i64::try_from(epochs)?])
-        .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get::<_, f64>("amount"),
-                row.get::<_, f64>("slots_per_year"),
-            )
-        })
-        .collect())
-}
-
-/// The running epoch has no `epochs` row yet, so `cluster_info` is the only record of its regime.
-pub async fn get_running_epoch_slots_per_year(
-    psql_client: &Client,
-) -> anyhow::Result<Option<(u64, f64)>> {
-    let row = psql_client
-        .query_opt(
-            "
-        SELECT epoch, slots_per_year FROM cluster_info
-        WHERE slots_per_year IS NOT NULL
-          AND epoch > COALESCE((SELECT MAX(epoch) FROM epochs), 0)
-        ORDER BY epoch DESC, epoch_slot DESC LIMIT 1
-    ",
-            &[],
-        )
-        .await?;
-
-    Ok(row.map(|row| {
-        (
-            row.get::<_, Decimal>("epoch").try_into().unwrap(),
-            row.get::<_, f64>("slots_per_year"),
-        )
-    }))
-}
-
-pub async fn get_block_rewards(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    // limit_null_count: at least 10 rows per epoch filled, then considering data is well loaded
-    get_rewards_by_table(
-        psql_client,
-        VALIDATORS_BLOCK_REWARDS_TABLE,
-        "amount",
-        epochs,
-        10,
-    )
-    .await
+    Some((sample.epoch, sample.slots_per_year))
 }

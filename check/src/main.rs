@@ -1,19 +1,19 @@
-use crate::validators_jito::{check_jito, ValidatorsJitoCheckParams};
 use check::validators_block_rewards::{check_block_rewards, BlockRewardsCheckParams};
+use check::validators_jito::{check_jito, ValidatorsJitoCheckParams};
 use collect::solana_service::solana_client;
 use env_logger::Env;
 use log::info;
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
+use store::directory::Directory;
+use store::docs::{MEV_DIR, PRIORITY_FEE_DIR};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
-    #[structopt(long = "postgres-url")]
-    postgres_url: String,
+    #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
+    pub directory_url: String,
 
-    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
-    pub postgres_ssl_root_cert: String,
+    #[structopt(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    pub directory_token: String,
 
     #[structopt(short = "u", long = "rpc-url", env = "RPC_URL")]
     pub rpc_url: String,
@@ -38,8 +38,6 @@ enum StoreCommand {
     BlockRewards(BlockRewardsCheckParams),
 }
 
-pub mod validators_jito;
-
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -63,49 +61,19 @@ async fn run() -> anyhow::Result<bool> {
         "Running check command {:?} with commitment {}",
         params.command, params.common.commitment
     );
-    let mut builder = SslConnector::builder(SslMethod::tls())?;
-    builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
-    let connector = MakeTlsConnector::new(builder.build());
-
-    let mut psql_config: tokio_postgres::Config = params.common.postgres_url.parse()?;
-    psql_config.ssl_mode(tokio_postgres::config::SslMode::Require);
-    let (psql_client, psql_conn) = psql_config.connect(connector).await?;
-    tokio::spawn(async move {
-        if let Err(err) = psql_conn.await {
-            log::error!("Connection error: {err}");
-            std::process::exit(2);
-        }
-    });
+    let directory = Directory::new(params.common.directory_url, params.common.directory_token)?;
 
     let rpc_client = solana_client(params.common.rpc_url, params.common.commitment);
 
     match params.command {
         StoreCommand::JitoMev(mev_params) => {
-            check_jito(
-                mev_params,
-                &psql_client,
-                &rpc_client,
-                collect::validators_jito::JitoAccountType::MevTipDistribution.db_table_name(),
-            )
-            .await
+            check_jito(mev_params, &directory, &rpc_client, MEV_DIR).await
         }
         StoreCommand::JitoPriority(jito_params) => {
-            check_jito(
-                jito_params,
-                &psql_client,
-                &rpc_client,
-                collect::validators_jito::JitoAccountType::PriorityFeeDistribution.db_table_name(),
-            )
-            .await
+            check_jito(jito_params, &directory, &rpc_client, PRIORITY_FEE_DIR).await
         }
         StoreCommand::BlockRewards(rewards_params) => {
-            check_block_rewards(
-                rewards_params,
-                &psql_client,
-                &rpc_client,
-                store::validators_block_rewards::VALIDATORS_BLOCK_REWARDS_TABLE,
-            )
-            .await
+            check_block_rewards(rewards_params, &directory, &rpc_client).await
         }
     }
 }

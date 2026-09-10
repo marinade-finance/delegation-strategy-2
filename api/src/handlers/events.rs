@@ -5,7 +5,7 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::EventEpochRecord;
 use store::validators_events::{get_events_with_context, resolve_epoch_for_date};
-use tokio_postgres::Client;
+use store::warehouse::Warehouse;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -25,26 +25,22 @@ pub struct QueryParams {
 impl QueryParams {
     /// Resolves the lower-bound epoch. `query_from_epoch` and `query_from_date` are mutually
     /// exclusive; on failure returns the HTTP status + message to respond with.
-    async fn resolve_from_epoch(&self, psql: &Client) -> Result<Option<u64>, (StatusCode, String)> {
+    fn resolve_from_epoch(
+        &self,
+        warehouse: &Warehouse,
+    ) -> Result<Option<u64>, (StatusCode, String)> {
         match (self.query_from_epoch, self.query_from_date) {
             (Some(_), Some(_)) => Err((
                 StatusCode::BAD_REQUEST,
                 "Specify only one of query_from_epoch / query_from_date".into(),
             )),
             (Some(epoch), None) => Ok(Some(epoch)),
-            (None, Some(date)) => match resolve_epoch_for_date(psql, date, true).await {
-                Ok(Some(epoch)) => Ok(Some(epoch)),
-                Ok(None) => Err((
+            (None, Some(date)) => match resolve_epoch_for_date(warehouse, date, true) {
+                Some(epoch) => Ok(Some(epoch)),
+                None => Err((
                     StatusCode::BAD_REQUEST,
                     "query_from_date is outside the recorded epoch range".into(),
                 )),
-                Err(err) => {
-                    error!("Failed to resolve query_from_date: {err}");
-                    Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to fetch records!".into(),
-                    ))
-                }
             },
             (None, None) => Ok(None),
         }
@@ -91,14 +87,15 @@ pub async fn handler(
         }
     };
 
-    let ctx = context.read().await;
+    let warehouse = context.read().await.warehouse.clone();
+    let warehouse = warehouse.read().await;
 
-    let from_epoch = match query_params.resolve_from_epoch(&ctx.psql_client).await {
+    let from_epoch = match query_params.resolve_from_epoch(&warehouse) {
         Ok(from_epoch) => from_epoch,
         Err((status, message)) => return Ok(response_error(status, message)),
     };
 
-    let events = match get_events_with_context(&ctx.psql_client, &vote_key, from_epoch).await {
+    let events = match get_events_with_context(&warehouse, &vote_key, from_epoch) {
         Ok(events) => events,
         Err(err) => {
             error!("Failed to fetch events for {vote_account}: {err}");

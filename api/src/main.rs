@@ -1,8 +1,8 @@
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_validators, readiness, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
+    cluster_stats, commissions, config, docs, events, global_unstake_hints, glossary, health, jito,
+    jito_mev, list_validators, readiness, reports_commission_changes, reports_scoring,
+    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
     validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
@@ -318,15 +318,6 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(global_unstake_hints::handler);
 
-    let route_admin_upload_score = warp::path!("admin" / "scores")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_admin_auth(params.admin_auth_token.clone()))
-        .and(warp::query::<admin_score_upload::QueryParams>())
-        .and(warp::multipart::form().max_length(5_000_000))
-        .and(with_context(context.clone()))
-        .and_then(admin_score_upload::handler);
-
     let route_workflow_metrics_upload = warp::path!("admin" / "metrics")
         .and(warp::path::end())
         .and(warp::post())
@@ -361,7 +352,6 @@ async fn main() -> anyhow::Result<()> {
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
         .or(route_reports_commission_changes)
-        .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
         .with(cors);
 

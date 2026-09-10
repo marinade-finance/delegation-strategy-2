@@ -1,11 +1,10 @@
-use crate::docs::UptimeStatus;
+use crate::docs::{SnapshotDoc, UptimeStatus, VersionSample};
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
     UptimeRecord, Validator, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord,
+    ValidatorScoreRecord, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use crate::validators_jito::get_last_jito_info;
 use crate::warehouse::Warehouse;
@@ -1619,71 +1618,71 @@ pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAgg
     agg
 }
 
-pub async fn load_validators_aggregated_flat(
-    psql_client: &Client,
+/// What ds-sam scores from: one row per validator, averaged over the window.
+pub fn load_validators_aggregated_flat(
+    warehouse: &Warehouse,
     last_epoch: u64,
     epochs: u64,
 ) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
     let epochs = epochs.max(1);
-    // last_version is deliberately left unbounded while the client columns are bounded to $2:
-    // adding the bound changes what historical scoring runs see, so it needs a ds-sam side check.
-    let rows = psql_client
-            .query(
-                "with
-                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
-                select
-                    validators.vote_account,
-                    min(activated_stake / 1e9)::double precision AS minimum_stake,
-                    avg(activated_stake / 1e9)::double precision AS avg_stake,
-                    coalesce(avg(dc_concentration), 0)::double precision AS avg_dc_concentration,
-                    coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
-                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
-                    max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
-                    (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,
-                    coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
-                    coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
-                    coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    (array_agg(agg_versions.last_client_id))[1] AS last_client_id,
-                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw
-                FROM
-                    validators
-                    LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
-                    LEFT JOIN cluster_skip_rate ON cluster_skip_rate.epoch = validators.epoch
-                    LEFT JOIN agg_versions ON validators.vote_account = agg_versions.vote_account
-                WHERE
-                validators.epoch BETWEEN $1 AND $2
-                GROUP BY validators.vote_account
-                HAVING COUNT(*) = $3 AND COUNT(*) FILTER (WHERE credits > 0) >= 7
-                ORDER BY avg_adjusted_credits DESC;
-            ",
-                &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
-            )
-            .await?; // and vote_account not in ('3Z1N2Fkfha4ThNiRwN8RnU6U8dkFJ92DH2TFyLWJf8cj','2Dwg3x37yN4q8SyrrwDaRPGQTp14atcwMPewe3Y8FDoL','GkBrxrDjmx2kfTMUZJgYWAbar9fEpYJW7TgLatrZSjhN','5fdEXhCBKC7FRRsH64asZCSiwgNXRozxmzb1cFzfrtWM','7y4wStv8XxUkuBgwNkidfxdy1V6TMYr4UjaTDwcS3MUr','C33g1CBgcc47XFcrYksA3CEkBKaitKuhs9yD7LLtW98K','964w4qykexipZ7aCur1BEeJtexTMa1ehMUc9tCcxm9J3','Gj63nResvnBrKLw4GyyfWFpTudwQWDe9bExkE9Z1LvB1','9uygnf8zm2A88bS4tjqiYUPKAUuSWkJGeHxKLTndrs6v','A465fkGZut4A7FncUvzbCzGD8QE98yn2Lm8grr93c9dV','13zyX9jfGy1RvM28LcdqfLwR4VSowXx6whAL6AcFERCk','AUgLtpPVz6zL4iVCXZwi3cifLERdvnHsuVhNKzqmW45i','4R2eqfCDqN3UesKPW4kSTZVd55955V4awbof4vBuWibY','97AgcJPr1KGkwhq7tSD2LDMADreeCpGoFcX6hWjEuQpi','dVcK6ZibNvBiiwqxadXEGheznJFsWY9SHiMb8afTQns','C9pfCHG1zx5fTtmbsFwLG6yFoztyUVXoCmirUcCe2dt7','5hVPfoTZcfZTcyondKxjuVczaFap9pBGYBSPKXg9Jrg5','DXv73X82WCjVMsqDszK3z764tTJMU3nPXyCU3UktudBG','FvoZJRfV8LWMbkMeiswKzMHSZ2qvU8KVsEkUaW6MdN8m','6EftrAURp1rwpmy7Jeqem4kwWYeSnKmgYWKbdX5gEBHQ','HCZJjvZbaKaPTE96jz64HnBZTnXHBFv3pugqsBE5Z1D9','9fDyXmKS8Qgf9TNsRoDw8q2FJJL5J8LN7Y52sddigqyi','BHGHrKBJ9z6oE4Rjd7rBTsy9GLiFcTeDbkTkC5YmT5JG','CQCvXh6fDejoKVeMKXWirksnwCnhrLzb6XkyrBoQJzX5','Agsu9fcnH3rKBix59mktDRqJhjR8aStgLDd9njaddcdr','AUYVsW5ZGwPMAiFJUuAYPtCB9Xp5CVA1osJyAasj8CLe','FKCcfoLt2pq7boiNqRGucVq5LE1K5Dt4HALCx2WbEQkv','DHasctf9Gs2hRY2QzSoRiLuJnuEkRcGHSrh2JUxthxwa','467Bg8FwFFq5jqebWPnMQtdDRjpmHUqvCWBW1zYVMzHg','JCHsvHwF6TgeM1fapxgAkhVKDU5QtPox3bfCR5sjWirP','72i2i4D7ehg7k3rKUNZLFiHqvhVFv1UvdCQbiNTFudJa','G4RU9qUt7tG8M8E4L4ZfXtdnwPTcPpaWwLEvSxtdRNHF','JB8zjnRE6FeT8N6Yq2182vj69kKHGdeKJ7kBAhHKuHRq','Amhxcj1nt4BhnmTfy3ncqaoLzVr94QEfGMYY9Lqkg9en','783PrbTTsMojSJWv64ZCFnQ7mYoDj4oqdsAGXf22XVQs','FrWFgD5vfjJkKiCY4WeKBk65X4C7sDhi2X1DVMFCPfJ5','BeNvYv2pd3MRJBBSGiMPSRVYcafKAXocNNp79GoaHfoP','ZBfLjZjz48oS3ArtnjmPn4Fc1bd2VbKeBnxeCSrKE9S','DzhGmMUzpyQ5ruk5rRCfekTZMyvPXBXHtnn6aNnt94x4','8cUmk4UHZXFBXZJBnWnXd48iTSRMYikQ1QYbJddBfAxu','85qJ2DWmav9YgKLLdo6mrVAVLLKRH3fDuWPyiViA362n','5xk3gjstftRwZRqQdme4vTuZonpkgs2wsm734M68Bq1Y','7iC1Uu6QBqNG6oaBimnPgLmtoantH7Nc3RD7SoLHgVET','8sqpHTT3B8kLto6Vb98bNP93MVuRuPKdcUAwZaP6xuYs','4QMtvpJ2cFLWAa363dZsr46aBeDAnEsF66jomv4eVqu4','4rxFGSzXiTXuF9GveXbMr4fJAPPnQVjHmpEZbWV8jz9m','HC1NSDR9cbBeQ8V1XJ62VNceUAbjGdnCcH7f5wVFVZw3','Bm3rPaD62YWXJxvpW5viF9jUVdMmd7Q2HYA6eTbDhxxW','DeNodee9LR1WPokmRqidmAQEq8UbBqNCv6QfFTvU6k69','9xMyJXgxBABzV5bmiCuw4xZ8acao2xgvhC1G1yknW1Zj','9DYSMwSwMbQcckH1Zi7EQ3E6ipJKkChqRVJCQjF5FCWp','DqxQuDD9BZERufL2gTCipHhAqj7Bb2zoAEKfvHuXWNUL','FfE7rncxyYJvsqFu3Kn323sJpjBXkfMNXwd4d8kdURk9','9HvcpT4vGkgDU3TUXuJFtC5DPjMt5jb8MXFFTNTg9Mim','CrZEDyNQfbxakxdFYzMc8dtrYq4XDoRZ51xBa12skDpJ','D7wuZ935mznAM6hRJJQBpWcBWyvVgUK96pPDZT2uZq5g','9c5bpzVRbfsYY2fannb4hyX5CJUPg3BfH2cL6sR7kJM4','CnYYmAhuFcyocBbXxoVzPnu37a5ctpLaSr8ja1NGKNZ7','ESF3vCij1t6K437j7tzDyKspPeuMnYoEtooFN9Suzico','GHRvDXj9BfACkJ9CoLWbpi2UkMVti9DwXJGsaFT9XDcD','5HMtU9ngrq7vhQn4qPxFHzaVJRjbnT2VQxTTPdfwvbUL','3HSgNsx9rQsAFZrL7k2BAUuL8HpCjhgfxXjrPBK9cnjD','5GKFk6ptwtYTUVXZwofK3tgCJXRiQBfY6yS9w8dgZaSS','CZw1sSfjZbCccsk2kTjbFeVSgfzEgV1JxHEsEW69Qce9','6XimUrvgbdoAuavV9WGgSYdYKSw6ghajLGeQgZMG9aZU','13fUogQP3K8jAWgSW5gji5NyqHFprwoW3xVRs9MpLqdp','5KF6gMG6f5GCr4V6BXKzdroHxeXK68oKrLQdiujGsj9m','EAZpeduar1WoSCyR8W4YhurN3FfVmuKwdPx4ruy58VU8','4GhsFrzqekca4FiZQdwqbstzcEXsredqpemF9FdRQBqZ','BCFLyTNSoxQbVrTogK8n7ft1oYAgHYEdzafVfGgqz9WN','DREVB8Ce8nLp9Ha5m66sduRcjJtHeQo8B9BkYxjC4Zx3','A8XYMkTzKNceJT7BKtRwGrg5KGgaXcjyoAYuthrjfKUi','2e6hcXeqPMwskDfQXKuwVuHiFByEwaiG9ohgapNBk6qU','53gnaHMxDzGTZ9A58S4jbc1qzhYT4X51thUD4MdSBiyo','2kQZfvm5tqcBhXnscT3xe5SbCDttkipxgy1wCqhzqL2a','6vJGsbs5jYKEdQGUfMEYN4Nenwscgza1dBXB3WJraFyH','CGWR68eEdSDoj5LUn2MGKBgxRC3By64DCBFHCoHdSV21','DDmp7zGUzKhXsZhnUynohWrrKyWFf9gSJcGacihRRHuU','7yvrrixKhYrxMJHjzsPDz8tSAajLL3oD2arAsgeMdK9N','9DsSqMHnrSXkyHtG8sN4zPhjrsRUgfP9vBQ6hFEpEwM','5HedSkUKfYmusiV7rAppuHbz7fp8JmUoLLJjJqCQLS5j','725My2yzg5ZUpQtpEtivLT7JmRes2gGxF3KeGCbYACDe','9Mi8M1JnRmtcYpB42DxYPVmYy2safgdYFmeHmMgkW8TG','2jevuBmk1TrXA36bRZ4bhdJGPzGqcCDoVzRcyYtxzKHY','CHUF69YeA3gZv484izYuhKk1EjaJYjv1pNoJJ6QeFDQc','8b3JPQtHbw8MBJQNwUDVXC6xfaL26UNx6WA3GShGy5Vw','HHFqy4NJteQJScyoAsjwYjS8wCuV1AjNv4veoeKVACRi','DMYn88X6PkHAc2y5zDWm5jGZ2Tk2CyBUe8K1U2obF8jc','C31ocJKVAi8wxCvyAMjXte2fY9zECV2fKrn786F4WZ4N','6g6jypXGeavZPVkWSu4Ny5bfhTMLFnuSepfGMQkQpWV1','D6AkdRCEAvE8Rjh4AKDSCXZ5BaiKpp79da6XtUJotGq5','3Le35iTn2KXRfomruXiDLcMd4BVLKYVgQ7yssmrFJZXx','9TTpcbiTDUQH9goeRvhAhk4X3ahtZ6XttCjRyH8Pu7MP','7yXM5mUSAtBuh2TcCABvSJa3LouZ8wcLps5zTEMiwxvj','LSV1yYBUsxwY8y7AgL2RcJDVJjnwxfeShxaXm7Edrwr','FQY5UU6THEhRNZRg7YXfYGQhJi45TLXrHg76EsXJmESc','9TUJdBxnHvAapYoq8cVFgh1bMbTh6GYfY4etDqWVKXAT','FSH9xke8FBpx6YxEEzNXVWgjmT3G5SN9HpipmCSVamV','CFtrZKxqGfXSuZrM5G64prTfNM8GqWQFQa3GXq4tdzx2','BifNttkf51HzsPgUf2keDdVBL64YvnAVQGF3fkNDfB56','4e1B3jra6oS7nK5wLn9mPMtX1skUJsEvmhV9MscA6UA4','DZJWKjtj1fCJDWTYL1HvF9rLrxRRKKp6GQgyujEzqc22','3YKcH4c8eoAKkghQeGavg9HZ13fSe77RWM3QoFTCV2Gv','7r4qcfiaWaZ8i9zW2YjqgRLEpGGE7L5hfW8ncpF1HdTs','8aGU18Nxn99AEWEQNrBYy1ZsJBhiHVFrcqYqHQPNhmEv','5TFdzjKE6LnkhQArxWjt26yVCXskPo3fUXE8F351Cfn7','DpodNd2DWRLbNJVuV1R33xW2PkBJyRTFU5aZGmQrVtMi','Dpy1qt9MhoRD5YpmzfM9iBw2LuRvP1nZAa9La77nAHW5','8kcrp8M2c5LGYThHQxVgsp7BGfGjHZ9fLHa6YN3YpFNa','BgjQPDdsHeD9XXs7pYyHsmvKdkLR1A4SBNYs3mLmPUCD','9EzbogBnGi8hVeLXEyFu2xUo6qi5JdEELs4y3cQXQW33','9uASGafRPWpvpfXeuwcA3TzMUuP5BoHfQWtcdGMyYR9x','7aE66BtyfPELpp6hnb6qb3PjQzmzMqXRMKx9EU7tHak6','6JjWRGRM94G2cpnsqDD3KL8p4ravnFSpJP778V6M9LUS','AeHBkLDeWtMHqrM4uwuewwWKtyKd5aBZAygxZJ3MCjRp','6c2FJC1NfzNvivapAzPW8vj9TW63dpHCVh7zzehwnNLH','D7ZCDE1PHe8duMjNpxwHrYbrRzcnsS7p4nD2daLzWwtr','DaNexGpPeQChZTPZAn1BGmd4ASQpHE4hLDv7V4iAe2oA','8HciLEx6hGdb8mxaCx7ExFBxkcgdkpt43FhiJdvPA6XZ','ouLzBTp7vqzT1mhjtg1TpYHwACJpeB5akRC1zDVdg1N','AQB1eoovP55TyjkecjCPTvfXBEzS1JH1sxWguBo1gu9d','J9Go27V87fCdJtjMxmFJu48ctrHzFoe6xQpA6Ecq4Wkw','Fu4wz4US6dV6GzZrv9NnF18KeT47tdbDKRd7pA6DiyS4','CwEsA6kkUZHnuCK2HC1WVpriBpZWFJSKW9xxrdednm6J','5bjKPhoQDcpPVeMhu83SEtXqXA9vw62k7KhL9zpsK31b','2ikGwX24ATJQHPtWpHupEAJvAyp63niaFL5R2sGXwfnd','GAerry2FZncXgLJXohjgGmC3W4JKLDFxwhGz4beTgDeP','8sNLx7RinHfPWeoYE1N4dixtNACvgiUrj9Ty81p7iMhb','9EMmPd6zKqTnpj74rgmkTjkYAsZSZ42jBWcqu6iaoGTR','3v6FfdWMT2bcoQQ9hN4F2syu7qhRHzNuCPPQqV12hsw2','BYNXBFkB89FoRCJ4VxFE9Tfde3anECjZjasTP8qSYQUi','3iD36QhXqWzx5b4HHhkRAyUcbEgCaC42hi1GcBePNsp2','8hpaVczvUK24kogYWxV6s3hajDAbaHb6KGZsVRLDoksi','J61sYWwTT3Kfkjy3gJ1ViRwtfXVp7Bi89DLqvCp5WDgC','A9hwhEeQ7hNm8rPbRX7ZDAZRjTVrUCjgDEDD4Tt8rmT7','9b9F4xYHMenZfbD8pSLm45oJfoFYPQ9RVWPXSEmJQzVn','DawVi7TKkWS81ZKyGTmxLAabL1w5gcw8FhGgbHeGJGnj','5ycsa9WVK6zFcUR13m3yijxbevZehZeCbuSocSawsweW','4qS6unxhpNh6fp2rRU3nnyMZEYyZ4hUbjnP7iEN7Jx1w','BxTUwfMiokzimVDLDupGfVPmWXfLSGVpkGr9TUmetn6b','8J4xNmyAQskmPuyywPf1arig4X8hfza2xKBkKwz8E2gU','6zDrZWRXQ7GWi1W2fBTzSs59PSa2uj2k8w2qkc451rqG','74ibS6YRDBF3jMf3bxiLY1i3ohFhJySQwyeeMWaRsAk2','HTpinijYNYPe2UhfwoX7fHKC9j44QEJoVmStCmfvYZxA','76sb4FZPwewvxtST5tJMp9N43jj4hDC5DQ7bv8kBi1rA','FKyoehgzXD6KVSQoHJuTteXGCrChYe65k98wMckr9MN8','4qSZsB9QjXr97HzhzPd1zuvB8z7tqqDuM1xbxB5PcPFh','1M5USfamd1N4i1z6UZeECrWeu2VfrxjYMBSXThu6TqB','7LCnWqQGpNCiUvBLznYG9Q6Zo7mcLkhAHA7YBjbg8SET','AU4yDLbrnLzcjk2pnxvXwNeKJsj9CiUDRXWQbeSbk6Y9','AeSLUUNmADEM2xzfmWbRhfwomvJW3f3Rd1AdicXf27Gb','4RyNsFHDccFEEnbYJAFt2cNufFduh8Se8eKTqXDVr82h','5enTTfG63W4JUzCpwioeLte7827NrYXUgGr6z7Rm7xf5','8usnMxy6YunbfrjHDHPfRcpLWXigcSvrpVohv3F2v24H','J4ooR8AV8o5Ez2qN8ghQhR7YKhqRY5WEHfE8dTR2Yo6a','HFY5f6PF6cRyVAvVG1xV9X15q87qoZ1o6GDcyBzHSEnX')
+    let first_epoch = last_epoch - u64::min(last_epoch, epochs - 1);
+
+    let mut accumulators: HashMap<&String, FlatAccumulator> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.range(first_epoch..=last_epoch) {
+        let cluster = ClusterEpoch::of(snapshot);
+        for (vote_account, validator) in snapshot.iter() {
+            accumulators
+                .entry(vote_account)
+                .or_default()
+                .add(*epoch, validator, &cluster);
+        }
+    }
+
+    // last_version is deliberately left unbounded while the client columns are bounded to
+    // last_epoch: adding the bound changes what historical scoring runs see, so it needs a
+    // ds-sam side check.
+    let versions = version_changes_by_validator(warehouse);
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
-    for row in rows.iter() {
-        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
-        let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
-        let last_client_id = effective_client_id(
-            row.get::<_, Option<i32>>("last_client_id")
-                .map(|n| n as u16),
-            last_client_id_raw.as_deref(),
-        );
+    for (vote_account, accumulator) in accumulators {
+        if accumulator.count != epochs || accumulator.epochs_with_credits < 7 {
+            continue;
+        }
+        let changes = versions.get(vote_account);
+        let last_version = changes
+            .and_then(|changes| {
+                changes
+                    .iter()
+                    .rev()
+                    .find_map(|change| change.version.clone())
+            })
+            .unwrap_or_else(|| "0.0.0".to_string());
+        // The shared filter plus the position tiebreak make both aggregates read one change.
+        let last_client = changes.and_then(|changes| {
+            changes.iter().rev().find(|change| {
+                (change.client_id.is_some() || change.client_id_raw.is_some())
+                    && change.epoch <= last_epoch
+            })
+        });
+        let last_client_id = last_client.and_then(|change| {
+            effective_client_id(
+                change.client_id.map(|id| id as u16),
+                change.client_id_raw.as_deref(),
+            )
+        });
+
         validators.push(ValidatorAggregatedFlat {
-            vote_account: row.get("vote_account"),
-            minimum_stake: row.get("minimum_stake"),
-            avg_stake: row.get("avg_stake"),
-            avg_dc_concentration: row.get("avg_dc_concentration"),
-            avg_skip_rate: row.get("avg_skip_rate"),
-            avg_grace_skip_rate: row.get("avg_grace_skip_rate"),
-            max_commission: row.get::<_, i32>("max_commission").try_into()?,
-            avg_adjusted_credits: row.get("avg_adjusted_credits"),
-            dc_aso: row.get("dc_aso"),
-            marinade_stake: row.get("marinade_stake"),
-            version: row.get("last_version"),
+            vote_account: vote_account.clone(),
+            minimum_stake: accumulator.minimum_stake,
+            avg_stake: accumulator.stake / accumulator.count as f64,
+            avg_dc_concentration: accumulator.average_dc_concentration(),
+            avg_skip_rate: accumulator.skip_rate / accumulator.count as f64,
+            avg_grace_skip_rate: accumulator.grace_skip_rate / accumulator.count as f64,
+            max_commission: accumulator.max_commission.try_into()?,
+            avg_adjusted_credits: accumulator.adjusted_credits / accumulator.count as f64 / 100f64,
+            dc_aso: accumulator.dc_aso.unwrap_or_else(|| "Unknown".to_string()),
+            marinade_stake: accumulator.marinade_stake,
+            version: last_version,
             client_vendor: client_vendor(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
             client_lineage: client_lineage(last_client_id)
@@ -1691,305 +1690,135 @@ pub async fn load_validators_aggregated_flat(
         });
     }
 
+    validators.sort_by(|a, b| b.avg_adjusted_credits.total_cmp(&a.avg_adjusted_credits));
+
     Ok(validators)
 }
 
-fn map_to_ordered_component_values(
-    components: &Vec<&str>,
-    row: &ValidatorScoringCsvRow,
-) -> Vec<Option<String>> {
-    components
-        .iter()
-        .map(|component| match *component {
-            "COMMISSION_ADJUSTED_CREDITS" => Some(row.avg_adjusted_credits.to_string()),
-            "GRACE_SKIP_RATE" => Some(row.avg_grace_skip_rate.to_string()),
-            "DC_CONCENTRATION" => Some(row.avg_dc_concentration.to_string()),
-            _ => None,
-        })
-        .collect()
+/// The cluster-wide figures one epoch's averages are taken against.
+struct ClusterEpoch {
+    weighted_skip_rate: Option<f64>,
+    concentration_by_aso: HashMap<String, f64>,
 }
 
-pub async fn store_scoring(
-    psql_client: &mut Client,
-    epoch: i32,
-    ui_id: String,
-    components: Vec<&str>,
-    component_weights: Vec<f64>,
-    scores: Vec<ValidatorScoringCsvRow>,
-) -> anyhow::Result<()> {
-    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
-    let tx = psql_client.transaction().await?;
+impl ClusterEpoch {
+    fn of(snapshot: &SnapshotDoc) -> Self {
+        let mut stake = 0f64;
+        let mut weighted_skip_rate = 0f64;
+        let mut stake_by_aso: HashMap<String, f64> = Default::default();
 
-    let scoring_run_result = tx
-        .query_one(
-            "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
-            VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
-            &[&epoch, &components, &component_weights, &ui_id],
-        )
-        .await?;
-
-    let scoring_run_id: i64 = scoring_run_result.get("scoring_run_id");
-
-    log::info!("Stored scoring run: {scoring_run_id}");
-
-    let component_scores_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.normalized_adjusted_credits,
-                    row.normalized_grace_skip_rate,
-                    row.normalized_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_ranks_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.rank_adjusted_credits,
-                    row.rank_grace_skip_rate,
-                    row.rank_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_values_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                map_to_ordered_component_values(&components, row),
-            )
-        })
-        .collect();
-
-    let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                if row.ui_hints.is_empty() {
-                    Default::default()
-                } else {
-                    row.ui_hints.split(",").collect()
-                },
-            )
-        })
-        .collect();
-
-    for chunk in scores.chunks(500) {
-        let mut query = InsertQueryCombiner::new(
-            "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, component_values, vemnde_votes, msol_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_vemnde, eligible_stake_msol, target_stake_algo, target_stake_vemnde, target_stake_msol, scoring_run_id".to_string(),
-        );
-        for row in chunk {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &row.vote_account,
-                &row.score,
-                component_scores_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_ranks_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_values_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                &row.vemnde_votes,
-                &row.msol_votes,
-                &row.rank,
-                ui_hints_parsed.get(&row.vote_account).unwrap(),
-                &row.eligible_stake_algo,
-                &row.eligible_stake_vemnde,
-                &row.eligible_stake_msol,
-                &row.target_stake_algo,
-                &row.target_stake_vemnde,
-                &row.target_stake_msol,
-                &scoring_run_id,
-            ];
-            query.add(&mut params);
+        for validator in snapshot.values() {
+            let activated_stake = validator.activated_stake.to_f64().unwrap_or_default();
+            stake += activated_stake;
+            weighted_skip_rate += validator.skip_rate * activated_stake;
+            if let Some(aso) = validator.dc_aso.clone() {
+                *stake_by_aso.entry(aso).or_default() += activated_stake;
+            }
         }
-        query.execute_in(&tx).await?;
+
+        Self {
+            weighted_skip_rate: (stake > 0f64).then(|| weighted_skip_rate / stake),
+            concentration_by_aso: stake_by_aso
+                .into_iter()
+                .map(|(aso, aso_stake)| (aso, aso_stake / stake))
+                .collect(),
+        }
     }
-
-    tx.commit().await?;
-
-    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Default)]
+struct FlatAccumulator {
+    count: u64,
+    epochs_with_credits: u64,
+    minimum_stake: f64,
+    stake: f64,
+    dc_concentration: f64,
+    epochs_with_aso: u64,
+    skip_rate: f64,
+    grace_skip_rate: f64,
+    max_commission: i32,
+    adjusted_credits: f64,
+    newest_epoch: u64,
+    dc_aso: Option<String>,
+    marinade_stake: f64,
+}
 
-    #[test]
-    fn to_fixed_for_sort_scales_usable_values() {
-        assert_eq!(to_fixed_for_sort(0.0), Some(0));
-        assert_eq!(to_fixed_for_sort(0.05), Some(500));
-        assert_eq!(to_fixed_for_sort(1.0), Some(10_000));
-    }
+impl FlatAccumulator {
+    fn add(&mut self, epoch: u64, validator: &Validator, cluster: &ClusterEpoch) {
+        let stake = to_sol(validator.activated_stake);
+        if self.count == 0 || stake < self.minimum_stake {
+            self.minimum_stake = stake;
+        }
+        self.count += 1;
+        self.stake += stake;
+        if validator.credits > Decimal::ZERO {
+            self.epochs_with_credits += 1;
+        }
 
-    #[test]
-    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_zero() {
-        assert_eq!(to_fixed_for_sort(-0.01), None);
-        assert_eq!(to_fixed_for_sort(f64::NAN), None);
-        assert_eq!(to_fixed_for_sort(f64::NEG_INFINITY), None);
-    }
+        if let Some(concentration) = validator
+            .dc_aso
+            .as_ref()
+            .and_then(|aso| cluster.concentration_by_aso.get(aso))
+        {
+            self.dc_concentration += concentration;
+            self.epochs_with_aso += 1;
+        }
 
-    #[test]
-    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_max() {
-        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
-        assert_eq!(to_fixed_for_sort(f64::MAX), None);
-        assert_eq!(to_fixed_for_sort(1e30), None);
-    }
+        self.skip_rate += validator.skip_rate;
+        // A validator with few leader slots is judged no worse than the cluster.
+        let leader_slots = validator.leader_slots.to_u64().unwrap_or_default();
+        self.grace_skip_rate += match (leader_slots < 200, cluster.weighted_skip_rate) {
+            (true, Some(cluster_skip_rate)) => validator.skip_rate.min(cluster_skip_rate),
+            _ => validator.skip_rate,
+        };
 
-    const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
-    const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
+        let commission = validator
+            .commission_effective
+            .or(validator.commission_advertised)
+            .unwrap_or(100);
+        self.max_commission = self.max_commission.max(commission);
+        self.adjusted_credits +=
+            validator.credits.to_f64().unwrap_or_default() * 0f64.max((100 - commission) as f64);
 
-    const CREDITS: u64 = 400_000;
-
-    /// Mainnet-scale: 600M SOL supply, ~400k credits per validator, ~400M SOL staked cluster-wide.
-    fn calculator(slots_per_year: f64) -> InflationApyCalculator {
-        InflationApyCalculator {
-            supply: 600_000_000_000_000_000,
-            duration: 182_400,
-            inflation: 0.043,
-            slots_per_year,
-            total_weighted_credits: 160_000_000_000_000_000_000_000,
+        if epoch >= self.newest_epoch {
+            self.newest_epoch = epoch;
+            self.dc_aso = validator.dc_aso.clone();
+            self.marinade_stake = to_sol(validator.marinade_stake);
         }
     }
 
-    /// Relative, because these quantities span 1e-2 to 1e15 and a fixed epsilon fits neither end.
-    fn assert_close(left: f64, right: f64) {
-        assert!(
-            (left - right).abs() / right.abs() < 1e-12,
-            "{left} != {right}"
-        );
+    fn average_dc_concentration(&self) -> f64 {
+        match self.epochs_with_aso {
+            0 => 0f64,
+            epochs => self.dc_concentration / epochs as f64,
+        }
+    }
+}
+
+fn to_sol(lamports: Decimal) -> f64 {
+    (lamports / Decimal::from(1_000_000_000u64))
+        .to_f64()
+        .unwrap_or_default()
+}
+
+/// Every version change held, oldest first, so the last one is the newest.
+fn version_changes_by_validator(warehouse: &Warehouse) -> HashMap<&String, Vec<&VersionSample>> {
+    let mut changes: HashMap<&String, Vec<&VersionSample>> = Default::default();
+
+    for sealed in warehouse.versions.values() {
+        for (vote_account, sealed) in sealed.iter() {
+            changes.entry(vote_account).or_default().extend(sealed);
+        }
+    }
+    for (vote_account, state) in warehouse.live.versions.iter() {
+        changes
+            .entry(vote_account)
+            .or_default()
+            .extend(state.changes.iter());
+    }
+    for changes in changes.values_mut() {
+        changes.sort_by_key(|change| change.created_at);
     }
 
-    fn rate_per_epoch(calculator: &InflationApyCalculator) -> f64 {
-        let (apr, _) = calculator.estimate_yields(CREDITS, 5);
-        apr / (SECONDS_IN_YEAR / calculator.duration as f64)
-    }
-
-    #[test]
-    fn per_epoch_issuance_tracks_the_protocol_slot_time() {
-        let baseline = calculator(BASELINE_SLOTS_PER_YEAR);
-        let stage_1 = calculator(SLOTS_PER_YEAR_350MS);
-        let (_, apy_baseline) = baseline.estimate_yields(CREDITS, 5);
-        let (_, apy_350) = stage_1.estimate_yields(CREDITS, 5);
-
-        // Guards the fixture: an implausible one overflows to inf, where every ratio below matches.
-        assert!((0.03..0.12).contains(&apy_baseline), "{apy_baseline}");
-
-        // Shorter slots mint proportionally less per epoch, so the rate scales by exactly 350/400.
-        assert_close(
-            rate_per_epoch(&stage_1) / rate_per_epoch(&baseline),
-            350.0 / 400.0,
-        );
-
-        let epochs_per_year = SECONDS_IN_YEAR / stage_1.duration as f64;
-        assert_close(
-            1.0 + apy_350,
-            (1.0 + rate_per_epoch(&stage_1)).powf(epochs_per_year),
-        );
-        assert!(apy_350 < apy_baseline);
-    }
-
-    #[test]
-    fn measured_epoch_length_does_not_move_per_epoch_issuance() {
-        let short = InflationApyCalculator {
-            duration: 151_200,
-            ..calculator(BASELINE_SLOTS_PER_YEAR)
-        };
-        let long = InflationApyCalculator {
-            duration: 182_400,
-            ..calculator(BASELINE_SLOTS_PER_YEAR)
-        };
-
-        // Only the compounding exponent may depend on the measured epoch, never the minted amount.
-        assert_close(rate_per_epoch(&short), rate_per_epoch(&long));
-    }
-
-    // Roughly mainnet's mix at epoch 1015, so the numbers below read against something real.
-    const MIX: RewardMixShares = RewardMixShares {
-        inflation: 0.90,
-        mev: 0.044,
-        block: 0.056,
-    };
-
-    fn approx(actual: Option<f64>, expected: f64) {
-        let actual = actual.expect("expected a rate");
-        assert!(
-            (actual - expected).abs() < 1e-12,
-            "expected {expected}, got {actual}"
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_floors_at_the_block_share_for_a_zero_fee_validator() {
-        // HelixNode's shape: 0% inflation, 0% MEV, no priority-fee account. It measures ~5.6%.
-        approx(expected_take_rate(MIX, Some(0), Some(0), None), MIX.block);
-    }
-
-    #[test]
-    fn expected_take_rate_reaches_one_when_every_component_is_fully_taken() {
-        approx(
-            expected_take_rate(MIX, Some(100), Some(10_000), Some(10_000)),
-            1.0,
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_weights_each_commission_by_its_component() {
-        approx(
-            expected_take_rate(MIX, Some(5), Some(1_000), None),
-            0.05 * MIX.inflation + 0.1 * MIX.mev + MIX.block,
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_drops_below_the_floor_when_block_rewards_are_shared() {
-        // The two validators on Jito's PriorityFeeDistribution at 0 bps keep none of their priority fees.
-        approx(expected_take_rate(MIX, Some(0), Some(0), Some(0)), 0.0);
-    }
-
-    #[test]
-    fn expected_take_rate_renormalizes_when_the_validator_earns_no_mev() {
-        // Without Jito there is no MEV to take a cut of, so the MEV weight must leave the denominator
-        // rather than count as a 0% commission and dilute the rate.
-        let no_jito = expected_take_rate(MIX, Some(10), None, None);
-        approx(
-            no_jito,
-            (0.1 * MIX.inflation + MIX.block) / (MIX.inflation + MIX.block),
-        );
-
-        let diluted = 0.1 * MIX.inflation + MIX.block;
-        assert!(
-            no_jito.unwrap() > diluted,
-            "renormalizing must read higher than crediting a 0% MEV commission"
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_is_unknown_without_an_inflation_commission() {
-        // Inflation rewards are earned by every validator, so a missing commission cannot renormalize away the way a missing MEV one does.
-        assert_eq!(expected_take_rate(MIX, None, Some(0), Some(0)), None);
-    }
-
-    #[test]
-    fn expected_take_rate_needs_at_least_one_component_to_weigh() {
-        let empty = RewardMixShares {
-            inflation: 0.0,
-            mev: 0.0,
-            block: 0.0,
-        };
-        assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
-    }
+    changes
 }

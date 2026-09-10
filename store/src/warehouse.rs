@@ -150,6 +150,29 @@ impl Warehouse {
         intervals
     }
 
+    /// The commission changes recorded in one epoch, sealed or still live.
+    pub fn commissions_of(&self, epoch: u64) -> HashMap<&String, Vec<&CommissionSample>> {
+        if let Some(sealed) = self.commissions.get(&epoch) {
+            return sealed
+                .iter()
+                .map(|(vote_account, changes)| (vote_account, changes.iter().collect()))
+                .collect();
+        }
+
+        self.live
+            .commissions
+            .iter()
+            .filter_map(|(vote_account, state)| {
+                let changes: Vec<_> = state
+                    .changes
+                    .iter()
+                    .filter(|change| change.epoch == epoch)
+                    .collect();
+                (!changes.is_empty()).then_some((vote_account, changes))
+            })
+            .collect()
+    }
+
     pub fn commission_changes(&self, epochs: u64) -> Vec<(&String, &CommissionSample)> {
         let first = self.window_start(epochs);
         let mut changes: Vec<_> = self

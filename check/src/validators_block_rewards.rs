@@ -1,9 +1,10 @@
+use crate::stored::last_epoch;
 use collect::common::measure_milliseconds_per_slot;
 use log::{debug, info};
-use rust_decimal::prelude::*;
 use solana_client::rpc_client::RpcClient;
+use store::directory::Directory;
+use store::docs::BLOCK_REWARDS_DIR;
 use structopt::StructOpt;
-use tokio_postgres::Client;
 use validator::Validate;
 
 #[derive(Debug, StructOpt, Validate)]
@@ -19,47 +20,30 @@ pub struct BlockRewardsCheckParams {
 
 /// Verification if block rewards data collection is possible.
 /// Returns `Ok(true)` to proceed with collection, `Ok(false)` to skip
-/// (data already in the PostgreSQL table or too early in the epoch to collect).
+/// (data already stored or too early in the epoch to collect).
 pub async fn check_block_rewards(
     params: BlockRewardsCheckParams,
-    psql_client: &Client,
+    directory: &Directory,
     rpc_client: &RpcClient,
-    db_table: &str,
 ) -> anyhow::Result<bool> {
-    info!("Checking epoch data about epoch in DB table {db_table}");
+    let dir = BLOCK_REWARDS_DIR;
+    info!("Checking epoch data about epoch in {dir}");
 
     // in block rewards, we only care about epoch
-    let row_epoch = psql_client
-        .query_opt(
-            format!(
-                "SELECT epoch
-                    FROM {db_table}
-                    WHERE epoch = (SELECT MAX(epoch) FROM {db_table})
-                    GROUP BY epoch;"
-            )
-            .as_str(),
-            &[],
-        )
-        .await?;
-
-    match row_epoch {
-        Some(row) => {
-            // PostgreSQL type 'NUMERIC'
-            // the value saved within the `epoch` is the epoch of data record was created for
-            let sql_epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-
+    match last_epoch(directory, dir).await? {
+        Some(sql_epoch) => {
             let current_epoch_data = rpc_client.get_epoch_info()?;
             let current_epoch = current_epoch_data.epoch;
             let current_slot_index = current_epoch_data.slot_index;
 
             info!(
-                "DB {db_table} stores last epoch: {sql_epoch}. On-chain epoch {current_epoch} slot index: {current_slot_index}",
+                "{dir} stores last epoch: {sql_epoch}. On-chain epoch {current_epoch} slot index: {current_slot_index}",
             );
 
             // The lastly stored epoch saved in DB is delayed by 1 epoch compared to the current epoch
             if current_epoch - 1 > sql_epoch {
                 info!(
-                    "The previous epoch ({}) has surpassed the last recorded table {db_table} epoch ({sql_epoch}). Initiating data collection for {db_table} analysis.",
+                    "The previous epoch ({}) has surpassed the last recorded {dir} epoch ({sql_epoch}). Initiating data collection for {dir} analysis.",
                     current_epoch - 1
                 );
 
@@ -89,13 +73,13 @@ pub async fn check_block_rewards(
             }
 
             info!(
-                "{db_table} data collection for the epoch prior {} has already been processed",
+                "{dir} data collection for the epoch prior {} has already been processed",
                 current_epoch - 1
             );
             Ok(false)
         }
         None => {
-            info!("No {db_table} data found in DB. Proceed with data collection.");
+            info!("No {dir} data found in the store. Proceed with data collection.");
             Ok(true)
         }
     }

@@ -31,12 +31,15 @@ pub async fn handler(
     info!("Fetching unstake hints {:?}", query_params.epoch);
     metrics::REQUEST_UNSTAKE_HINTS.inc();
 
+    let (warehouse, blacklist_path) = {
+        let ctx = context.read().await;
+        (ctx.warehouse.clone(), ctx.blacklist_path.clone())
+    };
     let unstake_hints = store::scoring::load_global_unstake_hint_records(
-        &context.read().await.psql_client,
-        &context.read().await.blacklist_path,
+        &*warehouse.read().await,
+        &blacklist_path,
         query_params.epoch,
-    )
-    .await;
+    );
 
     Ok(match unstake_hints {
         Ok(unstake_hints) => warp::reply::with_status(
