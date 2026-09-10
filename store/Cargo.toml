@@ -27,3 +27,6 @@ collect = { path = "../collect" }
 chrono = { workspace = true }
 csv = { workspace = true }
 utoipa = { workspace = true }
+
+[dev-dependencies]
+jsonwebtoken = "9.3"

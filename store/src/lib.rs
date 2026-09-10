@@ -1,6 +1,13 @@
+pub mod close_epoch;
+pub mod cluster_info;
+pub mod commissions;
+pub mod directory;
+pub mod docs;
 pub mod dto;
+pub mod ls_open_epochs;
 pub mod rewards;
 pub mod scoring;
+pub mod uptime;
 pub mod utils;
 pub mod validators;
 pub mod validators_block_rewards;

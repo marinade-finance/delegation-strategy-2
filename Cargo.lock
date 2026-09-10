@@ -7733,6 +7733,7 @@ dependencies = [
  "csv",
  "env_logger 0.11.8",
  "google-cloud-bigquery",
+ "jsonwebtoken",
  "log",
  "openssl",
  "postgres-openssl",

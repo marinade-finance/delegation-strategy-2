@@ -1,18 +1,18 @@
-use close_epoch::{close_epoch, CloseEpochParams};
-use cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use collect::validators_jito::JitoAccountType;
-use commissions::{store_commissions, StoreCommissionsParams};
 use env_logger::Env;
-use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::close_epoch::{close_epoch, CloseEpochParams};
+use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
+use store::commissions::{store_commissions, StoreCommissionsParams};
+use store::ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
+use store::uptime::{store_uptime, StoreUptimeParams};
+use store::validators::{store_validators, StoreValidatorsParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
+use store::validators_jito::{store_jito, StoreJitoParams};
+use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
-use uptime::{store_uptime, StoreUptimeParams};
-use validators::{store_validators, StoreValidatorsParams};
-use validators_jito::{store_jito, StoreJitoParams};
-use versions::{store_versions, StoreVersionsParams};
 
 #[derive(Debug, StructOpt)]
 pub struct CommonParams {
@@ -46,17 +46,6 @@ enum StoreCommand {
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
 }
-
-pub mod close_epoch;
-pub mod cluster_info;
-pub mod commissions;
-pub mod dto;
-pub mod ls_open_epochs;
-pub mod uptime;
-pub mod utils;
-pub mod validators;
-pub mod validators_jito;
-pub mod versions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

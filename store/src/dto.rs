@@ -116,6 +116,7 @@ impl ValidatorBlockReward {
     }
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Validator {
     pub identity: String,
     pub vote_account: String,
