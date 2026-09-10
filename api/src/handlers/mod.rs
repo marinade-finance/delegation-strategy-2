@@ -13,6 +13,7 @@ pub mod list_clients;
 pub mod list_providers;
 pub mod list_validators;
 pub mod readiness;
+pub mod releases;
 pub mod reports_commission_changes;
 pub mod reports_scoring;
 pub mod reports_scoring_html;

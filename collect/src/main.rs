@@ -1,5 +1,6 @@
 use clap::Parser;
 use collect::common::*;
+use collect::releases::{collect_releases_info, ReleasesParams};
 use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
 use collect::validators::*;
 use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
@@ -30,6 +31,7 @@ enum CollectCommand {
     ValidatorsBlockRewards(BlockRewardsParams),
     ValidatorsEvents(EventsParams),
     TakeRates(TakeRatesParams),
+    Releases(ReleasesParams),
 }
 
 impl Display for CollectCommand {
@@ -42,6 +44,7 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
             CollectCommand::ValidatorsEvents(_) => write!(f, "validators-events"),
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
+            CollectCommand::Releases(_) => write!(f, "releases"),
         }
     }
 }
@@ -77,6 +80,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::TakeRates(take_rates_params) => {
             collect_take_rates_info(params.common, take_rates_params)
+        }
+        CollectCommand::Releases(releases_params) => {
+            collect_releases_info(params.common, releases_params)
         }
     };
 

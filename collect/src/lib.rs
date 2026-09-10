@@ -1,5 +1,6 @@
 pub mod common;
 pub mod marinade_service;
+pub mod releases;
 pub mod slot_params;
 pub mod solana_service;
 pub mod take_rates;

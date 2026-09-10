@@ -1,0 +1,1101 @@
+[
+  {
+    "identity": "EkvdKhULbMFqjKBKotAzGi3kwMvMpYNDKJXXQQmi6C1f",
+    "vote_account": "3ZYJxzCeweSoh2Jj7oCgencFs9y27iKmXJeqYapje1cj",
+    "name": null,
+    "activated_stake": "4086435275554176",
+    "activated_stake_sol": 4086435.275554176
+  },
+  {
+    "identity": "9UM8wQ8F5oMiRcP5YdqD6Lr4krpBWCD8LtgQYoisJd9i",
+    "vote_account": "9jToNMWCLW1GeoLGPZNvEfuXE4AUwiRsrC1HMGmh3PTu",
+    "name": null,
+    "activated_stake": "3735248682459907",
+    "activated_stake_sol": 3735248.682459907
+  },
+  {
+    "identity": "GBQ2GvTzmjXMu97dr7WUnLKYTNim1aoZsYS53KYXAAAA",
+    "vote_account": "AuGwcQWqWuNbnrkgERSp8VN6kZeJiM4AZuLMrwbkzg9m",
+    "name": "Bitwise Onchain Solutions | Jito BAM",
+    "activated_stake": "2993560576473984",
+    "activated_stake_sol": 2993560.576473984
+  },
+  {
+    "identity": "3psxMyr7rQzywVp1MXKd1XFmFz33NjydzCoJx9t2sMQW",
+    "vote_account": "23XqhxnRHt5gQWHowvyRHDX4Ky6BZyFdYxjTzxx2QEFr",
+    "name": "OtterSec",
+    "activated_stake": "2595288954013529",
+    "activated_stake_sol": 2595288.954013529
+  },
+  {
+    "identity": "AWcCdYG7Dy6GX45c6QMPbgGwgRZPKcBDT4bXGb3QrVRV",
+    "vote_account": "G2W5QfMSBYXT5NNWEG8jSN9ZMqvVoaon3DMHMQ3BV7Bj",
+    "name": null,
+    "activated_stake": "2013800997122051",
+    "activated_stake_sol": 2013800.997122051
+  },
+  {
+    "identity": "2m1A2WM1vte7RWz5xTTw4i1SiXmngVtXhqFERaUjoAAb",
+    "vote_account": "8wTSPukwTAzNzEYyUdc8UiKkTg1hNtZ1xLum7o1Ne6wr",
+    "name": "",
+    "activated_stake": "2005488249610397",
+    "activated_stake_sol": 2005488.249610397
+  },
+  {
+    "identity": "BUv44cVtsdvU9z2BfFGk6s5JZZWrmVnq5qCaii5ARyyB",
+    "vote_account": "6jzDwKeR21EFHwaRgZMefMxJ9D2vnQRqfYxkpUuJppPh",
+    "name": null,
+    "activated_stake": "1937410077711701",
+    "activated_stake_sol": 1937410.077711701
+  },
+  {
+    "identity": "ChorusmmK7i1AxXeiTtQgQZhQNiXYU84ULeaYF1EH15n",
+    "vote_account": "Chorus6Kis8tFHA7AowrPMcRJk3LbApHTYpgSNXzY5KE",
+    "name": "Bitwise Onchain Solutions 02",
+    "activated_stake": "1588098419182482",
+    "activated_stake_sol": 1588098.419182482
+  },
+  {
+    "identity": "CMPSSdrTnRQBiBGTyFpdCc3VMNuLWYWaSkE8Zh5z6gbd",
+    "vote_account": "EARNynHRWg6GfyJCmrrizcZxARB3HVzcaasvNa8kBS72",
+    "name": "Solana Compass \ud83e\udded Solana For The People",
+    "activated_stake": "1393324836942674",
+    "activated_stake_sol": 1393324.836942674
+  },
+  {
+    "identity": "G3a3iYZKNLbivothF3twqcaTCEvoPb9uJ2bFc9DNKkBQ",
+    "vote_account": "Eqwa3Jo6aa4ugEbPZNcDQyBfVU7dSz3VR8CcDYRrPyh4",
+    "name": null,
+    "activated_stake": "1324631001000000",
+    "activated_stake_sol": 1324631.001
+  },
+  {
+    "identity": "G2TBEh2ahNGS9tGnuBNyDduNjyfUtGhMcssgRb8b6KfH",
+    "vote_account": "F5b1wSUtpaYDnpjLQonCZC7iyFvizLcNqTactZbwSEXK",
+    "name": "AG 0% fee + ALL MEV profit share",
+    "activated_stake": "1034517172532541",
+    "activated_stake_sol": 1034517.172532541
+  },
+  {
+    "identity": "PUmpKiNnSVAZ3w4KaFX6jKSjXUNHFShGkXbERo54xjb",
+    "vote_account": "DsiG71AvUHUEo9rMMHqM9NAWQ6ptguRAHyot6wGzLJjx",
+    "name": "Pumpkin's Pool \u2764\ufe0f",
+    "activated_stake": "1001312781384275",
+    "activated_stake_sol": 1001312.781384275
+  },
+  {
+    "identity": "C1ocKDYMCm2ooWptMMnpd5VEB2Nx4UMJgRuYofysyzcA",
+    "vote_account": "AS3nKBQfKs8fJ8ncyHrdvo4FDT6S8HMRhD75JjCcyr1t",
+    "name": "Overclock",
+    "activated_stake": "988275029583230",
+    "activated_stake_sol": 988275.02958323
+  },
+  {
+    "identity": "GEM1N1UE3C8BB8EaaEPrcFvT3iLMVrurknjW5AYjUReR",
+    "vote_account": "GEM1N1pCDGKiTa547eckcwuHWYMsUQeXgnXHfEZLDvpB",
+    "name": "Gemini",
+    "activated_stake": "801528412022139",
+    "activated_stake_sol": 801528.412022139
+  },
+  {
+    "identity": "BFmqBsaGjeYA7gHpReKmnVkRyhqiMmHoR9ttv1crWmzy",
+    "vote_account": "2hK2uke7ssm7QuBzbrgxBs2aStmFmdKyC12yV2iwvvPm",
+    "name": null,
+    "activated_stake": "777623383891828",
+    "activated_stake_sol": 777623.383891828
+  },
+  {
+    "identity": "AicQr2zCWBLiBwt2r6o7iTemmtyE7q5pTKyuuupbXEQA",
+    "vote_account": "Bkskrv38Kn7zJR5mvmbCDGn2M4Jyhzt2ZqwQXV6rYnXa",
+    "name": null,
+    "activated_stake": "746985197051552",
+    "activated_stake_sol": 746985.197051552
+  },
+  {
+    "identity": "6XKqyUVUcpe3CNucjF6gk5zonJDqNGvob6kaTy4Ps1U",
+    "vote_account": "SKRuTecmFDZHjs2DxRTJNEK7m7hunKGTWJiaZ3tMVVA",
+    "name": "Solana Mobile Validator",
+    "activated_stake": "732741815824229",
+    "activated_stake_sol": 732741.815824229
+  },
+  {
+    "identity": "3cZSHGfNdaULpFAvGbWbxpVwzXB4gHdk8NFucPNR5pgA",
+    "vote_account": "HJmfKJjKiyuuxFUuXgecgD5gdD312apCpHwZt6ETuRMU",
+    "name": "Ghost",
+    "activated_stake": "631340155182049",
+    "activated_stake_sol": 631340.155182049
+  },
+  {
+    "identity": "Cogent51kHgGLHr7zpkpRjGYFXM57LgjHjDdqXd4ypdA",
+    "vote_account": "CogentC52e7kktFfWHwsqSmr8LiS1yAtfqhHcftCPcBJ",
+    "name": "Cogent \u2699\ufe0f  by SOL Strategies",
+    "activated_stake": "611942438787816",
+    "activated_stake_sol": 611942.438787816
+  },
+  {
+    "identity": "Frog1Fks1AVN8ywFH3HTFeYojq6LQqoEPzgQFx2Kz5Ch",
+    "vote_account": "Pond1QyT1sQtiru3fi9G5LGaLRGeUpJKR1a2gdbq2u4",
+    "name": "Leapfrog Systems \ud83d\udc8e No Fees",
+    "activated_stake": "611567412872059",
+    "activated_stake_sol": 611567.412872059
+  },
+  {
+    "identity": "LeDbQ99QT342j9S5YdyXLrsq2Gu3T3dMGajExdAuE3V",
+    "vote_account": "CpfvLiiPALdzZTP3fUrALg2TXwEDSAknRh1sn5JCt9Sr",
+    "name": "Ledger by Bitwise",
+    "activated_stake": "546030404372302",
+    "activated_stake_sol": 546030.404372302
+  },
+  {
+    "identity": "AqyRvpjjSN6jWYPxijoJwhmKwJFk6fRYDh9fQZHcJ2o7",
+    "vote_account": "EeitHdhXPu3pYMb5oPHvLjkaKQMUPzdNnxvrXc3EEHxj",
+    "name": "STSS Validator",
+    "activated_stake": "500742395663867",
+    "activated_stake_sol": 500742.395663867
+  },
+  {
+    "identity": "Cu9Ls6dsTL6cxFHZdStHwVSh1uy2ynXz8qPJMS5FRq86",
+    "vote_account": "5iJDEVRi1nMLwKAWhYbEokZnvBAe15rgFaHGkggVEP9z",
+    "name": "Stardust Staking - 0% fee forever + MEV 0% fee",
+    "activated_stake": "485392783859637",
+    "activated_stake_sol": 485392.783859637
+  },
+  {
+    "identity": "Certusm1sa411sMpV9FPqU5dXAYhmmhygvxJ23S6hJ24",
+    "vote_account": "CertusDeBmqN8ZawdkxK5kFGMwBXdudvWHYwtNgNhvLu",
+    "name": "Asymmetric Research",
+    "activated_stake": "438077974987389",
+    "activated_stake_sol": 438077.974987389
+  },
+  {
+    "identity": "7GkMBmtrTZz8QbjSe1sXvAUtz7Pp42SQxfT5ymmJD4We",
+    "vote_account": "J2nUHEAgZFRyuJbFjdqPrAa9gyWDuc7hErtDQHPhsYRp",
+    "name": "Phantom Validator",
+    "activated_stake": "431080897251222",
+    "activated_stake_sol": 431080.897251222
+  },
+  {
+    "identity": "9iFPQbP1jGkj67sXg6YLLGRUBVEDMcapdS6jmCZSnz8R",
+    "vote_account": "7kqphS3JdqYsp4kGvLZAi4siKRZFiU4qBrKZfkGdht4N",
+    "name": null,
+    "activated_stake": "401613720717049",
+    "activated_stake_sol": 401613.720717049
+  },
+  {
+    "identity": "LA1NEzryoih6CQW3gwQqJQffK2mKgnXcjSQZSRpM3wc",
+    "vote_account": "GE6atKoWiQ2pt3zL7N13pjNHjdLVys8LinG8qeJLcAiL",
+    "name": "Laine \u2764\ufe0f  by SOL Strategies",
+    "activated_stake": "400556048196809",
+    "activated_stake_sol": 400556.048196809
+  },
+  {
+    "identity": "CVgwMrWo9chKEuEPCe6Za9KJe8jamnAcoeWzaMeNubr6",
+    "vote_account": "F1wBgGku883aGGCQYMQFR4PmdJ7faej3qKSk8xGCycP7",
+    "name": "SelfLiquidity",
+    "activated_stake": "399498759088966",
+    "activated_stake_sol": 399498.759088966
+  },
+  {
+    "identity": "ANC1u9sY36q3mi2MyVhtz71un8yLgTsFBUuyLcSPzKsk",
+    "vote_account": "ANCVpxEySGWWLqqkVKw2xWYDE9UP4fmZWMCBr5t96jch",
+    "name": "Anchorage Digital",
+    "activated_stake": "390259835493193",
+    "activated_stake_sol": 390259.835493193
+  },
+  {
+    "identity": "CVvaeDPR2o7P1eawG5c9TPFLzSXAewwPovPmREaEL4Cm",
+    "vote_account": "DMSuZcavta8L1w1tSiH8bALWjz6Q6KSryGG6m6Az4Qt5",
+    "name": "Lion3d | 0% Forever + Block Rewards Sharing",
+    "activated_stake": "389876868836168",
+    "activated_stake_sol": 389876.868836168
+  },
+  {
+    "identity": "FyrwfMaomErzqrFUXMjCJ7mA4u81DsiDdrzC3MJD6d4j",
+    "vote_account": "1Dadio3JRvpEjY6iSmXmhbGy9RiU8Nxh2GmoVbNusbE",
+    "name": "1dad | Solfege",
+    "activated_stake": "340315318347372",
+    "activated_stake_sol": 340315.318347372
+  },
+  {
+    "identity": "3WDh9HgusCujDmXCVhophLrHvoKHQd1Sd4uFHz1Awo35",
+    "vote_account": "9G19HT8xqceG7mKQVSrTRS3DGnGqDHErPyQEaEfyWEuW",
+    "name": "Absolute Guard",
+    "activated_stake": "295852494328232",
+    "activated_stake_sol": 295852.494328232
+  },
+  {
+    "identity": "Raydiumm3w3a4nGanDBLkUtKxMFooSPmeg9qwUKMsMc",
+    "vote_account": "RaydiumNAMK9EbDEP5wab8XiRkHNz1897SBsGUKotrV",
+    "name": "Raydium",
+    "activated_stake": "292942640451881",
+    "activated_stake_sol": 292942.640451881
+  },
+  {
+    "identity": "Lake8NXDThihebhxS3Js7mFnj9fthmus93zEdsFNrsL",
+    "vote_account": "LAKEuKJQYVFpf4vyjX7iuf9ajHo3k9FiyewYKf6VxPV",
+    "name": "LakeStake",
+    "activated_stake": "277307546013674",
+    "activated_stake_sol": 277307.546013674
+  },
+  {
+    "identity": "2mDrrmhSzpSyaF12izGk8hnFjtKCGeCFPwQHpRiJDby2",
+    "vote_account": "9wQQnnnkk5b5GkQWTW9L4kEA3CjFv6CqsQd5gt6tRsHK",
+    "name": "S4Mar",
+    "activated_stake": "271687267698546",
+    "activated_stake_sol": 271687.267698546
+  },
+  {
+    "identity": "qZMH9GWnnBkx7aM1h98iKSv2Lz5N78nwNSocAxDQrbP",
+    "vote_account": "6JfBwvcz5QUKQJ37BMKTLrf968DDJBtwoZLw19aHwFtQ",
+    "name": "Spectrum Staking",
+    "activated_stake": "266843529398994",
+    "activated_stake_sol": 266843.529398994
+  },
+  {
+    "identity": "9gFxqsXbFyrKXUkqpAatonn47uYZ7sEZSnMxhzQoXrUJ",
+    "vote_account": "48oxpSHQkM4sdXUY9NQ8KnEtebzZbyk8uUT7JRdVQNuf",
+    "name": "LUX8 Validator",
+    "activated_stake": "264214312127077",
+    "activated_stake_sol": 264214.312127077
+  },
+  {
+    "identity": "radM7PKUpZwJ9bYPAJ7V8FXHeUmH1zim6iaXUKkftP9",
+    "vote_account": "radYEig9KGrMTMWbWRFV7LStotQbnLgPaEFHVDsudQz",
+    "name": "Radiants",
+    "activated_stake": "257239490416147",
+    "activated_stake_sol": 257239.490416147
+  },
+  {
+    "identity": "7VZM7YHcX73TpGoXDeBu61g4QKC86GwAEnew8dA7Y2xn",
+    "vote_account": "HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib",
+    "name": "BLOCKSIZE",
+    "activated_stake": "247209818648045",
+    "activated_stake_sol": 247209.818648045
+  },
+  {
+    "identity": "mD1afZhSisoXfJLT8nYwSFANqjr1KPoDUEpYTEfFX1e",
+    "vote_account": "4PL2ZFoZJHgkbZ54US4qNC58X69Fa1FKtY4CaVKeuQPg",
+    "name": "Block Parliament \ud83e\udd89",
+    "activated_stake": "245208028471563",
+    "activated_stake_sol": 245208.028471563
+  },
+  {
+    "identity": "61QB1Evn9E3noQtpJm4auFYyHSXS5FPgqKtPgwJJfEQk",
+    "vote_account": "5iZ5PQPy5Z9XDnkfoWPi6nvUgtxWnRFwZ36WaftPuaVM",
+    "name": "Pigs in Blankets",
+    "activated_stake": "240819066110016",
+    "activated_stake_sol": 240819.066110016
+  },
+  {
+    "identity": "UNrgBLmc8JT6A3dxXY9DWeHvDezt2DZQbhg1KPQfqEL",
+    "vote_account": "unRgBLTLNXdBmenHXNPAg3AMn3KWcV3Mk4eoZBmTrdk",
+    "name": "Unruggable",
+    "activated_stake": "238238244716136",
+    "activated_stake_sol": 238238.244716136
+  },
+  {
+    "identity": "AsMpvJ3DZ2Ydu1WTRMAyMH4QjSLiUG39rKzfzvtE1bWr",
+    "vote_account": "B1w6SZcyvjyp6zEyStcc8u9AxXAh2AbYvNzMmP9rRKE9",
+    "name": "Nordic Staking 0% fee top APY 3+ years",
+    "activated_stake": "233276036040242",
+    "activated_stake_sol": 233276.036040242
+  },
+  {
+    "identity": "5marvipGzf98hxnoJFXsZbGHSXcEQ3yRGJ4ps7D3V4ou",
+    "vote_account": "i6PZjkPHGYmPfPE8LsJuLn5huZyusXhmysiDiHGPjxb",
+    "name": "MARVEL+MEV!",
+    "activated_stake": "228120241949421",
+    "activated_stake_sol": 228120.241949421
+  },
+  {
+    "identity": "BeSovDCzhEAfgwDyXBuhmCFKsu5WQ3PaX61GEfteNzXM",
+    "vote_account": "BeSov1og3sEYyH9JY3ap7QcQDvVX8f4sugfNPf9YLkcV",
+    "name": "Yonta Labs - LST 0%Fee MEV -",
+    "activated_stake": "224881217672807",
+    "activated_stake_sol": 224881.217672807
+  },
+  {
+    "identity": "DViARWAWKkxAzp4UCgbw5B9pLSrBY3PaztFErcwgVUKX",
+    "vote_account": "HeTyhZdUKswQoonJJTXqAnDN48ceyVAeFaKfYKayGPNS",
+    "name": "Code-Breader",
+    "activated_stake": "221508508391842",
+    "activated_stake_sol": 221508.508391842
+  },
+  {
+    "identity": "3s97yjq2MhoPVPC3U9VeE3Z5S643Pweovg88ysvrQPw5",
+    "vote_account": "D3QPJm7BDzzPeRG51YZSEz3LfV7GvFNu9NkcibzURxuj",
+    "name": "Starke Finance",
+    "activated_stake": "214945658438678",
+    "activated_stake_sol": 214945.658438678
+  },
+  {
+    "identity": "GwHH8ciFhR8vejWCqmg8FWZUCNtubPY2esALvy5tBvji",
+    "vote_account": "3iPuTgpWaaC6jYEY7kd993QBthGsQTK3yPCrNJyPMhCD",
+    "name": "ART3MIS.CLOUD \u2618\ufe0f",
+    "activated_stake": "201305764602384",
+    "activated_stake_sol": 201305.764602384
+  },
+  {
+    "identity": "9FXD1NXrK6xFU8i4gLAgjj2iMEWTqJhSuQN8tQuDfm2e",
+    "vote_account": "2g2QU1NDRax6i2mKzRwgRfdBFoDkMC6bj7Zp5Q3i8sCq",
+    "name": "Grassets Tech | Jito-BAM | IBRL",
+    "activated_stake": "199464214463607",
+    "activated_stake_sol": 199464.214463607
+  },
+  {
+    "identity": "AG1PsJMQcutNUX64RD3bAhW7NpxWeFkqkgGizBznYFKW",
+    "vote_account": "6TBdCtZjNYRoh97hJ3RHN992nwzC4oaj74hMnbnrJsE8",
+    "name": null,
+    "activated_stake": "192812373498732",
+    "activated_stake_sol": 192812.373498732
+  },
+  {
+    "identity": "JC7bH7HSZoDhwggBXtRF31cVt71WiizY2J6YDDQfG5er",
+    "vote_account": "6hkfqeNAbURk7CmAQsP4Qm6WwHVF4LxHupEvQf7Tkrf1",
+    "name": "Valid Blocks",
+    "activated_stake": "190000070824854",
+    "activated_stake_sol": 190000.070824854
+  },
+  {
+    "identity": "1KXvrkPXwkGF6NK1zyzVuJqbXfpenPVPP6hoiK9bsK3",
+    "vote_account": "1KXz4xKV2viJCGpxqnQqdf2J45vQr5USdmtcJLTaHkm",
+    "name": "1000X.sh",
+    "activated_stake": "185179700791849",
+    "activated_stake_sol": 185179.700791849
+  },
+  {
+    "identity": "Fudp7uPDYNYQRxoq1Q4JiwJnzyxhVz37bGqRki3PBzS",
+    "vote_account": "4QhNoG3PN1FXXFhAEA2QWdor6xjXvM9pjq6MXAUV8Zg2",
+    "name": "huglester",
+    "activated_stake": "184219921835636",
+    "activated_stake_sol": 184219.921835636
+  },
+  {
+    "identity": "DnQBmTJyLbBMgJYQLJDqJz25AJModNkyexL5LdVRGnG4",
+    "vote_account": "6AAeoHYMUQfSdFGqubUmWVAasFkzJEq47oKpHNNTZxLN",
+    "name": "Tane",
+    "activated_stake": "183476228115960",
+    "activated_stake_sol": 183476.22811596
+  },
+  {
+    "identity": "NdMV1C3XMCRqSBwBtNmoUNnKctYh95Ug4xb6FSTcAWr",
+    "vote_account": "NeodymeDFipD7eA1ShrLJAZTBdHWcFsDB9YkoHshZNk",
+    "name": "Neodyme",
+    "activated_stake": "182503537173011",
+    "activated_stake_sol": 182503.537173011
+  },
+  {
+    "identity": "BNtHBLo1L2vAG7PBQ6mJvWz7GqVPxBnioXsY2Gjtubrg",
+    "vote_account": "ErvMUdtMC7AX55zKdYSyy4DnWNCrTsWn5GwprSG7ocnx",
+    "name": "CatalystX - Innovation OnChain",
+    "activated_stake": "181954682751930",
+    "activated_stake_sol": 181954.68275193
+  },
+  {
+    "identity": "b1ueZK9bWTywN2587zsScyLTaH18wfRfN5W15XnkiqF",
+    "vote_account": "b1uei1YN8YVb3qHy2JitBx4Fq9nAatLQFcNbnk6Ex8p",
+    "name": "Blue Sky",
+    "activated_stake": "180759648228562",
+    "activated_stake_sol": 180759.648228562
+  },
+  {
+    "identity": "MBVyz9s72WSfUmbr1S8fgHjDJQkPs1Q4Wxi6A2Mees9",
+    "vote_account": "3vwstewNgWAwN2uyuJduoZVVhmiwvAbwCxrjeJG6bASy",
+    "name": "WIZE Validator",
+    "activated_stake": "180017762509578",
+    "activated_stake_sol": 180017.762509578
+  },
+  {
+    "identity": "GWJyUxzcVwRRtpLuLiu1mpiUQsZ4onYFAYfCjQnuLmz5",
+    "vote_account": "9KgZYnDzHhQANoJ43Z8czkgXYdTjtWLRrH9nDf42gqa",
+    "name": "Pacific Meta",
+    "activated_stake": "178545686564928",
+    "activated_stake_sol": 178545.686564928
+  },
+  {
+    "identity": "AmhQFcGvH2hjkucP78rn6GMKSbstYwyFpCDVKZUwBGrG",
+    "vote_account": "BdM7KCd6ZYWcaCMmHVi8YeL4jFzDVM9cRLJUeRAGSvMS",
+    "name": "myhauz",
+    "activated_stake": "174281251209472",
+    "activated_stake_sol": 174281.251209472
+  },
+  {
+    "identity": "8T8AJfUCXwPFwEMmjca8gCRSktPrqbUBVa6ggNyhLhFJ",
+    "vote_account": "DPsW8v7gkGUbPPRnraS5e163bDepd9tD537X9S231T2j",
+    "name": "StudentSOL",
+    "activated_stake": "170846608460824",
+    "activated_stake_sol": 170846.608460824
+  },
+  {
+    "identity": "MARiKM3t7pDCyXtvLq24ErWDAvYu84yXqCthkR1GS33",
+    "vote_account": "MARvNLH6rCLroQEGr8fWNxygJ7fHJRCfykRk9DqzwVn",
+    "name": "\ud83e\uddd1\u200d\ud83c\udf73 Customized Rewards (5.80% APY)",
+    "activated_stake": "168222838682270",
+    "activated_stake_sol": 168222.83868227
+  },
+  {
+    "identity": "CVRr5oHCAAooVbYze7CvXtRp4FUtkMCSqBZU7MVu8v8e",
+    "vote_account": "cover89z945JotsCRGdbjakJm4rnL5XspFSPgN1mVZj",
+    "name": "Coverlet+MEV | 0% ALL FEES \u2705",
+    "activated_stake": "167295557396750",
+    "activated_stake_sol": 167295.55739675
+  },
+  {
+    "identity": "vaoJKVZYPAsqc52T2nNQhABR1gU6Cy2koDKfCQaEiva",
+    "vote_account": "voEskim7SFWrPx1tV2PVisqyrJejxmDEARX11mtZ5vo",
+    "name": "polkachu.com",
+    "activated_stake": "165010569393765",
+    "activated_stake_sol": 165010.569393765
+  },
+  {
+    "identity": "GGX3BEoZDqjxcw4AbCdu62ZTMrkpSgmPt81oP2mVuZNS",
+    "vote_account": "Cat8oWQiFfrR3c7BcceTYcpnYCzSWfCPjMXT7mfHXvEP",
+    "name": "HashKey Cloud",
+    "activated_stake": "164521578675077",
+    "activated_stake_sol": 164521.578675077
+  },
+  {
+    "identity": "8GLRbAstsabZuZUx73AoyfGi1FRCWSUhRgMugFyofEz7",
+    "vote_account": "7PmWxxiTneGteGxEYvzj5pGDVMQ4nuN9DfUypEXmaA8o",
+    "name": "Syncnode | 0% Fees  | Genesis Validator",
+    "activated_stake": "164096986002544",
+    "activated_stake_sol": 164096.986002544
+  },
+  {
+    "identity": "HVXXmNKkmDZbZwj74iL2Y9Wu4SyrchBoxAfFYVAktLrG",
+    "vote_account": "644K33yWfSzc32VvY5fRUfUqphw8LTaLQntCkyEpJ8h7",
+    "name": "fat tails lab",
+    "activated_stake": "163785017338440",
+    "activated_stake_sol": 163785.01733844
+  },
+  {
+    "identity": "ADjyeNzWd8yhEjCVyAqT87eqoyGRbimERQsNhFQcXjop",
+    "vote_account": "26RGqX3mezgYDxJnGh94gnMM4L2k9grH1eWcTSCHnaxR",
+    "name": "\ud83d\udca5 InfiniteSOL \ud83d\udca5",
+    "activated_stake": "163329991899973",
+    "activated_stake_sol": 163329.991899973
+  },
+  {
+    "identity": "LunaowJnt875WWoqDkhHhE93SNYHa6tfFNVn1rqc57c",
+    "vote_account": "LunaFpQkZsZVJL2P2BUqNDJqyVYqrw9buQnjQtMLXdK",
+    "name": "LunaNova",
+    "activated_stake": "160138729443763",
+    "activated_stake_sol": 160138.729443763
+  },
+  {
+    "identity": "BSGMRbK97DcgLe4u4kfNQnmTVZGVnwdtKQBJqWRBTZxU",
+    "vote_account": "BSGMtRHy9qvsPbUKtT8yqd7nNqn2urTcSMVUgzj9zJVd",
+    "name": "Black Sea Gold",
+    "activated_stake": "159893485727173",
+    "activated_stake_sol": 159893.485727173
+  },
+  {
+    "identity": "simpRo1FrQYGa1moicfgnPDp6KyE38d4gYrZzhjXYJb",
+    "vote_account": "Simpj3KyRQmpRkXuBvCQFS7DBBG6vqw93SkZb9UD1hp",
+    "name": "Simpdigit",
+    "activated_stake": "158822536236999",
+    "activated_stake_sol": 158822.536236999
+  },
+  {
+    "identity": "PAD9aPiKJGcbGxuVLbc8o4Vf65GPq3fJQ7PkHWuX6a8",
+    "vote_account": "1234LB7uvDC23rdCQoK8C3jNwnovUNyeKxz8wC3dghJ5",
+    "name": "BlueLotus \ud83d\udc69\u200d\ud83d\udcbb",
+    "activated_stake": "158184434790659",
+    "activated_stake_sol": 158184.434790659
+  },
+  {
+    "identity": "parafiUS6h6oLhCFwhjvEmQJKw8pF1iXsxMJdTq46dS",
+    "vote_account": "pt1LsjkNwqCKdYYfc35ToDkqtEG9pswLTJNaMo8inft",
+    "name": "ParaFi Technologies",
+    "activated_stake": "153243032377232",
+    "activated_stake_sol": 153243.032377232
+  },
+  {
+    "identity": "6k1YkmTKwPRUhChnxA9ryJmbtuQMbro4xFTL6mL9jycB",
+    "vote_account": "91413b9eEvG6UofpSgwdUgH9Lz4QBF1G3J325Bw7JwGR",
+    "name": "Sign Labs \ud83e\udd1f",
+    "activated_stake": "152906002049729",
+    "activated_stake_sol": 152906.002049729
+  },
+  {
+    "identity": "CTDGxTK789ZvhgyHZHtSnxTtysbyY1mrywXEJiYYqXxC",
+    "vote_account": "CTDGxxJBrZVqUUHdHopLn4k4gtc2PCpcM9TB7ZEC4Hu2",
+    "name": "Cointelegraph Decentralization Guardians",
+    "activated_stake": "152224094041000",
+    "activated_stake_sol": 152224.094041
+  },
+  {
+    "identity": "MagiCBYNPD9iTBXqiFybAFCREQzG6MSM4LmFLXQZxuV",
+    "vote_account": "magiCChVWbehZ1e3XqQfLh164yUfQ8LnRWgSP9i4oFp",
+    "name": "Magic Eden Validator",
+    "activated_stake": "150341312216421",
+    "activated_stake_sol": 150341.312216421
+  },
+  {
+    "identity": "6xUK9Nbonr4eoJNtHGoUEMmYKoPz5mipKzyDBv6deX4d",
+    "vote_account": "8vyuJTHSDkx7k1zymea4TMsgvixf3rCYBXHPDQajePkE",
+    "name": "LuSOL +MEV",
+    "activated_stake": "149132641532779",
+    "activated_stake_sol": 149132.641532779
+  },
+  {
+    "identity": "N43JWBg42ZoUFMkHsRUVbP7wGVdxaHKanqaF9BBNiFC",
+    "vote_account": "vanFfAkyFXFnj6TpmVwet6pJBnS4nBWNcJiE5GEsZ4K",
+    "name": "Quantix",
+    "activated_stake": "147417538905132",
+    "activated_stake_sol": 147417.538905132
+  },
+  {
+    "identity": "7nzTzRZzezmugqE5ZjHRMxarhXunpwZ2PUdjV7uYzt7A",
+    "vote_account": "so1arJJbp9sis5XpovLyjTZPk8bDjfs37Meghi5wXbu",
+    "name": "Solar | Empowering Youth | 0% Fee + MEV Rewards",
+    "activated_stake": "147141497829206",
+    "activated_stake_sol": 147141.497829206
+  },
+  {
+    "identity": "DidkDYa64DEMx97P4iahDwsWtgUTnLiEhHSMUbQGihi5",
+    "vote_account": "DyjoG2US2XiVvL1MVzL2wjS5jCTmvo6aNwvqJfaPNx9u",
+    "name": null,
+    "activated_stake": "144504861651186",
+    "activated_stake_sol": 144504.861651186
+  },
+  {
+    "identity": "3V2xaccDpFib4DbTksdiveNDmiwpXBqSWyjSof3w1Bg7",
+    "vote_account": "34yvUa2fxfm2tUqxFEj9PHrVNwCcdzd51eo9hntWpZRs",
+    "name": "Aurora Validator",
+    "activated_stake": "143007866655469",
+    "activated_stake_sol": 143007.866655469
+  },
+  {
+    "identity": "GvfaiJUhNCRZGVGumsEF1eHDb8JpAeFAyHSrTifyhrbt",
+    "vote_account": "6oscGUEkXE8fyWoC4czRKbM1cuLkJNtgRsX1Un6w88Vf",
+    "name": "Vybe Validator",
+    "activated_stake": "142181068241201",
+    "activated_stake_sol": 142181.068241201
+  },
+  {
+    "identity": "DP9iBgK9c7tJYb83KhxQMFNc1LXYu7nE7EhWpEzQnjmg",
+    "vote_account": "EnRcbgr5r7EUS2P35szncy6TW6eWA9UQiU3yQRCDbh2P",
+    "name": "Sec3",
+    "activated_stake": "142108686073147",
+    "activated_stake_sol": 142108.686073147
+  },
+  {
+    "identity": "HwN6eoEe9N3kwHi66hpQDBMFPk6ASQGthWKPX5MZmisp",
+    "vote_account": "HwcVgFSgmfeeF7zGFUBLoVA8Hpx8rtwyfCrJ1npBaSVC",
+    "name": "Solya",
+    "activated_stake": "142081128610522",
+    "activated_stake_sol": 142081.128610522
+  },
+  {
+    "identity": "ECNnK4VjcKTsABiw8FAp3JCE6tCmYyrEJthYVyMazmxi",
+    "vote_account": "NikGQUQqSLtsdHGGx7mQopojZcgd3N9uWFaZQ1r5EXn",
+    "name": "NCValidator",
+    "activated_stake": "140824933283125",
+    "activated_stake_sol": 140824.933283125
+  },
+  {
+    "identity": "99rG5AhkVagxJ7y8NpMAmy1h1u9GhT3h1Cimu2X3cwaJ",
+    "vote_account": "HZDt9b6AVva1cgbuHBRKQczfA5FGGwLh4a6wLRM6FSvT",
+    "name": null,
+    "activated_stake": "138436124167853",
+    "activated_stake_sol": 138436.124167853
+  },
+  {
+    "identity": "CTwsruptUccEtZGNxBDbuusHYxkBX3P6ndrxVjSG213y",
+    "vote_account": "Fhks5gukimP6vxKYbRY4V1aw888EgHhpdDSscD9V6bub",
+    "name": "CryptoVik",
+    "activated_stake": "138420625378051",
+    "activated_stake_sol": 138420.625378051
+  },
+  {
+    "identity": "nebu15XQKGpxzhhckADBX9PgvGN5qk9RRJCFLKc118w",
+    "vote_account": "nebu1WnZBrFZz5X7sfPWuEqyb8LBSsrXpxaesnK9CRE",
+    "name": "Nebula Node",
+    "activated_stake": "136730849567204",
+    "activated_stake_sol": 136730.849567204
+  },
+  {
+    "identity": "DiveRaPKviyDnQyiiMFdV4rujsCBJzMNvPjKfvGNLGvL",
+    "vote_account": "6hcGvZypizjf6PPsxboshZHRqefyQKSG9L8vZqYdm7UY",
+    "name": "Onchain Divers",
+    "activated_stake": "136664646542825",
+    "activated_stake_sol": 136664.646542825
+  },
+  {
+    "identity": "bay3wXfJsu9ds1zQBoQQ4DUwFGs3NP6q4gca9WM5G1z",
+    "vote_account": "bay3rQMjiLPy6Nvi7tfNeVK26inBCxf88hKYyeKy64H",
+    "name": "Bay3",
+    "activated_stake": "135740078032736",
+    "activated_stake_sol": 135740.078032736
+  },
+  {
+    "identity": "8augxYLUge2iWmitQMwbcBL5VQEpsM6aJdRofhwpnzyw",
+    "vote_account": "o27rnqfNHPwHsRp2xPXXwWzn2q2dGxn6UD4Rt5KMU5h",
+    "name": "Stake.Cake",
+    "activated_stake": "135228555693403",
+    "activated_stake_sol": 135228.555693403
+  },
+  {
+    "identity": "EydLxzdWfD434DDxZYXkTcajvK5VKH7p6CofEDCRUkJ4",
+    "vote_account": "7Eg46UwGgsufXdd9C9kF27UAyD2t4VdmCdVTtPFoqxCy",
+    "name": "Bernardo Beacon",
+    "activated_stake": "133818840581719",
+    "activated_stake_sol": 133818.840581719
+  },
+  {
+    "identity": "gojir4WnhS7VS1JdbnanJMzaMfr4UD7KeX1ixWAHEmw",
+    "vote_account": "goJiRADNdmfnJ4iWEyft7KaYMPTVsRba2Ee1akDEBXb",
+    "name": "Gojira",
+    "activated_stake": "133595731377253",
+    "activated_stake_sol": 133595.731377253
+  },
+  {
+    "identity": "YuRBAsy9Stw1u46A8dMp7WQVBFweLP1PKuYibzYAMmQ",
+    "vote_account": "9gANMngbGUmAaLXL1RC3JdiaLjRowJXNbzCTh53ht7mq",
+    "name": "Yurbason",
+    "activated_stake": "129128674737961",
+    "activated_stake_sol": 129128.674737961
+  },
+  {
+    "identity": "nSGZ3tv2UhskkPqiB666yDVj7PTi9qKgDqvjHyw5JgM",
+    "vote_account": "AY271jdvcyo5VzBiWsMGLEjpZFFrarq8FDydJHLmYgCG",
+    "name": "OranG3cluB",
+    "activated_stake": "127147751043157",
+    "activated_stake_sol": 127147.751043157
+  },
+  {
+    "identity": "6NDen7aDi65apHo8m1Vea4nuS6LyjQeM6pDNqcW4Q5Pg",
+    "vote_account": "6cvBCfFXugkTqgSFVPvzhoWaLbhHWvZfSsZadWP5rryR",
+    "name": "0node.io",
+    "activated_stake": "126209287719064",
+    "activated_stake_sol": 126209.287719064
+  },
+  {
+    "identity": "SWD1LwTcEtpCRL683CT4HYDaGgMyMZ9LpSa5Foarsq4",
+    "vote_account": "SWDV7HwnwKq2QtJtGzCUPDeswekexTYL9cRPYmjWqjY",
+    "name": null,
+    "activated_stake": "125801261122120",
+    "activated_stake_sol": 125801.26112212
+  },
+  {
+    "identity": "hxMhrsuGPDmkLJ4mTxEjyeMST3VGhTiwJvS9XgHwePj",
+    "vote_account": "hxVjzDmta9TuN1gM981TRKnfwG2uZ9TQDGwSCs3uDow",
+    "name": "Suzuko Stake",
+    "activated_stake": "122486053202507",
+    "activated_stake_sol": 122486.053202507
+  },
+  {
+    "identity": "NATsUSZGohWw8xtLdxG4yus21UCkaes4FLfM2eqKbRk",
+    "vote_account": "fuyugZxM5S4NyV3ZYoc6ebs3fmRTrZ3X27MKCFvHpVD",
+    "name": "Kisetsu Stake",
+    "activated_stake": "116050376159324",
+    "activated_stake_sol": 116050.376159324
+  },
+  {
+    "identity": "Av8EnYrPBnSJHK5e2wmTdnCpSy7nzmBgyFaUKSyLnBfe",
+    "vote_account": "3QPGLackJy5LKctYYoPGmA4P8ncyE197jdxr1zP2ho8K",
+    "name": "AndrewInUA",
+    "activated_stake": "115794120736226",
+    "activated_stake_sol": 115794.120736226
+  },
+  {
+    "identity": "93Q99nhdKjuSe6WNXgMBbC3s8QVQEAoHKt91PNRkUkMn",
+    "vote_account": "8D8XL6ovqx15RKwC1XtFyTz6H8JYF2fUsxTnsY4b123P",
+    "name": "STEALTH",
+    "activated_stake": "115714807620807",
+    "activated_stake_sol": 115714.807620807
+  },
+  {
+    "identity": "tkmaiSoZ3F8MofkQBVWG6JYSCzyN6ioe7ReYXohx3WJ",
+    "vote_account": "TKMA1fBGq4M7gF2CNnhphX6vNateFc2cm2FL2mYwq7e",
+    "name": "Tokamai",
+    "activated_stake": "114600721019845",
+    "activated_stake_sol": 114600.721019845
+  },
+  {
+    "identity": "8aySXUFrqJz5kath6aVijrkBH8ZtxMWJGhYXwYBpKmHK",
+    "vote_account": "A7uqmajxP3NdzbYDXiGQRGTL8d3dZ5pjS4kR9NTZcxtg",
+    "name": "L0vd 0% fee +MEV",
+    "activated_stake": "112820544651710",
+    "activated_stake_sol": 112820.54465171
+  },
+  {
+    "identity": "eyeYaqg9e2L6xw7YwsSLm27eWJfhLNAm6ETQm8TXNoK",
+    "vote_account": "eyeVhGmVEoPSWmQU2wP5WZmMihPBTCk7kMMm4VhuAKS",
+    "name": "Eyenotion",
+    "activated_stake": "112129444024523",
+    "activated_stake_sol": 112129.444024523
+  },
+  {
+    "identity": "EN5F2BU5juUEWr9zRNNqKuQMi9zBUY1YLPHV5EyMrvnW",
+    "vote_account": "9ymU1ayh9mZVyDL4dUUtXKtX1wCaFNzZPGutLJgqzuC1",
+    "name": "SunshineVR",
+    "activated_stake": "111635775697429",
+    "activated_stake_sol": 111635.775697429
+  },
+  {
+    "identity": "2P9ZYA4vBoBBr56hrEFTmrd5ctuz3r7wtvRYmbgk6jRL",
+    "vote_account": "FGtsnE1HB4bBi6g4xAt5mvWtuC3qBPWPBgWVrnRmUiVH",
+    "name": "Sunshine",
+    "activated_stake": "111349556531623",
+    "activated_stake_sol": 111349.556531623
+  },
+  {
+    "identity": "7Nu9ckgtjobZ3MkbadGFKEvRymYuah9HmcxiUJKMM9NB",
+    "vote_account": "DPhzpiNGU9C6576uLsNSHmdi2AxwxpjMsRdh2iVC4TPh",
+    "name": "SoLyrae",
+    "activated_stake": "109769473289051",
+    "activated_stake_sol": 109769.473289051
+  },
+  {
+    "identity": "Ee8dX3qtwrDRnxYK6NGQfmMeKT3Qpp2QZHpxiAiw23W9",
+    "vote_account": "5szskKdH8nfnUuHTvn9hnhH3Xuvo7RVmcDDvD5WD7yNh",
+    "name": "StakeNode777",
+    "activated_stake": "109551776492492",
+    "activated_stake_sol": 109551.776492492
+  },
+  {
+    "identity": "LitxAVo3RnYXD2sX1TyRJxfnKy48amXgyGiysPZjZwE",
+    "vote_account": "D7WodK26tETSqyWBW35vvMGfige9afLEyTsm1Pvvropd",
+    "name": "Litx - 0% Commission",
+    "activated_stake": "109427233615770",
+    "activated_stake_sol": 109427.23361577
+  },
+  {
+    "identity": "G1eAmANVWf6ZeoxG4aMbS1APauyEDHqLxHFytzk5hZqN",
+    "vote_account": "G1EAMrJcvzs5SwqAQRgDTjYBEGrxxJVwNS7qiUtB3akg",
+    "name": "Gleam",
+    "activated_stake": "108679840521042",
+    "activated_stake_sol": 108679.840521042
+  },
+  {
+    "identity": "nateKhsYkrVc992UuTfAhEEFQqr2zQfpGg9RafNkxdC",
+    "vote_account": "nateBZg7oHVPLB2samBLkKvfzedU3ALZBexMFPMKjn1",
+    "name": "Epoch.Day",
+    "activated_stake": "108644537629012",
+    "activated_stake_sol": 108644.537629012
+  },
+  {
+    "identity": "6qwYjs5vCSEKaTMBbHinnW8fvdGj1r8cpzPoAV1EHKsw",
+    "vote_account": "Azc2uttGtHsRLorfQzd7tsMNtfaEg7LyvVEMVtckPCNN",
+    "name": "Fast Runner",
+    "activated_stake": "107127839176231",
+    "activated_stake_sol": 107127.839176231
+  },
+  {
+    "identity": "adre1Xia7ekGsEqNgHeFc7MYwkfzTQNeJgQmZ2agAKZ",
+    "vote_account": "adrePWHJJQNNuMfK3QrBKXDZZuRFPRjhovMMeSr3Drz",
+    "name": "Systems",
+    "activated_stake": "106666968019739",
+    "activated_stake_sol": 106666.968019739
+  },
+  {
+    "identity": "vnd1Ps8w3fsi54qUMJxBhUWARES34Qw7JQXDZxvbysd",
+    "vote_account": "vnd1jskPHR2gfMtgTtq6xCwANrAiNbQTKgVBAJHnMke",
+    "name": "Vandal",
+    "activated_stake": "106119809585039",
+    "activated_stake_sol": 106119.809585039
+  },
+  {
+    "identity": "ExCHWgfeJyKRzpfryiQn4W6aYaWhbSAEnsoUnBGNqjWD",
+    "vote_account": "ExCHgw3CfdZTbsrDA2phe95jswV2bDr5oSJwyKJKzEdN",
+    "name": "DSM-01",
+    "activated_stake": "106018205920829",
+    "activated_stake_sol": 106018.205920829
+  },
+  {
+    "identity": "cybi55ebub37HZW9YmRaLh59Lh3kqaLTsEBQwW6vFkC",
+    "vote_account": "VaCdXKupamusfRsDf9Ai7e8Up36Z4f3MP6SqhnM7c76",
+    "name": "CyberAlex \ud83d\udc51 MEV",
+    "activated_stake": "105195891441937",
+    "activated_stake_sol": 105195.891441937
+  },
+  {
+    "identity": "FdH9QEQBxPQfaF2JpcjgdfcMnDb7rjZkCDRCWLRjTQwj",
+    "vote_account": "HcbE5huUVDgsf7SURsRfQqnFMp3Zz3i49eXMddugPyAP",
+    "name": "Solana Ukraine \ud83c\uddfa\ud83c\udde6",
+    "activated_stake": "105014711277025",
+    "activated_stake_sol": 105014.711277025
+  },
+  {
+    "identity": "1Link6hB1NpkCwJt3ZtpQKZszKauhEcKgiWjaU8PRDG",
+    "vote_account": "1LinkCP4qUqGvUiNuAWhAxQyopdBxsh4vhfLBb4apyR",
+    "name": "OneLink Solutions",
+    "activated_stake": "103241700187578",
+    "activated_stake_sol": 103241.700187578
+  },
+  {
+    "identity": "GQiWnDYrzHMALWG9avt5FCu1wisAQHjGY5ve7GMBiPEe",
+    "vote_account": "5XGMWvqZSBk1fktPtxbwaMF5dhkbrtchpwd4xiXG9q8u",
+    "name": "Nam-dok-mai \ud83e\udd11 stake-earn-repeat",
+    "activated_stake": "100957684288354",
+    "activated_stake_sol": 100957.684288354
+  },
+  {
+    "identity": "pitch9cMruwjDtAnisNS4mwZUPhMsBztNEGu2weMg55",
+    "vote_account": "P1TCHYwYPsNaNUK6fGkZzwXPjnYAMYRnUUv4c1TREee",
+    "name": "DePitch Academy",
+    "activated_stake": "100425644416447",
+    "activated_stake_sol": 100425.644416447
+  },
+  {
+    "identity": "F6kVwubXEfZZo6e4Kozrtg7WoWk5wTRmrC8pwoxSLa7S",
+    "vote_account": "E5Y8uSQ8SWHH7GynZqMGirckAybkWXH5QcxtZ6tLezbn",
+    "name": "Go by Jupiter",
+    "activated_stake": "100141626604800",
+    "activated_stake_sol": 100141.6266048
+  },
+  {
+    "identity": "sTEVErNNwF2qPnV6DuNPkWpEyCt4UU6k2Y3Hyn7WUFu",
+    "vote_account": "STevE9xVb1QfBHU4GgEn28r9oikAf5yxKJddF7fufwb",
+    "name": "STEVE",
+    "activated_stake": "98811658467174",
+    "activated_stake_sol": 98811.658467174
+  },
+  {
+    "identity": "RoYLttggWwa2st3KAGEjnPhsq4NPD5QwaNVyyR8pTz4",
+    "vote_account": "roYL9AoyuGae7uEAErzZhPSSxnLLZU4TNx8wmwCk77r",
+    "name": "Royal",
+    "activated_stake": "98698900698277",
+    "activated_stake_sol": 98698.900698277
+  },
+  {
+    "identity": "1i1yPyh843bTfi5qPgqozTbDcEX65rUNEFcUT2KAs2i",
+    "vote_account": "1i1yax3thZfiV8id5HTA61bjsxEi4pbjmhXsqy6JePP",
+    "name": "Lilith",
+    "activated_stake": "98413132706961",
+    "activated_stake_sol": 98413.132706961
+  },
+  {
+    "identity": "hnhCMmnrmod4rcyc3QRKkLEC9XnPTvYJ2gBvjgFiV4o",
+    "vote_account": "hnhxfrndd827LET6jvnQV4aWqpS2EedaHcT4gj8ArSu",
+    "name": "Hodl & Hodl LLLP",
+    "activated_stake": "98242127063701",
+    "activated_stake_sol": 98242.127063701
+  },
+  {
+    "identity": "dst2u7mXMyDvb14cSErRNA1mxH1d5VXbSXgZ3DKE9xH",
+    "vote_account": "dstqVmt3cDH43Ux2SeTY2Hza1eVW6pwGLwehWCLfuPd",
+    "name": "Dust Eleven",
+    "activated_stake": "98201867631163",
+    "activated_stake_sol": 98201.867631163
+  },
+  {
+    "identity": "DCKyEmMENQMtLXgbmUoHRmgP9XdJ9HsR5WxrKnSDCzKA",
+    "vote_account": "DCKYVqFDwUs5m2DhW9muK2EX86pootvWD8wXA4nSqDxU",
+    "name": "Dicky",
+    "activated_stake": "98100897174326",
+    "activated_stake_sol": 98100.897174326
+  },
+  {
+    "identity": "MicoB9cA9R6jsicdhzWFjwd9HMkV8FA4o3WxYU6Z2yz",
+    "vote_account": "MicobSZgB9CZNvmnFSYbEtMjy7CUui5o6P3XoGTwZC5",
+    "name": "MICOBO",
+    "activated_stake": "97591206637442",
+    "activated_stake_sol": 97591.206637442
+  },
+  {
+    "identity": "LiFiDJwJjW98MB8wxcnXpafKYsuz1hwpUkuszkERiX6",
+    "vote_account": "LiFiDDUsf6GCRHwkHzW4YnR1QErj99MAU9diwb8TvWk",
+    "name": "LI.FI",
+    "activated_stake": "96282545618649",
+    "activated_stake_sol": 96282.545618649
+  },
+  {
+    "identity": "BR1aTt4ZZUCwWJDkSYf1hqkYJjo7Mb7Ar8iVTkeSwUB8",
+    "vote_account": "AbacusTT3yhEFEKkQKjGStDhKDnvSFGpg9EqBwz8FnDF",
+    "name": "Abacus",
+    "activated_stake": "93429681682352",
+    "activated_stake_sol": 93429.681682352
+  },
+  {
+    "identity": "CpgSfd6QUoBw1267rTtJoZhELqC5q7isKLojBifSbNEE",
+    "vote_account": "7miZ2ZoXwS3YDzBRCbWcEtNVyuxk8WbbcyQwq7i5btvZ",
+    "name": "WestSide \ud83d\udd96",
+    "activated_stake": "92650207471958",
+    "activated_stake_sol": 92650.207471958
+  },
+  {
+    "identity": "By8MseMKtZQQaQjMHJiyetmc5AC8RZZv8C2ss33ktrHt",
+    "vote_account": "H1kyn75BFTXr8QRmToRRvuEEmYan5n6M5APyfhMLau3b",
+    "name": "Wave",
+    "activated_stake": "92349457898903",
+    "activated_stake_sol": 92349.457898903
+  },
+  {
+    "identity": "3Rv6ZVGUuRczP76322LyhTTYw2iM4avV4B5xFJocQJer",
+    "vote_account": "GaxxAn5335dA4U3772MCFeqdyqCVEfmsQTQ47YXfC2Xi",
+    "name": "Gaxx Validator",
+    "activated_stake": "92244365353729",
+    "activated_stake_sol": 92244.365353729
+  },
+  {
+    "identity": "BxkAkLR2W3agWtjMXBNvhxmB8vsn7zhjNQcyfost99KY",
+    "vote_account": "FSDKGroWxgBf7VmV6X1NLDhnncrWW2ekztwRWiJrPf3k",
+    "name": "\ud83e\ude90 To The Stars \ud83e\ude90",
+    "activated_stake": "91224065310249",
+    "activated_stake_sol": 91224.065310249
+  },
+  {
+    "identity": "sfvTq7ojrEc5WdXcHijz676eX1pc5MgoLxbkYSdRDAB",
+    "vote_account": "sfo5vA1fFdPRsvqd8qdePtTnK97Qj6Jj3GupEzmNPjJ",
+    "name": "soltop.sh",
+    "activated_stake": "90390857539399",
+    "activated_stake_sol": 90390.857539399
+  },
+  {
+    "identity": "2uxEHizFmmnLekKG2LZJwxNabhpymEYfdVCpgDxjt87m",
+    "vote_account": "Dcoj98wWiKhA4iqxcSg7NtuR2miA7tZqtycMdkPo8XDw",
+    "name": "\ud83c\udf40PADDY - \ud83d\udcb0JITO-BAM",
+    "activated_stake": "85707787089787",
+    "activated_stake_sol": 85707.787089787
+  },
+  {
+    "identity": "Hu7pi2Xg5Kav8vSAUUr5CCZaEmMCzT6FgCTpueu3oBtW",
+    "vote_account": "9YQXaP6VyiZepa1CCjGzBDZ1DZQ9rBSCfhKr5DLkUStz",
+    "name": null,
+    "activated_stake": "85269962819653",
+    "activated_stake_sol": 85269.962819653
+  },
+  {
+    "identity": "3BeharBd3j4sKQp7Qze27JLQLd9AEEwGTX9TC7dXYSNw",
+    "vote_account": "CP6mfD4Qc5AYrboXBAQeHMYj5x1UnYksDXRjG7DMkHH7",
+    "name": "Dragon Trust Stake",
+    "activated_stake": "84675748267583",
+    "activated_stake_sol": 84675.748267583
+  },
+  {
+    "identity": "7PpXQgDb9eCHN1Uudgi77Wm89cRz4T85YgDw83qvaJXd",
+    "vote_account": "B8Jud6Mqv1FSKpjBM2hPBqoPhGMAciX2UqR9WcepDF7F",
+    "name": "Nodance \ud83d\udc83 00",
+    "activated_stake": "81824199114473",
+    "activated_stake_sol": 81824.199114473
+  },
+  {
+    "identity": "KAoSp3EudGqUBXv46tQoDwbZxSm3iXa9wM2aF4ySbJJ",
+    "vote_account": "kaosFcskhYZCQidKKmkUSQLAqwpz3vtPpyyZ67N5NwA",
+    "name": "Aepalizage",
+    "activated_stake": "80971672641222",
+    "activated_stake_sol": 80971.672641222
+  },
+  {
+    "identity": "7HMHSdQkjDwz9Q5zAhEy83uzW3XHJchjdpMYapKXcKt5",
+    "vote_account": "GZgVV7MMweKm11hh8z8Nui9kRo3VxUVr2qgmkDdtJesa",
+    "name": "GERSIA",
+    "activated_stake": "79698308866419",
+    "activated_stake_sol": 79698.308866419
+  },
+  {
+    "identity": "TopjgY7N1fJdnW89S9fX6t7LF61nspgXGL1NpgAKhDG",
+    "vote_account": "5DnWqsJceNamPNNUpMnVr1XQ8anSxcj9TXRD5Rn52prJ",
+    "name": "TopReward - 0% fee and mev, top APY!",
+    "activated_stake": "70460959460651",
+    "activated_stake_sol": 70460.959460651
+  },
+  {
+    "identity": "MargusJeV9bkePFLWbbzRNsMVo3Re6h9wKB5Ago8Tfj",
+    "vote_account": "CzmqDuqEpfnkptuLAcikmJrhCnhFXo8aUBj6Rto1SPAc",
+    "name": "MARGUS.ONE \ud83d\udc8e 0% fee +MEV!",
+    "activated_stake": "61857556124641",
+    "activated_stake_sol": 61857.556124641
+  },
+  {
+    "identity": "peNgUgnzs1jGogUPW8SThXMvzNpzKSNf3om78xVPAYx",
+    "vote_account": "pENgUh4K9zNacyU3PXVE9KugW98XCqZsWpEvA8d8wzX",
+    "name": "PENGU Validator",
+    "activated_stake": "53977409538387",
+    "activated_stake_sol": 53977.409538387
+  },
+  {
+    "identity": "tapeQbu7YwpMuJNA2oSKBJkfBdic5QJ9bCZt27Q4PVf",
+    "vote_account": "TAPEtHVPxwEGgjZtEErkE4cSG7f2c22BZtdVvYGN5D3",
+    "name": "Tapedrive",
+    "activated_stake": "53628780906792",
+    "activated_stake_sol": 53628.780906792
+  },
+  {
+    "identity": "GqDCbnafLmKkdqiqf278jDLXqjjZMB2sViZQtR82jPUf",
+    "vote_account": "4KfAqBj3Jvi9GGngFK1MbZkjHTcSFyvhFnVwc2QrNiEh",
+    "name": "SolLana",
+    "activated_stake": "52581055534813",
+    "activated_stake_sol": 52581.055534813
+  },
+  {
+    "identity": "7pR7t5axFfkg2VZB1uAuFNUvpAeowq2v15J4gw5MmHTB",
+    "vote_account": "59k9CiZ7L1bpEivLrAtaMPMgw18syZ4RQsJUo3hbbj8x",
+    "name": null,
+    "activated_stake": "44784232291851",
+    "activated_stake_sol": 44784.232291851
+  },
+  {
+    "identity": "2abwQG3v2xRemFxRszVHSfnjJNe9zu5X8duKgxjyLeaK",
+    "vote_account": "EogKVYgic8LKAuV1kR9nRqJaS5zpwCvSMfqoehzmAMpK",
+    "name": "Bitwise Onchain Solutions Research",
+    "activated_stake": "44442780789032",
+    "activated_stake_sol": 44442.780789032
+  },
+  {
+    "identity": "EWARp8Syq8cTWGWHtP5LT9fKAn5GvXfSCH8LfAwpgQ6m",
+    "vote_account": "4BVYjw1ztUzUPsxsaCheWWwThT2X4rjogZytGnuWPUGg",
+    "name": "SOLrainDrops",
+    "activated_stake": "35256461603397",
+    "activated_stake_sol": 35256.461603397
+  },
+  {
+    "identity": "49j9bnkdgVNxLwsZ9h88sPR5MYEmsUyKrrJ6ZW8ijBrb",
+    "vote_account": "9QFvZhLvpbcFJTPkKq5wTWR2DGTXqrsP8z9igPgjSsZ1",
+    "name": "StakeChain",
+    "activated_stake": "32947109978546",
+    "activated_stake_sol": 32947.109978546
+  },
+  {
+    "identity": "tboxdsRMjUfYRh2utXwWbW5vzFohWmgbkCGhdb9uVgs",
+    "vote_account": "tboxpC4pHDqMfg5waLxSF7F2QaZvrUDge8MxSSnoZif",
+    "name": "ToolboxDAO Validator",
+    "activated_stake": "32022944229160",
+    "activated_stake_sol": 32022.94422916
+  },
+  {
+    "identity": "Atom7LRkdXj6MBoWJPgjaetrCMrgB9nnkQBYXTWE8Z3S",
+    "vote_account": "QUANT7qKUEW4PS4eP9jq4K35rDHpgWkWcgjbW1CwnGJ",
+    "name": "Quantum Crypto",
+    "activated_stake": "24173122928073",
+    "activated_stake_sol": 24173.122928073
+  },
+  {
+    "identity": "5429ouKuzSkH8TV5GULMLtqkEGnJ7H6RsfhDLyscqXoB",
+    "vote_account": "HwYTVzrz6oB5exDihSKaoYAMaicZ1nLv859AS71C16W7",
+    "name": null,
+    "activated_stake": "10763411579217",
+    "activated_stake_sol": 10763.411579217
+  },
+  {
+    "identity": "CRNyGD7xNPThLjNviGdxoAiHpQXZKx3UeyCfrxnmTi8r",
+    "vote_account": "8nshUCt7FvxGRphfmiqAr9wdkRMrktfuS7YMhaaP3oUV",
+    "name": null,
+    "activated_stake": "522768014414",
+    "activated_stake_sol": 522.768014414
+  },
+  {
+    "identity": "BVHwHvRNwt8eM1x7cmfrEdhrbZAdWiFe9FnEFGhGuUTR",
+    "vote_account": "GkwAKTia6y2PkYpfYF52PT7ux1g5H3BpfqptpyJcK3vG",
+    "name": "",
+    "activated_stake": "2896291184",
+    "activated_stake_sol": 2.896291184
+  },
+  {
+    "identity": "KESTR4VhkALtPjwn4QLEErMB6vEmi8nyDo8JRqJ7KsH",
+    "vote_account": "KESTRiqRhTuQo1MqU8TPevgkbSkGKKDrkcg8R5aNje9",
+    "name": null,
+    "activated_stake": "1007922776",
+    "activated_stake_sol": 1.007922776
+  },
+  {
+    "identity": "BpdmpWst6JpgRqUfUdr2P2eiJDCxmRXpTwMqq7St8vFH",
+    "vote_account": "Cw6jFzzz4HKFq7LpNgK3wbCL24dqyr7SKreVbJYu4gRC",
+    "name": null,
+    "activated_stake": "0",
+    "activated_stake_sol": 0.0
+  }
+]

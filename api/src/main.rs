@@ -5,9 +5,10 @@ use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    releases, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
+    rewards, take_rates, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
+    versions, workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -142,6 +143,13 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<list_clients::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(list_clients::handler);
+
+    let route_releases = warp::path!("releases")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<releases::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(releases::handler);
 
     let route_providers = warp::path!("providers")
         .and(warp::path::end())
@@ -322,6 +330,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validators)
         .or(route_clients)
         .or(route_providers)
+        .or(route_releases)
         .or(route_validator_score_breakdown)
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
