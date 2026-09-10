@@ -68,22 +68,34 @@ pub trait ReleaseFetcher {
 
 /// Gossip reports `26.8.2` where the Firedancer tag zero-pads to `v26.08.2`, and no tag carries a
 /// leading zero that means anything, so the padding is dropped to keep one spelling per version.
+/// A prerelease suffix is carried over untouched.
 pub fn normalize_version(tag: &str) -> String {
     let version = tag.trim().trim_start_matches('v');
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() == 3
-        && parts
+    let (numbers, prerelease) = match version.split_once('-') {
+        Some((numbers, prerelease)) => (numbers, Some(prerelease)),
+        None => (version, None),
+    };
+
+    let parts: Vec<&str> = numbers.split('.').collect();
+    if parts.len() != 3
+        || !parts
             .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
     {
-        return parts
-            .iter()
-            .map(|p| p.trim_start_matches('0'))
-            .map(|p| if p.is_empty() { "0" } else { p })
-            .collect::<Vec<_>>()
-            .join(".");
+        return version.to_string();
     }
-    version.to_string()
+
+    let numbers = parts
+        .iter()
+        .map(|part| part.trim_start_matches('0'))
+        .map(|part| if part.is_empty() { "0" } else { part })
+        .collect::<Vec<_>>()
+        .join(".");
+
+    match prerelease {
+        Some(prerelease) => format!("{numbers}-{prerelease}"),
+        None => numbers,
+    }
 }
 
 /// Frankendancer keeps the `0.<frankendancer>.<agave>` numbering it always had; Firedancer proper
@@ -199,6 +211,8 @@ mod tests {
         assert_eq!(normalize_version("v26.08.2"), "26.8.2");
         assert_eq!(normalize_version("v0.1106.40201"), "0.1106.40201");
         assert_eq!(normalize_version("v1.1.4"), "1.1.4");
+        // A padded core keeps its suffix and still loses the padding.
+        assert_eq!(normalize_version("v26.08.2-rc.1"), "26.8.2-rc.1");
     }
 
     #[test]
