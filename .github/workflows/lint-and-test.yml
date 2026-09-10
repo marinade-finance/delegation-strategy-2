@@ -19,20 +19,6 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:17.4
-        env:
-          POSTGRES_DB: delegation-strategy
-          POSTGRES_USER: delegation-strategy
-          POSTGRES_PASSWORD: delegation-strategy
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: 🚧 Checkout project
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +49,19 @@ jobs:
       - name: 🧭 Run cargo lint
         run: cargo fmt -- --check && cargo clippy
 
+      # The store-backed suites start fake-gcs-server and marinade-directory
+      # themselves and fail, not skip, when the image is missing; the image is
+      # built from the tag the suites were verified against.
+      - name: 📦 Checkout marinade-directory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: marinade-finance/marinade-directory
+          ref: v0.1.0
+          path: marinade-directory
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: 📦 Build the marinade-directory image
+        run: docker build -t marinade-directory:v0.1.0 marinade-directory
+
       - name: 🧨 Run cargo tests
-        env:
-          DS_TEST_POSTGRES_URL: postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy
         run: cargo test --all-features
