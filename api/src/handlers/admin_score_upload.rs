@@ -15,6 +15,7 @@ pub struct ResponseAdminScoreUpload {
 }
 
 #[derive(Deserialize, Serialize, Debug, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epoch: i32,
     components: String,

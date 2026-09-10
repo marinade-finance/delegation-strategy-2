@@ -20,6 +20,7 @@ pub struct ResponseScoreBreakdowns {
 }
 
 #[derive(Deserialize, Serialize, Debug, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
     query_vote_account: Option<String>,
