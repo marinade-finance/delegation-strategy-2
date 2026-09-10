@@ -227,6 +227,21 @@ pub fn replace_entries<T>(doc: &mut BTreeMap<String, T>, incoming: BTreeMap<Stri
     doc.extend(incoming);
 }
 
+/// Writes a document its writer owns outright: creates it, or replaces the
+/// version that is there. The read discards the body it does not need.
+pub async fn put_whole<T: Serialize>(
+    directory: &Directory,
+    path: &str,
+    body: &T,
+) -> anyhow::Result<()> {
+    let precondition = match directory.get::<serde::de::IgnoredAny>(path).await? {
+        Some(stored) => Precondition::IfMatch(stored.etag),
+        None => Precondition::Create,
+    };
+    directory.put(path, body, precondition).await?;
+    Ok(())
+}
+
 /// GET-merge-PUT of a per-epoch document. The one repeat covers a concurrent
 /// first write of the epoch; a lost `IfMatch` race is an error.
 pub async fn merge_into<T>(
@@ -369,7 +384,7 @@ pub struct ClusterInfoSample {
     pub epoch_slot: u64,
     pub transaction_count: u64,
     pub created_at: DateTime<Utc>,
-    pub slots_per_year: Option<f64>,
+    pub slots_per_year: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -378,3 +393,9 @@ pub struct ClusterInfoDoc {
     #[serde(default)]
     pub samples: Vec<ClusterInfoSample>,
 }
+
+/// What close-epoch seals under `/validators/{stream}/{epoch}`.
+pub type SealedUptimesDoc = BTreeMap<String, Vec<UptimeInterval>>;
+pub type SealedCommissionsDoc = BTreeMap<String, Vec<CommissionSample>>;
+pub type SealedVersionsDoc = BTreeMap<String, Vec<VersionSample>>;
+pub type SealedClusterInfoDoc = Vec<ClusterInfoSample>;

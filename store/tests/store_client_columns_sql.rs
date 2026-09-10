@@ -1,141 +1,14 @@
 mod common;
 
-use collect::slot_params::baseline_slots_per_year;
-use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
+use collect::validators_performance::ValidatorPerformance;
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use store::dto::UNKNOWN_CLIENT_NAME;
 use store::utils::{load_validators, load_versions, ValidatorOverlays};
-use store::versions::{store_versions, StoreVersionsParams};
-use structopt::StructOpt;
-use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
 const VOTE_ACCOUNT: &str = "voteClientColumns";
-
-struct ClientFields {
-    client_id: Option<u16>,
-    client_id_raw: Option<String>,
-}
-
-fn agave() -> ClientFields {
-    ClientFields {
-        client_id: Some(3),
-        client_id_raw: Some("Agave".into()),
-    }
-}
-
-fn performance(client: &ClientFields) -> ValidatorPerformance {
-    ValidatorPerformance {
-        commission: 7,
-        version: Some("2.0.0".into()),
-        client_id: client.client_id,
-        client_id_raw: client.client_id_raw.clone(),
-        feature_set: Some(123),
-        shred_version: Some(456),
-        credits: 10,
-        leader_slots: 100,
-        blocks_produced: 100,
-        skip_rate: 0f64,
-        delinquent: false,
-    }
-}
-
-fn write_yaml(name: &str, contents: &str) -> String {
-    let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
-    std::fs::write(&path, contents).unwrap();
-    path.to_str().unwrap().to_string()
-}
-
-async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFields) {
-    let mut validators = HashMap::new();
-    validators.insert(VOTE_ACCOUNT.to_string(), performance(fields));
-    let snapshot = ValidatorsPerformanceSnapshot {
-        epoch: EPOCH,
-        epoch_slot: 1,
-        transaction_count: 1,
-        created_at: "2026-07-31T00:00:00Z".into(),
-        slots_per_year: baseline_slots_per_year(),
-        cluster_inflation: None,
-        validators,
-        rewards: None,
-    };
-    let path = write_yaml(name, &serde_yaml::to_string(&snapshot).unwrap());
-    store_versions(
-        StoreVersionsParams::from_iter(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
-}
-
-async fn stored_client_columns(client: &Client, table: &str) -> Vec<ClientFields> {
-    client
-        .query(
-            &format!(
-                "SELECT client_id, client_id_raw
-                 FROM {table} WHERE vote_account = $1 ORDER BY client_id NULLS LAST"
-            ),
-            &[&VOTE_ACCOUNT],
-        )
-        .await
-        .unwrap()
-        .iter()
-        .map(|row| ClientFields {
-            client_id: row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_id_raw: row.get("client_id_raw"),
-        })
-        .collect()
-}
-
-#[tokio::test]
-async fn store_versions_logs_a_change_only_when_the_resolved_client_changes() {
-    let schema = "ds_test_store_versions_client";
-    if skip_without_database(schema) {
-        return;
-    }
-    let mut client = migrated_client(schema).await.unwrap();
-
-    run_store_versions(&mut client, "versions-first", &agave()).await;
-    assert_eq!(
-        stored_client_columns(&client, "versions").await.len(),
-        1,
-        "the first snapshot must be recorded"
-    );
-
-    run_store_versions(&mut client, "versions-unchanged", &agave()).await;
-    assert_eq!(
-        stored_client_columns(&client, "versions").await.len(),
-        1,
-        "an unchanged snapshot must not add a row"
-    );
-
-    let mut rerendered = agave();
-    rerendered.client_id_raw = Some("Unknown(3)".into());
-    run_store_versions(&mut client, "versions-rerendered", &rerendered).await;
-    assert_eq!(
-        stored_client_columns(&client, "versions").await.len(),
-        1,
-        "the answering RPC rendering the same id differently is not a client change"
-    );
-
-    let mut switched = agave();
-    switched.client_id = Some(1);
-    switched.client_id_raw = Some("JitoLabs".into());
-    run_store_versions(&mut client, "versions-switched", &switched).await;
-    assert_eq!(
-        stored_client_columns(&client, "versions").await.len(),
-        2,
-        "a different resolved client id must be recorded"
-    );
-
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
 
 // Re-resolving client_id_raw is what makes a later client-ids.csv row reclassify old rows.
 #[tokio::test]

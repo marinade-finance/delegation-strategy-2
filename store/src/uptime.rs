@@ -1,13 +1,10 @@
-use crate::utils::*;
+use crate::directory::{Directory, Doc, Precondition};
+use crate::docs::{UptimeInterval, UptimeState, UptimeStatus, UptimesDoc, LIVE_UPTIMES};
 use chrono::{DateTime, Duration, Utc};
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
-use log::{debug, info, warn};
-use rust_decimal::prelude::*;
+use log::{info, warn};
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
-use tokio_postgres::types::ToSql;
-use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreUptimeParams {
@@ -15,127 +12,112 @@ pub struct StoreUptimeParams {
     snapshot_path: String,
 }
 
-static UP: &str = "UP";
-static DOWN: &str = "DOWN";
-
-fn status_from_delinquency(delinquent: bool) -> &'static str {
-    if delinquent {
-        DOWN
-    } else {
-        UP
-    }
+/// A sample this far past the open interval's end still extends it; a longer
+/// gap closes the interval where it stood and opens a new one.
+fn status_max_delay_to_extend() -> Duration {
+    Duration::minutes(5)
 }
 
-pub async fn store_uptime(
-    params: StoreUptimeParams,
-    psql_client: &mut Client,
-) -> anyhow::Result<()> {
+pub async fn store_uptime(params: StoreUptimeParams, directory: &Directory) -> anyhow::Result<()> {
     info!("Storing uptime...");
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
-    let mut validators_with_extended_status: HashSet<String> = HashSet::new();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
-    let default_status_end_at = snapshot_created_at
-        .checked_add_signed(Duration::minutes(1))
-        .unwrap();
-    let status_max_delay_to_extend = Duration::minutes(5);
-    let mut records_extensions: HashMap<i64, DateTime<Utc>> = Default::default();
 
     info!("Loaded the snapshot");
 
-    for row in psql_client
-        .query(
-            "
-        SELECT DISTINCT ON (vote_account)
-            id,
-            vote_account,
-            status,
-            epoch,
-            start_at,
-            end_at
-        FROM uptimes
-        ORDER BY vote_account, end_at DESC
-    ",
-            &[],
-        )
-        .await?
-    {
-        let id: i64 = row.get("id");
-        let vote_account: &str = row.get("vote_account");
-        let status: &str = row.get("status");
-        let epoch: Decimal = row.get("epoch");
-        let start_at: DateTime<Utc> = row.get("start_at");
-        let end_at: DateTime<Utc> = row.get("end_at");
-        let latest_end_extension_at = end_at
-            .checked_add_signed(status_max_delay_to_extend)
-            .unwrap();
+    let stored = directory.get::<UptimesDoc>(LIVE_UPTIMES).await?;
+    write_uptimes(directory, stored, &snapshot).await
+}
 
-        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
-            let status_from_snapshot = status_from_delinquency(validator_snapshot.delinquent);
-            if latest_end_extension_at > snapshot_created_at {
-                if status == status_from_snapshot && epoch == snapshot_epoch {
-                    validators_with_extended_status.insert(vote_account.to_string());
-                    records_extensions.insert(id, default_status_end_at);
-                } else {
-                    records_extensions.insert(id, snapshot_created_at);
-                }
-            }
-        }
+/// Applies one sample to the accumulator and writes it back under the version
+/// it was read at.
+pub async fn write_uptimes(
+    directory: &Directory,
+    stored: Option<Doc<UptimesDoc>>,
+    snapshot: &ValidatorsPerformanceSnapshot,
+) -> anyhow::Result<()> {
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let (mut uptimes, precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (UptimesDoc::new(), Precondition::Create),
+    };
+    refuse_older_epoch(&uptimes, snapshot.epoch)?;
 
-        debug!("found uptime record: {id} {vote_account} {status} {start_at} {end_at}");
-    }
+    apply_uptime_samples(&mut uptimes, snapshot, created_at);
 
-    let mut query = UpdateQueryCombiner::new(
-        "uptimes".to_string(),
-        "end_at = u.end_at".to_string(),
-        "u(id, end_at)".to_string(),
-        "uptimes.id = u.id".to_string(),
-    );
+    // No retry on a conflict: two overlapping runs must not both write, and
+    // the next minute's sample carries what this one loses.
+    directory.put(LIVE_UPTIMES, &uptimes, precondition).await?;
 
-    for (id, status_end_at) in records_extensions.iter() {
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![id, status_end_at];
-        query.add(
-            &mut params,
-            HashMap::from_iter([(0, "BIGINT".into()), (1, "TIMESTAMP WITH TIME ZONE".into())]),
-        );
-    }
-    query.execute(psql_client).await?;
-    info!("Extended previous {} uptimes", records_extensions.len());
-
-    let mut query = InsertQueryCombiner::new(
-        "uptimes".to_string(),
-        "vote_account, status, epoch, start_at, end_at".to_string(),
-    );
-
-    for (vote_account, snapshot) in snapshot.validators.iter() {
-        if !validators_with_extended_status.contains(vote_account) {
-            if snapshot.delinquent {
-                let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    vote_account,
-                    &DOWN,
-                    &snapshot_epoch,
-                    &snapshot_created_at,
-                    &default_status_end_at,
-                ];
-                query.add(&mut params);
-                warn!("Validator {vote_account} is now DOWN");
-            } else {
-                let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    vote_account,
-                    &UP,
-                    &snapshot_epoch,
-                    &snapshot_created_at,
-                    &default_status_end_at,
-                ];
-                query.add(&mut params);
-                info!("Validator {vote_account} is now UP");
-            }
-        }
-    }
-    let insertions = query.execute(psql_client).await?;
-    info!("Stored {} changed uptimes", insertions.unwrap_or(0));
+    info!("Stored uptimes of {} validators", uptimes.len());
 
     Ok(())
+}
+
+/// The accumulator moves forward only: a sample from an epoch already passed
+/// would reopen it.
+fn refuse_older_epoch(uptimes: &UptimesDoc, epoch: u64) -> anyhow::Result<()> {
+    let stored_epoch = uptimes
+        .values()
+        .map(|state| state.open.epoch)
+        .max()
+        .unwrap_or(epoch);
+    if epoch < stored_epoch {
+        anyhow::bail!("Sample of epoch {epoch} is older than the stored epoch {stored_epoch}");
+    }
+    Ok(())
+}
+
+/// Extends the open interval while the status and the epoch hold and the
+/// sample is inside the extension window; otherwise closes it and opens a new
+/// one at the sample.
+pub fn apply_uptime_samples(
+    uptimes: &mut UptimesDoc,
+    snapshot: &ValidatorsPerformanceSnapshot,
+    created_at: DateTime<Utc>,
+) {
+    let default_end_at = created_at + Duration::minutes(1);
+
+    for (vote_account, validator) in snapshot.validators.iter() {
+        let status = UptimeStatus::from_delinquency(validator.delinquent);
+        let opened = UptimeInterval {
+            status,
+            epoch: snapshot.epoch,
+            start_at: created_at,
+            end_at: default_end_at,
+        };
+
+        let Some(state) = uptimes.get_mut(vote_account) else {
+            uptimes.insert(
+                vote_account.clone(),
+                UptimeState {
+                    open: opened,
+                    closed: Vec::new(),
+                },
+            );
+            warn_on_status(vote_account, status);
+            continue;
+        };
+
+        let within_window = state.open.end_at + status_max_delay_to_extend() > created_at;
+        if within_window && state.open.status == status && state.open.epoch == snapshot.epoch {
+            state.open.end_at = default_end_at;
+            continue;
+        }
+        if within_window {
+            // A status or epoch change ends the interval where the sample found it.
+            state.open.end_at = created_at;
+        }
+        let closed = std::mem::replace(&mut state.open, opened);
+        state.closed.push(closed);
+        warn_on_status(vote_account, status);
+    }
+}
+
+fn warn_on_status(vote_account: &str, status: UptimeStatus) {
+    match status {
+        UptimeStatus::Down => warn!("Validator {vote_account} is now DOWN"),
+        UptimeStatus::Up => info!("Validator {vote_account} is now UP"),
+    }
 }

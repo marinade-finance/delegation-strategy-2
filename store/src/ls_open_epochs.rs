@@ -1,32 +1,40 @@
+use crate::directory::Directory;
+use crate::docs::{EPOCHS_DIR, SNAPSHOT_DIR};
 use log::info;
-use rust_decimal::prelude::*;
+use std::collections::HashSet;
 use structopt::StructOpt;
-use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct LsOpenEpochsParams {}
 
-pub async fn list_open_epochs(psql_client: &Client) -> anyhow::Result<()> {
+pub async fn list_open_epochs(directory: &Directory) -> anyhow::Result<()> {
     info!("Finding open epochs...");
 
-    let rows = psql_client
-        .query(
-            "
-        SELECT DISTINCT epoch
-        FROM validators
-        WHERE epoch NOT IN (SELECT DISTINCT epoch FROM epochs)
-    ",
-            &[],
-        )
-        .await?;
-
-    for row in rows.iter() {
-        let epoch: Decimal = row.get("epoch");
+    let epochs = open_epochs(directory).await?;
+    for epoch in epochs.iter() {
         println!("{epoch}");
         info!("Open epoch: {epoch}");
     }
 
-    info!("Found open epochs: {}", rows.len());
+    info!("Found open epochs: {}", epochs.len());
 
     Ok(())
+}
+
+/// An epoch is open while it has a snapshot but no `epochs` document.
+pub async fn open_epochs(directory: &Directory) -> anyhow::Result<Vec<String>> {
+    let sealed: HashSet<String> = directory
+        .list(EPOCHS_DIR)
+        .await?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+
+    Ok(directory
+        .list(SNAPSHOT_DIR)
+        .await?
+        .into_iter()
+        .map(|entry| entry.name)
+        .filter(|epoch| !sealed.contains(epoch))
+        .collect())
 }

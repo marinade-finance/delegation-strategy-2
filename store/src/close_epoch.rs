@@ -1,12 +1,18 @@
-use crate::utils::UpdateQueryCombiner;
+use crate::directory::{Directory, Precondition};
+use crate::docs::{
+    epoch_doc_path, put_whole, ClusterInfoDoc, CommissionsDoc, EpochDoc, SealedClusterInfoDoc,
+    SealedCommissionsDoc, SealedUptimesDoc, SealedVersionsDoc, SnapshotDoc, UptimeInterval,
+    UptimeStatus, UptimesDoc, VersionsDoc, CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR,
+    LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, SNAPSHOT_DIR, UPTIMES_DIR,
+    VERSIONS_DIR,
+};
+use crate::dto::Validator;
 use chrono::{DateTime, Utc};
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
-use tokio_postgres::{types::ToSql, Client};
 
 #[derive(Debug, StructOpt)]
 pub struct CloseEpochParams {
@@ -14,242 +20,362 @@ pub struct CloseEpochParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-
-pub async fn create_epoch_record(
-    psql_client: &Client,
-    epoch: u64,
-    cluster_inflation: ClusterInflation,
-    slots_per_year: f64,
-) -> anyhow::Result<()> {
-    psql_client
-        .execute(
-            "
-        WITH
-            epoch_cluster_info AS (
-                SELECT
-                    MAX(transaction_count) - MIN(transaction_count) transaction_count,
-                    MIN(created_at) AS start_at,
-                    MAX(created_at) AS end_at
-                FROM cluster_info
-                WHERE epoch = $1
-            ),
-            previous_epoch AS (
-                SELECT
-                    MAX(end_at) end_at
-                FROM epochs
-                WHERE epoch = $1 - 1
-            )
-        INSERT INTO epochs (
-            epoch,
-            start_at,
-            end_at,
-            transaction_count,
-            supply,
-            inflation,
-            inflation_taper,
-            slots_per_year
-        ) SELECT
-            $1,
-            COALESCE(previous_epoch.end_at, epoch_cluster_info.start_at) start_at,
-            epoch_cluster_info.end_at,
-            transaction_count,
-            $2,
-            $3,
-            $4,
-            $5
-        FROM epoch_cluster_info, previous_epoch
-    ",
-            &[
-                &Decimal::from(epoch),
-                &Decimal::from(cluster_inflation.sol_total_supply),
-                &cluster_inflation.inflation,
-                &cluster_inflation.inflation_taper,
-                &slots_per_year,
-            ],
-        )
-        .await?;
-
-    Ok(())
-}
-
-pub async fn update_observed_commission(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
-    psql_client
-            .execute("
-                WITH grouped_commissions AS (
-                    WITH
-                        commissions AS (SELECT vote_account, MIN(commission) AS commission_min, MAX(commission) AS commission_max FROM commissions WHERE epoch = $1 GROUP BY vote_account)
-                    SELECT
-                        commissions.commission_min,
-                        commissions.commission_max,
-                        validators.vote_account
-                    FROM
-                        validators
-                        LEFT JOIN commissions ON validators.vote_account = commissions.vote_account
-                    WHERE validators.epoch = $1
-                )
-                UPDATE validators
-                SET
-                    commission_max_observed = GREATEST(commission_max, commission_advertised, commission_effective),
-                    commission_min_observed = LEAST(commission_min, commission_advertised, commission_effective)
-                FROM grouped_commissions
-                WHERE grouped_commissions.vote_account = validators.vote_account AND validators.epoch = $1
-                "
-,
-        &[
-            &Decimal::from(epoch),
-        ],
-    )
-    .await?;
-
-    Ok(())
-}
-
-pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
-    psql_client
-            .execute("
-                WITH uptimes AS (
-                    WITH
-                        vars AS (SELECT epoch, end_at - start_at AS epoch_duration FROM epochs WHERE epoch = $1),
-                        downtimes AS (SELECT vote_account, SUM(end_at - start_at) AS downtime FROM uptimes WHERE epoch = $1 AND status = 'DOWN' GROUP BY vote_account)
-                    SELECT
-                        LEAST(GREATEST(COALESCE(1 - EXTRACT('epoch' FROM downtimes.downtime) / EXTRACT('epoch' FROM vars.epoch_duration), 1), 0), 1) uptime_pct,
-                        EXTRACT('epoch' FROM GREATEST(COALESCE(vars.epoch_duration - downtimes.downtime, vars.epoch_duration), '0 seconds')) uptime,
-                        EXTRACT('epoch' FROM COALESCE(downtimes.downtime, '0 seconds')) downtime,
-                        validators.vote_account,
-                        vars.epoch
-                    FROM
-                        validators
-                        INNER JOIN vars ON validators.epoch = vars.epoch
-                        LEFT JOIN downtimes ON validators.vote_account = downtimes.vote_account
-                    WHERE validators.epoch = $1
-                )
-                UPDATE validators
-                SET uptime_pct = uptimes.uptime_pct, uptime = uptimes.uptime, downtime = uptimes.downtime
-                FROM uptimes
-                WHERE uptimes.vote_account = validators.vote_account AND uptimes.epoch = validators.epoch
-                "
-,
-        &[
-            &Decimal::from(epoch),
-        ],
-    )
-    .await?;
-
-    Ok(())
-}
-
-struct ValidatorUpdateRecord {
-    vote_account: String,
-    epoch: Decimal,
-    commission_effective: Option<i32>,
-    credits: Decimal,
-    leader_slots: Decimal,
-    blocks_produced: Decimal,
-    skip_rate: f64,
-    updated_at: DateTime<Utc>,
-}
-
 pub async fn close_epoch(
     epoch_params: CloseEpochParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Finalizing validators snapshot...");
 
     let snapshot_file = std::fs::File::open(epoch_params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let rewards = snapshot.rewards.unwrap();
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let epoch = snapshot.epoch;
+    let inflation = snapshot
+        .cluster_inflation
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("The snapshot of epoch {epoch} carries no inflation"))?;
 
-    create_epoch_record(
-        psql_client,
-        snapshot.epoch,
-        snapshot.cluster_inflation.unwrap(),
+    info!("Loaded the snapshot");
+
+    let uptimes = read_live::<UptimesDoc>(directory, LIVE_UPTIMES).await?;
+    let commissions = read_live::<CommissionsDoc>(directory, LIVE_COMMISSIONS).await?;
+    let versions = read_live::<VersionsDoc>(directory, LIVE_VERSIONS).await?;
+    let cluster_info = read_live::<ClusterInfoDoc>(directory, LIVE_CLUSTER_INFO).await?;
+
+    let epoch_record = build_epoch_record(
+        directory,
+        epoch,
+        &cluster_info.body,
+        inflation,
         snapshot.slots_per_year,
     )
     .await?;
 
-    let mut updated_identities: HashSet<_> = Default::default();
+    let snapshot_path = epoch_doc_path(SNAPSHOT_DIR, epoch);
+    let stored = directory
+        .get::<SnapshotDoc>(&snapshot_path)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{snapshot_path} holds no validators to finalize"))?;
+    let mut validators = stored.body;
+    apply_finalized_performance(&mut validators, &snapshot, created_at);
+    apply_uptimes(&mut validators, &uptimes.body, epoch, &epoch_record);
+    apply_observed_commissions(&mut validators, &commissions.body, epoch);
+    directory
+        .put(
+            &snapshot_path,
+            &validators,
+            Precondition::IfMatch(stored.etag),
+        )
+        .await?;
+    info!("Finalized {} validator records", validators.len());
 
-    info!("Loaded the snapshot");
+    seal(
+        directory,
+        &epoch_doc_path(UPTIMES_DIR, epoch),
+        seal_uptimes(&uptimes.body, epoch),
+    )
+    .await?;
+    seal(
+        directory,
+        &epoch_doc_path(COMMISSIONS_DIR, epoch),
+        seal_commissions(&commissions.body, epoch),
+    )
+    .await?;
+    seal(
+        directory,
+        &epoch_doc_path(VERSIONS_DIR, epoch),
+        seal_versions(&versions.body, epoch),
+    )
+    .await?;
+    seal(
+        directory,
+        &epoch_doc_path(CLUSTER_INFO_DIR, epoch),
+        seal_cluster_info(&cluster_info.body, epoch),
+    )
+    .await?;
+    info!("Sealed the streams of epoch {epoch}");
 
-    let validator_update_records: Vec<_> = snapshot
-        .validators
-        .iter()
-        .map(|(vote_account, v)| ValidatorUpdateRecord {
-            vote_account: vote_account.clone(),
-            epoch: snapshot_epoch,
-            commission_effective: rewards
-                .get(vote_account)
-                .and_then(|r| r.commission_effective.map(|c| c as i32)),
-            credits: v.credits.into(),
-            leader_slots: v.leader_slots.into(),
-            blocks_produced: v.blocks_produced.into(),
-            skip_rate: v.skip_rate,
-            updated_at: snapshot_created_at,
-        })
-        .collect();
+    directory
+        .put(
+            LIVE_UPTIMES,
+            &trim_uptimes(uptimes.body, epoch),
+            Precondition::IfMatch(uptimes.etag),
+        )
+        .await?;
+    directory
+        .put(
+            LIVE_COMMISSIONS,
+            &trim_commissions(commissions.body, epoch),
+            Precondition::IfMatch(commissions.etag),
+        )
+        .await?;
+    directory
+        .put(
+            LIVE_VERSIONS,
+            &trim_versions(versions.body, epoch),
+            Precondition::IfMatch(versions.etag),
+        )
+        .await?;
+    directory
+        .put(
+            LIVE_CLUSTER_INFO,
+            &trim_cluster_info(cluster_info.body, epoch),
+            Precondition::IfMatch(cluster_info.etag),
+        )
+        .await?;
+    info!("Trimmed the accumulators to epoch {}", epoch + 1);
 
-    for chunk in validator_update_records.chunks(DEFAULT_CHUNK_SIZE) {
-        let mut query = UpdateQueryCombiner::new(
-            "validators".to_string(),
-            "
-            commission_effective = u.commission_effective,
-            credits = u.credits,
-            leader_slots = u.leader_slots,
-            blocks_produced = u.blocks_produced,
-            skip_rate = u.skip_rate,
-            updated_at = u.updated_at
-            "
-            .to_string(),
-            "u(
-                vote_account,
-                epoch,
-                commission_effective,
-                credits,
-                leader_slots,
-                blocks_produced,
-                skip_rate,
-                updated_at
-            )"
-            .to_string(),
-            "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
-        );
-        for v in chunk {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &v.vote_account,
-                &v.epoch,
-                &v.commission_effective,
-                &v.credits,
-                &v.leader_slots,
-                &v.blocks_produced,
-                &v.skip_rate,
-                &v.updated_at,
-            ];
-            query.add(
-                &mut params,
-                HashMap::from_iter([
-                    (1, "NUMERIC".into()),                  // epoch
-                    (2, "INTEGER".into()),                  // commission_effective
-                    (3, "NUMERIC".into()),                  // credits
-                    (4, "NUMERIC".into()),                  // leader_slots
-                    (5, "NUMERIC".into()),                  // blocks_produced
-                    (6, "DOUBLE PRECISION".into()),         // skip_rate
-                    (7, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                ]),
-            );
-            updated_identities.insert(v.vote_account.clone());
-        }
-        query.execute(psql_client).await?;
-        info!(
-            "Updated previously existing validator records: {}",
-            updated_identities.len()
-        );
-    }
-
-    update_uptimes(psql_client, snapshot.epoch).await?;
-    update_observed_commission(psql_client, snapshot.epoch).await?;
+    // Last: the presence of this document is what marks the epoch sealed.
+    let path = epoch_doc_path(EPOCHS_DIR, epoch);
+    put_whole(directory, &path, &epoch_record).await?;
+    info!("Closed epoch {epoch}");
 
     Ok(())
+}
+
+async fn read_live<T: serde::de::DeserializeOwned>(
+    directory: &Directory,
+    path: &str,
+) -> anyhow::Result<crate::directory::Doc<T>> {
+    directory
+        .get::<T>(path)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{path} is missing: nothing to seal"))
+}
+
+async fn seal<T: serde::Serialize>(
+    directory: &Directory,
+    path: &str,
+    sealed: T,
+) -> anyhow::Result<()> {
+    put_whole(directory, path, &sealed).await
+}
+
+async fn build_epoch_record(
+    directory: &Directory,
+    epoch: u64,
+    cluster_info: &ClusterInfoDoc,
+    inflation: ClusterInflation,
+    slots_per_year: f64,
+) -> anyhow::Result<EpochDoc> {
+    let samples: Vec<_> = cluster_info
+        .samples
+        .iter()
+        .filter(|sample| sample.epoch == epoch)
+        .collect();
+    let first_at = samples
+        .iter()
+        .map(|sample| sample.created_at)
+        .min()
+        .ok_or_else(|| anyhow::anyhow!("No cluster info sampled in epoch {epoch}"))?;
+    let end_at = samples
+        .iter()
+        .map(|sample| sample.created_at)
+        .max()
+        .ok_or_else(|| anyhow::anyhow!("No cluster info sampled in epoch {epoch}"))?;
+    let transactions: Vec<u64> = samples
+        .iter()
+        .map(|sample| sample.transaction_count)
+        .collect();
+    let transaction_count =
+        transactions.iter().max().unwrap_or(&0) - transactions.iter().min().unwrap_or(&0);
+
+    // The epoch starts where the previous one ended; the first epoch ever
+    // collected starts at its first sample.
+    let previous = match epoch.checked_sub(1) {
+        Some(previous) => {
+            directory
+                .get::<EpochDoc>(&epoch_doc_path(EPOCHS_DIR, previous))
+                .await?
+        }
+        None => None,
+    };
+
+    Ok(EpochDoc {
+        epoch,
+        start_at: previous.map(|doc| doc.body.end_at).unwrap_or(first_at),
+        end_at,
+        transaction_count,
+        supply: Decimal::from(inflation.sol_total_supply),
+        inflation: inflation.inflation,
+        inflation_taper: inflation.inflation_taper,
+        slots_per_year,
+    })
+}
+
+/// The finalized performance of the epoch, which only close-epoch knows.
+fn apply_finalized_performance(
+    validators: &mut SnapshotDoc,
+    snapshot: &ValidatorsPerformanceSnapshot,
+    created_at: DateTime<Utc>,
+) {
+    for (vote_account, performance) in snapshot.validators.iter() {
+        let Some(validator) = validators.get_mut(vote_account) else {
+            continue;
+        };
+        validator.commission_effective = snapshot
+            .rewards
+            .as_ref()
+            .and_then(|rewards| rewards.get(vote_account))
+            .and_then(|reward| reward.commission_effective.map(|c| c as i32));
+        validator.credits = performance.credits.into();
+        validator.leader_slots = performance.leader_slots.into();
+        validator.blocks_produced = performance.blocks_produced.into();
+        validator.skip_rate = performance.skip_rate;
+        validator.updated_at = Some(created_at);
+    }
+}
+
+fn apply_uptimes(
+    validators: &mut SnapshotDoc,
+    uptimes: &UptimesDoc,
+    epoch: u64,
+    epoch_record: &EpochDoc,
+) {
+    let duration = (epoch_record.end_at - epoch_record.start_at).num_seconds() as f64;
+
+    for (vote_account, validator) in validators.iter_mut() {
+        let downtime = uptimes
+            .get(vote_account)
+            .and_then(|state| downtime_seconds(state.closed.iter().chain([&state.open]), epoch));
+
+        validator.uptime_pct = Some(match downtime {
+            Some(downtime) => (1f64 - downtime / duration).clamp(0f64, 1f64),
+            None => 1f64,
+        });
+        validator.uptime = Decimal::from_f64((duration - downtime.unwrap_or(0f64)).max(0f64));
+        validator.downtime = Decimal::from_f64(downtime.unwrap_or(0f64));
+    }
+}
+
+/// `None` where the validator was never down in the epoch, which is what the
+/// missing row meant.
+fn downtime_seconds<'a>(
+    intervals: impl Iterator<Item = &'a UptimeInterval>,
+    epoch: u64,
+) -> Option<f64> {
+    let seconds: f64 = intervals
+        .filter(|interval| interval.epoch == epoch && interval.status == UptimeStatus::Down)
+        .map(|interval| (interval.end_at - interval.start_at).num_seconds() as f64)
+        .sum::<f64>();
+    (seconds > 0f64).then_some(seconds)
+}
+
+fn apply_observed_commissions(
+    validators: &mut SnapshotDoc,
+    commissions: &CommissionsDoc,
+    epoch: u64,
+) {
+    for (vote_account, validator) in validators.iter_mut() {
+        let observed: Vec<i32> = commissions
+            .get(vote_account)
+            .map(|state| {
+                state
+                    .changes
+                    .iter()
+                    .filter(|change| change.epoch == epoch)
+                    .map(|change| change.commission)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        validator.commission_max_observed =
+            extreme(validator, observed.iter().max().copied(), i32::max);
+        validator.commission_min_observed =
+            extreme(validator, observed.iter().min().copied(), i32::min);
+    }
+}
+
+/// GREATEST/LEAST over the observed, advertised and effective commissions,
+/// ignoring the ones that are not known.
+fn extreme(validator: &Validator, observed: Option<i32>, pick: fn(i32, i32) -> i32) -> Option<i32> {
+    [
+        observed,
+        validator.commission_advertised,
+        validator.commission_effective,
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(pick)
+}
+
+fn seal_uptimes(uptimes: &UptimesDoc, epoch: u64) -> SealedUptimesDoc {
+    uptimes
+        .iter()
+        .filter_map(|(vote_account, state)| {
+            let intervals: Vec<UptimeInterval> = state
+                .closed
+                .iter()
+                .chain([&state.open])
+                .filter(|interval| interval.epoch == epoch)
+                .cloned()
+                .collect();
+            (!intervals.is_empty()).then(|| (vote_account.clone(), intervals))
+        })
+        .collect()
+}
+
+fn trim_uptimes(mut uptimes: UptimesDoc, epoch: u64) -> UptimesDoc {
+    for state in uptimes.values_mut() {
+        state.closed.retain(|interval| interval.epoch > epoch);
+    }
+    uptimes
+}
+
+fn seal_commissions(commissions: &CommissionsDoc, epoch: u64) -> SealedCommissionsDoc {
+    commissions
+        .iter()
+        .filter_map(|(vote_account, state)| {
+            let changes: Vec<_> = state
+                .changes
+                .iter()
+                .filter(|change| change.epoch == epoch)
+                .cloned()
+                .collect();
+            (!changes.is_empty()).then(|| (vote_account.clone(), changes))
+        })
+        .collect()
+}
+
+fn trim_commissions(mut commissions: CommissionsDoc, epoch: u64) -> CommissionsDoc {
+    for state in commissions.values_mut() {
+        state.changes.retain(|change| change.epoch > epoch);
+    }
+    commissions
+}
+
+fn seal_versions(versions: &VersionsDoc, epoch: u64) -> SealedVersionsDoc {
+    versions
+        .iter()
+        .filter_map(|(vote_account, state)| {
+            let changes: Vec<_> = state
+                .changes
+                .iter()
+                .filter(|change| change.epoch == epoch)
+                .cloned()
+                .collect();
+            (!changes.is_empty()).then(|| (vote_account.clone(), changes))
+        })
+        .collect()
+}
+
+fn trim_versions(mut versions: VersionsDoc, epoch: u64) -> VersionsDoc {
+    for state in versions.values_mut() {
+        state.changes.retain(|change| change.epoch > epoch);
+    }
+    versions
+}
+
+fn seal_cluster_info(cluster_info: &ClusterInfoDoc, epoch: u64) -> SealedClusterInfoDoc {
+    cluster_info
+        .samples
+        .iter()
+        .filter(|sample| sample.epoch == epoch)
+        .cloned()
+        .collect()
+}
+
+fn trim_cluster_info(mut cluster_info: ClusterInfoDoc, epoch: u64) -> ClusterInfoDoc {
+    cluster_info.samples.retain(|sample| sample.epoch > epoch);
+    cluster_info
 }
