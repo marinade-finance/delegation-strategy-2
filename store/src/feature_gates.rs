@@ -3,17 +3,17 @@
 //!
 //! Static rather than collected: no API serves these, and they move a handful of times a year.
 
-use anyhow::{bail, Context, Result};
+use csv::{optional, required, Column};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 const DEFAULT_CSV: &str = include_str!("../release_feature_gates.csv");
 
-const HEADER: [&str; 4] = [
-    "client_lineage",
-    "client_version",
-    "effective_epoch",
-    "announced_epoch",
+const COLUMNS: [Column; 4] = [
+    required("client_lineage"),
+    required("client_version"),
+    optional("effective_epoch"),
+    required("announced_epoch"),
 ];
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -30,60 +30,15 @@ pub struct FeatureGateFloor {
 
 fn floors() -> &'static Vec<FeatureGateFloor> {
     static FLOORS: OnceLock<Vec<FeatureGateFloor>> = OnceLock::new();
-    FLOORS.get_or_init(|| match std::env::var_os("FEATURE_GATES_CSV") {
-        Some(path) => {
-            let csv = std::fs::read_to_string(&path)
-                .unwrap_or_else(|err| panic!("read {path:?} failed: {err}"));
-            parse(&csv).unwrap_or_else(|err| panic!("parse {path:?} failed: {err:#}"))
-        }
-        None => parse(DEFAULT_CSV)
-            .unwrap_or_else(|err| panic!("parse release_feature_gates.csv failed: {err:#}")),
+    FLOORS.get_or_init(|| {
+        csv::load_vendored(
+            DEFAULT_CSV,
+            "FEATURE_GATES_CSV",
+            &COLUMNS,
+            "release_feature_gates.csv",
+        )
+        .unwrap_or_else(|err| panic!("{err:#}"))
     })
-}
-
-/// `#` starts a comment; the file's own header block carries its provenance.
-fn parse(csv: &str) -> Result<Vec<FeatureGateFloor>> {
-    let mut reader = csv::ReaderBuilder::new()
-        .comment(Some(b'#'))
-        .from_reader(csv.as_bytes());
-
-    let header = reader.headers().context("reading header")?.clone();
-    // Without this a headerless file loses its first row to the header, dropping one floor.
-    if header.iter().collect::<Vec<_>>() != HEADER {
-        bail!("first line must be the {} header", HEADER.join(","));
-    }
-
-    let mut parsed = Vec::new();
-    for record in reader.records() {
-        let record = record.context("reading record")?;
-        let field = |index: usize| record.get(index).unwrap_or_default().trim();
-        let optional = |index: usize| Some(field(index)).filter(|value| !value.is_empty());
-
-        let (client_lineage, client_version) = (field(0), field(1));
-        if client_lineage.is_empty() || client_version.is_empty() {
-            bail!("{record:?} does not name a client lineage and a version");
-        }
-
-        let epoch = |value: Option<&str>, what: &str| -> Result<Option<u64>> {
-            value
-                .map(|value| {
-                    value
-                        .parse()
-                        .with_context(|| format!("{record:?} has an unparseable {what}"))
-                })
-                .transpose()
-        };
-
-        parsed.push(FeatureGateFloor {
-            client_lineage: client_lineage.to_string(),
-            client_version: client_version.to_string(),
-            effective_epoch: epoch(optional(2), "effective_epoch")?,
-            announced_epoch: epoch(optional(3), "announced_epoch")?
-                .context("announced_epoch is required")?,
-        });
-    }
-
-    Ok(parsed)
 }
 
 pub fn all() -> &'static [FeatureGateFloor] {
@@ -140,26 +95,5 @@ mod tests {
     fn nothing_answers_before_the_first_floor_or_for_an_untracked_lineage() {
         assert!(floor_at_epoch("agave", 945).is_none());
         assert!(floor_at_epoch("sig", 1030).is_none());
-    }
-
-    #[test]
-    fn a_wrong_header_is_refused() {
-        assert!(parse("client,version\nagave,4.0.2\n").is_err());
-    }
-
-    #[test]
-    fn unusable_rows_are_refused() {
-        let header = HEADER.join(",");
-        for row in [
-            ",4.0.2,992,991",       // no lineage
-            "agave,,992,991",       // no version
-            "agave,4.0.2,soon,991", // unparseable effective epoch
-            "agave,4.0.2,992,",     // no announcement epoch
-        ] {
-            assert!(
-                parse(&format!("{header}\n{row}\n")).is_err(),
-                "{row} should be refused"
-            );
-        }
     }
 }

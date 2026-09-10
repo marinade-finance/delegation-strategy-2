@@ -25,5 +25,5 @@ tokio = { workspace = true }
 google-cloud-bigquery = { workspace = true }
 collect = { path = "../collect" }
 chrono = { workspace = true }
-csv = { workspace = true }
+csv = { package = "ds-csv", path = "../csv" }
 utoipa = { workspace = true }

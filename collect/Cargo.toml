@@ -21,7 +21,7 @@ solana-account-decoder = { workspace = true }
 solana-config-program-client = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-feature-gate-interface = { workspace = true }
-csv = { workspace = true }
+csv = { package = "ds-csv", path = "../csv" }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
