@@ -75,7 +75,7 @@ impl SfdpFetcher {
     }
 }
 
-/// First epoch of each version's first run as the floor.
+/// First epoch of each version's latest run as the floor.
 ///
 /// The per-epoch endpoint always answers `inherited_from_prev_epoch: false`, so the effective epoch
 /// has to come from where the value changes, not from that flag.
@@ -88,12 +88,11 @@ fn collapse_runs(series: &BTreeMap<u64, String>) -> Vec<(String, u64)> {
             continue;
         }
         previous = Some(version);
-        if let Some((_, first_epoch)) = effective.iter().find(|(v, _)| v == version) {
-            // A floor that was lowered and later raised back: "the floor at epoch E" resolves
-            // against the first run, which is wrong for the second one.
+        if let Some((_, effective_epoch)) = effective.iter_mut().find(|(v, _)| v == version) {
             warn!(
-                "Floor {version} is effective again at epoch {epoch} after being effective at {first_epoch}"
+                "Floor {version} is effective again at epoch {epoch}, replacing epoch {effective_epoch}"
             );
+            *effective_epoch = *epoch;
             continue;
         }
         effective.push((version.clone(), *epoch));
@@ -201,7 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn a_reinstated_floor_keeps_the_epoch_of_its_first_run() {
+    fn a_reinstated_floor_takes_the_epoch_of_its_latest_run() {
+        // Answering "the floor at 1002" with 4.2.0-rc.1 would flag every node on 4.1.0-rc.1.
         let floors = series(&[
             (1000, "4.1.0-rc.1"),
             (1001, "4.2.0-rc.1"),
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(
             collapse_runs(&floors),
             vec![
-                ("4.1.0-rc.1".to_string(), 1000),
+                ("4.1.0-rc.1".to_string(), 1002),
                 ("4.2.0-rc.1".to_string(), 1001),
             ]
         );
