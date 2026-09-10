@@ -1,18 +1,20 @@
 use crate::context::WrappedContext;
 use crate::metrics;
+use crate::utils::order::{directed, OrderDirection, DEFAULT_ORDER_DIRECTION};
 use crate::utils::response::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use store::dto::ReleaseRecord;
+use store::dto::{ReleaseRecord, SfdpFloor};
 use store::feature_gates::{self, FeatureGateFloor};
-use store::releases::load_releases;
+use store::releases::{load_releases, load_sfdp_floors};
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseReleases {
     releases: Vec<ReleaseRecord>,
+    sfdp_floors: Vec<SfdpFloor>,
     /// Not filtered by `client` or `since_epoch`.
-    feature_gate_floors: &'static [FeatureGateFloor],
+    feature_gate_floors: Vec<FeatureGateFloor>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -22,13 +24,15 @@ pub struct QueryParams {
     client: Option<String>,
     /// Lower-bound epoch, inclusive. Matches on either `available_epoch` or `sfdp_floor_epoch`.
     since_epoch: Option<u64>,
+    /// Orders `releases` by publish time and both floor lists by the epoch they took effect.
+    order_direction: Option<OrderDirection>,
 }
 
 #[utoipa::path(
     get,
     tag = "Validators",
     operation_id = "List client releases",
-    description = "Mainnet client releases, one row per (client_lineage, client_version): `available_epoch` is the epoch the release was published in, `sfdp_floor_epoch` the epoch it became the minimum the Solana Foundation Delegation Program required.",
+    description = "Mainnet client releases and the two version floors, as three lists: what was published (`releases`), what the Solana Foundation Delegation Program required (`sfdp_floors`), and what the cluster required (`feature_gate_floors`).",
     path = "/releases",
     params(QueryParams),
     responses(
@@ -45,14 +49,17 @@ pub async fn handler(
 
     let ctx = context.read().await;
 
-    let releases = match load_releases(
-        &ctx.psql_client,
-        query_params.client.as_deref(),
-        query_params.since_epoch,
-    )
-    .await
-    {
-        Ok(releases) => releases,
+    let client = query_params.client.as_deref();
+    let since_epoch = query_params.since_epoch;
+    let order_direction = query_params
+        .order_direction
+        .unwrap_or(DEFAULT_ORDER_DIRECTION);
+
+    let (releases, sfdp_floors) = match tokio::try_join!(
+        load_releases(&ctx.psql_client, client, since_epoch),
+        load_sfdp_floors(&ctx.psql_client, client, since_epoch),
+    ) {
+        Ok(fetched) => fetched,
         Err(err) => {
             error!("Failed to fetch releases: {err}");
             return Ok(response_error(
@@ -62,10 +69,19 @@ pub async fn handler(
         }
     };
 
+    let (mut releases, mut sfdp_floors) = (releases, sfdp_floors);
+    let mut feature_gate_floors = feature_gates::all().to_vec();
+    releases.sort_by(|a, b| directed(a.released_at.cmp(&b.released_at), &order_direction));
+    sfdp_floors
+        .sort_by(|a, b| directed(a.effective_epoch.cmp(&b.effective_epoch), &order_direction));
+    feature_gate_floors
+        .sort_by(|a, b| directed(a.effective_epoch.cmp(&b.effective_epoch), &order_direction));
+
     Ok(warp::reply::with_status(
         json(&ResponseReleases {
             releases,
-            feature_gate_floors: feature_gates::all(),
+            sfdp_floors,
+            feature_gate_floors,
         }),
         StatusCode::OK,
     ))

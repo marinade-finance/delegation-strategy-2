@@ -185,13 +185,12 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 
 ## Releases
 
-Mainnet client releases: when a version was published, and when it became the minimum the Solana
-Foundation Delegation Program required. Filter with `client` (a lineage: `agave`,
-`frankendancer`, `firedancer`, `sig`) and `since_epoch` (matches either epoch).
+Three lists: `releases` (what was published, from the client's GitHub releases), `sfdp_floors` (what
+the Solana Foundation Delegation Program required) and `feature_gate_floors` (what the cluster
+required). `client` (a lineage: `agave`, `frankendancer`, `firedancer`, `sig`) and `since_epoch`
+filter the first two; `feature_gate_floors` is static and always served whole.
 
-One row per (client lineage, version): availability from the client's GitHub releases, the floor from
-SFDP's published requirements. `feature_gate_floors` carries the other floor -- the one the cluster
-enforces -- whole and unfiltered, since it is a handful of static rows.
+`releases` is ordered by publish time, `order_direction=ASC|DESC` (default `DESC`).
 
 ```bash
 curl -sfLS 'localhost:8000/releases?client=agave&since_epoch=1010' | jq
@@ -205,17 +204,14 @@ curl -sfLS 'localhost:8000/releases?client=agave&since_epoch=1010' | jq
       "available_epoch": 1026,
       "released_at": "2026-08-28T18:47:41Z",
       "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.2.2",
-      "sfdp_floor_epoch": 1033,
-      "updated_at": "2026-09-09T17:24:59.299327Z"
-    },
+      "updated_at": "2026-09-10T07:11:50.467767Z"
+    }
+  ],
+  "sfdp_floors": [
     {
       "client_lineage": "agave",
-      "client_version": "4.3.0-rc.0",
-      "available_epoch": 1029,
-      "released_at": "2026-09-04T15:46:13Z",
-      "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.3.0-rc.0",
-      "sfdp_floor_epoch": null,
-      "updated_at": "2026-09-09T17:24:59.299327Z"
+      "client_version": "4.2.2",
+      "effective_epoch": 1033
     }
   ],
   "feature_gate_floors": [

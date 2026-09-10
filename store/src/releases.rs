@@ -1,4 +1,4 @@
-use crate::dto::{ReleaseFloorRecord, ReleaseRecord};
+use crate::dto::{ReleaseRecord, SfdpFloor};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::releases::{ReleaseEntry, ReleaseSource, ReleasesSnapshot};
@@ -273,6 +273,7 @@ async fn upsert_floors(
     Ok(total)
 }
 
+/// What was published: one row per version the client's releases carry a timestamp for.
 pub async fn load_releases(
     psql_client: &Client,
     client_lineage: Option<&str>,
@@ -284,45 +285,69 @@ pub async fn load_releases(
             &format!(
                 "
         SELECT
-            client_lineage, client_version, available_epoch, released_at, release_url,
-            sfdp_floor_epoch, updated_at
+            client_lineage, client_version, available_epoch, released_at, release_url, updated_at
         FROM {RELEASES_TABLE}
-        WHERE ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
-          -- A row qualifies on either epoch: a floor that took effect in the window matters even
-          -- when the version it names shipped long before it.
-          AND ($2::NUMERIC IS NULL
-               OR available_epoch >= $2::NUMERIC
-               OR sfdp_floor_epoch >= $2::NUMERIC)
-        ORDER BY
-            client_lineage,
-            COALESCE(available_epoch, sfdp_floor_epoch) DESC NULLS LAST,
-            client_version
+        -- A row with no timestamp exists only because SFDP named the version as a floor; it belongs
+        -- in the floor list, not here.
+        WHERE released_at IS NOT NULL
+          AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
+          AND ($2::NUMERIC IS NULL OR available_epoch >= $2::NUMERIC)
+        ORDER BY released_at DESC, client_lineage, client_version
     "
             ),
             &[&client_lineage, &since_epoch],
         )
         .await?;
 
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        records.push(ReleaseRecord {
-            client_lineage: row.get("client_lineage"),
-            client_version: row.get("client_version"),
-            available_epoch: row
-                .get::<_, Option<Decimal>>("available_epoch")
-                .map(u64::try_from)
-                .transpose()?,
-            released_at: row.get("released_at"),
-            release_url: row.get("release_url"),
-            sfdp_floor_epoch: row
-                .get::<_, Option<Decimal>>("sfdp_floor_epoch")
-                .map(u64::try_from)
-                .transpose()?,
-            updated_at: row.get("updated_at"),
-        });
-    }
+    rows.into_iter()
+        .map(|row| {
+            Ok(ReleaseRecord {
+                client_lineage: row.get("client_lineage"),
+                client_version: row.get("client_version"),
+                available_epoch: row
+                    .get::<_, Option<Decimal>>("available_epoch")
+                    .map(u64::try_from)
+                    .transpose()?,
+                released_at: row.get("released_at"),
+                release_url: row.get("release_url"),
+                updated_at: row.get("updated_at"),
+            })
+        })
+        .collect()
+}
 
-    Ok(records)
+/// Every version SFDP has required, newest floor first.
+pub async fn load_sfdp_floors(
+    psql_client: &Client,
+    client_lineage: Option<&str>,
+    since_epoch: Option<u64>,
+) -> anyhow::Result<Vec<SfdpFloor>> {
+    let since_epoch = since_epoch.map(Decimal::from);
+    let rows = psql_client
+        .query(
+            &format!(
+                "
+        SELECT client_lineage, client_version, sfdp_floor_epoch
+        FROM {RELEASES_TABLE}
+        WHERE sfdp_floor_epoch IS NOT NULL
+          AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
+          AND ($2::NUMERIC IS NULL OR sfdp_floor_epoch >= $2::NUMERIC)
+        ORDER BY client_lineage, sfdp_floor_epoch DESC
+    "
+            ),
+            &[&client_lineage, &since_epoch],
+        )
+        .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(SfdpFloor {
+                client_lineage: row.get("client_lineage"),
+                client_version: row.get("client_version"),
+                effective_epoch: row.get::<_, Decimal>("sfdp_floor_epoch").try_into()?,
+            })
+        })
+        .collect()
 }
 
 /// The SFDP floor in force at `epoch`, one row per lineage: the latest one to take effect by then.
@@ -333,7 +358,7 @@ pub async fn get_sfdp_floor_at_epoch(
     psql_client: &Client,
     client_lineage: Option<&str>,
     epoch: u64,
-) -> anyhow::Result<Vec<ReleaseFloorRecord>> {
+) -> anyhow::Result<Vec<SfdpFloor>> {
     let epoch = Decimal::from(epoch);
     let rows = psql_client
         .query(
@@ -354,10 +379,10 @@ pub async fn get_sfdp_floor_at_epoch(
 
     let mut records = Vec::with_capacity(rows.len());
     for row in rows {
-        records.push(ReleaseFloorRecord {
+        records.push(SfdpFloor {
             client_lineage: row.get("client_lineage"),
             client_version: row.get("client_version"),
-            sfdp_floor_epoch: row.get::<_, Decimal>("sfdp_floor_epoch").try_into()?,
+            effective_epoch: row.get::<_, Decimal>("sfdp_floor_epoch").try_into()?,
         });
     }
 
