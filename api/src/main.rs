@@ -8,8 +8,6 @@ use crate::handlers::{
 };
 use env_logger::Env;
 use log::{error, info};
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
 use std::convert::Infallible;
 use std::sync::Arc;
 use structopt::StructOpt;
@@ -25,12 +23,6 @@ pub mod utils;
 
 #[derive(Debug, StructOpt)]
 pub struct Params {
-    #[structopt(long = "postgres-url")]
-    postgres_url: String,
-
-    #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
-    pub postgres_ssl_root_cert: String,
-
     #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
     pub directory_url: String,
 
@@ -80,18 +72,6 @@ async fn main() -> anyhow::Result<()> {
 
     let params = Params::from_args();
 
-    let mut builder = SslConnector::builder(SslMethod::tls())?;
-    builder.set_ca_file(&params.postgres_ssl_root_cert)?;
-    let connector = MakeTlsConnector::new(builder.build());
-
-    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
-    tokio::spawn(async move {
-        if let Err(err) = psql_conn.await {
-            error!("PSQL Connection error: {err}");
-            std::process::exit(1);
-        }
-    });
-
     // One client with a bounded connect + total timeout, shared by the startup
     // fetch and the refresh loop: a hung upstream must never stall startup before
     // the port binds, nor wedge a refresh iteration.
@@ -127,7 +107,6 @@ async fn main() -> anyhow::Result<()> {
 
     let context = Arc::new(RwLock::new(Context::new(
         directory,
-        psql_client,
         params.glossary_path,
         params.blacklist_path,
         params.validator_bonds_api_url,
