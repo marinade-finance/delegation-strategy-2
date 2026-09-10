@@ -88,15 +88,13 @@ pub struct FilterParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` groups the validators into operator blocks, returns the `operators` aggregates beside them, and pages over those top-level rows rather than validators. `/validators/count` then counts those top-level rows.
+    /// `true` groups the validators into operator blocks, returns the `operators` aggregates beside them, and pages over those top-level rows rather than validators.
     with_operator_groups: Option<bool>,
 }
 
-/// The query options that shape the page rather than the match: ordering, `offset`/`limit`, and
-/// the epoch window `epoch_stats` reaches back over. `/validators/count` takes none of them.
 #[derive(Deserialize, Serialize, Debug, Default, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
-pub struct PageParams {
+pub struct ValidatorPageParams {
     epochs: Option<usize>,
     query_from_date: Option<DateTime<Utc>>,
     order_field: Option<OrderField>,
@@ -149,7 +147,7 @@ impl GetValidatorsConfig {
     /// The defaults and the 400s `/validators` and `/validators/count` share.
     pub fn from_params(
         filters: FilterParams,
-        page: PageParams,
+        page: ValidatorPageParams,
     ) -> Result<Self, (StatusCode, String)> {
         if let Some(window) = filters.incident_window_epochs {
             if window == 0 || window > DEFAULT_CACHE_EPOCHS {
@@ -658,14 +656,14 @@ pub fn filter_validators(
     tag = "Validators",
     operation_id = "List validators",
     path = "/validators",
-    params(FilterParams, PageParams),
+    params(FilterParams, ValidatorPageParams),
     responses(
         (status = 200, body = ResponseValidators)
     )
 )]
 pub async fn handler(
     filters: FilterParams,
-    page: PageParams,
+    page: ValidatorPageParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATORS.inc();
@@ -1487,7 +1485,7 @@ mod tests {
         assert_eq!(filters.query.as_deref(), Some("abc"));
         assert_eq!(filters.with_operator_groups, Some(true));
 
-        let page: PageParams = serde_urlencoded::from_str(query).unwrap();
+        let page: ValidatorPageParams = serde_urlencoded::from_str(query).unwrap();
         assert_eq!(page.limit, Some(7));
         assert_eq!(page.order_field, Some(OrderField::Credits));
     }

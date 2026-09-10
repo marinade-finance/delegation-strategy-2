@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::handlers::list_validators::{
-    count_validators, FilterParams, GetValidatorsConfig, PageParams,
+    count_validators, FilterParams, GetValidatorsConfig, ValidatorPageParams,
 };
 use crate::metrics;
 use crate::utils::response::response_error;
@@ -30,7 +30,7 @@ pub async fn handler(
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATORS_COUNT.inc();
-    let config = match GetValidatorsConfig::from_params(filters, PageParams::default()) {
+    let config = match GetValidatorsConfig::from_params(filters, ValidatorPageParams::default()) {
         Ok(config) => config,
         Err((status, message)) => return Ok(response_error(status, message)),
     };

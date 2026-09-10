@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::path::end())
         .and(warp::get())
         .and(warp::query::<list_validators::FilterParams>())
-        .and(warp::query::<list_validators::PageParams>())
+        .and(warp::query::<list_validators::ValidatorPageParams>())
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
 
