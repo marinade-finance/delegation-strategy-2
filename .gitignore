@@ -10,3 +10,9 @@ pnpm-lock.yaml
 
 # Runtime cache of the blacklist fetched from ds-sam-pipeline
 blacklist.cache.csv
+
+# Local working dirs
+/specs/
+/.ship/
+/.diary/
+/BUGS.md
