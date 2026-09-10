@@ -1,21 +1,18 @@
 mod common;
 
 use collect::slot_params::baseline_slots_per_year;
-use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use store::dto::UNKNOWN_CLIENT_NAME;
 use store::utils::{load_validators, load_versions, ValidatorOverlays};
-use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use structopt::StructOpt;
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1000;
 const VOTE_ACCOUNT: &str = "voteClientColumns";
-const IDENTITY: &str = "identityClientColumns";
 
 struct ClientFields {
     client_id: Option<u16>,
@@ -26,21 +23,6 @@ fn agave() -> ClientFields {
     ClientFields {
         client_id: Some(3),
         client_id_raw: Some("Agave".into()),
-    }
-}
-
-fn no_client() -> ClientFields {
-    ClientFields {
-        client_id: None,
-        client_id_raw: None,
-    }
-}
-
-// Unlike `no_client()`, an actual observation: the node reported a client absent from client-ids.csv.
-fn unrecognized() -> ClientFields {
-    ClientFields {
-        client_id: None,
-        client_id_raw: Some("Unknown(97)".into()),
     }
 }
 
@@ -64,44 +46,6 @@ fn write_yaml(name: &str, contents: &str) -> String {
     let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
     std::fs::write(&path, contents).unwrap();
     path.to_str().unwrap().to_string()
-}
-
-async fn run_store_validators(client: &mut Client, name: &str, fields: &ClientFields) {
-    let snapshot = Snapshot {
-        epoch: EPOCH,
-        created_at: "2026-07-31T00:00:00Z".into(),
-        validators: vec![ValidatorSnapshot {
-            identity: IDENTITY.into(),
-            vote_account: VOTE_ACCOUNT.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
-            data_center: None,
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: performance(fields),
-        }],
-    };
-    let path = write_yaml(name, &serde_yaml::to_string(&snapshot).unwrap());
-    store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
 }
 
 async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFields) {
@@ -144,92 +88,6 @@ async fn stored_client_columns(client: &Client, table: &str) -> Vec<ClientFields
             client_id_raw: row.get("client_id_raw"),
         })
         .collect()
-}
-
-fn assert_matches(actual: &ClientFields, expected: &ClientFields, context: &str) {
-    assert_eq!(actual.client_id, expected.client_id, "client_id: {context}");
-    assert_eq!(
-        actual.client_id_raw, expected.client_id_raw,
-        "client_id_raw: {context}"
-    );
-}
-
-// The UPDATE path casts parameters via a positional index map the compiler cannot check.
-#[tokio::test]
-async fn store_validators_round_trips_client_columns_on_insert_and_update() {
-    let schema = "ds_test_store_validators_client";
-    if skip_without_database(schema) {
-        return;
-    }
-    let mut client = migrated_client(schema).await.unwrap();
-
-    run_store_validators(&mut client, "validators-insert", &agave()).await;
-    let inserted = stored_client_columns(&client, "validators").await;
-    assert_eq!(inserted.len(), 1, "one row per vote account and epoch");
-    assert_matches(&inserted[0], &agave(), "INSERT path");
-
-    run_store_validators(&mut client, "validators-update", &agave()).await;
-    let updated = stored_client_columns(&client, "validators").await;
-    assert_eq!(updated.len(), 1, "the second run must update, not insert");
-    assert_matches(&updated[0], &agave(), "UPDATE path");
-
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn store_validators_keeps_the_last_known_client_when_gossip_reports_none() {
-    let schema = "ds_test_store_validators_gossip_gap";
-    if skip_without_database(schema) {
-        return;
-    }
-    let mut client = migrated_client(schema).await.unwrap();
-
-    run_store_validators(&mut client, "gossip-gap-seed", &agave()).await;
-    run_store_validators(&mut client, "gossip-gap-empty", &no_client()).await;
-
-    let stored = stored_client_columns(&client, "validators").await;
-    assert_eq!(stored.len(), 1);
-    assert_matches(
-        &stored[0],
-        &agave(),
-        "a snapshot with no gossip data must not erase the stored client",
-    );
-
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-// Regression test for P1-R1#1: COALESCE-ing client_id/vendor/lineage against the resolved value
-// (instead of against whether a client was observed at all) left a switch to an unrecognized
-// client indistinguishable from a transient gossip gap, so the old classification stuck around.
-#[tokio::test]
-async fn store_validators_clears_a_stale_classification_when_the_client_becomes_unrecognized() {
-    let schema = "ds_test_store_validators_unrecognized_switch";
-    if skip_without_database(schema) {
-        return;
-    }
-    let mut client = migrated_client(schema).await.unwrap();
-
-    run_store_validators(&mut client, "unrecognized-seed", &agave()).await;
-    run_store_validators(&mut client, "unrecognized-switch", &unrecognized()).await;
-
-    let stored = stored_client_columns(&client, "validators").await;
-    assert_eq!(stored.len(), 1);
-    assert_matches(
-        &stored[0],
-        &unrecognized(),
-        "a validator switching to an unregistered client must not keep the old classification",
-    );
-
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

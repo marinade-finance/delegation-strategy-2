@@ -1,3 +1,7 @@
+use crate::directory::Directory;
+use crate::docs::{
+    epoch_doc_path, merge_events, merge_into, upsert_event, EventEntry, EventsDoc, EVENTS_DIR,
+};
 use crate::dto::{EventEpochRecord, PerformanceRecord, SettlementRecord};
 use crate::utils::DEFAULT_CACHE_EPOCHS;
 use chrono::{DateTime, Utc};
@@ -5,10 +9,8 @@ use collect::validators_events::ValidatorsEventsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tokio_postgres::Client;
-
-pub const VALIDATORS_EVENTS_TABLE: &str = "validators_events";
 
 #[derive(Debug, structopt::StructOpt)]
 pub struct StoreEventsParams {
@@ -16,12 +18,7 @@ pub struct StoreEventsParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-
-pub async fn store_events(
-    params: StoreEventsParams,
-    psql_client: &mut Client,
-) -> anyhow::Result<()> {
+pub async fn store_events(params: StoreEventsParams, directory: &Directory) -> anyhow::Result<()> {
     info!("Storing events (PSR settlements) snapshot...");
 
     let path = params.snapshot_path;
@@ -30,74 +27,43 @@ pub async fn store_events(
     let snapshot: ValidatorsEventsSnapshot = serde_yaml::from_reader(snapshot_file)
         .map_err(|e| anyhow::anyhow!("Failed to parse snapshot events file '{path}': {e}"))?;
 
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
     info!(
         "Loaded the events snapshot from epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}. {} records.",
         snapshot.from_epoch,
-        snapshot_created_at,
+        created_at,
         snapshot.loaded_at_epoch,
         snapshot.loaded_at_slot_index,
         snapshot.events.len()
     );
 
-    let mut total_upserted = 0;
-
-    for chunk in snapshot.events.chunks(DEFAULT_CHUNK_SIZE) {
-        let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
-        let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
-        let reasons: Vec<&str> = chunk.iter().map(|r| r.reason.as_str()).collect();
-        let metas: Vec<&str> = chunk.iter().map(|r| r.meta.as_str()).collect();
-        let amounts: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.amount)).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        let query = format!(
-            "INSERT INTO {VALIDATORS_EVENTS_TABLE} (
-            epoch,
-            vote_account,
-            reason,
-            meta,
-            amount,
-            created_at,
-            updated_at
-        )
-        SELECT * FROM UNNEST(
-            $1::NUMERIC[],
-            $2::TEXT[],
-            $3::TEXT[],
-            $4::TEXT[],
-            $5::NUMERIC[],
-            $6::TIMESTAMP WITH TIME ZONE[],
-            $7::TIMESTAMP WITH TIME ZONE[]
-        )
-        ON CONFLICT (epoch, vote_account, reason, meta)
-        DO UPDATE SET
-            amount = EXCLUDED.amount,
-            updated_at = EXCLUDED.updated_at"
+    // One snapshot reaches back over several epochs; each has its own document.
+    let mut events_by_epoch: BTreeMap<u64, EventsDoc> = Default::default();
+    for settlement in snapshot.events.iter() {
+        let events = events_by_epoch
+            .entry(settlement.epoch)
+            .or_default()
+            .entry(settlement.vote_account.clone())
+            .or_default();
+        upsert_event(
+            events,
+            EventEntry {
+                reason: settlement.reason.clone(),
+                meta: settlement.meta.clone(),
+                amount: Decimal::from(settlement.amount),
+                created_at,
+                updated_at: created_at,
+            },
         );
-
-        let rows_affected = psql_client
-            .execute(
-                &query,
-                &[
-                    &epochs,
-                    &vote_accounts,
-                    &reasons,
-                    &metas,
-                    &amounts,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
-
-        total_upserted += rows_affected;
-
-        info!("Upserted {rows_affected} events records in this chunk");
     }
 
-    info!("Stored events snapshot: {total_upserted} total records upserted");
+    for (epoch, events) in events_by_epoch {
+        let path = epoch_doc_path(EVENTS_DIR, epoch);
+        let count: usize = events.values().map(Vec::len).sum();
+        merge_into(directory, &path, events, merge_events).await?;
+        info!("Stored {count} events at {path}");
+    }
 
     Ok(())
 }

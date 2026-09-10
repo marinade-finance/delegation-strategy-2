@@ -1,10 +1,14 @@
+use crate::directory::Directory;
+use crate::docs::{
+    block_reward_key, epoch_doc_path, merge_block_rewards, merge_into, BlockRewardEntry,
+    BlockRewardsDoc, BLOCK_REWARDS_DIR,
+};
 use crate::dto::{ValidatorBlockReward, ValidatorBlockRewardsRecord};
 use chrono::{DateTime, Utc};
 use collect::validators_block_rewards::ValidatorsBlockRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::HashMap;
 use structopt::StructOpt;
 use tokio_postgres::Client;
 
@@ -16,11 +20,9 @@ pub struct StoreBlockRewardsParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-
 pub async fn store_block_rewards(
     params: StoreBlockRewardsParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing block rewards snapshot...");
 
@@ -31,96 +33,26 @@ pub async fn store_block_rewards(
         serde_yaml::from_reader(snapshot_file).map_err(|e| {
             anyhow::anyhow!("Failed to parse snapshot block rewards file '{path}': {e}")
         })?;
-
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
-    let snapshot_epoch = Decimal::from(snapshot.epoch);
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
     info!(
         "Loaded the snapshot for epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
-        snapshot_epoch,
-        snapshot_created_at,
-        snapshot.loaded_at_epoch,
-        snapshot.loaded_at_slot_index
+        snapshot.epoch, created_at, snapshot.loaded_at_epoch, snapshot.loaded_at_slot_index
     );
 
-    let block_rewards: HashMap<_, _> = snapshot
-        .block_rewards
-        .iter()
-        .map(|r| {
-            let key = (r.identity_account.clone(), r.vote_account.clone());
-            let reward = ValidatorBlockReward::from_snapshot(r, snapshot.epoch);
-            (key, reward)
-        })
-        .collect();
-
-    info!(
-        "Processing snapshot loaded block rewards records {}",
-        block_rewards.keys().len()
-    );
-
-    let records: Vec<_> = block_rewards.values().collect();
-
-    let mut total_upserted = 0;
-
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        // Build arrays for each column
-        let identity_accounts: Vec<&str> =
-            chunk.iter().map(|r| r.identity_account.as_str()).collect();
-        let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
-        let authorized_voters: Vec<&str> =
-            chunk.iter().map(|r| r.authorized_voter.as_str()).collect();
-        let amounts: Vec<&Decimal> = chunk.iter().map(|r| &r.amount).collect();
-        let epochs: Vec<&Decimal> = chunk.iter().map(|r| &r.epoch).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        let query = format!(
-            "INSERT INTO {VALIDATORS_BLOCK_REWARDS_TABLE} (
-            identity_account,
-            vote_account,
-            authorized_voter,
-            amount,
-            epoch,
-            created_at,
-            updated_at
-        )
-        SELECT * FROM UNNEST(
-            $1::TEXT[],
-            $2::TEXT[],
-            $3::TEXT[],
-            $4::NUMERIC[],
-            $5::NUMERIC[],
-            $6::TIMESTAMP WITH TIME ZONE[],
-            $7::TIMESTAMP WITH TIME ZONE[]
-        )
-        ON CONFLICT (epoch, identity_account, vote_account)
-        DO UPDATE SET
-            authorized_voter = EXCLUDED.authorized_voter,
-            amount = EXCLUDED.amount,
-            updated_at = EXCLUDED.updated_at"
-        );
-
-        let rows_affected = psql_client
-            .execute(
-                &query,
-                &[
-                    &identity_accounts,
-                    &vote_accounts,
-                    &authorized_voters,
-                    &amounts,
-                    &epochs,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
-
-        total_upserted += rows_affected;
-
-        info!("Upserted {rows_affected} block rewards records in this chunk",);
+    let mut block_rewards = BlockRewardsDoc::new();
+    for reward in snapshot.block_rewards.iter() {
+        let key = block_reward_key(&reward.identity_account, &reward.vote_account);
+        let reward = ValidatorBlockReward::from_snapshot(reward, snapshot.epoch);
+        block_rewards.insert(key, BlockRewardEntry::new(&reward, created_at)?);
     }
 
-    info!("Stored block rewards snapshot: {total_upserted} total records upserted",);
+    info!("Processing block rewards records {}", block_rewards.len());
+
+    let path = epoch_doc_path(BLOCK_REWARDS_DIR, snapshot.epoch);
+    merge_into(directory, &path, block_rewards, merge_block_rewards).await?;
+
+    info!("Stored the block rewards snapshot at {path}");
 
     Ok(())
 }

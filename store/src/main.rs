@@ -21,6 +21,12 @@ pub struct CommonParams {
 
     #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
     pub postgres_ssl_root_cert: String,
+
+    #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
+    pub directory_url: String,
+
+    #[structopt(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    pub directory_token: String,
 }
 
 #[derive(Debug, StructOpt)]
@@ -53,6 +59,11 @@ async fn main() -> anyhow::Result<()> {
 
     let params = Params::from_args();
 
+    let directory = store::directory::Directory::new(
+        params.common.directory_url.clone(),
+        params.common.directory_token.clone(),
+    )?;
+
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
     let connector = MakeTlsConnector::new(builder.build());
@@ -77,13 +88,11 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::ClusterInfo(store_params) => {
             store_cluster_info(store_params, &mut psql_client).await
         }
-        StoreCommand::Validators(store_params) => {
-            store_validators(store_params, &mut psql_client).await
-        }
+        StoreCommand::Validators(store_params) => store_validators(store_params, &directory).await,
         StoreCommand::JitoMev(store_params) => {
             store_jito(
                 store_params,
-                &mut psql_client,
+                &directory,
                 JitoAccountType::MevTipDistribution,
             )
             .await
@@ -91,16 +100,16 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::JitoPriority(store_params) => {
             store_jito(
                 store_params,
-                &mut psql_client,
+                &directory,
                 JitoAccountType::PriorityFeeDistribution,
             )
             .await
         }
         StoreCommand::ValidatorsBlockRewards(store_params) => {
-            store_block_rewards(store_params, &mut psql_client).await
+            store_block_rewards(store_params, &directory).await
         }
         StoreCommand::ValidatorsEvents(store_params) => {
-            store_events(store_params, &mut psql_client).await
+            store_events(store_params, &directory).await
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,

@@ -1,14 +1,11 @@
+use crate::directory::Directory;
+use crate::docs::{epoch_doc_path, merge_into, merge_snapshot, SnapshotDoc, SNAPSHOT_DIR};
 use crate::dto::Validator;
-use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
 use chrono::{DateTime, Utc};
 use collect::validators::Snapshot;
 use log::info;
-use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
-use tokio_postgres::types::ToSql;
-use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreValidatorsParams {
@@ -16,329 +13,32 @@ pub struct StoreValidatorsParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-
 pub async fn store_validators(
     params: StoreValidatorsParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing validators snapshot...");
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
-    let validators: HashMap<_, _> = snapshot
+    let validators: SnapshotDoc = snapshot
         .validators
         .iter()
         .map(|v| {
-            (
-                v.vote_account.clone(),
-                Validator::new_from_snapshot(v, snapshot.epoch),
-            )
+            let mut validator = Validator::new_from_snapshot(v, snapshot.epoch);
+            validator.updated_at = Some(created_at);
+            (v.vote_account.clone(), validator)
         })
         .collect();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let mut updated_vote_accounts: HashSet<_> = Default::default();
 
-    info!("Loaded the snapshot");
+    info!("Loaded the snapshot: {} validators", validators.len());
 
-    for chunk in psql_client
-        .query(
-            "
-        SELECT vote_account
-        FROM validators
-        WHERE epoch = $1
-    ",
-            &[&snapshot_epoch],
-        )
-        .await?
-        .chunks(DEFAULT_CHUNK_SIZE)
-    {
-        let mut query = UpdateQueryCombiner::new(
-            "validators".to_string(),
-            "
-            identity = u.identity,
-            vote_account = u.vote_account,
-            epoch = u.epoch,
-            info_name = u.info_name,
-            info_url = u.info_url,
-            info_keybase = u.info_keybase,
-            node_ip = u.node_ip,
-            dc_coordinates_lat = u.dc_coordinates_lat,
-            dc_coordinates_lon = u.dc_coordinates_lon,
-            dc_continent = u.dc_continent,
-            dc_country_iso = u.dc_country_iso,
-            dc_country = u.dc_country,
-            dc_city = u.dc_city,
-            dc_asn = u.dc_asn,
-            dc_aso = u.dc_aso,
-            commission_advertised = u.commission_advertised,
-            version = COALESCE(u.version, validators.version),
-            activated_stake = u.activated_stake,
-            marinade_stake = u.marinade_stake,
-            foundation_stake = u.foundation_stake,
-            marinade_native_stake = u.marinade_native_stake,
-            institutional_stake = u.institutional_stake,
-            self_stake = u.self_stake,
-            superminority = u.superminority,
-            stake_to_become_superminority = u.stake_to_become_superminority,
-            credits = u.credits,
-            leader_slots = u.leader_slots,
-            blocks_produced = u.blocks_produced,
-            skip_rate = u.skip_rate,
-            updated_at = u.updated_at,
-            info_icon_url = u.info_icon_url,
-            client_id = CASE WHEN u.client_id_raw IS NOT NULL THEN u.client_id ELSE validators.client_id END,
-            client_id_raw = COALESCE(u.client_id_raw, validators.client_id_raw),
-            feature_set = u.feature_set,
-            shred_version = u.shred_version,
-            gossip_port = u.gossip_port,
-            rpc_public = u.rpc_public,
-            pubsub_public = u.pubsub_public
-            "
-            .to_string(),
-            "u(
-                identity,
-                vote_account,
-                epoch,
-                info_name,
-                info_url,
-                info_keybase,
-                node_ip,
-                dc_coordinates_lat,
-                dc_coordinates_lon,
-                dc_continent,
-                dc_country_iso,
-                dc_country,
-                dc_city,
-                dc_asn,
-                dc_aso,
-                commission_advertised,
-                version,
-                activated_stake,
-                marinade_stake,
-                foundation_stake,
-                marinade_native_stake,
-                institutional_stake,
-                self_stake,
-                superminority,
-                stake_to_become_superminority,
-                credits,
-                leader_slots,
-                blocks_produced,
-                skip_rate,
-                updated_at,
-                info_icon_url,
-                client_id,
-                client_id_raw,
-                feature_set,
-                shred_version,
-                gossip_port,
-                rpc_public,
-                pubsub_public
-            )"
-            .to_string(),
-            "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
-        );
-        for row in chunk {
-            let vote_account: &str = row.get("vote_account");
+    let path = epoch_doc_path(SNAPSHOT_DIR, snapshot.epoch);
+    merge_into(directory, &path, validators, merge_snapshot).await?;
 
-            if let Some(v) = validators.get(vote_account) {
-                let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    &v.identity,
-                    &v.vote_account,
-                    &v.epoch,
-                    &v.info_name,
-                    &v.info_url,
-                    &v.info_keybase,
-                    &v.node_ip,
-                    &v.dc_coordinates_lat,
-                    &v.dc_coordinates_lon,
-                    &v.dc_continent,
-                    &v.dc_country_iso,
-                    &v.dc_country,
-                    &v.dc_city,
-                    &v.dc_asn,
-                    &v.dc_aso,
-                    &v.commission_advertised,
-                    &v.version,
-                    &v.activated_stake,
-                    &v.marinade_stake,
-                    &v.foundation_stake,
-                    &v.marinade_native_stake,
-                    &v.institutional_stake,
-                    &v.self_stake,
-                    &v.superminority,
-                    &v.stake_to_become_superminority,
-                    &v.credits,
-                    &v.leader_slots,
-                    &v.blocks_produced,
-                    &v.skip_rate,
-                    &snapshot_created_at,
-                    &v.info_icon_url,
-                    &v.client_id,
-                    &v.client_id_raw,
-                    &v.feature_set,
-                    &v.shred_version,
-                    &v.gossip_port,
-                    &v.rpc_public,
-                    &v.pubsub_public,
-                ];
-                query.add(
-                    &mut params,
-                    HashMap::from_iter([
-                        (2, "NUMERIC".into()),                   // epoch
-                        (7, "DOUBLE PRECISION".into()),          // dc_coordinates_lat
-                        (8, "DOUBLE PRECISION".into()),          // dc_coordinates_lon
-                        (13, "INTEGER".into()),                  // dc_asn
-                        (15, "INTEGER".into()),                  // commission_advertised
-                        (17, "NUMERIC".into()),                  // activated_stake
-                        (18, "NUMERIC".into()),                  // marinade_stake
-                        (19, "NUMERIC".into()),                  // foundation_stake
-                        (20, "NUMERIC".into()),                  // marinade_native_stake
-                        (21, "NUMERIC".into()),                  // institutional_stake
-                        (22, "NUMERIC".into()),                  // selft_stake
-                        (23, "BOOL".into()),                     // superminority
-                        (24, "NUMERIC".into()),                  // stake_to_become_superminority
-                        (25, "NUMERIC".into()),                  // credits
-                        (26, "NUMERIC".into()),                  // leader_slots
-                        (27, "NUMERIC".into()),                  // blocks_produced
-                        (28, "DOUBLE PRECISION".into()),         // skip_rate
-                        (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                        (30, "TEXT".into()),                     // icon_url
-                        (31, "INTEGER".into()),                  // client_id
-                        (32, "TEXT".into()),                     // client_id_raw
-                        (33, "BIGINT".into()),                   // feature_set
-                        (34, "INTEGER".into()),                  // shred_version
-                        (35, "INTEGER".into()),                  // gossip_port
-                        (36, "BOOL".into()),                     // rpc_public
-                        (37, "BOOL".into()),                     // pubsub_public
-                    ]),
-                );
-                updated_vote_accounts.insert(vote_account.to_string());
-            }
-        }
-        query.execute(psql_client).await?;
-        info!(
-            "Updated previously existing validator records: {}",
-            updated_vote_accounts.len()
-        );
-    }
-
-    let validators: Vec<_> = validators
-        .into_iter()
-        .filter(|(vote_account, _validator)| !updated_vote_accounts.contains(vote_account))
-        .collect();
-    let mut insertions = 0;
-
-    for chunk in validators.chunks(DEFAULT_CHUNK_SIZE) {
-        let mut query = InsertQueryCombiner::new(
-            "validators".to_string(),
-            "
-        identity,
-        vote_account,
-        epoch,
-        info_name,
-        info_url,
-        info_keybase,
-        node_ip,
-        dc_coordinates_lat,
-        dc_coordinates_lon,
-        dc_continent,
-        dc_country_iso,
-        dc_country,
-        dc_city,
-        dc_asn,
-        dc_aso,
-        commission_max_observed,
-        commission_min_observed,
-        commission_advertised,
-        commission_effective,
-        version,
-        activated_stake,
-        marinade_stake,
-        foundation_stake,
-        marinade_native_stake,
-        institutional_stake,
-        self_stake,
-        superminority,
-        stake_to_become_superminority,
-        credits,
-        leader_slots,
-        blocks_produced,
-        skip_rate,
-        uptime_pct,
-        uptime,
-        downtime,
-        updated_at,
-        info_icon_url,
-        client_id,
-        client_id_raw,
-        feature_set,
-        shred_version,
-        gossip_port,
-        rpc_public,
-        pubsub_public
-        "
-            .to_string(),
-        );
-
-        for (vote_account, v) in chunk {
-            if updated_vote_accounts.contains(vote_account) {
-                continue;
-            }
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &v.identity,
-                &v.vote_account,
-                &v.epoch,
-                &v.info_name,
-                &v.info_url,
-                &v.info_keybase,
-                &v.node_ip,
-                &v.dc_coordinates_lat,
-                &v.dc_coordinates_lon,
-                &v.dc_continent,
-                &v.dc_country_iso,
-                &v.dc_country,
-                &v.dc_city,
-                &v.dc_asn,
-                &v.dc_aso,
-                &v.commission_max_observed,
-                &v.commission_min_observed,
-                &v.commission_advertised,
-                &v.commission_effective,
-                &v.version,
-                &v.activated_stake,
-                &v.marinade_stake,
-                &v.foundation_stake,
-                &v.marinade_native_stake,
-                &v.institutional_stake,
-                &v.self_stake,
-                &v.superminority,
-                &v.stake_to_become_superminority,
-                &v.credits,
-                &v.leader_slots,
-                &v.blocks_produced,
-                &v.skip_rate,
-                &v.uptime_pct,
-                &v.uptime,
-                &v.downtime,
-                &snapshot_created_at,
-                &v.info_icon_url,
-                &v.client_id,
-                &v.client_id_raw,
-                &v.feature_set,
-                &v.shred_version,
-                &v.gossip_port,
-                &v.rpc_public,
-                &v.pubsub_public,
-            ];
-            query.add(&mut params);
-        }
-        insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Stored {insertions} new validator records");
-    }
+    info!("Stored the validators snapshot at {path}");
 
     Ok(())
 }

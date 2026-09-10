@@ -1,11 +1,13 @@
 //! The documents stored in marinade-directory and the rules for merging a
 //! fresh snapshot into one. Every writer and every reader agree here.
 
+use crate::directory::{Directory, Precondition};
 use crate::dto::{
     Validator, ValidatorBlockReward, ValidatorJitoMEVInfo, ValidatorJitoPriorityFeeInfo,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -198,18 +200,67 @@ pub type EventsDoc = BTreeMap<String, Vec<EventEntry>>;
 pub fn merge_events(doc: &mut EventsDoc, incoming: EventsDoc) {
     for (vote_account, events) in incoming {
         let stored = doc.entry(vote_account).or_default();
-        for mut event in events {
-            match stored
-                .iter()
-                .position(|e| e.reason == event.reason && e.meta == event.meta)
-            {
-                Some(index) => {
-                    event.created_at = stored[index].created_at;
-                    stored[index] = event;
-                }
-                None => stored.push(event),
-            }
+        for event in events {
+            upsert_event(stored, event);
         }
+    }
+}
+
+/// A settlement is unique per `(reason, meta)`; a rewrite keeps the moment it
+/// was first seen.
+pub fn upsert_event(events: &mut Vec<EventEntry>, mut event: EventEntry) {
+    match events
+        .iter()
+        .position(|e| e.reason == event.reason && e.meta == event.meta)
+    {
+        Some(index) => {
+            event.created_at = events[index].created_at;
+            events[index] = event;
+        }
+        None => events.push(event),
+    }
+}
+
+/// mev and priority-fee hold the latest observation of a validator, so a
+/// fresh entry simply replaces the stored one.
+pub fn replace_entries<T>(doc: &mut BTreeMap<String, T>, incoming: BTreeMap<String, T>) {
+    doc.extend(incoming);
+}
+
+/// GET-merge-PUT of a per-epoch document. The one repeat covers a concurrent
+/// first write of the epoch; a lost `IfMatch` race is an error.
+pub async fn merge_into<T>(
+    directory: &Directory,
+    path: &str,
+    incoming: T,
+    merge: fn(&mut T, T),
+) -> anyhow::Result<()>
+where
+    T: Default + Clone + Serialize + DeserializeOwned,
+{
+    let stored = directory.get::<T>(path).await?;
+    let created = stored.is_none();
+    let (mut doc, precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (T::default(), Precondition::Create),
+    };
+    merge(&mut doc, incoming.clone());
+
+    match directory.put(path, &doc, precondition).await {
+        Ok(_) => Ok(()),
+        Err(err) if created && err.is_conflict() => {
+            let stored = directory
+                .get::<T>(path)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("{path} vanished between two writes"))?;
+            let mut doc = stored.body;
+            merge(&mut doc, incoming);
+            directory
+                .put(path, &doc, Precondition::IfMatch(stored.etag))
+                .await?;
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
     }
 }
 
