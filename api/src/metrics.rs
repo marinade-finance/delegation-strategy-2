@@ -21,6 +21,11 @@ lazy_static! {
         "How many times /validators endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_VALIDATORS_COUNT: IntCounter = register_int_counter!(
+        "ds_request_count_validators_count",
+        "How many times /validators/count endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_CLIENTS: IntCounter = register_int_counter!(
         "ds_request_count_clients",
         "How many times /clients endpoint was requested"

@@ -7,7 +7,8 @@ use crate::handlers::{
     glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
     take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    validator_scores, validators_block_rewards, validators_count, validators_flat, versions,
+    workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -129,12 +130,21 @@ async fn main() -> anyhow::Result<()> {
         .and(with_ready(ready))
         .and_then(readiness::handler);
 
+    // Two typed views over the same query string: the count route takes the filters alone.
     let route_validators = warp::path!("validators")
         .and(warp::path::end())
         .and(warp::get())
-        .and(warp::query::<list_validators::QueryParams>())
+        .and(warp::query::<list_validators::FilterParams>())
+        .and(warp::query::<list_validators::PageParams>())
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
+
+    let route_validators_count = warp::path!("validators" / "count")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<list_validators::FilterParams>())
+        .and(with_context(context.clone()))
+        .and_then(validators_count::handler);
 
     let route_clients = warp::path!("clients")
         .and(warp::path::end())
@@ -320,6 +330,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_readiness)
         .or(route_cluster_stats)
         .or(route_validators)
+        .or(route_validators_count)
         .or(route_clients)
         .or(route_providers)
         .or(route_validator_score_breakdown)

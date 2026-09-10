@@ -99,6 +99,20 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
 }
 ```
 
+## Count validators
+Takes the filtering query parameters of `List validators` — everything except `epochs`,
+`query_from_date`, `order_field`, `order_direction`, `offset`, `limit` — and serves the number of
+rows they match, the same number `List validators` serves as `total_count`. Under
+`with_operator_groups=true` the rows are operator blocks.
+```bash
+curl -sfLS 'localhost:8000/validators/count?query_marinade_stake=true' | jq
+```
+```json
+{
+  "count": 123
+}
+```
+
 ## Uptimes
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/uptimes | jq

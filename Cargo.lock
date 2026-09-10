@@ -396,6 +396,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "serde_yaml",
  "solana-program",
  "store",

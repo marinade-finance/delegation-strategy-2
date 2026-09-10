@@ -55,18 +55,16 @@ pub struct ResponseValidators {
     net_apy_updated_at: Option<DateTime<Utc>>,
 }
 
+/// The query options that decide which rows a request matches.
+/// Used by `/validators` and `/validators/count`.
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
-pub struct QueryParams {
-    epochs: Option<usize>,
+pub struct FilterParams {
     /// Text search over validator name, vote account and identity. To also search other
     /// properties (datacenter location), set `search_properties=true`.
     query: Option<String>,
-    query_from_date: Option<DateTime<Utc>>,
     query_vote_accounts: Option<String>,
     query_identities: Option<String>,
-    order_field: Option<OrderField>,
-    order_direction: Option<OrderDirection>,
     query_superminority: Option<bool>,
     query_score: Option<bool>,
     query_marinade_stake: Option<bool>,
@@ -90,8 +88,19 @@ pub struct QueryParams {
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
-    /// `true` groups the validators into operator blocks, returns the `operators` aggregates beside them, and pages over those top-level rows rather than validators.
+    /// `true` groups the validators into operator blocks, returns the `operators` aggregates beside them, and pages over those top-level rows rather than validators. `/validators/count` then counts those top-level rows.
     with_operator_groups: Option<bool>,
+}
+
+/// The query options that shape the page rather than the match: ordering, `offset`/`limit`, and
+/// the epoch window `epoch_stats` reaches back over. `/validators/count` takes none of them.
+#[derive(Deserialize, Serialize, Debug, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PageParams {
+    epochs: Option<usize>,
+    query_from_date: Option<DateTime<Utc>>,
+    order_field: Option<OrderField>,
+    order_direction: Option<OrderDirection>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -134,6 +143,87 @@ pub struct ValidatorsPage {
     pub total_count: usize,
     pub bond_flags_updated_at: Option<DateTime<Utc>>,
     pub net_apy_updated_at: Option<DateTime<Utc>>,
+}
+
+impl GetValidatorsConfig {
+    /// The defaults and the 400s `/validators` and `/validators/count` share.
+    pub fn from_params(
+        filters: FilterParams,
+        page: PageParams,
+    ) -> Result<Self, (StatusCode, String)> {
+        if let Some(window) = filters.incident_window_epochs {
+            if window == 0 || window > DEFAULT_CACHE_EPOCHS {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("incident_window_epochs must be between 1 and {DEFAULT_CACHE_EPOCHS}"),
+                ));
+            }
+        }
+        if let Some(missed_slots) = filters.min_incident_missed_slots {
+            if missed_slots < MIN_MISSED_SLOTS {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("min_incident_missed_slots must be at least {MIN_MISSED_SLOTS}"),
+                ));
+            }
+        }
+        if let Some(leader_slots) = filters.min_incident_leader_slots {
+            if leader_slots < MIN_LEADER_SLOTS {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("min_incident_leader_slots must be at least {MIN_LEADER_SLOTS}"),
+                ));
+            }
+        }
+        let query_incident_types = match filters.query_incident_types.as_deref() {
+            Some(types) => match IncidentType::parse_list(types) {
+                Ok(types) => Some(types),
+                Err(unknown) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "query_incident_types does not know {unknown:?}, expected Downtime or BlockProduction"
+                        ),
+                    ))
+                }
+            },
+            None => Some(DEFAULT_INCIDENT_TYPES.to_vec()),
+        };
+
+        Ok(Self {
+            order_direction: page.order_direction.unwrap_or(DEFAULT_ORDER_DIRECTION),
+            order_field: page.order_field.unwrap_or(DEFAULT_ORDER_FIELD),
+            offset: page.offset.unwrap_or(0),
+            limit: page.limit.unwrap_or(DEFAULT_LIMIT),
+            query: filters.query,
+            query_vote_accounts: filters.query_vote_accounts.map(|i| {
+                i.split(",")
+                    .map(|vote_account| vote_account.to_string())
+                    .collect()
+            }),
+            query_identities: filters
+                .query_identities
+                .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
+            query_superminority: filters.query_superminority,
+            query_score: filters.query_score,
+            query_marinade_stake: filters.query_marinade_stake,
+            query_with_names: filters.query_with_names,
+            query_sfdp: filters.query_sfdp,
+            query_incident_free: filters.query_incident_free,
+            query_incident_types,
+            min_incident_downtime_seconds: filters.min_incident_downtime_seconds,
+            min_incident_missed_slots: filters.min_incident_missed_slots,
+            min_incident_leader_slots: filters.min_incident_leader_slots,
+            incident_window_epochs: filters.incident_window_epochs,
+            query_verified: filters.query_verified,
+            query_protected: filters.query_protected,
+            query_flagged: filters.query_flagged,
+            search_properties: filters.search_properties,
+            query_from_date: page.query_from_date,
+            epochs: page.epochs.unwrap_or(DEFAULT_EPOCHS),
+            with_operator_groups: filters.with_operator_groups == Some(true),
+        })
+    }
 }
 
 pub async fn get_validators(
@@ -203,6 +293,33 @@ pub async fn get_validators(
         bond_flags_updated_at,
         net_apy_updated_at,
     })
+}
+
+/// The number `/validators` serves as `total_count`, without paging or ordering the match.
+pub async fn count_validators(context: WrappedContext, config: GetValidatorsConfig) -> usize {
+    let (validators, incidents) = {
+        let cache = &context.read().await.cache;
+        (cache.get_validators(), cache.get_validator_incidents())
+    };
+
+    count_rows(
+        &filter_validators(validators, &incidents, &config),
+        config.with_operator_groups,
+    )
+}
+
+/// Rows the match occupies, in the units it is paged in: validators, or top-level rows under
+/// `with_operator_groups`.
+fn count_rows(validators: &[ValidatorRecord], with_operator_groups: bool) -> usize {
+    if with_operator_groups {
+        validators
+            .iter()
+            .map(top_level_row)
+            .collect::<HashSet<TopLevelRow>>()
+            .len()
+    } else {
+        validators.len()
+    }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
@@ -541,88 +658,20 @@ pub fn filter_validators(
     tag = "Validators",
     operation_id = "List validators",
     path = "/validators",
-    params(QueryParams),
+    params(FilterParams, PageParams),
     responses(
         (status = 200, body = ResponseValidators)
     )
 )]
 pub async fn handler(
-    query_params: QueryParams,
+    filters: FilterParams,
+    page: PageParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
     metrics::REQUEST_COUNT_VALIDATORS.inc();
-    if let Some(window) = query_params.incident_window_epochs {
-        if window == 0 || window > DEFAULT_CACHE_EPOCHS {
-            return Ok(response_error(
-                StatusCode::BAD_REQUEST,
-                format!("incident_window_epochs must be between 1 and {DEFAULT_CACHE_EPOCHS}"),
-            ));
-        }
-    }
-    if let Some(missed_slots) = query_params.min_incident_missed_slots {
-        if missed_slots < MIN_MISSED_SLOTS {
-            return Ok(response_error(
-                StatusCode::BAD_REQUEST,
-                format!("min_incident_missed_slots must be at least {MIN_MISSED_SLOTS}"),
-            ));
-        }
-    }
-    if let Some(leader_slots) = query_params.min_incident_leader_slots {
-        if leader_slots < MIN_LEADER_SLOTS {
-            return Ok(response_error(
-                StatusCode::BAD_REQUEST,
-                format!("min_incident_leader_slots must be at least {MIN_LEADER_SLOTS}"),
-            ));
-        }
-    }
-    let query_incident_types = match query_params.query_incident_types.as_deref() {
-        Some(types) => match IncidentType::parse_list(types) {
-            Ok(types) => Some(types),
-            Err(unknown) => {
-                return Ok(response_error(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "query_incident_types does not know {unknown:?}, expected Downtime or BlockProduction"
-                    ),
-                ))
-            }
-        },
-        None => Some(DEFAULT_INCIDENT_TYPES.to_vec()),
-    };
-    let config = GetValidatorsConfig {
-        order_direction: query_params
-            .order_direction
-            .unwrap_or(DEFAULT_ORDER_DIRECTION),
-        order_field: query_params.order_field.unwrap_or(DEFAULT_ORDER_FIELD),
-        offset: query_params.offset.unwrap_or(0),
-        limit: query_params.limit.unwrap_or(DEFAULT_LIMIT),
-        query: query_params.query,
-        query_vote_accounts: query_params.query_vote_accounts.map(|i| {
-            i.split(",")
-                .map(|vote_account| vote_account.to_string())
-                .collect()
-        }),
-        query_identities: query_params
-            .query_identities
-            .map(|i| i.split(",").map(|identity| identity.to_string()).collect()),
-        query_superminority: query_params.query_superminority,
-        query_score: query_params.query_score,
-        query_marinade_stake: query_params.query_marinade_stake,
-        query_with_names: query_params.query_with_names,
-        query_sfdp: query_params.query_sfdp,
-        query_incident_free: query_params.query_incident_free,
-        query_incident_types,
-        min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
-        min_incident_missed_slots: query_params.min_incident_missed_slots,
-        min_incident_leader_slots: query_params.min_incident_leader_slots,
-        incident_window_epochs: query_params.incident_window_epochs,
-        query_verified: query_params.query_verified,
-        query_protected: query_params.query_protected,
-        query_flagged: query_params.query_flagged,
-        search_properties: query_params.search_properties,
-        query_from_date: query_params.query_from_date,
-        epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
-        with_operator_groups: query_params.with_operator_groups == Some(true),
+    let config = match GetValidatorsConfig::from_params(filters, page) {
+        Ok(config) => config,
+        Err((status, message)) => return Ok(response_error(status, message)),
     };
 
     log::info!("Query validators {config:?}");
@@ -1426,6 +1475,35 @@ mod tests {
             ],
             vec![operator("X", 600), operator("Y", 300)],
         )
+    }
+
+    /// `/validators` reads both structs off one query string and `/validators/count` reads only
+    /// the filters, so neither may reject the other's params.
+    #[test]
+    fn the_two_views_ignore_each_others_params() {
+        let query = "query=abc&with_operator_groups=true&limit=7&order_field=Credits";
+
+        let filters: FilterParams = serde_urlencoded::from_str(query).unwrap();
+        assert_eq!(filters.query.as_deref(), Some("abc"));
+        assert_eq!(filters.with_operator_groups, Some(true));
+
+        let page: PageParams = serde_urlencoded::from_str(query).unwrap();
+        assert_eq!(page.limit, Some(7));
+        assert_eq!(page.order_field, Some(OrderField::Credits));
+    }
+
+    #[test]
+    fn the_count_matches_the_total_count_beside_a_page() {
+        let (validators, operators) = two_operators();
+        let (_, total_count) = paged(validators.clone(), Some(operators), 0, 1);
+        assert_eq!(
+            count_rows(&validators, true),
+            total_count,
+            "operator blocks"
+        );
+
+        let (_, total_count) = paged(validators.clone(), None, 0, 1);
+        assert_eq!(count_rows(&validators, false), total_count, "validators");
     }
 
     #[test]

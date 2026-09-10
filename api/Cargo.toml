@@ -31,3 +31,7 @@ prometheus = { workspace = true }
 lazy_static = { workspace = true }
 regex = { workspace = true }
 utoipa = { workspace = true }
+
+[dev-dependencies]
+# The two typed views of the /validators query string are asserted against the same decoder warp uses.
+serde_urlencoded = "0.7.1"
