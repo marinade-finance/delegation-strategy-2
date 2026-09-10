@@ -183,6 +183,52 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 }
 ```
 
+## Releases
+
+Mainnet client releases: when a version was published, and when it became the minimum the Solana
+Foundation Delegation Program required. Filter with `client` (a lineage: `agave`,
+`frankendancer`, `firedancer`, `sig`) and `since_epoch` (matches either epoch).
+
+One row per (client lineage, version): availability from the client's GitHub releases, the floor from
+SFDP's published requirements. `feature_gate_floors` carries the other floor -- the one the cluster
+enforces -- whole and unfiltered, since it is a handful of static rows.
+
+```bash
+curl -sfLS 'localhost:8000/releases?client=agave&since_epoch=1010' | jq
+```
+```json
+{
+  "releases": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.2",
+      "available_epoch": 1026,
+      "released_at": "2026-08-28T18:47:41Z",
+      "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.2.2",
+      "sfdp_floor_epoch": 1033,
+      "updated_at": "2026-09-09T17:24:59.299327Z"
+    },
+    {
+      "client_lineage": "agave",
+      "client_version": "4.3.0-rc.0",
+      "available_epoch": 1029,
+      "released_at": "2026-09-04T15:46:13Z",
+      "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.3.0-rc.0",
+      "sfdp_floor_epoch": null,
+      "updated_at": "2026-09-09T17:24:59.299327Z"
+    }
+  ],
+  "feature_gate_floors": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.0-beta.1",
+      "effective_epoch": 1019,
+      "announced_epoch": 1015
+    }
+  ]
+}
+```
+
 ## Glossary
 ```bash
 curl -sfLS localhost:8000/static/glossary.md

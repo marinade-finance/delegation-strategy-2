@@ -209,7 +209,7 @@ impl ClientId {
 }
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
-fn is_plausible_node_version(version: &str) -> bool {
+pub fn is_plausible_node_version(version: &str) -> bool {
     let numeric = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
     let mut parts = version.splitn(3, '.');
     parts.next().is_some_and(numeric)

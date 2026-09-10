@@ -1,0 +1,19 @@
+# Feature-gate floors: the version the cluster required, and the epoch it started requiring it.
+# Announced in the Solana Tech Discord, served by no API. Rebuilt from
+# marinade-finance/marinade-experiments/explore-solana-versions/discord/, which keeps the messages.
+# effective_epoch 1019: the announcement only said "16 hours from now", so it was read off the
+# chain -- gate iBRL5RuWhw4yqaAZu96RUULHckHTZAoe2b77qaV38JZ activated at slot 440208000.
+# The archive ends 2026-08-18. Later gates are published on solana.com/upgrades and in Anza's
+# release schedules, as a date and sometimes an epoch; add those rows here by hand.
+client_lineage,client_version,effective_epoch,announced_epoch
+agave,3.1.0,946,945
+agave,3.1.7,953,950
+agave,4.0.0-beta.0,979,978
+agave,4.0.2,992,991
+agave,4.1.0-beta.0,999,998
+agave,4.2.0-beta.1,1019,1015
+frankendancer,0.812.30108,946,945
+frankendancer,0.902.40002,979,978
+frankendancer,0.911.40002,992,991
+frankendancer,0.1001.40101,999,998
+frankendancer,0.1102.40201,1019,1015

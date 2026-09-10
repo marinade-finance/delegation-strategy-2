@@ -56,3 +56,39 @@ cargo run --bin collect -- -u $RPC_URL validators-block-rewards --epoch $EPOCH |
 - **One-off historical backfill:** use `--from-epoch N` (queries all epochs `>= N`).
 
 Runs are stateless (no synced-epoch cursor): each run re-queries its whole window and upserts, so an interrupted run is fixed by simply re-running. Prefer `--epochs-back` for the cron — a fixed `--from-epoch` grows the re-queried window unbounded as epochs advance.
+
+## releases
+
+Release metadata for the `releases` table: when a version was published, and when it became the
+minimum the Solana Foundation Delegation Program required. Mainnet only. One fetcher per source,
+selected with `--source`:
+
+| Source | Fetcher | Gives |
+|---|---|---|
+| `github` | GitHub releases for `anza-xyz/agave` and `firedancer-io/firedancer` | publish timestamps, full history, no floors |
+| `sfdp` | `api.solana.org/api/community/v1/sfdp_required_versions`, one request per epoch | the Solana Foundation Delegation Program floor, per epoch, from epoch 688 on |
+
+```bash
+export RPC_URL=...
+
+# Steady state: the recent floor window plus the current release lists.
+cargo run --bin collect -- releases > releases.yaml
+
+# One-off historical backfill of every floor the endpoint answers for.
+cargo run --bin collect -- releases --from-epoch 688 > releases.yaml
+```
+
+Adding a source means implementing `ReleaseFetcher` and adding a `--source` value; the table does
+not change. Rows from different sources coexist and are resolved by the precedence documented in
+`migrations/0027-releases.sql`.
+
+The SFDP endpoint answers one epoch per request and starts refusing a few hundred requests in, so
+the fetcher paces itself: a full backfill from epoch 688 takes about four minutes. Epochs it has no
+answer for reply 404, which is recorded as "no floor stated", not as a failure. `GITHUB_TOKEN`
+raises the GitHub rate limit but is not needed for a single run.
+
+`available_epoch` is not resolved here: placing a timestamp in an epoch needs the `epochs` table, so
+`collect` emits `released_at` and `store releases` does the mapping.
+
+The cluster's own feature-gate floors are not collected: no API serves them, so they are a static
+table, `store/release_feature_gates.csv`, read through `store::feature_gates`.
