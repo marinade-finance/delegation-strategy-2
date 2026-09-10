@@ -10,6 +10,14 @@ use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
+/// `commission_effective` came from the epoch's reward row, the rate the runtime applied.
+pub const COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW: &str = "reward_row";
+/// `commission_effective` came from the vote state this epoch's last snapshot sampled, because
+/// SIMD-0232 removed the rate from the reward rows. Close to the applied rate, but not it: the
+/// runtime reads the state at the epoch's last slot, and a rate changed after the last snapshot or
+/// held back by the anti-rug delay is not in this number.
+pub const COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE: &str = "vote_state";
+
 /// Served instead of null so every consumer has a client name to render.
 pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
 
@@ -163,6 +171,12 @@ pub struct Validator {
     pub uptime: Option<Decimal>,
     pub downtime: Option<Decimal>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub inflation_rewards_collector: Option<String>,
+    pub block_revenue_collector: Option<String>,
+    pub inflation_rewards_commission_bps: Option<i32>,
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    pub block_revenue_commission_bps: Option<i32>,
+    pub pending_delegator_rewards: Option<Decimal>,
 }
 
 impl Validator {
@@ -201,6 +215,12 @@ impl Validator {
             commission_min_observed: None,
             commission_advertised: Some(v.performance.commission as i32),
             commission_effective: None,
+            inflation_rewards_collector: v.inflation_rewards_collector.clone(),
+            block_revenue_collector: v.block_revenue_collector.clone(),
+            inflation_rewards_commission_bps: v.inflation_rewards_commission_bps.map(i32::from),
+            inflation_rewards_commission_bps_is_v4: v.inflation_rewards_commission_bps_is_v4,
+            block_revenue_commission_bps: v.block_revenue_commission_bps.map(i32::from),
+            pending_delegator_rewards: v.pending_delegator_rewards.map(Decimal::from),
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -239,6 +259,28 @@ pub struct ValidatorEpochStats {
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
+    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the rate sampled from vote state at epoch close, which is what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
+    pub commission_effective_source: Option<String>,
+    /// Inflation commission in basis points as the vote state carried it. Authoritative where the whole-percent fields are a `div_ceil` projection of it. Set on every vote state version: agave synthesizes `commission * 100` on a pre-v4 account, so this is the rate it applies either way — read `inflation_rewards_commission_bps_is_v4` to tell a rate the validator set in basis points from that projection.
+    pub inflation_rewards_commission_bps: Option<i32>,
+    /// Whether `inflation_rewards_commission_bps` came from a v4 vote state, where a validator can set a fraction of a percent, rather than being agave's `commission * 100` projection of a whole-percent rate. Null where nothing was sampled.
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    /// SIMD-0232 account this validator's inflation commission is paid into. Null on a pre-v4 vote state, where agave has no collector to read and credits the vote account itself — null is not "the vote account", it is "no collector recorded". Sampled from live vote state, so it predicts this epoch's payout, which lands in the first block of the next epoch.
+    pub inflation_rewards_collector: Option<String>,
+    /// Whether `inflation_rewards_collector` points somewhere other than the vote account, so a consumer need not diff pubkeys. Null on a pre-v4 vote state. Unlike the block-revenue side this does mean a deliberate redirect: a vote account's own address never changes, and the only way to move this collector is the `UpdateCommissionCollector` instruction.
+    pub inflation_rewards_collector_redirected: Option<bool>,
+    /// How many vote accounts in this epoch name the same `inflation_rewards_collector`, this one included. More than one means the runtime merges their commissions into a single reward row and the per-validator split is not recoverable from the ledger. **Not a relationship between those validators**: SIMD-0232 asks a collector for no signature of its own, so anyone can point a throwaway vote account at somebody else's collector. Never key an identity or an operator grouping on a collector.
+    pub inflation_rewards_collector_shared_count: Option<i64>,
+    /// SIMD-0232 account this validator's block revenue is paid into. Null on a pre-v4 vote state, where agave credits the leader identity instead. Read from the vote state that built the leader schedule, so a sample taken now predicts the *next* epoch's block revenue, not this one's.
+    pub block_revenue_collector: Option<String>,
+    /// Whether `block_revenue_collector` still points at the current identity, which is its default. Null on a pre-v4 vote state. False does **not** imply a deliberate redirect: agave stopped re-syncing this field to the identity once SIMD-0232 activated, so changing identity leaves it on the old one.
+    pub block_revenue_collector_is_identity: Option<bool>,
+    /// How many vote accounts in this epoch name the same `block_revenue_collector`, this one included. Carries the same no-consent caveat as `inflation_rewards_collector_shared_count`, but not its attribution loss: block revenue is deposited per block rather than merged into one epoch reward row.
+    pub block_revenue_collector_shared_count: Option<i64>,
+    /// Block-revenue commission in basis points. Inert until SIMD-0123 activates, and 10000 by default on a vote state migrated to v4, which reads as "the validator keeps all of it" rather than as an inflation rate. Null on a pre-v4 vote state.
+    pub block_revenue_commission_bps: Option<i32>,
+    /// Inflation rewards accrued to this vote account and not yet distributed to its delegators. Null on a pre-v4 vote state.
+    pub pending_delegator_rewards: Option<Decimal>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
@@ -314,6 +356,28 @@ pub struct ValidatorRecord {
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
+    /// See `ValidatorEpochStats::commission_effective_source`. Projected from the newest closed epoch, alongside `commission_effective` itself.
+    pub commission_effective_source: Option<String>,
+    /// See `ValidatorEpochStats::inflation_rewards_commission_bps`. Projected from the newest closed epoch.
+    pub inflation_rewards_commission_bps: Option<i32>,
+    /// See `ValidatorEpochStats::inflation_rewards_commission_bps_is_v4`.
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector`.
+    pub inflation_rewards_collector: Option<String>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector_redirected`.
+    pub inflation_rewards_collector_redirected: Option<bool>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector_shared_count`.
+    pub inflation_rewards_collector_shared_count: Option<i64>,
+    /// See `ValidatorEpochStats::block_revenue_collector`.
+    pub block_revenue_collector: Option<String>,
+    /// See `ValidatorEpochStats::block_revenue_collector_is_identity`.
+    pub block_revenue_collector_is_identity: Option<bool>,
+    /// See `ValidatorEpochStats::block_revenue_collector_shared_count`.
+    pub block_revenue_collector_shared_count: Option<i64>,
+    /// See `ValidatorEpochStats::block_revenue_commission_bps`.
+    pub block_revenue_commission_bps: Option<i32>,
+    /// See `ValidatorEpochStats::pending_delegator_rewards`.
+    pub pending_delegator_rewards: Option<Decimal>,
     pub commission_aggregated: Option<i32>,
     pub rugged_commission_occurrences: u64,
     pub rugged_commission: bool,

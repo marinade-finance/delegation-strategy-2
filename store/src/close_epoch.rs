@@ -1,6 +1,8 @@
+use crate::dto::{COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE};
 use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use collect::solana_service::bps_to_percent;
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
 use log::info;
 use rust_decimal::prelude::*;
@@ -15,6 +17,48 @@ pub struct CloseEpochParams {
 }
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
+
+// A reward row still wins where one exists, so pre-1031 epochs reprocess to the same values.
+fn resolve_commission_effective(
+    from_reward_row: Option<u8>,
+    sampled_bps: Option<u16>,
+) -> (Option<i32>, Option<&'static str>) {
+    if let Some(commission) = from_reward_row {
+        return (
+            Some(i32::from(commission)),
+            Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
+        );
+    }
+    match sampled_bps {
+        Some(bps) => (
+            Some(i32::from(bps_to_percent(bps))),
+            Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+        ),
+        None => (None, None),
+    }
+}
+
+// Written hourly by store validators over the open epoch, so by close this is the last sample taken.
+async fn load_sampled_commission_bps(
+    psql_client: &Client,
+    epoch: &Decimal,
+) -> anyhow::Result<HashMap<String, u16>> {
+    let rows = psql_client
+        .query(
+            "SELECT vote_account, inflation_rewards_commission_bps
+             FROM validators
+             WHERE epoch = $1 AND inflation_rewards_commission_bps IS NOT NULL",
+            &[epoch],
+        )
+        .await?;
+
+    let mut sampled = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let bps: i32 = row.get("inflation_rewards_commission_bps");
+        sampled.insert(row.get("vote_account"), u16::try_from(bps)?);
+    }
+    Ok(sampled)
+}
 
 pub async fn create_epoch_record(
     psql_client: &Client,
@@ -143,6 +187,7 @@ struct ValidatorUpdateRecord {
     vote_account: String,
     epoch: Decimal,
     commission_effective: Option<i32>,
+    commission_effective_source: Option<&'static str>,
     credits: Decimal,
     leader_slots: Decimal,
     blocks_produced: Decimal,
@@ -174,28 +219,54 @@ pub async fn close_epoch(
 
     info!("Loaded the snapshot");
 
+    let sampled_commission_bps = load_sampled_commission_bps(psql_client, &snapshot_epoch).await?;
+
     let validator_update_records: Vec<_> = snapshot
         .validators
         .iter()
-        .map(|(vote_account, v)| ValidatorUpdateRecord {
-            vote_account: vote_account.clone(),
-            epoch: snapshot_epoch,
-            commission_effective: rewards
-                .get(vote_account)
-                .and_then(|r| r.commission_effective.map(|c| c as i32)),
-            credits: v.credits.into(),
-            leader_slots: v.leader_slots.into(),
-            blocks_produced: v.blocks_produced.into(),
-            skip_rate: v.skip_rate,
-            updated_at: snapshot_created_at,
+        .map(|(vote_account, v)| {
+            let (commission_effective, commission_effective_source) = resolve_commission_effective(
+                rewards
+                    .get(vote_account)
+                    .and_then(|r| r.commission_effective),
+                sampled_commission_bps.get(vote_account).copied(),
+            );
+            ValidatorUpdateRecord {
+                vote_account: vote_account.clone(),
+                epoch: snapshot_epoch,
+                commission_effective,
+                commission_effective_source,
+                credits: v.credits.into(),
+                leader_slots: v.leader_slots.into(),
+                blocks_produced: v.blocks_produced.into(),
+                skip_rate: v.skip_rate,
+                updated_at: snapshot_created_at,
+            }
         })
         .collect();
+
+    let from_vote_state = validator_update_records
+        .iter()
+        .filter(|record| {
+            record.commission_effective_source == Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE)
+        })
+        .count();
+    let unresolved = validator_update_records
+        .iter()
+        .filter(|record| record.commission_effective_source.is_none())
+        .count();
+    info!(
+        "Effective commission for {} validators: {} from a reward row, {from_vote_state} from sampled vote state, {unresolved} unresolved",
+        validator_update_records.len(),
+        validator_update_records.len() - from_vote_state - unresolved
+    );
 
     for chunk in validator_update_records.chunks(DEFAULT_CHUNK_SIZE) {
         let mut query = UpdateQueryCombiner::new(
             "validators".to_string(),
             "
             commission_effective = u.commission_effective,
+            commission_effective_source = u.commission_effective_source,
             credits = u.credits,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
@@ -207,6 +278,7 @@ pub async fn close_epoch(
                 vote_account,
                 epoch,
                 commission_effective,
+                commission_effective_source,
                 credits,
                 leader_slots,
                 blocks_produced,
@@ -221,6 +293,7 @@ pub async fn close_epoch(
                 &v.vote_account,
                 &v.epoch,
                 &v.commission_effective,
+                &v.commission_effective_source,
                 &v.credits,
                 &v.leader_slots,
                 &v.blocks_produced,
@@ -232,11 +305,12 @@ pub async fn close_epoch(
                 HashMap::from_iter([
                     (1, "NUMERIC".into()),                  // epoch
                     (2, "INTEGER".into()),                  // commission_effective
-                    (3, "NUMERIC".into()),                  // credits
-                    (4, "NUMERIC".into()),                  // leader_slots
-                    (5, "NUMERIC".into()),                  // blocks_produced
-                    (6, "DOUBLE PRECISION".into()),         // skip_rate
-                    (7, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                    (3, "TEXT".into()),                     // commission_effective_source
+                    (4, "NUMERIC".into()),                  // credits
+                    (5, "NUMERIC".into()),                  // leader_slots
+                    (6, "NUMERIC".into()),                  // blocks_produced
+                    (7, "DOUBLE PRECISION".into()),         // skip_rate
+                    (8, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());
@@ -252,4 +326,54 @@ pub async fn close_epoch(
     update_observed_commission(psql_client, snapshot.epoch).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reward_row_still_wins_so_closed_epochs_reprocess_unchanged() {
+        assert_eq!(
+            resolve_commission_effective(Some(7), Some(300)),
+            (Some(7), Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW))
+        );
+    }
+
+    #[test]
+    fn a_missing_reward_row_falls_back_to_the_sampled_vote_state() {
+        assert_eq!(
+            resolve_commission_effective(None, Some(700)),
+            (Some(7), Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE))
+        );
+    }
+
+    // Same div_ceil rule as every other projection of these basis points, so a validator just over
+    // the 10% eligibility cap cannot round down onto it.
+    #[test]
+    fn the_fallback_projects_basis_points_the_way_agave_does() {
+        assert_eq!(resolve_commission_effective(None, Some(1_001)).0, Some(11));
+        assert_eq!(resolve_commission_effective(None, Some(1_000)).0, Some(10));
+        assert_eq!(
+            resolve_commission_effective(None, Some(25_600)).0,
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn neither_source_leaves_the_rate_unknown_rather_than_zero() {
+        assert_eq!(resolve_commission_effective(None, None), (None, None));
+    }
+
+    #[test]
+    fn a_genuine_zero_is_resolved_not_missing() {
+        assert_eq!(
+            resolve_commission_effective(None, Some(0)),
+            (Some(0), Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE))
+        );
+        assert_eq!(
+            resolve_commission_effective(Some(0), None),
+            (Some(0), Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW))
+        );
+    }
 }

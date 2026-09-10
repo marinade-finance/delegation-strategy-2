@@ -398,6 +398,8 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in DB, caching an empty set");
     }
 
+    record_inflation_commission_sources(validators.values());
+
     // The window ends at the newest epoch the validator records report, which is the same epoch the
     // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.
     let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
@@ -621,6 +623,44 @@ fn next_retry_s(current: u64) -> u64 {
 fn seconds_until_next_window() -> u64 {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     CACHE_WARMUP_TIME_S - now.as_secs() % CACHE_WARMUP_TIME_S
+}
+
+/// Neither an epoch-close source nor an advertised rate: nothing left to read.
+const COMMISSION_SOURCE_NONE: &str = "none";
+/// No epoch-close source yet, but the open epoch's snapshot carries a rate.
+const COMMISSION_SOURCE_ADVERTISED: &str = "advertised";
+
+fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &str {
+    match source {
+        Some(source) => source,
+        None if has_advertised => COMMISSION_SOURCE_ADVERTISED,
+        None => COMMISSION_SOURCE_NONE,
+    }
+}
+
+// Every series is set on every refresh, including to zero, so an alert on `source="none"` reads a
+// resolved fleet as a zero rather than as a series that stopped being reported.
+fn record_inflation_commission_sources<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) {
+    let mut counts: HashMap<&str, i64> = HashMap::from([
+        (store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, 0),
+        (store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE, 0),
+        (COMMISSION_SOURCE_ADVERTISED, 0),
+        (COMMISSION_SOURCE_NONE, 0),
+    ]);
+    for record in validators {
+        let label = commission_source_label(
+            record.commission_effective_source.as_deref(),
+            record.commission_advertised.is_some(),
+        );
+        *counts.entry(label).or_insert(0) += 1;
+    }
+    for (source, count) in counts {
+        metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+            .with_label_values(&[source])
+            .set(count);
+    }
 }
 
 // Zero, not absent: an unregistered series makes a cache that never loaded invisible to a staleness alert.
@@ -1008,5 +1048,58 @@ mod tests {
     fn refresh_window_is_within_the_refresh_interval() {
         let seconds = seconds_until_next_window();
         assert!(seconds > 0 && seconds <= CACHE_WARMUP_TIME_S, "{seconds}");
+    }
+}
+
+#[cfg(test)]
+mod commission_source_metric_tests {
+    use super::*;
+
+    #[test]
+    fn an_epoch_close_source_is_reported_as_itself() {
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE
+        );
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW
+        );
+    }
+
+    // The fleet-wide state through epoch 1031: no epoch-close source, every consumer on the fallback.
+    #[test]
+    fn a_validator_on_the_advertised_fallback_is_told_apart_from_one_with_nothing() {
+        assert_eq!(
+            commission_source_label(None, true),
+            COMMISSION_SOURCE_ADVERTISED
+        );
+        assert_eq!(commission_source_label(None, false), COMMISSION_SOURCE_NONE);
+    }
+
+    #[test]
+    fn every_series_reports_a_zero_rather_than_disappearing() {
+        record_inflation_commission_sources(std::iter::empty());
+        for source in [
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+            COMMISSION_SOURCE_ADVERTISED,
+            COMMISSION_SOURCE_NONE,
+        ] {
+            assert_eq!(
+                metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+                    .get_metric_with_label_values(&[source])
+                    .unwrap()
+                    .get(),
+                0,
+                "{source} has to be alertable before it ever has a validator in it"
+            );
+        }
     }
 }

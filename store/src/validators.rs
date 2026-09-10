@@ -98,7 +98,13 @@ pub async fn store_validators(
             shred_version = u.shred_version,
             gossip_port = u.gossip_port,
             rpc_public = u.rpc_public,
-            pubsub_public = u.pubsub_public
+            pubsub_public = u.pubsub_public,
+            inflation_rewards_collector = u.inflation_rewards_collector,
+            block_revenue_collector = u.block_revenue_collector,
+            inflation_rewards_commission_bps = u.inflation_rewards_commission_bps,
+            inflation_rewards_commission_bps_is_v4 = u.inflation_rewards_commission_bps_is_v4,
+            block_revenue_commission_bps = u.block_revenue_commission_bps,
+            pending_delegator_rewards = u.pending_delegator_rewards
             "
             .to_string(),
             "u(
@@ -140,7 +146,13 @@ pub async fn store_validators(
                 gossip_port,
                 rpc_public,
                 pubsub_public,
-                dc_resolved
+                dc_resolved,
+                inflation_rewards_collector,
+                block_revenue_collector,
+                inflation_rewards_commission_bps,
+                inflation_rewards_commission_bps_is_v4,
+                block_revenue_commission_bps,
+                pending_delegator_rewards
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -189,6 +201,12 @@ pub async fn store_validators(
                     &v.rpc_public,
                     &v.pubsub_public,
                     &v.dc_resolved,
+                    &v.inflation_rewards_collector,
+                    &v.block_revenue_collector,
+                    &v.inflation_rewards_commission_bps,
+                    &v.inflation_rewards_commission_bps_is_v4,
+                    &v.block_revenue_commission_bps,
+                    &v.pending_delegator_rewards,
                 ];
                 query.add(
                     &mut params,
@@ -220,6 +238,12 @@ pub async fn store_validators(
                         (36, "BOOL".into()),                     // rpc_public
                         (37, "BOOL".into()),                     // pubsub_public
                         (38, "BOOL".into()),                     // dc_resolved
+                        (39, "TEXT".into()),                     // inflation_rewards_collector
+                        (40, "TEXT".into()),                     // block_revenue_collector
+                        (41, "INTEGER".into()),                  // inflation_rewards_commission_bps
+                        (42, "BOOL".into()), // inflation_rewards_commission_bps_is_v4
+                        (43, "INTEGER".into()), // block_revenue_commission_bps
+                        (44, "NUMERIC".into()), // pending_delegator_rewards
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -288,7 +312,13 @@ pub async fn store_validators(
         shred_version,
         gossip_port,
         rpc_public,
-        pubsub_public
+        pubsub_public,
+        inflation_rewards_collector,
+        block_revenue_collector,
+        inflation_rewards_commission_bps,
+        inflation_rewards_commission_bps_is_v4,
+        block_revenue_commission_bps,
+        pending_delegator_rewards
         "
             .to_string(),
         );
@@ -342,6 +372,12 @@ pub async fn store_validators(
                 &v.gossip_port,
                 &v.rpc_public,
                 &v.pubsub_public,
+                &v.inflation_rewards_collector,
+                &v.block_revenue_collector,
+                &v.inflation_rewards_commission_bps,
+                &v.inflation_rewards_commission_bps_is_v4,
+                &v.block_revenue_commission_bps,
+                &v.pending_delegator_rewards,
             ];
             query.add(&mut params);
             if !v.dc_resolved {
