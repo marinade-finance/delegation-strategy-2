@@ -3,7 +3,8 @@
 
 use crate::directory::{Directory, Precondition};
 use crate::dto::{
-    Validator, ValidatorBlockReward, ValidatorJitoMEVInfo, ValidatorJitoPriorityFeeInfo,
+    ScoringRunRecord, Validator, ValidatorBlockReward, ValidatorJitoMEVInfo,
+    ValidatorJitoPriorityFeeInfo, ValidatorScoreRecord,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
@@ -387,11 +388,37 @@ pub struct ClusterInfoSample {
     pub slots_per_year: f64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ClusterInfoDoc {
     pub epoch: u64,
     #[serde(default)]
     pub samples: Vec<ClusterInfoSample>,
+}
+
+/// ds-scoring's document for one epoch: the run that produced the scores and
+/// the scores themselves. DS2 reads it; it never writes one.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScoringBreakdownsDoc {
+    pub scoring_run_id: i64,
+    pub epoch: i32,
+    pub created_at: DateTime<Utc>,
+    pub ui_id: String,
+    pub components: Vec<String>,
+    pub component_weights: Vec<f64>,
+    pub scores: Vec<ValidatorScoreRecord>,
+}
+
+impl ScoringBreakdownsDoc {
+    pub fn scoring_run(&self) -> ScoringRunRecord {
+        ScoringRunRecord {
+            scoring_run_id: self.scoring_run_id.into(),
+            created_at: self.created_at,
+            epoch: self.epoch,
+            components: self.components.clone(),
+            component_weights: self.component_weights.clone(),
+            ui_id: self.ui_id.clone(),
+        }
+    }
 }
 
 /// What close-epoch seals under `/validators/{stream}/{epoch}`.

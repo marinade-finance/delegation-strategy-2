@@ -7,6 +7,7 @@ use crate::dto::{
     JitoMevRecord, JitoPriorityFeeRecord, JitoRecord, ValidatorJitoMEVInfo,
     ValidatorJitoPriorityFeeInfo,
 };
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use collect::validators_jito::{JitoAccountType, JitoSnapshot};
 use log::info;
@@ -14,7 +15,6 @@ use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
 use structopt::StructOpt;
-use tokio_postgres::Client;
 
 #[derive(Debug, StructOpt)]
 pub struct StoreJitoParams {
@@ -85,97 +85,60 @@ pub async fn store_jito(
     Ok(())
 }
 
-async fn get_last_validator_info<T, F>(
-    psql_client: &Client,
+/// The latest observation per vote account inside the last `epochs` epochs,
+/// which the per-epoch documents hold one of each.
+fn last_per_vote_account<'a, T, E>(
+    documents: &'a std::collections::BTreeMap<u64, std::collections::BTreeMap<String, E>>,
+    warehouse: &Warehouse,
     epochs: u64,
-    db_table: &str,
-    select_fields: &str,
-    row_mapper: F,
-) -> anyhow::Result<Vec<T>>
-where
-    F: Fn(&tokio_postgres::Row) -> anyhow::Result<T>,
-{
-    let query = format!(
-        "WITH cluster AS (
-            SELECT MAX(epoch) AS last_epoch
-            FROM cluster_info
-        ),
-        filtered_data AS (
-            SELECT
-                {select_fields},
-                ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY epoch DESC) AS rn
-            FROM {db_table}
-            CROSS JOIN cluster
-            WHERE epoch > cluster.last_epoch - $1::NUMERIC
-        )
-        SELECT {select_fields}
-        FROM filtered_data
-        WHERE rn = 1;"
-    );
+    map: impl Fn(&'a E) -> anyhow::Result<T>,
+) -> anyhow::Result<Vec<T>> {
+    let first_epoch = warehouse.window_start(epochs);
+    let mut latest: HashMap<&String, (u64, &E)> = Default::default();
 
-    let rows = psql_client.query(&query, &[&Decimal::from(epochs)]).await?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row_mapper(&row)?);
+    for (epoch, entries) in documents.range(first_epoch..) {
+        for (vote_account, entry) in entries.iter() {
+            match latest.get(vote_account) {
+                Some((seen, _)) if seen >= epoch => {}
+                _ => {
+                    latest.insert(vote_account, (*epoch, entry));
+                }
+            }
+        }
     }
 
-    Ok(results)
+    latest.into_values().map(|(_, entry)| map(entry)).collect()
 }
 
-pub async fn get_last_mev_info(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<JitoMevRecord>> {
-    get_last_validator_info(
-        psql_client,
-        epochs,
-        JitoAccountType::MevTipDistribution.db_table_name(),
-        "vote_account, mev_commission, epoch",
-        |row| {
-            Ok(JitoMevRecord {
-                epoch: row.get::<_, Decimal>("epoch"),
-                mev_commission_bps: row.get::<_, i32>("mev_commission"),
-                vote_account: row.get("vote_account"),
-            })
-        },
-    )
-    .await
+pub fn get_last_mev_info(warehouse: &Warehouse, epochs: u64) -> anyhow::Result<Vec<JitoMevRecord>> {
+    last_per_vote_account(&warehouse.mev, warehouse, epochs, |entry| {
+        Ok(JitoMevRecord {
+            epoch: entry.epoch,
+            mev_commission_bps: entry.mev_commission,
+            vote_account: entry.vote_account.clone(),
+        })
+    })
 }
 
-async fn get_last_priority_fee_info(
-    psql_client: &Client,
+fn get_last_priority_fee_info(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<JitoPriorityFeeRecord>> {
-    get_last_validator_info(
-        psql_client,
-        epochs,
-        JitoAccountType::PriorityFeeDistribution.db_table_name(),
-        "vote_account, validator_commission, total_lamports_transferred, epoch",
-        |row| {
-            Ok(JitoPriorityFeeRecord {
-                epoch: row.get::<_, Decimal>("epoch"),
-                priority_commission_bps: row.get::<_, i32>("validator_commission"),
-                vote_account: row.get("vote_account"),
-                total_lamports_transferred: row
-                    .get::<_, Decimal>("total_lamports_transferred")
-                    .try_into()?,
-            })
-        },
-    )
-    .await
+    last_per_vote_account(&warehouse.priority_fees, warehouse, epochs, |entry| {
+        Ok(JitoPriorityFeeRecord {
+            epoch: entry.epoch,
+            priority_commission_bps: entry.priority_commission,
+            vote_account: entry.vote_account.clone(),
+            total_lamports_transferred: entry.total_lamports_transferred.try_into()?,
+        })
+    })
 }
 
-pub async fn get_last_jito_info(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<Vec<JitoRecord>> {
-    let (mev_records, priority_fee_records) = tokio::try_join!(
-        get_last_mev_info(psql_client, epochs),
-        get_last_priority_fee_info(psql_client, epochs)
-    )?;
+pub fn get_last_jito_info(warehouse: &Warehouse, epochs: u64) -> anyhow::Result<Vec<JitoRecord>> {
+    let mev_records = get_last_mev_info(warehouse, epochs)?;
+    let priority_fee_records = get_last_priority_fee_info(warehouse, epochs)?;
 
-    // Combine the two records into a single JitoRecord (combine by vote_account and epoch)
+    // Keyed on (vote_account, epoch): the two distribution accounts resolve their last epoch separately.
     let mut mev_map: HashMap<(String, Decimal), JitoMevRecord> = HashMap::new();
     for record in mev_records {
         let key = (record.vote_account.clone(), record.epoch);

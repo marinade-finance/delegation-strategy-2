@@ -2,7 +2,7 @@ use crate::dto::{
     BlacklistRecord, GlobalUnstakeHintRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord,
     ValidatorScoreRecord,
 };
-use chrono::{DateTime, Utc};
+use crate::warehouse::Warehouse;
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
@@ -203,97 +203,23 @@ pub async fn load_global_unstake_hint_records(
         .collect())
 }
 
-pub async fn load_all_scores(
-    psql_client: &Client,
-) -> anyhow::Result<HashMap<Decimal, Vec<ValidatorScoreRecord>>> {
-    log::info!("Querying all scores...");
-    let rows = psql_client
-        .query(
-            "
-            SELECT vote_account,
-                score,
-                rank,
-                vemnde_votes,
-                msol_votes,
-                ui_hints,
-                component_scores,
-                component_ranks,
-                component_values,
-                eligible_stake_algo,
-                eligible_stake_vemnde,
-                eligible_stake_msol,
-                target_stake_algo,
-                target_stake_vemnde,
-                target_stake_msol,
-                scores.scoring_run_id,
-                scoring_runs.created_at AS created_at
-            FROM scores
-            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
-            ORDER BY rank",
-            &[],
-        )
-        .await?;
-
-    let records: HashMap<_, Vec<_>> = {
-        log::info!("Aggregating scores records...");
-        let mut records: HashMap<_, Vec<_>> = Default::default();
-        for row in rows {
-            let scoring_run_id: i64 = row.get("scoring_run_id");
-            let scores = records
-                .entry(scoring_run_id.into())
-                .or_insert(Default::default());
-            scores.push(ValidatorScoreRecord {
-                vote_account: row.get("vote_account"),
-                score: row.get("score"),
-                rank: row.get("rank"),
-                vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into()?,
-                msol_votes: row.get::<_, Decimal>("msol_votes").try_into()?,
-                ui_hints: row.get("ui_hints"),
-                component_scores: row.get("component_scores"),
-                component_ranks: row.get("component_ranks"),
-                component_values: row.get("component_values"),
-                eligible_stake_algo: row.get("eligible_stake_algo"),
-                eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
-                eligible_stake_msol: row.get("eligible_stake_msol"),
-                target_stake_algo: row.get::<_, Decimal>("target_stake_algo").try_into()?,
-                target_stake_vemnde: row.get::<_, Decimal>("target_stake_vemnde").try_into()?,
-                target_stake_msol: row.get::<_, Decimal>("target_stake_msol").try_into()?,
-                scoring_run_id: row.get("scoring_run_id"),
-                created_at: row.get::<_, DateTime<Utc>>("created_at"),
-            })
-        }
-
-        records
-    };
-    log::info!("Records prepared...");
-    Ok(records)
+pub fn load_all_scores(warehouse: &Warehouse) -> HashMap<Decimal, Vec<ValidatorScoreRecord>> {
+    warehouse
+        .scoring
+        .values()
+        .map(|breakdowns| {
+            let mut scores = breakdowns.scores.clone();
+            scores.sort_by_key(|score| score.rank);
+            (Decimal::from(breakdowns.scoring_run_id), scores)
+        })
+        .collect()
 }
 
-pub async fn load_scoring_runs(psql_client: &Client) -> anyhow::Result<Vec<ScoringRunRecord>> {
-    log::info!("Querying all scoring runs...");
-    Ok(psql_client
-        .query(
-            "
-            SELECT
-                scoring_run_id::numeric,
-                created_at,
-                epoch,
-                components,
-                component_weights,
-                ui_id
-            FROM scoring_runs
-            ORDER BY scoring_run_id DESC",
-            &[],
-        )
-        .await?
-        .into_iter()
-        .map(|scoring_run| ScoringRunRecord {
-            scoring_run_id: scoring_run.get("scoring_run_id"),
-            created_at: scoring_run.get("created_at"),
-            epoch: scoring_run.get("epoch"),
-            components: scoring_run.get("components"),
-            component_weights: scoring_run.get("component_weights"),
-            ui_id: scoring_run.get("ui_id"),
-        })
-        .collect())
+pub fn load_scoring_runs(warehouse: &Warehouse) -> Vec<ScoringRunRecord> {
+    warehouse
+        .scoring
+        .values()
+        .rev()
+        .map(|breakdowns| breakdowns.scoring_run())
+        .collect()
 }

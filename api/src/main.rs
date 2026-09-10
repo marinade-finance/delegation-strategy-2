@@ -31,8 +31,11 @@ pub struct Params {
     #[structopt(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
     pub postgres_ssl_root_cert: String,
 
-    #[structopt(long = "scoring-url")]
-    scoring_url: String,
+    #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
+    pub directory_url: String,
+
+    #[structopt(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    pub directory_token: String,
 
     #[structopt(
         long = "validator-bonds-api-url",
@@ -117,11 +120,16 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    let directory = store::directory::Directory::new(
+        params.directory_url.clone(),
+        params.directory_token.clone(),
+    )?;
+
     let context = Arc::new(RwLock::new(Context::new(
+        directory,
         psql_client,
         params.glossary_path,
         params.blacklist_path,
-        params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
     )?));

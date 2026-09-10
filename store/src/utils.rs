@@ -1,25 +1,24 @@
+use crate::docs::UptimeStatus;
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, IncidentRecord, RugInfo, RuggerRecord, ScoringRunRecord,
-    UptimeRecord, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
-    ValidatorScoreRecord, ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning,
-    ValidatorsAggregated, VersionRecord,
+    UptimeRecord, Validator, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord,
+    ValidatorScoreRecord, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
+    VersionRecord,
 };
 use crate::validators_jito::get_last_jito_info;
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
-use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
     time::Duration,
 };
-use tokio::join;
-use tokio::sync::Semaphore;
 use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
@@ -28,7 +27,6 @@ pub const DEFAULT_CACHE_EPOCHS: u64 = 80;
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
 pub use collect::slot_params::SLOTS_IN_EPOCH;
-const SCORING_SCRAPER_WORKERS: usize = 10;
 /// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
 /// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
 const HTTP_TIMEOUT_S: u64 = 60;
@@ -184,38 +182,34 @@ impl InflationApyCalculator {
         (apr, apy)
     }
 }
-async fn get_apy_calculators(
-    psql_client: &Client,
+fn get_apy_calculators(
+    warehouse: &Warehouse,
 ) -> anyhow::Result<HashMap<u64, InflationApyCalculator>> {
-    let apy_info_rows = psql_client
-        .query(
-            "SELECT
-                    epochs.epoch,
-                    (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER AS duration,
-                    supply,
-                    inflation,
-                    slots_per_year,
-                    SUM(validators.credits * validators.activated_stake) total_weighted_credits
-                FROM
-                epochs
-                INNER JOIN validators ON epochs.epoch = validators.epoch
-                GROUP BY epochs.epoch",
-            &[],
-        )
-        .await?;
-
     let mut result: HashMap<_, _> = Default::default();
-    for row in apy_info_rows {
+
+    for (epoch, epoch_record) in warehouse.epochs.iter() {
+        // The epochs a snapshot never landed for carry no yield to estimate.
+        let Some(snapshot) = warehouse.snapshots.get(epoch) else {
+            continue;
+        };
+        let total_weighted_credits: u128 = snapshot
+            .values()
+            .map(|validator| {
+                validator.credits.to_u128().unwrap_or_default()
+                    * validator.activated_stake.to_u128().unwrap_or_default()
+            })
+            .sum();
+
         result.insert(
-            row.get::<_, Decimal>("epoch").try_into()?,
+            *epoch,
             InflationApyCalculator {
-                supply: row.get::<_, Decimal>("supply").try_into()?,
-                duration: row.get::<_, i32>("duration").try_into()?,
-                inflation: row.get("inflation"),
-                slots_per_year: row.get("slots_per_year"),
-                total_weighted_credits: row
-                    .get::<_, Decimal>("total_weighted_credits")
+                supply: epoch_record.supply.try_into()?,
+                duration: (epoch_record.end_at - epoch_record.start_at)
+                    .num_seconds()
                     .try_into()?,
+                inflation: epoch_record.inflation,
+                slots_per_year: epoch_record.slots_per_year,
+                total_weighted_credits,
             },
         );
     }
@@ -231,275 +225,212 @@ const DEFAULT_INCIDENTS_WINDOW_EPOCHS: u64 = 90;
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
-/// Loads all downtime incidents (each a distinct `DOWN` interval in the `uptimes` table) per
-/// validator over the last `epochs` epochs. Each `DOWN` row is one incident and includes
-/// length of downtime.
-pub async fn load_incidents(
-    psql_client: &Client,
+/// Loads all downtime incidents (each a distinct `DOWN` interval) per validator over the last
+/// `epochs` epochs. Each `DOWN` interval is one incident and includes length of downtime.
+pub fn load_incidents(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<IncidentRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account,
-                uptimes.epoch,
-                start_at,
-                end_at,
-                EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
-            FROM uptimes
-            CROSS JOIN cluster
-            WHERE status = 'DOWN' AND uptimes.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY start_at ASC",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
-
     let mut records: HashMap<String, Vec<IncidentRecord>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
+
+    for (vote_account, interval) in warehouse.uptime_intervals(epochs) {
+        if interval.status != UptimeStatus::Down {
+            continue;
+        }
         records
-            .entry(vote_account)
+            .entry(vote_account.clone())
             .or_default()
             .push(IncidentRecord {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                start_at: row.get("start_at"),
-                end_at: row.get("end_at"),
-                downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+                epoch: interval.epoch,
+                start_at: interval.start_at,
+                end_at: interval.end_at,
+                downtime_seconds: (interval.end_at - interval.start_at)
+                    .num_seconds()
+                    .try_into()?,
+            });
+    }
+
+    for incidents in records.values_mut() {
+        incidents.sort_by_key(|incident| incident.start_at);
+    }
+
+    Ok(records)
+}
+
+pub fn load_uptimes(
+    warehouse: &Warehouse,
+    epochs: u64,
+) -> anyhow::Result<HashMap<String, Vec<UptimeRecord>>> {
+    let mut records: HashMap<String, Vec<UptimeRecord>> = Default::default();
+
+    for (vote_account, interval) in warehouse.uptime_intervals(epochs) {
+        let epoch_record = warehouse.epochs.get(&interval.epoch);
+        records
+            .entry(vote_account.clone())
+            .or_default()
+            .push(UptimeRecord {
+                epoch: interval.epoch,
+                epoch_start_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at),
+                epoch_end_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.end_at),
+                status: interval.status.to_string(),
+                start_at: interval.start_at,
+                end_at: interval.end_at,
             });
     }
 
     Ok(records)
 }
 
-pub async fn load_uptimes(
-    psql_client: &Client,
-    epochs: u64,
-) -> anyhow::Result<HashMap<String, Vec<UptimeRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (
-                SELECT MAX(epoch) AS last_epoch
-                FROM cluster_info
-            )
-            SELECT
-                vote_account,
-                status,
-                uptimes.epoch,
-                epochs.start_at AS epoch_start,
-                epochs.end_at AS epoch_end,
-                uptimes.start_at,
-                uptimes.end_at
-            FROM uptimes
-            LEFT JOIN epochs ON uptimes.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE uptimes.epoch > cluster.last_epoch - $1::NUMERIC",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
-
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let uptimes = records
-            .entry(vote_account.clone())
-            .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> =
-            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-        uptimes.push(UptimeRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
-            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
-            status: row.get("status"),
-            start_at: row.get("start_at"),
-            end_at: row.get("end_at"),
-        })
-    }
-
-    Ok(records)
-}
-
-pub async fn load_versions(
-    psql_client: &Client,
+pub fn load_versions(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<VersionRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account, version, client_id, client_id_raw, feature_set, shred_version, epoch, created_at
-            FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
+    let mut records: HashMap<String, Vec<VersionRecord>> = Default::default();
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let client_id_raw: Option<String> = row.get("client_id_raw");
+    for (vote_account, change) in warehouse.version_changes(epochs) {
         let client_id = effective_client_id(
-            row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_id_raw.as_deref(),
+            change.client_id.map(|id| id as u16),
+            change.client_id_raw.as_deref(),
         );
-        let versions = records
+        records
             .entry(vote_account.clone())
-            .or_insert(Default::default());
-        versions.push(VersionRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            version: row.get("version"),
-            client_id,
-            client_name: client_name(client_id),
-            client_label: client_label(client_id),
-            client_vendor: client_vendor(client_id),
-            client_lineage: client_lineage(client_id),
-            client_id_raw,
-            feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-            shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-            created_at: row.get("created_at"),
-        })
+            .or_default()
+            .push(VersionRecord {
+                epoch: change.epoch,
+                version: change.version.clone(),
+                client_id,
+                client_name: client_name(client_id),
+                client_label: client_label(client_id),
+                client_vendor: client_vendor(client_id),
+                client_lineage: client_lineage(client_id),
+                client_id_raw: change.client_id_raw.clone(),
+                feature_set: change.feature_set.map(|set| set as u32),
+                shred_version: change.shred_version.map(|version| version as u16),
+                created_at: change.created_at,
+            });
     }
 
     Ok(records)
 }
+
 /*
 We are checking if:
 - Current commission is greater than previous minimum, and it's above 10 OR
 - Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
-- Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10 OR
+- Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10
  */
-pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH commission_changes AS (
-                SELECT
-                    vote_account,
-                    epoch,
-                    commission_effective,
-                    commission_min_observed,
-                    LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
-                FROM
-                    validators
-            ),
-            filtered_commissions AS (
-                SELECT
-                    vote_account,
-                    epoch,
-                    commission_effective,
-                    commission_min_observed
-                FROM
-                    commission_changes
-                WHERE
-                    (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
-                    OR
-                    (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
-                    OR
-                    (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
-            )
-            SELECT
-                vote_account,
-                COUNT(*) AS events_count,
-                ARRAY_AGG(epoch) AS epochs,
-                ARRAY_AGG(commission_effective) AS commission_observed_values,
-                ARRAY_AGG(commission_min_observed) AS commission_min_observed_values
-            FROM
-                filtered_commissions
-            GROUP BY
-                vote_account
-            HAVING
-                COUNT(*) > 1
-            ORDER BY
-                events_count DESC;
-            ",
-            &[],
-        )
-        .await?;
+/// One epoch's commissions of one validator, as the rug rule reads them.
+struct CommissionPoint {
+    epoch: u64,
+    effective: Option<i32>,
+    min_observed: Option<i32>,
+}
+
+pub fn load_ruggers(warehouse: &Warehouse) -> HashMap<String, RuggerRecord> {
+    let mut series: HashMap<&String, Vec<CommissionPoint>> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.iter() {
+        for (vote_account, validator) in snapshot.iter() {
+            series
+                .entry(vote_account)
+                .or_default()
+                .push(CommissionPoint {
+                    epoch: *epoch,
+                    effective: validator.commission_effective,
+                    min_observed: validator.commission_min_observed,
+                });
+        }
+    }
 
     let mut records: HashMap<String, RuggerRecord> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let occurrences: u64 = row.get::<_, i64>("events_count").try_into()?;
-        let epochs: Vec<u64> = row
-            .get::<_, Vec<Decimal>>("epochs")
-            .into_iter()
-            .map(|val| val.to_u64().unwrap_or_default())
-            .collect();
-        let observed_commissions: Vec<u64> = row
-            .get::<_, Vec<i32>>("commission_observed_values")
-            .into_iter()
-            .map(|val| val as u64)
-            .collect();
-        let min_commissions: Vec<u64> = row
-            .get::<_, Vec<i32>>("commission_min_observed_values")
-            .into_iter()
-            .map(|val| val as u64)
-            .collect();
+    for (vote_account, mut epochs) in series {
+        epochs.sort_by_key(|point| point.epoch);
 
+        let mut rugs: Vec<(u64, i32, i32)> = Default::default();
+        for (index, point) in epochs.iter().enumerate() {
+            let previous = index.checked_sub(1).and_then(|i| epochs[i].effective);
+            let next = epochs.get(index + 1).and_then(|point| point.effective);
+            let Some(effective) = point.effective else {
+                continue;
+            };
+            let above_its_own_floor = point
+                .min_observed
+                .is_some_and(|min| effective > min && effective > 10 && min <= 10);
+            let dipped =
+                previous.is_some_and(|p| p > 10) && effective <= 10 && next.is_some_and(|n| n > 10);
+            let spiked = previous.is_some_and(|p| p <= 10)
+                && effective > 10
+                && next.is_some_and(|n| n <= 10);
+            if above_its_own_floor || dipped || spiked {
+                // A dip or spike is judged on its neighbours, so the floor it
+                // is paired with may not have been observed at all.
+                rugs.push((
+                    point.epoch,
+                    effective,
+                    point.min_observed.unwrap_or_default(),
+                ));
+            }
+        }
+
+        if rugs.len() <= 1 {
+            continue;
+        }
         records.insert(
-            vote_account,
+            vote_account.clone(),
             RuggerRecord {
-                epochs,
-                occurrences,
-                observed_commissions,
-                min_commissions,
+                epochs: rugs.iter().map(|(epoch, _, _)| *epoch).collect(),
+                occurrences: rugs.len() as u64,
+                observed_commissions: rugs.iter().map(|(_, e, _)| *e as u64).collect(),
+                min_commissions: rugs.iter().map(|(_, _, m)| *m as u64).collect(),
                 created_at: Utc::now(),
             },
         );
     }
-    Ok(records)
+
+    records
 }
 
-pub async fn load_commissions(
-    psql_client: &Client,
+pub fn load_commissions(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<CommissionRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end,
-				epoch_slot, created_at
-            FROM commissions
-            LEFT JOIN epochs ON commissions.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
-            UNION
-            SELECT
-                vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, 432000, updated_at
-            FROM validators
-            LEFT JOIN epochs ON validators.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
-            ",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
+    let mut records: HashMap<String, Vec<CommissionRecord>> = Default::default();
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let commissions = records
+    for (vote_account, change) in warehouse.commission_changes(epochs) {
+        let epoch_record = warehouse.epochs.get(&change.epoch);
+        records
             .entry(vote_account.clone())
-            .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> =
-            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-        commissions.push(CommissionRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
-            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
-            epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
-            commission: row.get::<_, i32>("commission").try_into()?,
-            created_at: row.get("created_at"),
-        })
+            .or_default()
+            .push(CommissionRecord {
+                epoch: change.epoch,
+                epoch_start_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at),
+                epoch_end_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.end_at),
+                epoch_slot: change.epoch_slot,
+                commission: change.commission.try_into()?,
+                created_at: change.created_at,
+            });
+    }
+
+    // The effective commission of a closed epoch is a commission observation
+    // of its own, at the slot the epoch ended on.
+    let first_epoch = warehouse.window_start(epochs);
+    for (epoch, snapshot) in warehouse.snapshots.range(first_epoch..) {
+        let epoch_record = warehouse.epochs.get(epoch);
+        for (vote_account, validator) in snapshot.iter() {
+            let Some(commission_effective) = validator.commission_effective else {
+                continue;
+            };
+            records
+                .entry(vote_account.clone())
+                .or_default()
+                .push(CommissionRecord {
+                    epoch: *epoch,
+                    epoch_start_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at),
+                    epoch_end_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.end_at),
+                    epoch_slot: SLOTS_IN_EPOCH,
+                    commission: commission_effective.try_into()?,
+                    created_at: validator.updated_at.unwrap_or_else(Utc::now),
+                });
+        }
     }
 
     Ok(records)
@@ -961,214 +892,132 @@ pub struct ValidatorOverlays {
 }
 
 pub async fn load_validators(
-    psql_client: &Client,
-    scoring_url: String,
+    warehouse: &Warehouse,
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let ruggers = load_ruggers(psql_client).await?;
-    let apy_calculators = get_apy_calculators(psql_client).await?;
-    let concentrations = load_dc_concentration_stats(psql_client, 1)
-        .await?
-        .first()
-        .cloned();
+    let last_epoch = warehouse.last_epoch();
+    if warehouse.snapshots.is_empty() {
+        return Ok(Default::default());
+    }
+    let ruggers = load_ruggers(warehouse);
+    let apy_calculators = get_apy_calculators(warehouse)?;
+    let concentrations = load_dc_concentration_stats(warehouse, 1)?.first().cloned();
 
-    log::info!("Querying validators...");
-    let rows = psql_client
-        .query(
-            "
-            WITH
-                validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
-                cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
-            SELECT
-                validators.identity,
-                validators.vote_account,
-                validators.epoch,
-                epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end,
-                COALESCE(epochs_dates.starting_epoch, 0) AS starting_epoch,
-                epochs_dates.start_at AS starting_epoch_date,
-                info_name,
-                info_url,
-                info_keybase,
-                info_icon_url,
-                node_ip,
-                dc_coordinates_lat,
-                dc_coordinates_lon,
-                dc_continent,
-                dc_country_iso,
-                dc_country,
-                dc_city,
-                dc_asn,
-                dc_aso,
-                CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city,
+    // The epoch a validator was first seen in, over every epoch still held.
+    let mut first_epochs: HashMap<&String, u64> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.iter() {
+        for vote_account in snapshot.keys() {
+            let first_epoch = first_epochs.entry(vote_account).or_insert(*epoch);
+            *first_epoch = (*first_epoch).min(*epoch);
+        }
+    }
 
-                commission_max_observed,
-                commission_min_observed,
-                commission_advertised,
-                commission_effective,
-                version,
-                mev.mev_commission AS mev_commission_bps,
-                jpf.validator_commission AS priority_commission_bps,
-                client_id,
-                client_id_raw,
-                feature_set,
-                shred_version,
-                gossip_port,
-                rpc_public,
-                pubsub_public,
-                activated_stake,
-                marinade_stake,
-                foundation_stake,
-                marinade_native_stake,
-                institutional_stake,
-                self_stake,
-                superminority,
-                stake_to_become_superminority,
-                credits,
-                leader_slots,
-                blocks_produced,
-                skip_rate,
-                uptime_pct,
-                uptime,
-                downtime,
+    log::info!("Aggregating validator records...");
+    let mut records: HashMap<String, ValidatorRecord> = Default::default();
+    let window_start = warehouse.window_start(display_epochs);
 
-                validators_aggregated.first_epoch AS first_epoch
-            FROM validators
-                LEFT JOIN cluster ON 1 = 1
-                LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
-                LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
-                LEFT JOIN epochs ON epochs.epoch = validators.epoch
-                LEFT JOIN (
-                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, mev_commission
-                    FROM mev ORDER BY vote_account, epoch, created_at DESC
-                ) mev ON mev.vote_account = validators.vote_account AND mev.epoch = validators.epoch
-                LEFT JOIN (
-                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
-                    FROM jito_priority_fee ORDER BY vote_account, epoch, created_at DESC
-                ) jpf ON jpf.vote_account = validators.vote_account AND jpf.epoch = validators.epoch
-            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY epoch DESC",
-            &[&Decimal::from(display_epochs)],
-        )
-        .await?;
+    for (epoch, snapshot) in warehouse.snapshots.range(window_start..).rev() {
+        let epoch = *epoch;
+        let epoch_record = warehouse.epochs.get(&epoch);
+        let mev = warehouse.mev.get(&epoch);
+        let priority_fees = warehouse.priority_fees.get(&epoch);
 
-    let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
-        log::info!("Aggregating validator records...");
-        let mut records: HashMap<_, _> = Default::default();
-        for row in rows {
-            let vote_account: String = row.get("vote_account");
-            let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
-            let starting_epoch_date: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
-            let mut epoch_start_at: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-            let epoch_end_at: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-            let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
-            let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
-
-            let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
-                let (apr, apy) = c.estimate_yields(
-                    row.get::<_, Decimal>("credits").try_into().unwrap(),
-                    row.get::<_, Option<i32>>("commission_effective")
-                        .map(|n| n.try_into().unwrap())
-                        .unwrap_or(100),
-                );
-                (Some(apr), Some(apy))
-            } else {
-                (None, None)
+        for (vote_account, validator) in snapshot.iter() {
+            let first_epoch = first_epochs.get(vote_account).copied().unwrap_or(epoch);
+            let (apr, apy) = match apy_calculators.get(&epoch) {
+                Some(calculator) => {
+                    let (apr, apy) = calculator.estimate_yields(
+                        validator.credits.try_into()?,
+                        validator
+                            .commission_effective
+                            .map(|commission| commission.clamp(0, 100) as u8)
+                            .unwrap_or(100),
+                    );
+                    (Some(apr), Some(apy))
+                }
+                None => (None, None),
             };
 
-            let dc_full_city = row
-                .get::<_, Option<String>>("dc_full_city")
+            let dc_full_city = full_city(validator);
+            let dc_asn = validator
+                .dc_asn
+                .map(|asn| asn.to_string())
                 .unwrap_or("Unknown".into());
-            let dc_asn = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map(|dc_asn| dc_asn.to_string())
-                .unwrap_or("Unknown".into());
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".into());
-            let dc_country = row
-                .get::<_, Option<String>>("dc_country")
-                .unwrap_or("Unknown".into());
+            let dc_aso = validator.dc_aso.clone().unwrap_or("Unknown".into());
+            let dc_country = validator.dc_country.clone().unwrap_or("Unknown".into());
 
-            let dcc_full_city = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
-            let dcc_asn = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
-            let dcc_aso = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
-            let dcc_country = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
-
-            let client_id_raw: Option<String> = row.get("client_id_raw");
             let client_id = effective_client_id(
-                row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-                client_id_raw.as_deref(),
+                validator.client_id.map(|id| id as u16),
+                validator.client_id_raw.as_deref(),
             );
 
             let record = records
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
-                    identity: row.get("identity"),
-                    start_epoch: starting_epoch,
-                    start_date: starting_epoch_date,
+                    identity: validator.identity.clone(),
+                    // Without the epoch's own record there is no date to start from.
+                    start_epoch: match warehouse.epochs.contains_key(&first_epoch) {
+                        true => first_epoch,
+                        false => 0,
+                    },
+                    start_date: warehouse
+                        .epochs
+                        .get(&first_epoch)
+                        .map(|epoch| epoch.start_at),
                     vote_account: vote_account.clone(),
-                    info_name: row.get("info_name"),
-                    info_url: row.get("info_url"),
-                    info_keybase: row.get("info_keybase"),
-                    info_icon_url: row.get("info_icon_url"),
-                    node_ip: row.get("node_ip"),
-                    dc_coordinates_lat: row.get("dc_coordinates_lat"),
-                    dc_coordinates_lon: row.get("dc_coordinates_lon"),
-                    dc_continent: row.get("dc_continent"),
-                    dc_country_iso: row.get("dc_country_iso"),
-                    dc_country: row.get("dc_country"),
-                    dc_city: row.get("dc_city"),
-                    dc_full_city: row.get("dc_full_city"),
-                    dc_asn: row.get("dc_asn"),
-                    dc_aso: row.get("dc_aso"),
-                    dcc_full_city,
-                    dcc_asn,
-                    dcc_aso,
-                    dcc_country,
-                    commission_max_observed: row.get::<_, Option<i32>>("commission_max_observed"),
-                    commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
-                    commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
-                    commission_effective: row.get::<_, Option<i32>>("commission_effective"),
+                    info_name: validator.info_name.clone(),
+                    info_url: validator.info_url.clone(),
+                    info_keybase: validator.info_keybase.clone(),
+                    info_icon_url: validator.info_icon_url.clone(),
+                    node_ip: validator.node_ip.clone(),
+                    dc_coordinates_lat: validator.dc_coordinates_lat,
+                    dc_coordinates_lon: validator.dc_coordinates_lon,
+                    dc_continent: validator.dc_continent.clone(),
+                    dc_country_iso: validator.dc_country_iso.clone(),
+                    dc_country: validator.dc_country.clone(),
+                    dc_city: validator.dc_city.clone(),
+                    dc_full_city: Some(dc_full_city.clone()),
+                    dc_asn: validator.dc_asn,
+                    dc_aso: validator.dc_aso.clone(),
+                    dcc_full_city: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).copied()),
+                    dcc_asn: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).copied()),
+                    dcc_aso: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).copied()),
+                    dcc_country: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_country.get(&dc_country).copied()),
+                    commission_max_observed: validator.commission_max_observed,
+                    commission_min_observed: validator.commission_min_observed,
+                    commission_advertised: validator.commission_advertised,
+                    commission_effective: validator.commission_effective,
                     commission_aggregated: None,
-                    version: row.get("version"),
+                    version: validator.version.clone(),
                     client_id,
                     client_name: client_name(client_id),
                     client_label: client_label(client_id),
                     client_vendor: client_vendor(client_id),
                     client_lineage: client_lineage(client_id),
-                    client_id_raw: client_id_raw.clone(),
-                    feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                    shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                    gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                    rpc_public: row.get("rpc_public"),
-                    pubsub_public: row.get("pubsub_public"),
-                    activated_stake: row.get::<_, Decimal>("activated_stake"),
-                    marinade_stake: row.get::<_, Decimal>("marinade_stake"),
-                    foundation_stake: row.get::<_, Decimal>("foundation_stake"),
-                    self_stake: row.get::<_, Decimal>("self_stake"),
-                    marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
-                    institutional_stake: row.get::<_, Decimal>("institutional_stake"),
-                    superminority: row.get("superminority"),
-                    credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    client_id_raw: validator.client_id_raw.clone(),
+                    feature_set: validator.feature_set.map(|set| set as u32),
+                    shred_version: validator.shred_version.map(|version| version as u16),
+                    gossip_port: validator.gossip_port.map(|port| port as u16),
+                    rpc_public: validator.rpc_public,
+                    pubsub_public: validator.pubsub_public,
+                    activated_stake: validator.activated_stake,
+                    marinade_stake: validator.marinade_stake,
+                    foundation_stake: validator.foundation_stake,
+                    self_stake: validator.self_stake,
+                    marinade_native_stake: validator.marinade_native_stake,
+                    institutional_stake: validator.institutional_stake,
+                    superminority: validator.superminority,
+                    credits: validator.credits.try_into().unwrap_or_default(),
                     score: None,
 
                     epoch_stats: Vec::with_capacity(display_epochs as usize),
@@ -1192,81 +1041,69 @@ pub async fn load_validators(
                     rugged_commission_occurrences: 0,
                 });
 
-            let rug_info = ruggers.get(&vote_account);
-            if let Some(rugger_info) = rug_info {
+            if let Some(rugger) = ruggers.get(vote_account) {
                 record.rugged_commission = true;
-                record.rugged_commission_occurrences = rugger_info.occurrences;
-                record.rugged_commission_info = rugger_info
+                record.rugged_commission_occurrences = rugger.occurrences;
+                record.rugged_commission_info = rugger
                     .epochs
                     .iter()
                     .enumerate()
                     .map(|(index, &epoch)| RugInfo {
                         epoch,
-                        after: rugger_info.observed_commissions[index],
-                        before: rugger_info.min_commissions[index],
+                        after: rugger.observed_commissions[index],
+                        before: rugger.min_commissions[index],
                     })
                     .collect()
             }
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }
-            if epoch_start_at.is_none() {
-                epoch_start_at = Some(Utc::now());
-            }
+
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
-                epoch_start_at,
-                epoch_end_at,
-                commission_max_observed: row
-                    .get::<_, Option<i32>>("commission_max_observed")
-                    .map(|n| n.try_into().unwrap()),
-                commission_min_observed: row
-                    .get::<_, Option<i32>>("commission_min_observed")
-                    .map(|n| n.try_into().unwrap()),
-                commission_advertised: row
-                    .get::<_, Option<i32>>("commission_advertised")
-                    .map(|n| n.try_into().unwrap()),
-                commission_effective: row
-                    .get::<_, Option<i32>>("commission_effective")
-                    .map(|n| n.try_into().unwrap()),
-                version: row.get("version"),
-                mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
-                priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
-                dc_asn: row.get::<_, Option<i32>>("dc_asn"),
-                dc_aso: row.get::<_, Option<String>>("dc_aso"),
-                dc_city: row.get::<_, Option<String>>("dc_city"),
-                dc_country: row.get::<_, Option<String>>("dc_country"),
+                epoch_start_at: Some(epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at)),
+                epoch_end_at: epoch_record.map(|epoch| epoch.end_at),
+                commission_max_observed: to_commission(validator.commission_max_observed)?,
+                commission_min_observed: to_commission(validator.commission_min_observed)?,
+                commission_advertised: to_commission(validator.commission_advertised)?,
+                commission_effective: to_commission(validator.commission_effective)?,
+                version: validator.version.clone(),
+                mev_commission_bps: mev
+                    .and_then(|mev| mev.get(vote_account))
+                    .map(|entry| entry.mev_commission),
+                priority_commission_bps: priority_fees
+                    .and_then(|fees| fees.get(vote_account))
+                    .map(|entry| entry.priority_commission),
+                dc_asn: validator.dc_asn,
+                dc_aso: validator.dc_aso.clone(),
+                dc_city: validator.dc_city.clone(),
+                dc_country: validator.dc_country.clone(),
                 client_id,
                 client_name: client_name(client_id),
                 client_label: client_label(client_id),
                 client_vendor: client_vendor(client_id),
                 client_lineage: client_lineage(client_id),
-                client_id_raw,
-                feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-                shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-                gossip_port: row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16),
-                rpc_public: row.get("rpc_public"),
-                pubsub_public: row.get("pubsub_public"),
-                activated_stake: row.get::<_, Decimal>("activated_stake"),
-                marinade_stake: row.get::<_, Decimal>("marinade_stake"),
-                foundation_stake: row.get::<_, Decimal>("foundation_stake"),
-                self_stake: row.get::<_, Decimal>("self_stake"),
-                marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
-                institutional_stake: row.get::<_, Decimal>("institutional_stake"),
-                superminority: row.get("superminority"),
-                stake_to_become_superminority: row
-                    .get::<_, Decimal>("stake_to_become_superminority"),
-                credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
-                leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
-                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
-                skip_rate: row.get("skip_rate"),
-                uptime_pct: row.get("uptime_pct"),
-                uptime: row
-                    .get::<_, Option<Decimal>>("uptime")
-                    .map(|n| n.try_into().unwrap()),
-                downtime: row
-                    .get::<_, Option<Decimal>>("downtime")
-                    .map(|n| n.try_into().unwrap()),
+                client_id_raw: validator.client_id_raw.clone(),
+                feature_set: validator.feature_set.map(|set| set as u32),
+                shred_version: validator.shred_version.map(|version| version as u16),
+                gossip_port: validator.gossip_port.map(|port| port as u16),
+                rpc_public: validator.rpc_public,
+                pubsub_public: validator.pubsub_public,
+                activated_stake: validator.activated_stake,
+                marinade_stake: validator.marinade_stake,
+                foundation_stake: validator.foundation_stake,
+                self_stake: validator.self_stake,
+                marinade_native_stake: validator.marinade_native_stake,
+                institutional_stake: validator.institutional_stake,
+                superminority: validator.superminority,
+                stake_to_become_superminority: validator.stake_to_become_superminority,
+                credits: validator.credits.try_into()?,
+                leader_slots: validator.leader_slots.try_into()?,
+                blocks_produced: validator.blocks_produced.try_into()?,
+                skip_rate: validator.skip_rate,
+                uptime_pct: validator.uptime_pct,
+                uptime: validator.uptime.map(u64::try_from).transpose()?,
+                downtime: validator.downtime.map(u64::try_from).transpose()?,
                 apr,
                 apy,
                 score: None,
@@ -1275,17 +1112,13 @@ pub async fn load_validators(
                 rank_activated_stake: None,
             });
         }
+    }
 
-        records
-    })
-    .await?;
-
-    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
     let mut first_epoch = last_epoch - display_epochs.min(last_epoch) + 1;
     let mut epochs_range = first_epoch..=last_epoch;
 
     log::info!("Updating with scores...");
-    update_validators_with_scores(scoring_url, &mut records, epochs_range.clone()).await?;
+    update_validators_with_scores(warehouse, &mut records, epochs_range.clone());
 
     first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
     epochs_range = first_epoch..=last_epoch;
@@ -1320,7 +1153,7 @@ pub async fn load_validators(
     }
 
     log::info!("Updating incidents...");
-    let incidents = load_incidents(psql_client, DEFAULT_INCIDENTS_WINDOW_EPOCHS).await?;
+    let incidents = load_incidents(warehouse, DEFAULT_INCIDENTS_WINDOW_EPOCHS)?;
     for (vote_account, record) in records.iter_mut() {
         record.incidents = incidents.get(vote_account).cloned().unwrap_or_default();
     }
@@ -1335,7 +1168,7 @@ pub async fn load_validators(
     let mut mev_commissions: HashMap<String, i32> = Default::default();
     let mut priority_commissions: HashMap<String, i32> = Default::default();
     // get_last_jito_info keys on (vote_account, epoch): the two distribution accounts resolve their last epoch separately, splitting one validator across two records.
-    for jito in get_last_jito_info(psql_client, DEFAULT_JITO_COMMISSION_EPOCHS).await? {
+    for jito in get_last_jito_info(warehouse, DEFAULT_JITO_COMMISSION_EPOCHS)? {
         if let Some(bps) = jito.mev_commission_bps {
             mev_commissions.insert(jito.vote_account.clone(), bps);
         }
@@ -1364,240 +1197,101 @@ pub async fn load_validators(
     Ok(records)
 }
 
-pub async fn update_validators_with_scores(
-    scoring_url: String,
+/// What `CONCAT(dc_continent, '/', dc_country, '/', dc_city)` rendered: the
+/// parts that are unknown are empty, and the key exists either way.
+pub fn full_city(validator: &Validator) -> String {
+    format!(
+        "{}/{}/{}",
+        validator.dc_continent.clone().unwrap_or_default(),
+        validator.dc_country.clone().unwrap_or_default(),
+        validator.dc_city.clone().unwrap_or_default()
+    )
+}
+
+fn to_commission(commission: Option<i32>) -> anyhow::Result<Option<u8>> {
+    Ok(commission.map(u8::try_from).transpose()?)
+}
+
+pub fn update_validators_with_scores(
+    warehouse: &Warehouse,
     validators: &mut HashMap<String, ValidatorRecord>,
     epochs_range: RangeInclusive<u64>,
-) -> anyhow::Result<()> {
+) {
     log::info!("Updating validator score with epochs range: {epochs_range:?}");
-    let scores_per_epoch = load_scores_in_epochs(&scoring_url, epochs_range).await?;
+    let scores_per_epoch = load_scores_in_epochs(warehouse, epochs_range);
 
-    let latest_epoch_with_score = match scores_per_epoch.keys().max() {
-        Some(epoch) => epoch,
-        _ => return Ok(()),
+    let Some(latest_epoch_with_score) = scores_per_epoch.keys().max() else {
+        return;
     };
+    let latest_scores = &scores_per_epoch[latest_epoch_with_score];
 
-    let latest_scores = scores_per_epoch.get(latest_epoch_with_score).unwrap();
-
-    for (_, validator) in validators.iter_mut() {
+    for validator in validators.values_mut() {
         for epoch_record in validator.epoch_stats.iter_mut() {
             if let Some(scores) = scores_per_epoch.get(&epoch_record.epoch) {
-                epoch_record.score = scores.get(&validator.vote_account).cloned();
+                epoch_record.score = scores.get(&validator.vote_account).copied();
             }
         }
 
-        validator.score = latest_scores.get(&validator.vote_account).cloned();
+        validator.score = latest_scores.get(&validator.vote_account).copied();
     }
-
-    Ok(())
 }
 
-pub async fn load_scores_in_epochs(
-    scoring_url: &String,
+pub fn load_scores_in_epochs(
+    warehouse: &Warehouse,
     epochs: RangeInclusive<u64>,
-) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
+) -> HashMap<u64, HashMap<String, f64>> {
     log::info!("Loading scores for epochs: {epochs:?}");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, HashMap<String, f64>)>();
-
-    let handle = tokio::spawn(async move {
-        let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
-        while let Some((epoch, epoch_scores)) = rx.recv().await {
-            result.insert(epoch, epoch_scores);
-        }
-        result
-    });
-
-    let permits = Arc::new(Semaphore::new(SCORING_SCRAPER_WORKERS));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
-        .build()?;
-    for epoch in epochs {
-        let url = format!("{scoring_url}/api/v1/scores/breakdowns?epoch={epoch}");
-        let tx = tx.clone();
-        let client = client.clone();
-        let permit = permits.clone().acquire_owned().await?;
-        tokio::spawn(async move {
-            log::info!("Fetching scores from {url}...");
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(scores) = resp.json::<Vec<ValidatorScoreV2Record>>().await {
-                        let mut epoch_scores: HashMap<String, f64> = Default::default();
-                        for score in scores {
-                            epoch_scores.insert(score.vote_account.clone(), score.score);
-                        }
-                        tx.send((epoch, epoch_scores)).unwrap();
-                    }
-                }
-                Ok(resp) => {
-                    log::error!(
-                        "Failed to load scores for epoch {}: {}",
-                        epoch,
-                        resp.status()
-                    );
-                }
-                Err(e) => {
-                    log::error!("Error fetching scores for epoch {epoch}: {e}");
-                }
-            }
-            drop(permit);
-        });
-    }
-
-    drop(tx);
-
-    let (result,) = join!(handle);
-    Ok(result?)
+    warehouse
+        .scoring
+        .range(epochs)
+        .map(|(epoch, breakdowns)| {
+            let scores = breakdowns
+                .scores
+                .iter()
+                .map(|score| (score.vote_account.clone(), score.score))
+                .collect();
+            (*epoch, scores)
+        })
+        .collect()
 }
 
-pub async fn load_last_scoring_run(
-    psql_client: &Client,
-) -> anyhow::Result<Option<ScoringRunRecord>> {
-    log::info!("Querying scoring run...");
-    let result = psql_client
-        .query_opt(
-            "
-            SELECT
-                scoring_run_id::numeric,
-                created_at,
-                epoch,
-                components,
-                component_weights,
-                ui_id
-            FROM scoring_runs
-            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scoring_runs)",
-            &[],
-        )
-        .await?;
-
-    let scoring_run = match result {
-        Some(scoring_run) => scoring_run,
-        _ => {
-            log::warn!("No scoring run was found!");
-            return Ok(None);
-        }
+/// The newest epoch ds-scoring has published, in the version it serves now.
+pub fn load_last_scoring_run(warehouse: &Warehouse) -> Option<ScoringRunRecord> {
+    let Some((_, breakdowns)) = warehouse.scoring.iter().next_back() else {
+        log::warn!("No scoring run was found!");
+        return None;
     };
 
-    Ok(Some(ScoringRunRecord {
-        scoring_run_id: scoring_run.get("scoring_run_id"),
-        created_at: scoring_run.get("created_at"),
-        epoch: scoring_run.get("epoch"),
-        components: scoring_run.get("components"),
-        component_weights: scoring_run.get("component_weights"),
-        ui_id: scoring_run.get("ui_id"),
-    }))
+    Some(breakdowns.scoring_run())
 }
 
-pub async fn load_scores(
-    psql_client: &Client,
+pub fn load_scores(
+    warehouse: &Warehouse,
     scoring_run_id: Decimal,
-) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
-    log::info!("Querying scores...");
-    let rows = psql_client
-        .query(
-            "
-            SELECT vote_account,
-                score,
-                rank,
-                vemnde_votes,
-                msol_votes,
-                ui_hints,
-                component_scores,
-                component_ranks,
-                component_values,
-                eligible_stake_algo,
-                eligible_stake_vemnde,
-                eligible_stake_msol,
-                target_stake_algo,
-                target_stake_vemnde,
-                target_stake_msol,
-                scores.scoring_run_id,
-                scoring_runs.created_at AS created_at
-            FROM scores
-            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
-            WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
-            &[&scoring_run_id],
-        )
-        .await?;
-
-    let records: HashMap<_, _> = {
-        log::info!("Aggregating scores records...");
-        let mut records: HashMap<_, _> = Default::default();
-        for row in rows {
-            let vote_account: String = row.get("vote_account");
-
-            records
-                .entry(vote_account.clone())
-                .or_insert_with(|| ValidatorScoreRecord {
-                    vote_account: vote_account.clone(),
-                    score: row.get("score"),
-                    rank: row.get("rank"),
-                    vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
-                    msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
-                    ui_hints: row.get("ui_hints"),
-                    component_scores: row.get("component_scores"),
-                    component_ranks: row.get("component_ranks"),
-                    component_values: row.get("component_values"),
-                    eligible_stake_algo: row.get("eligible_stake_algo"),
-                    eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
-                    eligible_stake_msol: row.get("eligible_stake_msol"),
-                    target_stake_algo: row
-                        .get::<_, Decimal>("target_stake_algo")
-                        .try_into()
-                        .unwrap(),
-                    target_stake_vemnde: row
-                        .get::<_, Decimal>("target_stake_vemnde")
-                        .try_into()
-                        .unwrap(),
-                    target_stake_msol: row
-                        .get::<_, Decimal>("target_stake_msol")
-                        .try_into()
-                        .unwrap(),
-                    scoring_run_id: row.get("scoring_run_id"),
-                    created_at: row.get::<_, DateTime<Utc>>("created_at"),
-                });
-        }
-
-        records
-    };
-    log::info!("Records prepared...");
-    Ok(records)
+) -> HashMap<String, ValidatorScoreRecord> {
+    warehouse
+        .scoring
+        .values()
+        .find(|breakdowns| Decimal::from(breakdowns.scoring_run_id) == scoring_run_id)
+        .map(|breakdowns| {
+            breakdowns
+                .scores
+                .iter()
+                .map(|score| (score.vote_account.clone(), score.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Whether the table holds any row at all, regardless of epoch — `load_validators` filters by the latest `cluster_info` epoch and cannot answer this.
-pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
-    let row = psql_client
-        .query_one("SELECT EXISTS(SELECT 1 FROM validators) AS has_rows", &[])
-        .await?;
-
-    Ok(row.get("has_rows"))
+pub fn get_last_epoch(warehouse: &Warehouse) -> Option<u64> {
+    Some(warehouse.last_epoch())
 }
 
-pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
-    let row = psql_client
-        .query_opt(
-            "SELECT COALESCE(MAX(epoch), 0) AS last_epoch FROM validators",
-            &[],
-        )
-        .await?;
-
-    Ok(row.map(|row| {
-        row.get::<_, Decimal>("last_epoch")
-            .try_into()
-            .unwrap_or_default()
-    }))
-}
-
-pub async fn load_dc_concentration_stats(
-    psql_client: &Client,
+pub fn load_dc_concentration_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<DCConcentrationStats>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-
     let mut stats: Vec<_> = Default::default();
 
     let map_stake_to_concentration =
@@ -1608,50 +1302,29 @@ pub async fn load_dc_concentration_stats(
                 .collect()
         };
 
-    for epoch in (first_epoch..=last_epoch).rev() {
-        let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_city: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_country: HashMap<_, _> = Default::default();
+    for epoch in warehouse.epochs_window(epochs) {
+        let mut dc_stake_by_aso: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_asn: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_city: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_country: HashMap<String, u64> = Default::default();
         let mut total_active_stake = 0;
 
-        let rows = psql_client
-            .query(
-                "SELECT
-                    activated_stake,
-                    dc_aso,
-                    dc_asn,
-                    dc_country,
-                    CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city
-                FROM validators WHERE epoch = $1",
-                &[&Decimal::from(epoch)],
-            )
-            .await?;
-
-        for row in rows.iter() {
-            let activated_stake: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".to_string());
-            let dc_asn: String = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map_or("Unknown".to_string(), |dc_asn| dc_asn.to_string());
-            let dc_city: String = row
-                .get::<_, Option<String>>("dc_full_city")
-                .unwrap_or("Unknown".to_string());
-            let dc_country: String = row
-                .get::<_, Option<String>>("dc_country")
+        for validator in snapshot_of(warehouse, epoch) {
+            let activated_stake: u64 = validator.activated_stake.try_into()?;
+            let dc_aso = validator.dc_aso.clone().unwrap_or("Unknown".to_string());
+            let dc_asn = validator
+                .dc_asn
+                .map_or("Unknown".to_string(), |asn| asn.to_string());
+            let dc_country = validator
+                .dc_country
+                .clone()
                 .unwrap_or("Unknown".to_string());
 
             total_active_stake += activated_stake;
-            *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_city
-                .entry(dc_city)
-                .or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_country
-                .entry(dc_country)
-                .or_insert(Default::default())) += activated_stake;
+            *dc_stake_by_aso.entry(dc_aso).or_default() += activated_stake;
+            *dc_stake_by_asn.entry(dc_asn).or_default() += activated_stake;
+            *dc_stake_by_city.entry(full_city(validator)).or_default() += activated_stake;
+            *dc_stake_by_country.entry(dc_country).or_default() += activated_stake;
         }
 
         stats.push(DCConcentrationStats {
@@ -1683,38 +1356,33 @@ pub async fn load_dc_concentration_stats(
     Ok(stats)
 }
 
-pub async fn load_block_production_stats(
-    psql_client: &Client,
+pub fn load_block_production_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<BlockProductionStats>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
+    let last_epoch = warehouse.last_epoch();
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
 
     let mut stats: Vec<_> = Default::default();
+    // The SQL bound was exclusive and the series it feeds is drawn that way.
+    for (epoch, snapshot) in warehouse.snapshots.range(first_epoch + 1..).rev() {
+        let blocks_produced: u64 = snapshot
+            .values()
+            .map(|validator| u64::try_from(validator.blocks_produced).unwrap_or_default())
+            .sum();
+        let leader_slots: u64 = snapshot
+            .values()
+            .map(|validator| u64::try_from(validator.leader_slots).unwrap_or_default())
+            .sum();
 
-    let rows = psql_client
-            .query(
-                "SELECT
-	                epoch,
-                    COALESCE(SUM(blocks_produced), 0) blocks_produced,
-                    COALESCE(SUM(leader_slots), 0) leader_slots,
-                    COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
-                FROM validators
-                WHERE epoch > $1
-                GROUP BY epoch ORDER BY epoch DESC",
-                &[&Decimal::from(first_epoch)],
-            )
-            .await?;
-
-    for row in rows {
         stats.push(BlockProductionStats {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-            avg_skip_rate: row.get("avg_skip_rate"),
+            epoch: *epoch,
+            blocks_produced,
+            leader_slots,
+            avg_skip_rate: match leader_slots {
+                0 => 1f64,
+                _ => 1f64 - blocks_produced as f64 / leader_slots as f64,
+            },
         })
     }
 
@@ -1729,58 +1397,33 @@ struct StakeDistribution {
     count_by: HashMap<String, u64>,
 }
 
-// column_expr is interpolated into SQL; call only with compile-time literals
-async fn load_stake_distribution(
-    psql_client: &Client,
+/// The validators of one epoch, or none where no snapshot landed for it.
+fn snapshot_of(warehouse: &Warehouse, epoch: u64) -> impl Iterator<Item = &Validator> {
+    warehouse
+        .snapshots
+        .get(&epoch)
+        .into_iter()
+        .flat_map(|snapshot| snapshot.values())
+}
+
+fn load_stake_distribution(
+    warehouse: &Warehouse,
     epochs: u64,
-    column_expr: &str,
+    grouping_key: fn(&Validator) -> String,
 ) -> anyhow::Result<Vec<StakeDistribution>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-
-    let rows = psql_client
-        .query(
-            &format!(
-                "SELECT
-                    epoch,
-                    {column_expr} AS grouping_key,
-                    SUM(activated_stake) AS stake,
-                    COUNT(*) AS validator_count
-                FROM validators WHERE epoch BETWEEN $1 AND $2
-                GROUP BY epoch, grouping_key"
-            ),
-            &[&Decimal::from(first_epoch), &Decimal::from(last_epoch)],
-        )
-        .await?;
-
-    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
-    for row in rows {
-        rows_by_epoch
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .push(row);
-    }
-
     let mut distributions: Vec<StakeDistribution> = Default::default();
 
-    // Callers pair these per-epoch series with load_dc_concentration_stats, so an epoch with no
-    // validator rows must still yield an entry instead of being dropped by the SQL grouping.
-    for epoch in (first_epoch..=last_epoch).rev() {
+    for epoch in warehouse.epochs_window(epochs) {
         let mut stake_by: HashMap<String, u64> = Default::default();
         let mut count_by: HashMap<String, u64> = Default::default();
         let mut total_stake: u64 = 0;
-        for row in rows_by_epoch.remove(&epoch).unwrap_or_default().iter() {
-            let grouping_key: String = row.get("grouping_key");
-            let stake: u64 = row.get::<_, Decimal>("stake").try_into()?;
+
+        for validator in snapshot_of(warehouse, epoch) {
+            let key = grouping_key(validator);
+            let stake: u64 = validator.activated_stake.try_into()?;
             total_stake += stake;
-            stake_by.insert(grouping_key.clone(), stake);
-            count_by.insert(
-                grouping_key,
-                row.get::<_, i64>("validator_count").try_into()?,
-            );
+            *stake_by.entry(key.clone()).or_default() += stake;
+            *count_by.entry(key).or_default() += 1;
         }
 
         let share_by: HashMap<String, f64> = stake_by
@@ -1808,16 +1451,23 @@ async fn load_stake_distribution(
     Ok(distributions)
 }
 
-// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
-const CLIENT_ID_GROUPING: &str = "COALESCE(client_id::TEXT, client_id_raw, '')";
 const UNKNOWN_CLIENT_GROUP: &str = "unknown";
+
+// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
+fn client_id_group(validator: &Validator) -> String {
+    validator
+        .client_id
+        .map(|id| id.to_string())
+        .or_else(|| validator.client_id_raw.clone())
+        .unwrap_or_default()
+}
 
 fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
     map(effective_client_id(key.parse().ok(), Some(key)))
         .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
 }
 
-// SQL groups one row per client id, but several ids share a vendor.
+// One entry per client id, but several ids share a vendor.
 fn fold_distribution(
     distributions: &[StakeDistribution],
     map: fn(Option<u16>) -> Option<String>,
@@ -1881,32 +1531,31 @@ fn client_lineage_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientLineage
         .collect()
 }
 
-pub async fn load_client_diversity_stats(
-    psql_client: &Client,
+pub fn load_client_diversity_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientDiversityStats>> {
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(client_diversity_stats(&by_client_id))
 }
 
-pub async fn load_client_lineage_stats(
-    psql_client: &Client,
+pub fn load_client_lineage_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientLineageStats>> {
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(client_lineage_stats(&by_client_id))
 }
 
-pub async fn load_feature_set_stats(
-    psql_client: &Client,
+pub fn load_feature_set_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<FeatureSetStats>> {
-    Ok(load_stake_distribution(
-        psql_client,
-        epochs,
-        "COALESCE(feature_set::TEXT, 'unknown')",
-    )
-    .await?
+    Ok(load_stake_distribution(warehouse, epochs, |validator| {
+        validator
+            .feature_set
+            .map_or_else(|| UNKNOWN_CLIENT_GROUP.to_string(), |set| set.to_string())
+    })?
     .into_iter()
     .map(|distribution| FeatureSetStats {
         epoch: distribution.epoch,
@@ -1918,15 +1567,15 @@ pub async fn load_feature_set_stats(
     .collect())
 }
 
-pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
-    // Vendor and lineage are two folds of one per-client-id distribution, not two queries.
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+pub fn load_cluster_stats(warehouse: &Warehouse, epochs: u64) -> anyhow::Result<ClusterStats> {
+    // Vendor and lineage are two folds of one per-client-id distribution.
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(ClusterStats {
-        block_production_stats: load_block_production_stats(psql_client, epochs).await?,
-        dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
+        block_production_stats: load_block_production_stats(warehouse, epochs)?,
+        dc_concentration_stats: load_dc_concentration_stats(warehouse, epochs)?,
         client_diversity_stats: client_diversity_stats(&by_client_id),
         client_lineage_stats: client_lineage_stats(&by_client_id),
-        feature_set_stats: load_feature_set_stats(psql_client, epochs).await?,
+        feature_set_stats: load_feature_set_stats(warehouse, epochs)?,
     })
 }
 

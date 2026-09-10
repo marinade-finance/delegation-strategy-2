@@ -1,13 +1,18 @@
 use crate::cache::Cache;
 use std::sync::Arc;
+use store::directory::Directory;
+use store::warehouse::Warehouse;
 use tokio::sync::RwLock;
 use tokio_postgres::Client;
 
 pub struct Context {
+    pub directory: Directory,
+    /// The documents every warm step folds over. Locked on its own, and never
+    /// while the context's own lock is held, so a refresh cannot block a reader.
+    pub warehouse: Arc<RwLock<Warehouse>>,
     pub psql_client: Client,
     pub glossary_path: String,
     pub blacklist_path: String,
-    pub scoring_url: String,
     pub validator_bonds_api_url: String,
     pub apy_api_url: String,
     pub cache: Cache,
@@ -15,18 +20,19 @@ pub struct Context {
 
 impl Context {
     pub fn new(
+        directory: Directory,
         psql_client: Client,
         glossary_path: String,
         blacklist_path: String,
-        scoring_url: String,
         validator_bonds_api_url: String,
         apy_api_url: String,
     ) -> anyhow::Result<Self> {
         Ok(Self {
+            directory,
+            warehouse: Default::default(),
             psql_client,
             glossary_path,
             blacklist_path,
-            scoring_url,
             validator_bonds_api_url,
             apy_api_url,
             cache: Cache::new(),
