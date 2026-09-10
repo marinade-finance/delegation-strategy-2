@@ -506,17 +506,15 @@ pub struct ReleaseRecord {
     pub available_epoch: Option<u64>,
     pub released_at: Option<DateTime<Utc>>,
     pub release_url: Option<String>,
-    /// First epoch the Solana Foundation Delegation Program required this version.
-    pub sfdp_floor_epoch: Option<u64>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// The SFDP floor in force for one lineage at one epoch.
+/// A version the Solana Foundation Delegation Program required, and the epoch it started requiring it.
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct ReleaseFloorRecord {
+pub struct SfdpFloor {
     pub client_lineage: String,
     pub client_version: String,
-    pub sfdp_floor_epoch: u64,
+    pub effective_epoch: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

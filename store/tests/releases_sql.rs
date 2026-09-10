@@ -7,7 +7,7 @@ use common::{migrated_client, skip_without_database, write_yaml};
 use rust_decimal::Decimal;
 use store::dto::ReleaseRecord;
 use store::releases::{
-    get_sfdp_floor_at_epoch, load_releases, store_releases, StoreReleasesParams,
+    get_sfdp_floor_at_epoch, load_releases, load_sfdp_floors, store_releases, StoreReleasesParams,
 };
 use tokio_postgres::Client;
 
@@ -149,26 +149,30 @@ async fn the_two_fetchers_fill_one_row_without_blanking_each_other() {
     .await;
     store(&mut client, schema, vec![floor("4.0.2", 992)]).await;
 
-    let one_row = |releases: Vec<ReleaseRecord>| {
+    // Served as two lists, stored as one row, and neither fetcher blanks the other's columns.
+    async fn assert_both_columns(client: &Client) {
+        let releases = load_releases(client, None, None).await.unwrap();
+        let floors = load_sfdp_floors(client, None, None).await.unwrap();
         assert_eq!(releases.len(), 1, "{releases:#?}");
-        let release = releases.into_iter().next().unwrap();
-        assert_eq!(release.available_epoch, Some(985));
-        assert_eq!(release.sfdp_floor_epoch, Some(992));
-        assert!(release.released_at.is_some());
-    };
+        assert_eq!(releases[0].available_epoch, Some(985));
+        assert!(releases[0].released_at.is_some());
+        assert_eq!(floors.len(), 1, "{floors:#?}");
+        assert_eq!(floors[0].client_version, "4.0.2");
+        assert_eq!(floors[0].effective_epoch, 992);
+    }
 
-    one_row(load_releases(&client, None, None).await.unwrap());
+    assert_both_columns(&client).await;
 
-    // Either fetcher running again leaves the other's columns alone.
     store(
         &mut client,
         schema,
         vec![shipped("4.0.2", epoch_start(985))],
     )
     .await;
-    one_row(load_releases(&client, None, None).await.unwrap());
+    assert_both_columns(&client).await;
+
     store(&mut client, schema, vec![floor("4.0.2", 992)]).await;
-    one_row(load_releases(&client, None, None).await.unwrap());
+    assert_both_columns(&client).await;
 }
 
 #[tokio::test]
@@ -192,7 +196,7 @@ async fn storing_the_same_snapshot_twice_stores_the_same_rows() {
 }
 
 #[tokio::test]
-async fn since_epoch_matches_either_epoch() {
+async fn since_epoch_filters_each_list_on_its_own_epoch() {
     let schema = "releases_since_epoch";
     if skip_without_database(schema) {
         return;
@@ -206,21 +210,26 @@ async fn since_epoch_matches_either_epoch() {
         schema,
         vec![
             shipped("4.0.1", epoch_start(981)),
-            // Shipped before the window, made the floor inside it.
+            // A version whose floor took effect inside the window but that shipped before it.
             floor("4.0.0-rc.1", 992),
         ],
     )
     .await;
 
-    let in_window = load_releases(&client, None, Some(990)).await.unwrap();
-    assert_eq!(in_window.len(), 1);
-    assert_eq!(in_window[0].client_version, "4.0.0-rc.1");
-
+    // The release shipped at 981, the floor took effect at 992: each list answers for its own epoch.
+    assert!(load_releases(&client, None, Some(990))
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(
         load_releases(&client, None, Some(980)).await.unwrap().len(),
-        2
+        1
     );
-    assert!(load_releases(&client, None, Some(1000))
+
+    let floors = load_sfdp_floors(&client, None, Some(990)).await.unwrap();
+    assert_eq!(floors.len(), 1);
+    assert_eq!(floors[0].client_version, "4.0.0-rc.1");
+    assert!(load_sfdp_floors(&client, None, Some(1000))
         .await
         .unwrap()
         .is_empty());
@@ -238,8 +247,14 @@ async fn the_client_filter_narrows_to_one_lineage() {
         &mut client,
         schema,
         vec![
-            entry("agave", "4.2.2", ReleaseSource::Github),
-            entry("frankendancer", "0.1106.40201", ReleaseSource::Github),
+            ReleaseEntry {
+                released_at: Some(epoch_start(1030)),
+                ..entry("agave", "4.2.2", ReleaseSource::Github)
+            },
+            ReleaseEntry {
+                released_at: Some(epoch_start(1030)),
+                ..entry("frankendancer", "0.1106.40201", ReleaseSource::Github)
+            },
         ],
     )
     .await;
@@ -286,7 +301,7 @@ async fn the_sfdp_floor_in_force_is_the_most_recently_effective_one() {
         .unwrap();
     assert_eq!(at_991.len(), 1);
     assert_eq!(at_991[0].client_version, "4.0.0-rc.1");
-    assert_eq!(at_991[0].sfdp_floor_epoch, 975);
+    assert_eq!(at_991[0].effective_epoch, 975);
 
     assert_eq!(
         get_sfdp_floor_at_epoch(&client, Some("agave"), 992)
