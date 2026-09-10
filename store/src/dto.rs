@@ -6,8 +6,7 @@ use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
 use rust_decimal::prelude::*;
-use serde::de::{self, Unexpected};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Served instead of null so every consumer has a client name to render.
@@ -580,34 +579,6 @@ pub struct ValidatorAggregatedFlat {
     pub client_lineage: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ValidatorScoringCsvRow {
-    pub vote_account: String,
-    pub score: f64,
-    pub rank: i32,
-    pub vemnde_votes: Decimal,
-    pub msol_votes: Decimal,
-    pub ui_hints: String,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_algo: bool,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_vemnde: bool,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_msol: bool,
-    pub normalized_dc_concentration: f64,
-    pub normalized_grace_skip_rate: f64,
-    pub normalized_adjusted_credits: f64,
-    pub avg_dc_concentration: f64,
-    pub avg_grace_skip_rate: f64,
-    pub avg_adjusted_credits: f64,
-    pub rank_dc_concentration: i32,
-    pub rank_grace_skip_rate: i32,
-    pub rank_adjusted_credits: i32,
-    pub target_stake_algo: Decimal,
-    pub target_stake_vemnde: Decimal,
-    pub target_stake_msol: Decimal,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorScoreRecord {
     pub vote_account: String,
@@ -625,25 +596,6 @@ pub struct ValidatorScoreRecord {
     pub target_stake_algo: u64,
     pub target_stake_vemnde: u64,
     pub target_stake_msol: u64,
-    pub scoring_run_id: i64,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct ValidatorScoreV2Record {
-    pub vote_account: String,
-    pub score: f64,
-    pub rank: i32,
-    pub vemnde_votes: f64,
-    pub msol_votes: f64,
-    pub ui_hints: Vec<String>,
-    pub component_scores: Vec<f64>,
-    pub eligible_stake_algo: bool,
-    pub eligible_stake_vemnde: bool,
-    pub eligible_stake_msol: bool,
-    pub target_stake_algo: f64,
-    pub target_stake_vemnde: f64,
-    pub target_stake_msol: f64,
     pub scoring_run_id: i64,
     pub created_at: DateTime<Utc>,
 }
@@ -683,18 +635,4 @@ pub struct GlobalUnstakeHintRecord {
 pub struct BlacklistRecord {
     pub vote_account: String,
     pub code: String,
-}
-
-fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match u8::deserialize(deserializer)? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(de::Error::invalid_value(
-            Unexpected::Unsigned(other as u64),
-            &"zero or one",
-        )),
-    }
 }
