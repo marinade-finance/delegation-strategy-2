@@ -293,7 +293,11 @@ pub async fn load_releases(
         -- in the floor list, not here.
         WHERE released_at IS NOT NULL
           AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
-          AND ($2::NUMERIC IS NULL OR available_epoch >= $2::NUMERIC)
+          AND ($2::NUMERIC IS NULL
+               OR available_epoch >= $2::NUMERIC
+               -- Published after the epoch started, but too recent for the epochs table to place.
+               OR (available_epoch IS NULL
+                   AND released_at >= (SELECT start_at FROM epochs WHERE epoch = $2::NUMERIC)))
         ORDER BY released_at DESC, client_lineage, client_version
     "
             ),
