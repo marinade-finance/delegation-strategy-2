@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::Deserialize;
 
-const GITHUB_API: &str = "https://api.github.com";
+pub const GITHUB_API: &str = "https://api.github.com";
 const PER_PAGE: usize = 100;
 /// Enough for every release Agave has ever published; a higher count means the loop lost its exit.
 const MAX_PAGES: usize = 30;
@@ -27,13 +27,15 @@ struct GithubRelease {
 }
 
 pub struct GithubFetcher {
+    api_url: String,
     token: Option<String>,
     client: reqwest::blocking::Client,
 }
 
 impl GithubFetcher {
-    pub fn new(token: Option<String>) -> anyhow::Result<Self> {
+    pub fn new(api_url: String, token: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
+            api_url,
             token,
             client: reqwest::blocking::Client::builder()
                 // GitHub answers 403 to a request without one.
@@ -43,7 +45,10 @@ impl GithubFetcher {
     }
 
     fn fetch_page(&self, repo: &str, page: usize) -> anyhow::Result<Vec<GithubRelease>> {
-        let url = format!("{GITHUB_API}/repos/{repo}/releases?per_page={PER_PAGE}&page={page}");
+        let url = format!(
+            "{}/repos/{repo}/releases?per_page={PER_PAGE}&page={page}",
+            self.api_url
+        );
         let mut request = self.client.get(&url);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);

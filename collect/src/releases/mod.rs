@@ -138,6 +138,22 @@ pub struct ReleasesParams {
     from_epoch: Option<u64>,
 
     #[arg(
+        long = "sfdp-api-url",
+        env = "SFDP_API_URL",
+        help = "The Solana Foundation API root",
+        default_value = sfdp::SFDP_API
+    )]
+    sfdp_api_url: String,
+
+    #[arg(
+        long = "github-api-url",
+        env = "GITHUB_API_URL",
+        help = "The GitHub API root",
+        default_value = github::GITHUB_API
+    )]
+    github_api_url: String,
+
+    #[arg(
         long = "github-token",
         env = "GITHUB_TOKEN",
         help = "Raises the GitHub rate limit from 60 requests per hour; unauthenticated works for a single run."
@@ -155,6 +171,7 @@ pub fn collect_releases_info(
     for name in &params.sources {
         match name {
             FetcherName::Github => fetchers.push(Box::new(github::GithubFetcher::new(
+                params.github_api_url.clone(),
                 params.github_token.clone(),
             )?)),
             FetcherName::Sfdp => {
@@ -168,6 +185,7 @@ pub fn collect_releases_info(
                     .from_epoch
                     .unwrap_or_else(|| current_epoch.saturating_sub(params.epochs_back));
                 fetchers.push(Box::new(sfdp::SfdpFetcher::new(
+                    params.sfdp_api_url.clone(),
                     from_epoch,
                     // The floor for upcoming epochs is published ahead of them.
                     current_epoch + sfdp::UPCOMING_EPOCHS,
