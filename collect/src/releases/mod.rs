@@ -29,14 +29,6 @@ impl ReleaseSource {
             ReleaseSource::Sfdp => "sfdp",
         }
     }
-
-    pub fn parse(source: &str) -> Option<Self> {
-        Some(match source {
-            "github" => ReleaseSource::Github,
-            "sfdp" => ReleaseSource::Sfdp,
-            _ => return None,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +56,6 @@ pub struct ReleasesSnapshot {
 }
 
 pub trait ReleaseFetcher {
-    fn source(&self) -> ReleaseSource;
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>>;
 }
 
@@ -254,13 +245,5 @@ mod tests {
         assert_eq!(firedancer_lineage("0.905.0-beta.40007"), "frankendancer");
         assert_eq!(firedancer_lineage("26.8.2"), "firedancer");
         assert_eq!(firedancer_lineage("1.1.4"), "firedancer");
-    }
-
-    #[test]
-    fn sources_round_trip() {
-        for source in [ReleaseSource::Github, ReleaseSource::Sfdp] {
-            assert_eq!(ReleaseSource::parse(source.as_str()), Some(source));
-        }
-        assert_eq!(ReleaseSource::parse("gitlab"), None);
     }
 }

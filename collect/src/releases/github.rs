@@ -106,10 +106,6 @@ impl GithubFetcher {
 }
 
 impl ReleaseFetcher for GithubFetcher {
-    fn source(&self) -> ReleaseSource {
-        ReleaseSource::Github
-    }
-
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
         let mut entries = Vec::new();
         for (repo, lineage) in REPOS {
