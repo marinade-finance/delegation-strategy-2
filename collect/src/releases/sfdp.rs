@@ -113,10 +113,6 @@ fn collapse_runs(series: &BTreeMap<u64, String>, anchor_epoch: u64) -> Vec<(Stri
 }
 
 impl ReleaseFetcher for SfdpFetcher {
-    fn source(&self) -> ReleaseSource {
-        ReleaseSource::Sfdp
-    }
-
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
         let mut agave: BTreeMap<u64, String> = BTreeMap::new();
         let mut firedancer: BTreeMap<u64, String> = BTreeMap::new();
