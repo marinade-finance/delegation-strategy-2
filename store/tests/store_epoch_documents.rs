@@ -75,8 +75,13 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
     }
 }
 
+/// Fixtures are written under one directory and removed by the test that wrote them, so
+/// the name carries a counter: two tests naming the same snapshot run in parallel threads
+/// and would otherwise delete each other's file.
 fn write_yaml<T: serde::Serialize>(name: &str, snapshot: &T) -> String {
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.yaml"));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{nth}.yaml"));
     std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
     path.to_str().expect("snapshot path").to_string()
 }
