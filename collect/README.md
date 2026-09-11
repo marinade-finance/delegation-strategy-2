@@ -77,21 +77,3 @@ cargo run --bin collect -- releases > releases.yaml
 # One-off historical backfill of every floor the endpoint answers for.
 cargo run --bin collect -- releases --from-epoch 688 > releases.yaml
 ```
-
-Adding a source means implementing `ReleaseFetcher` and adding a `--source` value; the table does
-not change. Rows from different sources coexist and are resolved by the precedence documented in
-`migrations/0027-releases.sql`.
-
-The SFDP endpoint answers one epoch per request and starts refusing a few hundred requests in, so
-the fetcher paces itself: a full backfill from epoch 688 takes about four minutes. Epochs it has no
-answer for reply 404, which is recorded as "no floor stated", not as a failure. `GITHUB_TOKEN`
-raises the GitHub rate limit but is not needed for a single run.
-
-`available_epoch` is not stored at all: `collect` emits `released_at` and the read resolves the
-epoch against the `epochs` table.
-
-The feature-gate floor is the running maximum, over the gates activated so far, of the version each
-gate shipped in. The tracker JSON gives the version, the gate's account gives the activation epoch.
-
-Only gates requiring at least the floor `version-floor.json` publishes are read: that floor is the
-maximum over everything already activated, so anything below it is history the migration seeds.

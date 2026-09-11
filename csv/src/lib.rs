@@ -213,6 +213,37 @@ mod tests {
     }
 
     #[test]
+    fn the_env_var_replaces_the_vendored_table() {
+        // What ops-infra does with OPERATORS_CSV: mounts a file and points the binary at it. The
+        // var name and the path are unique to this test, so it shares no state with another.
+        let var = "DS_CSV_TEST_OVERRIDE_REPLACES_VENDORED";
+        let path = std::env::temp_dir().join(format!("ds-csv-{}-{var}.csv", std::process::id()));
+        std::fs::write(&path, "epoch,name\n1019,firedancer\n").unwrap();
+        std::env::set_var(var, &path);
+
+        let rows: Vec<Row> =
+            load_vendored("name,epoch\nagave,979\n", var, &COLUMNS, "vendored.csv").unwrap();
+
+        std::env::remove_var(var);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(rows[0].name, "firedancer");
+    }
+
+    #[test]
+    fn the_vendored_table_is_used_when_the_env_var_is_unset() {
+        let rows: Vec<Row> = load_vendored(
+            "name,epoch\nagave,979\n",
+            "DS_CSV_TEST_OVERRIDE_NEVER_SET",
+            &COLUMNS,
+            "vendored.csv",
+        )
+        .unwrap();
+
+        assert_eq!(rows[0].name, "agave");
+    }
+
+    #[test]
     fn a_missing_file_is_reported_with_its_path() {
         let err = load_path::<Row>(Path::new("/nonexistent/table.csv"), &COLUMNS)
             .unwrap_err()
