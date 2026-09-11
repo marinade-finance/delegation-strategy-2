@@ -1,11 +1,13 @@
 use crate::common::CommonParams;
 use crate::solana_service::solana_client;
+use crate::validator_version::ValidatorVersion;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod feature_gates;
 pub mod github;
 pub mod sfdp;
 
@@ -20,6 +22,7 @@ pub(crate) const HTTP_TIMEOUT_S: u64 = 30;
 pub enum ReleaseSource {
     Github,
     Sfdp,
+    FeatureGates,
 }
 
 impl ReleaseSource {
@@ -27,6 +30,7 @@ impl ReleaseSource {
         match self {
             ReleaseSource::Github => "github",
             ReleaseSource::Sfdp => "sfdp",
+            ReleaseSource::FeatureGates => "feature_gates",
         }
     }
 }
@@ -35,14 +39,14 @@ impl ReleaseSource {
 pub struct ReleaseEntry {
     /// agave | frankendancer | firedancer | sig, matching `ClientId::groupings()`.
     pub client_lineage: String,
-    /// As the client reports it in gossip, e.g. `4.2.2` or `0.1106.40201`.
-    pub client_version: String,
+    pub client_version: ValidatorVersion,
     /// Publish time. The epoch it falls in is resolved when the snapshot is stored, against the
     /// `epochs` table this crate cannot reach.
     pub released_at: Option<DateTime<Utc>>,
-    /// First epoch SFDP required this version. The cluster's own feature-gate floors are static
-    /// data, not collected: see `store::feature_gates`.
+    /// First epoch SFDP required this version.
     pub sfdp_floor_epoch: Option<u64>,
+    /// First epoch the cluster's feature gates required this version.
+    pub feature_gate_epoch: Option<u64>,
     pub release_url: Option<String>,
     /// Which columns this entry fills; the table has no source column.
     pub source: ReleaseSource,
@@ -59,42 +63,10 @@ pub trait ReleaseFetcher {
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>>;
 }
 
-/// Gossip reports `26.8.2` where the Firedancer tag zero-pads to `v26.08.2`, and no tag carries a
-/// leading zero that means anything, so the padding is dropped to keep one spelling per version.
-/// A prerelease suffix is carried over untouched.
-pub fn normalize_version(tag: &str) -> String {
-    let version = tag.trim().trim_start_matches('v');
-    let (numbers, prerelease) = match version.split_once('-') {
-        Some((numbers, prerelease)) => (numbers, Some(prerelease)),
-        None => (version, None),
-    };
-
-    let parts: Vec<&str> = numbers.split('.').collect();
-    if parts.len() != 3
-        || !parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return version.to_string();
-    }
-
-    let numbers = parts
-        .iter()
-        .map(|part| part.trim_start_matches('0'))
-        .map(|part| if part.is_empty() { "0" } else { part })
-        .collect::<Vec<_>>()
-        .join(".");
-
-    match prerelease {
-        Some(prerelease) => format!("{numbers}-{prerelease}"),
-        None => numbers,
-    }
-}
-
 /// Frankendancer keeps the `0.<frankendancer>.<agave>` numbering it always had; Firedancer proper
 /// releases under its own major (`1.1.4`, then calendar versions like `26.8.2`).
-pub fn firedancer_lineage(version: &str) -> &'static str {
-    if version.starts_with("0.") {
+pub fn firedancer_lineage(version: &ValidatorVersion) -> &'static str {
+    if version.major() == 0 {
         "frankendancer"
     } else {
         "firedancer"
@@ -107,7 +79,7 @@ pub struct ReleasesParams {
         long = "source",
         help = "Which fetchers to run.",
         value_delimiter = ',',
-        default_value = "github,sfdp"
+        default_value = "github,sfdp,feature-gates"
     )]
     sources: Vec<ReleaseSource>,
 
@@ -141,6 +113,27 @@ pub struct ReleasesParams {
     github_api_url: String,
 
     #[arg(
+        long = "feature-gate-schedule-url",
+        help = "The feature gate tracker's machine-readable schedule.",
+        default_value = feature_gates::SCHEDULE_JSON_URL
+    )]
+    feature_gate_schedule_url: String,
+
+    #[arg(
+        long = "version-floor-url",
+        help = "The floor Anza publishes, read as a cross-check on the derived one.",
+        default_value = feature_gates::VERSION_FLOOR_JSON_URL
+    )]
+    version_floor_url: String,
+
+    #[arg(
+        long = "latest-gates-to-read",
+        help = "How many of the tracker's newest feature gates to read on chain. The floor history is seeded by the migration; a larger window rebuilds more of it, at one account read per gate.",
+        default_value = "30"
+    )]
+    latest_gates_to_read: usize,
+
+    #[arg(
         long = "github-token",
         env = "GITHUB_TOKEN",
         hide_env_values = true,
@@ -162,6 +155,15 @@ pub fn collect_releases_info(
                 params.github_api_url.clone(),
                 params.github_token.clone(),
             )?)),
+            ReleaseSource::FeatureGates => {
+                fetchers.push(Box::new(feature_gates::FeatureGatesFetcher::new(
+                    params.feature_gate_schedule_url.clone(),
+                    params.version_floor_url.clone(),
+                    params.latest_gates_to_read,
+                    common_params.rpc_url.clone(),
+                    common_params.commitment.clone(),
+                )?))
+            }
             ReleaseSource::Sfdp => {
                 // Only this fetcher needs the cluster's current epoch, so the RPC call stays inside.
                 let client = solana_client(
@@ -210,32 +212,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn firedancer_tags_normalize_to_what_gossip_reports() {
-        // Live gossip at epoch 1031: Firedancer says 26.8.2, Frankendancer says 0.1106.40201.
-        assert_eq!(normalize_version("v26.08.2"), "26.8.2");
-        assert_eq!(normalize_version("v0.1106.40201"), "0.1106.40201");
-        assert_eq!(normalize_version("v1.1.4"), "1.1.4");
-        // A padded core keeps its suffix and still loses the padding.
-        assert_eq!(normalize_version("v26.08.2-rc.1"), "26.8.2-rc.1");
-    }
-
-    #[test]
-    fn agave_tags_keep_their_prerelease_verbatim() {
-        assert_eq!(normalize_version("v4.2.2"), "4.2.2");
-        assert_eq!(normalize_version("v4.0.0-rc.0"), "4.0.0-rc.0");
-        // A Frankendancer prerelease encodes an Agave version that never shipped; it must survive
-        // as written rather than be rewritten into something that looks like a release.
-        assert_eq!(
-            normalize_version("v0.905.0-beta.40007"),
-            "0.905.0-beta.40007"
-        );
-    }
-
-    #[test]
     fn lineage_splits_on_the_numbering_scheme() {
-        assert_eq!(firedancer_lineage("0.1106.40201"), "frankendancer");
-        assert_eq!(firedancer_lineage("0.905.0-beta.40007"), "frankendancer");
-        assert_eq!(firedancer_lineage("26.8.2"), "firedancer");
-        assert_eq!(firedancer_lineage("1.1.4"), "firedancer");
+        let lineage = |text: &str| firedancer_lineage(&text.parse().unwrap());
+        assert_eq!(lineage("0.1106.40201"), "frankendancer");
+        assert_eq!(lineage("0.905.0-beta.40007"), "frankendancer");
+        assert_eq!(lineage("26.8.2"), "firedancer");
+        assert_eq!(lineage("1.1.4"), "firedancer");
     }
 }

@@ -1,5 +1,6 @@
 use super::{firedancer_lineage, ReleaseEntry, ReleaseFetcher, ReleaseSource};
 use crate::common::retry_blocking;
+use crate::validator_version::ValidatorVersion;
 use log::{debug, info, warn};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -87,12 +88,15 @@ impl SfdpFetcher {
 ///
 /// A floor already in force at `anchor_epoch`, the epoch fetched ahead of the window, started
 /// outside it and is left unrecorded rather than stamped with the window's own first epoch.
-fn collapse_runs(series: &BTreeMap<u64, String>, anchor_epoch: u64) -> Vec<(String, u64)> {
-    let mut effective: Vec<(String, u64)> = Vec::new();
-    let mut previous: Option<&str> = None;
+fn collapse_runs(
+    series: &BTreeMap<u64, ValidatorVersion>,
+    anchor_epoch: u64,
+) -> Vec<(ValidatorVersion, u64)> {
+    let mut effective: Vec<(ValidatorVersion, u64)> = Vec::new();
+    let mut previous: Option<&ValidatorVersion> = None;
 
     for (epoch, version) in series {
-        if previous == Some(version.as_str()) {
+        if previous == Some(version) {
             continue;
         }
         previous = Some(version);
@@ -114,8 +118,8 @@ fn collapse_runs(series: &BTreeMap<u64, String>, anchor_epoch: u64) -> Vec<(Stri
 
 impl ReleaseFetcher for SfdpFetcher {
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
-        let mut agave: BTreeMap<u64, String> = BTreeMap::new();
-        let mut firedancer: BTreeMap<u64, String> = BTreeMap::new();
+        let mut agave: BTreeMap<u64, ValidatorVersion> = BTreeMap::new();
+        let mut firedancer: BTreeMap<u64, ValidatorVersion> = BTreeMap::new();
         // One epoch of context: a floor already in force here is one whose own start is outside the
         // window, and must not be reported as starting at the window's edge.
         let anchor_epoch = self.from_epoch.saturating_sub(1);
@@ -140,8 +144,16 @@ impl ReleaseFetcher for SfdpFetcher {
                 (&mut agave, row.agave_min_version),
                 (&mut firedancer, row.firedancer_min_version),
             ] {
-                if let Some(version) = min_version.filter(|v| !v.trim().is_empty()) {
-                    versions.insert(epoch, super::normalize_version(&version));
+                // The same spelling GitHub tags parse to, or one version becomes two rows.
+                match min_version
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| v.parse())
+                {
+                    Some(Ok(version)) => {
+                        versions.insert(epoch, version);
+                    }
+                    Some(Err(err)) => warn!("Epoch {epoch} names a floor that {err}"),
+                    None => {}
                 }
             }
         }
@@ -149,7 +161,10 @@ impl ReleaseFetcher for SfdpFetcher {
         let mut entries = Vec::new();
         for (series, lineage_of) in [
             (&agave, None),
-            (&firedancer, Some(firedancer_lineage as fn(&str) -> &str)),
+            (
+                &firedancer,
+                Some(firedancer_lineage as fn(&ValidatorVersion) -> &str),
+            ),
         ] {
             for (version, effective_epoch) in collapse_runs(series, anchor_epoch) {
                 let lineage = match lineage_of {
@@ -161,6 +176,7 @@ impl ReleaseFetcher for SfdpFetcher {
                     client_version: version,
                     released_at: None,
                     sfdp_floor_epoch: Some(effective_epoch),
+                    feature_gate_epoch: None,
                     release_url: None,
                     source: ReleaseSource::Sfdp,
                 });
@@ -182,9 +198,15 @@ mod tests {
         rows.first().map_or(0, |(epoch, _)| *epoch)
     }
 
-    fn series(rows: &[(u64, &str)]) -> BTreeMap<u64, String> {
+    fn series(rows: &[(u64, &str)]) -> BTreeMap<u64, ValidatorVersion> {
         rows.iter()
-            .map(|(epoch, version)| (*epoch, version.to_string()))
+            .map(|(epoch, version)| (*epoch, version.parse().unwrap()))
+            .collect()
+    }
+
+    fn effective(rows: &[(&str, u64)]) -> Vec<(ValidatorVersion, u64)> {
+        rows.iter()
+            .map(|(version, epoch)| (version.parse().unwrap(), *epoch))
             .collect()
     }
 
@@ -206,11 +228,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, 0),
-            vec![
-                ("3.1.10".to_string(), 948),
-                ("3.1.11".to_string(), 953),
-                ("3.1.13".to_string(), 956),
-            ]
+            effective(&[("3.1.10", 948), ("3.1.11", 953), ("3.1.13", 956)])
         );
     }
 
@@ -225,10 +243,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, 0),
-            vec![
-                ("4.1.0-rc.1".to_string(), 1002),
-                ("4.2.0-rc.1".to_string(), 1001),
-            ]
+            effective(&[("4.1.0-rc.1", 1002), ("4.2.0-rc.1", 1001)])
         );
     }
 
@@ -246,7 +261,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, anchor_epoch_of(&rows)),
-            vec![("4.2.0-rc.1".to_string(), 1016)]
+            effective(&[("4.2.0-rc.1", 1016)])
         );
     }
 
@@ -257,7 +272,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, anchor_epoch_of(&rows)),
-            vec![("4.2.0-rc.1".to_string(), 1016)]
+            effective(&[("4.2.0-rc.1", 1016)])
         );
     }
 
@@ -269,7 +284,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, 687),
-            vec![("1.18.21".to_string(), 688), ("2.0.15".to_string(), 697),]
+            effective(&[("1.18.21", 688), ("2.0.15", 697)])
         );
     }
 
@@ -280,7 +295,7 @@ mod tests {
 
         assert_eq!(
             collapse_runs(&floors, 0),
-            vec![("4.0.2".to_string(), 990), ("4.1.0-rc.1".to_string(), 994),]
+            effective(&[("4.0.2", 990), ("4.1.0-rc.1", 994)])
         );
     }
 }

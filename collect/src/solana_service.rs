@@ -218,20 +218,7 @@ impl ClientId {
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
 pub fn is_plausible_node_version(version: &str) -> bool {
-    let numeric = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-    let mut parts = version.splitn(3, '.');
-    parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(|p| match p.split_once('-') {
-            None => numeric(p),
-            Some((patch, prerelease)) => {
-                numeric(patch)
-                    && !prerelease.is_empty()
-                    && prerelease
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'.')
-            }
-        })
+    crate::validator_version::ValidatorVersion::from_gossip(version).is_ok()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

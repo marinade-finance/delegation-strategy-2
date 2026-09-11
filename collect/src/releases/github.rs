@@ -1,6 +1,6 @@
-use super::{firedancer_lineage, normalize_version, ReleaseEntry, ReleaseFetcher, ReleaseSource};
+use super::{firedancer_lineage, ReleaseEntry, ReleaseFetcher, ReleaseSource};
 use crate::common::{retry_blocking, QuadraticBackoffStrategy};
-use crate::solana_service::is_plausible_node_version;
+use crate::validator_version::ValidatorVersion;
 use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::Deserialize;
@@ -76,18 +76,18 @@ impl GithubFetcher {
                 if release.draft {
                     continue;
                 }
-                let version = normalize_version(&release.tag_name);
-                if !is_plausible_node_version(&version) {
-                    // Tags that are not a client version at all: tooling releases, and the odd
-                    // `fdctl-` style tag.
+                let Ok(version) = release.tag_name.parse::<ValidatorVersion>() else {
+                    // Tags that are not a client version at all: tooling releases, milestone tags,
+                    // and the odd `fdctl-` style tag.
                     debug!("Skipping {repo} tag {}", release.tag_name);
                     continue;
-                }
+                };
                 entries.push(ReleaseEntry {
                     client_lineage: lineage
                         .unwrap_or_else(|| firedancer_lineage(&version))
                         .to_string(),
                     client_version: version,
+                    feature_gate_epoch: None,
                     released_at: release.published_at,
                     sfdp_floor_epoch: None,
                     release_url: release.html_url,
