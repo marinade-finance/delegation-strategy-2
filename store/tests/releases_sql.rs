@@ -267,6 +267,32 @@ async fn since_epoch_filters_each_list_on_its_own_epoch() {
 }
 
 #[tokio::test]
+async fn since_epoch_keeps_a_release_too_recent_to_place() {
+    let schema = "releases_unplaced_in_window";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    // No running epoch, so anything published past epoch 1002 has no epoch to land in.
+    close_epochs(&client, 1000..=1002).await;
+    store(
+        &mut client,
+        schema,
+        vec![
+            shipped("4.2.2", epoch_start(1003)),
+            shipped("1.0.0", epoch_start(900)),
+        ],
+    )
+    .await;
+
+    let in_window = load_releases(&client, None, Some(1001)).await.unwrap();
+    assert_eq!(in_window.len(), 1, "{in_window:#?}");
+    assert_eq!(in_window[0].client_version, "4.2.2");
+    assert_eq!(in_window[0].available_epoch, None);
+}
+
+#[tokio::test]
 async fn the_client_filter_narrows_to_one_lineage() {
     let schema = "releases_client_filter";
     if skip_without_database(schema) {

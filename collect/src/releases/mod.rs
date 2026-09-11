@@ -193,8 +193,6 @@ pub fn collect_releases_info(
         releases.extend(fetcher.fetch()?);
     }
 
-    // Counted by the row's own source, not by the fetcher: the seed file carries rows from every
-    // source that cannot be fetched.
     let mut per_source: BTreeMap<&str, usize> = BTreeMap::new();
     for release in &releases {
         *per_source.entry(release.source.as_str()).or_default() += 1;
