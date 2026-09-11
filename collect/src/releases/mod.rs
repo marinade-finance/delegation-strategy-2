@@ -15,7 +15,7 @@ pub(crate) const HTTP_TIMEOUT_S: u64 = 30;
 
 /// Which columns of a release row the entry fills: a new source is a new [`ReleaseFetcher`] plus a
 /// variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseSource {
     Github,
@@ -101,12 +101,6 @@ pub fn firedancer_lineage(version: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum FetcherName {
-    Github,
-    Sfdp,
-}
-
 #[derive(Debug, Parser)]
 pub struct ReleasesParams {
     #[arg(
@@ -115,7 +109,7 @@ pub struct ReleasesParams {
         value_delimiter = ',',
         default_value = "github,sfdp"
     )]
-    sources: Vec<FetcherName>,
+    sources: Vec<ReleaseSource>,
 
     #[arg(
         long = "epochs-back",
@@ -164,11 +158,11 @@ pub fn collect_releases_info(
 
     for name in &params.sources {
         match name {
-            FetcherName::Github => fetchers.push(Box::new(github::GithubFetcher::new(
+            ReleaseSource::Github => fetchers.push(Box::new(github::GithubFetcher::new(
                 params.github_api_url.clone(),
                 params.github_token.clone(),
             )?)),
-            FetcherName::Sfdp => {
+            ReleaseSource::Sfdp => {
                 // Only this fetcher needs the cluster's current epoch, so the RPC call stays inside.
                 let client = solana_client(
                     common_params.rpc_url.clone(),

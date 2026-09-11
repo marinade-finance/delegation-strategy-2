@@ -55,7 +55,7 @@ pub async fn handler(
         .order_direction
         .unwrap_or(DEFAULT_ORDER_DIRECTION);
 
-    let (releases, sfdp_floors) = match tokio::try_join!(
+    let (mut releases, mut sfdp_floors) = match tokio::try_join!(
         load_releases(&ctx.psql_client, client, since_epoch),
         load_sfdp_floors(&ctx.psql_client, client, since_epoch),
     ) {
@@ -69,7 +69,6 @@ pub async fn handler(
         }
     };
 
-    let (mut releases, mut sfdp_floors) = (releases, sfdp_floors);
     let mut feature_gate_floors = feature_gates::all().to_vec();
     releases.sort_by(|a, b| directed(a.released_at.cmp(&b.released_at), &order_direction));
     sfdp_floors
