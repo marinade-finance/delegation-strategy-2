@@ -56,3 +56,24 @@ cargo run --bin collect -- -u $RPC_URL validators-block-rewards --epoch $EPOCH |
 - **One-off historical backfill:** use `--from-epoch N` (queries all epochs `>= N`).
 
 Runs are stateless (no synced-epoch cursor): each run re-queries its whole window and upserts, so an interrupted run is fixed by simply re-running. Prefer `--epochs-back` for the cron — a fixed `--from-epoch` grows the re-queried window unbounded as epochs advance.
+
+## releases
+
+Release metadata for the `releases` table: when a version was published, and the two floors it had
+to clear. Mainnet only. One fetcher per source, selected with `--source`:
+
+| Source | Fetcher | Gives |
+|---|---|---|
+| `github` | GitHub releases for `anza-xyz/agave` and `firedancer-io/firedancer` | publish timestamps, full history, no floors |
+| `sfdp` | `api.solana.org/api/community/v1/sfdp_required_versions`, one request per epoch | the Solana Foundation Delegation Program floor, per epoch, from epoch 688 on |
+| `feature-gates` | Anza's feature gate tracker wiki plus the gates' own accounts on chain | the floor the cluster enforces, from the epoch each gate activated |
+
+```bash
+export RPC_URL=...
+
+# Steady state: the recent floor window plus the current release lists.
+cargo run --bin collect -- releases > releases.yaml
+
+# One-off historical backfill of every floor the endpoint answers for.
+cargo run --bin collect -- releases --from-epoch 688 > releases.yaml
+```

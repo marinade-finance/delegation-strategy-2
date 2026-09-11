@@ -183,6 +183,47 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 }
 ```
 
+## Releases
+
+Three lists: `releases` (what was published, from the client's GitHub releases), `sfdp_floors` (what
+the Solana Foundation Delegation Program required) and `feature_gate_floors` (what the cluster's
+feature gates required). `client` (a lineage: `agave`, `frankendancer`, `firedancer`, `sig`) and
+`since_epoch` filter all three.
+
+`releases` is ordered by publish time, `order_direction=ASC|DESC` (default `DESC`).
+
+```bash
+curl -sfLS 'localhost:8000/releases?client=agave&since_epoch=1010' | jq
+```
+```json
+{
+  "releases": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.4.0-alpha.4",
+      "available_epoch": null,
+      "released_at": "2026-09-10T19:19:58Z",
+      "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.4.0-alpha.4",
+      "updated_at": "2026-09-11T12:13:14.576435Z"
+    }
+  ],
+  "sfdp_floors": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.1",
+      "effective_epoch": 1023
+    }
+  ],
+  "feature_gate_floors": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.0",
+      "effective_epoch": 1027
+    }
+  ]
+}
+```
+
 ## Glossary
 ```bash
 curl -sfLS localhost:8000/static/glossary.md

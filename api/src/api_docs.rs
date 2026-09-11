@@ -1,9 +1,10 @@
 use crate::handlers::{
     admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
     glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    releases, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
+    rewards, take_rates, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
+    versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -28,6 +29,7 @@ use utoipa::OpenApi;
         schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
         schemas(list_clients::ResponseClients),
         schemas(list_providers::ResponseProviders),
+        schemas(releases::ResponseReleases),
         schemas(crate::utils::order::OrderDirection),
         schemas(crate::utils::order::OrderField),
         schemas(list_validators::ResponseValidators),
@@ -67,6 +69,9 @@ use utoipa::OpenApi;
         schemas(store::dto::RuggerRecord),
         schemas(store::dto::RugInfo),
         schemas(store::dto::VersionRecord),
+        schemas(store::dto::ReleaseRecord),
+        schemas(store::dto::SfdpFloor),
+        schemas(store::dto::FeatureGateFloor),
         schemas(store::dto::JitoMevRecord),
         schemas(store::dto::JitoRecord),
         schemas(store::dto::ValidatorBlockRewardsRecord),
@@ -88,6 +93,7 @@ use utoipa::OpenApi;
         cluster_stats::handler,
         list_clients::handler,
         list_providers::handler,
+        releases::handler,
         commissions::handler,
         take_rates::handler,
         config::handler,
