@@ -311,9 +311,9 @@ pub fn collect_validators_info(
                 .and_then(|state| state.block_revenue_collector)
                 .map(|collector| collector.to_string()),
             inflation_rewards_commission_bps: vote_state
-                .map(|state| state.inflation_rewards_commission_bps),
+                .and_then(|state| state.inflation_rewards_commission_bps),
             inflation_rewards_commission_bps_is_v4: vote_state
-                .map(|state| state.inflation_rewards_commission_bps_is_v4),
+                .and_then(|state| state.inflation_rewards_commission_bps_is_v4),
             block_revenue_commission_bps: vote_state
                 .and_then(|state| state.block_revenue_commission_bps),
             pending_delegator_rewards: vote_state.and_then(|state| state.pending_delegator_rewards),

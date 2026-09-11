@@ -348,10 +348,8 @@ mod tests {
         );
     }
 
-    // Same div_ceil rule as every other projection of these basis points, so a validator just over
-    // the 10% eligibility cap cannot round down onto it.
     #[test]
-    fn the_fallback_projects_basis_points_the_way_agave_does() {
+    fn the_fallback_rounds_basis_points_up_so_the_eligibility_cap_stays_strict() {
         assert_eq!(resolve_commission_effective(None, Some(1_001)).0, Some(11));
         assert_eq!(resolve_commission_effective(None, Some(1_000)).0, Some(10));
         assert_eq!(

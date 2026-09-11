@@ -358,7 +358,7 @@ pub struct ValidatorRecord {
     pub commission_effective: Option<i32>,
     /// See `ValidatorEpochStats::commission_effective_source`. Projected from the newest closed epoch, alongside `commission_effective` itself.
     pub commission_effective_source: Option<String>,
-    /// See `ValidatorEpochStats::inflation_rewards_commission_bps`. Projected from the newest closed epoch.
+    /// See `ValidatorEpochStats::inflation_rewards_commission_bps`. Read from the newest epoch sampled, which is the open one, as is every vote-state field below it. It therefore does not pair with `commission_effective` above, which is a closed epoch's rate: a validator that moved its commission this epoch reads two different rates here.
     pub inflation_rewards_commission_bps: Option<i32>,
     /// See `ValidatorEpochStats::inflation_rewards_commission_bps_is_v4`.
     pub inflation_rewards_commission_bps_is_v4: Option<bool>,

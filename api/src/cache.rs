@@ -398,8 +398,6 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in DB, caching an empty set");
     }
 
-    record_inflation_commission_sources(validators.values());
-
     // The window ends at the newest epoch the validator records report, which is the same epoch the
     // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.
     let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
@@ -442,6 +440,8 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.validators = validators;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
+        // Inside the commit, so a warm that fails after loading cannot leave the gauge describing records no request ever saw
+        record_inflation_commission_sources(ctx.cache.validators.values());
     }
 
     info!(
@@ -629,10 +629,24 @@ fn seconds_until_next_window() -> u64 {
 const COMMISSION_SOURCE_NONE: &str = "none";
 /// No epoch-close source yet, but the open epoch's snapshot carries a rate.
 const COMMISSION_SOURCE_ADVERTISED: &str = "advertised";
+/// A `commission_effective_source` this build does not know, folded in rather than labelled with itself.
+const COMMISSION_SOURCE_UNKNOWN: &str = "unknown";
 
-fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &str {
+/// The label set is closed so that every series can be reset on every refresh; a free-text column value would otherwise mint a series nothing ever zeroes again.
+const COMMISSION_SOURCES: [&str; 5] = [
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+    COMMISSION_SOURCE_ADVERTISED,
+    COMMISSION_SOURCE_NONE,
+    COMMISSION_SOURCE_UNKNOWN,
+];
+
+fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &'static str {
     match source {
-        Some(source) => source,
+        Some(source) => COMMISSION_SOURCES
+            .into_iter()
+            .find(|known| *known == source)
+            .unwrap_or(COMMISSION_SOURCE_UNKNOWN),
         None if has_advertised => COMMISSION_SOURCE_ADVERTISED,
         None => COMMISSION_SOURCE_NONE,
     }
@@ -643,12 +657,10 @@ fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &str {
 fn record_inflation_commission_sources<'a>(
     validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
 ) {
-    let mut counts: HashMap<&str, i64> = HashMap::from([
-        (store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, 0),
-        (store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE, 0),
-        (COMMISSION_SOURCE_ADVERTISED, 0),
-        (COMMISSION_SOURCE_NONE, 0),
-    ]);
+    let mut counts: HashMap<&str, i64> = COMMISSION_SOURCES
+        .into_iter()
+        .map(|source| (source, 0))
+        .collect();
     for record in validators {
         let label = commission_source_label(
             record.commission_effective_source.as_deref(),
@@ -1083,15 +1095,20 @@ mod commission_source_metric_tests {
         assert_eq!(commission_source_label(None, false), COMMISSION_SOURCE_NONE);
     }
 
+    // A source the column carries but this build does not know must not mint a series of its own: only COMMISSION_SOURCES is ever reset, so such a series would hold its last count forever.
+    #[test]
+    fn an_unrecognised_source_folds_into_one_that_gets_reset() {
+        assert_eq!(
+            commission_source_label(Some("backfilled_by_hand"), true),
+            COMMISSION_SOURCE_UNKNOWN
+        );
+        assert!(COMMISSION_SOURCES.contains(&COMMISSION_SOURCE_UNKNOWN));
+    }
+
     #[test]
     fn every_series_reports_a_zero_rather_than_disappearing() {
         record_inflation_commission_sources(std::iter::empty());
-        for source in [
-            store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
-            store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
-            COMMISSION_SOURCE_ADVERTISED,
-            COMMISSION_SOURCE_NONE,
-        ] {
+        for source in COMMISSION_SOURCES {
             assert_eq!(
                 metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
                     .get_metric_with_label_values(&[source])

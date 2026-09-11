@@ -27,7 +27,3 @@ ALTER TABLE validators
   -- only the sampled state to go on. NULL for epochs closed before this column existed and for a
   -- validator with neither source, which is not the same as a rate of zero.
   ADD COLUMN commission_effective_source TEXT DEFAULT NULL;
-
--- The collector is many-to-one by design and needs no signature of its own, so lookups group by it.
-CREATE INDEX validators_inflation_rewards_collector ON validators (epoch, inflation_rewards_collector);
-CREATE INDEX validators_block_revenue_collector ON validators (epoch, block_revenue_collector);

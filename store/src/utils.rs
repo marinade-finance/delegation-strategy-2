@@ -391,7 +391,7 @@ pub async fn load_versions(
 
     Ok(records)
 }
-// Reads the epoch's observed ceiling, not commission_effective: SIMD-0232 nulled that, and SQL comparisons against NULL are never true, so no epoch-1031-or-later row could match. The ceiling also catches a spike raised and reverted inside one epoch, which the applied rate never reflected.
+// Reads the epoch's last advertised rate, not commission_effective: SIMD-0232 nulled that, and SQL comparisons against NULL are never true, so no epoch-1031-or-later row could match. It stands in because the runtime charges the rate held at the epoch's last slot, which is what commission_effective recorded; commission_max_observed would not, as a ceiling cannot tell a rug from an honest cut - both leave the same floor and ceiling.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -400,10 +400,10 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    commission_max_observed,
+                    commission_advertised,
                     commission_min_observed,
-                    LAG(commission_max_observed) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_max_observed) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                    LAG(commission_advertised) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
+                    LEAD(commission_advertised) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
                 FROM
                     validators
             ),
@@ -411,23 +411,23 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    commission_max_observed,
+                    commission_advertised,
                     commission_min_observed
                 FROM
                     commission_changes
                 WHERE
-                    (commission_max_observed > commission_min_observed AND commission_max_observed > 10 AND commission_min_observed <= 10)
+                    (commission_advertised > commission_min_observed AND commission_advertised > 10 AND commission_min_observed <= 10)
                     OR
-                    (prev_commission > 10 AND commission_max_observed <= 10 AND next_commission > 10)
+                    (prev_commission > 10 AND commission_advertised <= 10 AND next_commission > 10)
                     OR
-                    (prev_commission <= 10 AND commission_max_observed > 10 AND next_commission <= 10)
+                    (prev_commission <= 10 AND commission_advertised > 10 AND next_commission <= 10)
             )
             SELECT
                 vote_account,
                 COUNT(*) AS events_count,
-                ARRAY_AGG(epoch) AS epochs,
-                ARRAY_AGG(commission_max_observed) AS commission_observed_values,
-                ARRAY_AGG(commission_min_observed) AS commission_min_observed_values
+                ARRAY_AGG(epoch ORDER BY epoch) AS epochs,
+                ARRAY_AGG(commission_advertised ORDER BY epoch) AS commission_observed_values,
+                ARRAY_AGG(commission_min_observed ORDER BY epoch) AS commission_min_observed_values
             FROM
                 filtered_commissions
             GROUP BY
@@ -1062,7 +1062,9 @@ pub async fn load_validators(
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
                 let (apr, apy) = c.estimate_yields(
                     row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    // SIMD-0232 left commission_effective null for epochs 1030-1031, and nothing can backfill them; falling straight to 100 would read those epochs as zero yield fleet-wide
                     row.get::<_, Option<i32>>("commission_effective")
+                        .or(row.get::<_, Option<i32>>("commission_advertised"))
                         .map(|n| n.try_into().unwrap())
                         .unwrap_or(100),
                 );

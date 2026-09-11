@@ -508,8 +508,8 @@ fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> 
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-// Bincode discriminants of VoteStateVersions. 0 is agave's VoteStateViewError::OldVersion, whose
-// authorized withdrawer sits at a different offset, so it is rejected rather than read at a guess.
+// Bincode discriminants of VoteStateVersions. 0 carries no withdrawer to read: it is Uninitialized on the current interface, and the retired V0_23_5 it replaced put the withdrawer elsewhere.
+const VOTE_STATE_VERSION_UNINITIALIZED: u32 = 0;
 const VOTE_STATE_VERSION_V1_14_11: u32 = 1;
 const VOTE_STATE_VERSION_V3: u32 = 2;
 const VOTE_STATE_VERSION_V4: u32 = 3;
@@ -529,8 +529,9 @@ const VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET: usize = 136;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoteStateFields {
     pub authorized_withdrawer: Pubkey,
-    pub inflation_rewards_commission_bps: u16,
-    pub inflation_rewards_commission_bps_is_v4: bool,
+    // None on a version whose commission offset this build does not know; the withdrawer is still read, since it has sat at the same offset on every version since v1_14_11
+    pub inflation_rewards_commission_bps: Option<u16>,
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
     pub inflation_rewards_collector: Option<Pubkey>,
     pub block_revenue_collector: Option<Pubkey>,
     pub block_revenue_commission_bps: Option<u16>,
@@ -563,15 +564,16 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
     )?;
 
     match version {
+        VOTE_STATE_VERSION_UNINITIALIZED => {
+            anyhow::bail!("vote state version {version} carries no authorized withdrawer")
+        }
         VOTE_STATE_VERSION_V1_14_11 | VOTE_STATE_VERSION_V3 => {
-            let commission = *data.get(VOTE_PRE_V4_COMMISSION_OFFSET).ok_or_else(|| {
-                anyhow::anyhow!("vote state v{version} holds no commission at byte 68")
-            })?;
+            let commission = read_array::<1>(data, VOTE_PRE_V4_COMMISSION_OFFSET, "commission")?[0];
             Ok(VoteStateFields {
                 authorized_withdrawer,
                 // agave synthesizes this same projection when it converts a pre-v4 state, so it is what the runtime applies either way; is_v4 is what says it was not set in basis points
-                inflation_rewards_commission_bps: u16::from(commission).saturating_mul(100),
-                inflation_rewards_commission_bps_is_v4: false,
+                inflation_rewards_commission_bps: Some(u16::from(commission).saturating_mul(100)),
+                inflation_rewards_commission_bps_is_v4: Some(false),
                 inflation_rewards_collector: None,
                 block_revenue_collector: None,
                 block_revenue_commission_bps: None,
@@ -580,12 +582,12 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
         }
         VOTE_STATE_VERSION_V4 => Ok(VoteStateFields {
             authorized_withdrawer,
-            inflation_rewards_commission_bps: u16::from_le_bytes(read_array::<2>(
+            inflation_rewards_commission_bps: Some(u16::from_le_bytes(read_array::<2>(
                 data,
                 VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET,
                 "inflation_rewards_commission_bps",
-            )?),
-            inflation_rewards_commission_bps_is_v4: true,
+            )?)),
+            inflation_rewards_commission_bps_is_v4: Some(true),
             inflation_rewards_collector: Some(read_pubkey(
                 data,
                 VOTE_V4_INFLATION_REWARDS_COLLECTOR_OFFSET,
@@ -607,7 +609,16 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 "pending_delegator_rewards",
             )?)),
         }),
-        _ => anyhow::bail!("unsupported vote state version {version}"),
+        // Self-stake only needs the withdrawer, so an unknown version keeps resolving it rather than dropping the account; the SIMD-0185 fields stay unread because a new version may move them
+        _ => Ok(VoteStateFields {
+            authorized_withdrawer,
+            inflation_rewards_commission_bps: None,
+            inflation_rewards_commission_bps_is_v4: None,
+            inflation_rewards_collector: None,
+            block_revenue_collector: None,
+            block_revenue_commission_bps: None,
+            pending_delegator_rewards: None,
+        }),
     }
 }
 
@@ -642,8 +653,18 @@ pub fn get_vote_account_states(
     }
     let v4 = states
         .values()
-        .filter(|state| state.inflation_rewards_commission_bps_is_v4)
+        .filter(|state| state.inflation_rewards_commission_bps_is_v4 == Some(true))
         .count();
+    // The withdrawer still resolved for these, so self stake survives; only the commission is gone, and silence here is how a version bump would reach close_epoch unnoticed
+    let without_commission = states
+        .values()
+        .filter(|state| state.inflation_rewards_commission_bps.is_none())
+        .count();
+    if without_commission > 0 {
+        warn!(
+            "{without_commission} vote accounts hold a version this build reads no commission from"
+        );
+    }
     info!(
         "Parsed {} vote accounts, {v4} on vote state v4",
         states.len()
@@ -688,8 +709,7 @@ struct CommissionStats {
     no_reward: usize,
 }
 
-// Agave projects commissionBps onto the legacy percent this way; rounding down instead would let a
-// validator above the 10% eligibility cap read as exactly at it.
+// Rounds up where agave's own commission_percent() floors: rounding down would let a validator above the 10% eligibility cap read as exactly at it.
 pub fn bps_to_percent(bps: u16) -> u8 {
     bps.min(10_000).div_ceil(100) as u8
 }
@@ -1401,8 +1421,8 @@ mod vote_state_tests {
             state,
             VoteStateFields {
                 authorized_withdrawer: Pubkey::new_from_array(WITHDRAWER),
-                inflation_rewards_commission_bps: 733,
-                inflation_rewards_commission_bps_is_v4: true,
+                inflation_rewards_commission_bps: Some(733),
+                inflation_rewards_commission_bps_is_v4: Some(true),
                 inflation_rewards_collector: Some(Pubkey::new_from_array(INFLATION_COLLECTOR)),
                 block_revenue_collector: Some(Pubkey::new_from_array(BLOCK_COLLECTOR)),
                 block_revenue_commission_bps: Some(1234),
@@ -1435,8 +1455,8 @@ mod vote_state_tests {
     #[test]
     fn a_pre_v4_commission_projects_to_basis_points_and_says_it_is_not_v4() {
         let state = parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_V3, 7, 3762)).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps, 700);
-        assert!(!state.inflation_rewards_commission_bps_is_v4);
+        assert_eq!(state.inflation_rewards_commission_bps, Some(700));
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(false));
     }
 
     // A commission byte above 100 is invalid on chain; agave's own conversion saturates rather than overflowing.
@@ -1444,14 +1464,14 @@ mod vote_state_tests {
     fn a_pre_v4_commission_beyond_the_full_range_saturates() {
         let state =
             parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_V3, u8::MAX, 3762)).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps, 25_500);
+        assert_eq!(state.inflation_rewards_commission_bps, Some(25_500));
     }
 
     #[test]
     fn a_v4_state_carries_the_basis_points_a_percent_cannot_express() {
         let state = parse_vote_state(&v4_account(749, 10_000, 0, 3762)).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps, 749);
-        assert!(state.inflation_rewards_commission_bps_is_v4);
+        assert_eq!(state.inflation_rewards_commission_bps, Some(749));
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
         assert_eq!(
             state.block_revenue_commission_bps,
             Some(10_000),
@@ -1478,12 +1498,32 @@ mod vote_state_tests {
     }
 
     #[test]
-    fn an_unsupported_version_errors_rather_than_guessing_offsets() {
-        for version in [0u32, 4, u32::MAX] {
-            assert!(
-                parse_vote_state(&pre_v4_account(version, 7, 3762)).is_err(),
+    fn an_uninitialized_version_errors_rather_than_guessing_offsets() {
+        assert!(
+            parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762)).is_err(),
+            "version 0 holds no withdrawer where every later version puts one"
+        );
+    }
+
+    // Self stake reads the withdrawer alone, so a version bump must not drop the account from the set; the fields whose offsets it could move stay unread.
+    #[test]
+    fn an_unknown_version_yields_the_withdrawer_and_no_commission() {
+        for version in [4u32, u32::MAX] {
+            let state = parse_vote_state(&pre_v4_account(version, 7, 3762)).unwrap();
+            assert_eq!(
+                state.authorized_withdrawer,
+                Pubkey::new_from_array(WITHDRAWER),
+                "version {version} must still resolve self stake"
+            );
+            assert_eq!(
+                state.inflation_rewards_commission_bps, None,
                 "version {version} must not be read at v1/v3 offsets"
             );
+            assert_eq!(state.inflation_rewards_commission_bps_is_v4, None);
+            assert_eq!(state.inflation_rewards_collector, None);
+            assert_eq!(state.block_revenue_collector, None);
+            assert_eq!(state.block_revenue_commission_bps, None);
+            assert_eq!(state.pending_delegator_rewards, None);
         }
     }
 

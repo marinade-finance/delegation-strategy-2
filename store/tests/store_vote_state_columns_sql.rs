@@ -189,3 +189,99 @@ async fn a_snapshot_written_before_these_fields_still_stores() {
         .await
         .unwrap();
 }
+
+// An account getVoteAccounts lists but the program scan could not parse arrives here with every
+// field null. Overwriting on that would cost close_epoch the only commission it can still fall back
+// on, for an epoch nothing can backfill.
+#[tokio::test]
+async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
+    let schema = "ds_test_store_vote_state_columns_unparsed";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let mut snapshot = validator_snapshot(EPOCH, IDENTITY, VOTE_ACCOUNT);
+    let validator = &mut snapshot.validators[0];
+    validator.inflation_rewards_collector = Some("collectorInflation".into());
+    validator.block_revenue_collector = Some("collectorBlockRevenue".into());
+    validator.inflation_rewards_commission_bps = Some(749);
+    validator.inflation_rewards_commission_bps_is_v4 = Some(true);
+    validator.block_revenue_commission_bps = Some(10_000);
+    validator.pending_delegator_rewards = Some(987_654_321);
+    store_snapshot(&mut client, "vote-state-parsed", &snapshot).await;
+
+    let validator = &mut snapshot.validators[0];
+    validator.inflation_rewards_collector = None;
+    validator.block_revenue_collector = None;
+    validator.inflation_rewards_commission_bps = None;
+    validator.inflation_rewards_commission_bps_is_v4 = None;
+    validator.block_revenue_commission_bps = None;
+    validator.pending_delegator_rewards = None;
+    store_snapshot(&mut client, "vote-state-unparsed", &snapshot).await;
+
+    let stored = read_back(&client).await;
+    assert_eq!(
+        stored.inflation_rewards_collector.as_deref(),
+        Some("collectorInflation")
+    );
+    assert_eq!(
+        stored.block_revenue_collector.as_deref(),
+        Some("collectorBlockRevenue")
+    );
+    assert_eq!(stored.inflation_rewards_commission_bps, Some(749));
+    assert_eq!(stored.inflation_rewards_commission_bps_is_v4, Some(true));
+    assert_eq!(stored.block_revenue_commission_bps, Some(10_000));
+    assert_eq!(
+        stored.pending_delegator_rewards,
+        Some(Decimal::from(987_654_321u64))
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// The other half of the same guard: a state that did parse has to write its nulls through, or a
+// validator that converted away from v4 would keep collectors the runtime no longer reads.
+#[tokio::test]
+async fn a_parsed_pre_v4_state_still_clears_the_v4_only_columns_on_update() {
+    let schema = "ds_test_store_vote_state_columns_parsed_clear";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let mut snapshot = validator_snapshot(EPOCH, IDENTITY, VOTE_ACCOUNT);
+    let validator = &mut snapshot.validators[0];
+    validator.inflation_rewards_collector = Some("collectorInflation".into());
+    validator.block_revenue_collector = Some("collectorBlockRevenue".into());
+    validator.inflation_rewards_commission_bps = Some(749);
+    validator.inflation_rewards_commission_bps_is_v4 = Some(true);
+    validator.block_revenue_commission_bps = Some(10_000);
+    validator.pending_delegator_rewards = Some(987_654_321);
+    store_snapshot(&mut client, "vote-state-parsed-v4", &snapshot).await;
+
+    let validator = &mut snapshot.validators[0];
+    validator.inflation_rewards_collector = None;
+    validator.block_revenue_collector = None;
+    validator.inflation_rewards_commission_bps = Some(700);
+    validator.inflation_rewards_commission_bps_is_v4 = Some(false);
+    validator.block_revenue_commission_bps = None;
+    validator.pending_delegator_rewards = None;
+    store_snapshot(&mut client, "vote-state-parsed-pre-v4", &snapshot).await;
+
+    let stored = read_back(&client).await;
+    assert_eq!(stored.inflation_rewards_collector, None);
+    assert_eq!(stored.block_revenue_collector, None);
+    assert_eq!(stored.inflation_rewards_commission_bps, Some(700));
+    assert_eq!(stored.inflation_rewards_commission_bps_is_v4, Some(false));
+    assert_eq!(stored.block_revenue_commission_bps, None);
+    assert_eq!(stored.pending_delegator_rewards, None);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}

@@ -374,7 +374,8 @@ async fn load_ruggers_detects_a_rug_after_the_effective_commission_went_null() {
     let client = migrated_client(schema).await.unwrap();
 
     // voteRugger alternates 5/15 across five epochs with commission_effective null throughout;
-    // voteSteady never leaves 5. voteIntraEpoch never advertises above 10 but its ceiling does.
+    // voteSteady never leaves 5. voteCutter ends both its epochs at 5 with a ceiling of 15, the
+    // shape an honest mid-epoch cut leaves - and the one a spike-and-revert leaves too.
     client
         .execute(
             "INSERT INTO validators (
@@ -392,8 +393,8 @@ async fn load_ruggers_detects_a_rug_after_the_effective_commission_went_null() {
                 ('identitySteady', 'voteSteady', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
                 ('identitySteady', 'voteSteady', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
                 ('identitySteady', 'voteSteady', 1033, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
-                ('identityIntra', 'voteIntra', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL),
-                ('identityIntra', 'voteIntra', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL)",
+                ('identityCutter', 'voteCutter', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL),
+                ('identityCutter', 'voteCutter', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL)",
             &[],
         )
         .await
@@ -410,10 +411,9 @@ async fn load_ruggers_detects_a_rug_after_the_effective_commission_went_null() {
         !ruggers.contains_key("voteSteady"),
         "a validator that never crossed 10 must not be flagged"
     );
-    assert_eq!(
-        ruggers.get("voteIntra").map(|r| r.occurrences),
-        Some(2),
-        "a ceiling above the floor inside one epoch is a rug the applied rate never showed"
+    assert!(
+        !ruggers.contains_key("voteCutter"),
+        "both epochs ended at 5, so nothing above 10 was ever charged; reading the ceiling instead flagged this twice"
     );
 
     client
