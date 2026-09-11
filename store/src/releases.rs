@@ -40,10 +40,10 @@ impl EpochCalendar {
             return Some(*epoch);
         }
 
-        // Past the last closed epoch: the running one is the only epoch it can belong to, and it
-        // has no `epochs` row until `store close-epoch` writes one.
-        let (_, _, last_end_at) = self.closed.last()?;
-        if at >= *last_end_at {
+        // The running epoch has no `epochs` row yet, and is only where a timestamp belongs while it
+        // is the very next one.
+        let (last_closed, _, last_end_at) = self.closed.last()?;
+        if at >= *last_end_at && self.running == Some(last_closed + 1) {
             return self.running;
         }
 
@@ -203,7 +203,9 @@ async fn upsert_availability(
             )
             ON CONFLICT (client_lineage, client_version)
             DO UPDATE SET
-                available_epoch = EXCLUDED.available_epoch,
+                -- Derived from released_at, so a run with no epoch to place it in keeps the epoch a
+                -- run that had one worked out.
+                available_epoch = COALESCE(EXCLUDED.available_epoch, {RELEASES_TABLE}.available_epoch),
                 released_at = EXCLUDED.released_at,
                 release_url = EXCLUDED.release_url,
                 updated_at = EXCLUDED.updated_at"
@@ -332,7 +334,7 @@ pub async fn load_sfdp_floors(
         WHERE sfdp_floor_epoch IS NOT NULL
           AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
           AND ($2::NUMERIC IS NULL OR sfdp_floor_epoch >= $2::NUMERIC)
-        ORDER BY client_lineage, sfdp_floor_epoch DESC
+        ORDER BY client_lineage, sfdp_floor_epoch DESC, client_version
     "
             ),
             &[&client_lineage, &since_epoch],
@@ -370,7 +372,7 @@ pub async fn get_sfdp_floor_at_epoch(
         WHERE sfdp_floor_epoch IS NOT NULL
           AND sfdp_floor_epoch <= $1::NUMERIC
           AND ($2::TEXT IS NULL OR client_lineage = $2::TEXT)
-        ORDER BY client_lineage, sfdp_floor_epoch DESC
+        ORDER BY client_lineage, sfdp_floor_epoch DESC, updated_at DESC, client_version
     "
             ),
             &[&epoch, &client_lineage],
@@ -423,6 +425,17 @@ mod tests {
     #[test]
     fn a_release_older_than_the_epochs_we_hold_lands_nowhere() {
         assert_eq!(calendar().epoch_at(at("2020-03-19T00:00:00Z")), None);
+    }
+
+    #[test]
+    fn a_running_epoch_that_does_not_follow_the_closed_ones_places_nothing() {
+        // `close-epoch` lagging two epochs behind: a release from 1031 belongs to neither 1030 nor
+        // the 1033 `cluster_info` reports.
+        let calendar = EpochCalendar::new(
+            vec![(1030, at("2026-09-01T00:00:00Z"), at("2026-09-03T00:00:00Z"))],
+            Some(1033),
+        );
+        assert_eq!(calendar.epoch_at(at("2026-09-04T00:00:00Z")), None);
     }
 
     #[test]
