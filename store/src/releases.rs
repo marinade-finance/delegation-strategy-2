@@ -1,11 +1,11 @@
-use crate::dto::{FeatureGateFloor, ReleaseRecord, SfdpFloor};
+use crate::dto::{ClientRelease, FeatureGateFloor, ReleaseRecord, SfdpFloor};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::releases::{ReleaseEntry, ReleaseSource, ReleasesSnapshot};
 use collect::validator_version::ValidatorVersion;
 use log::{info, warn};
 use rust_decimal::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use tokio_postgres::Client;
 
 pub const RELEASES_TABLE: &str = "releases";
@@ -476,4 +476,20 @@ async fn floor_at_epoch(
         .into_iter()
         .map(|(lineage, (epoch, version))| (lineage, version.to_string(), epoch))
         .collect())
+}
+
+/// The newest release each lineage has published, keyed by the lowercased lineage. Reads `releases`
+/// in the order `load_releases` returns them, newest first.
+pub fn latest_releases(releases: Vec<ReleaseRecord>) -> HashMap<String, ClientRelease> {
+    let mut latest: HashMap<String, ClientRelease> = Default::default();
+    for release in releases {
+        latest
+            .entry(release.client_lineage.to_lowercase())
+            .or_insert(ClientRelease {
+                version: release.client_version,
+                released_at: release.released_at,
+                url: release.release_url,
+            });
+    }
+    latest
 }

@@ -659,6 +659,11 @@ pub struct ProviderDetails {
     /// Stake share per client lineage, biggest first.
     pub client_mix: Vec<GroupShare>,
     pub superminority_count: u64,
+    /// First epoch a validator reported this provider, over the whole history the DB holds. The
+    /// name is the one the geolocation source returned at the time, so a renamed organisation
+    /// reads as first seen when it was renamed.
+    pub first_seen_epoch: Option<u64>,
+    pub first_seen_at: Option<DateTime<Utc>>,
 }
 
 /// What the members of a client group are running. Only the client rows `/clients` serves carry it,
@@ -673,6 +678,20 @@ pub struct ClientDetails {
     pub country_count: u64,
     /// Distinct cities the members sit in; the data never resolves the building.
     pub data_center_count: u64,
+    /// Newest release published for the lineage, pre-releases included.
+    pub latest_release: Option<ClientRelease>,
+    /// First epoch a validator reported this client. Never earlier than
+    /// `client_history_since_epoch`, which is where the stored client identity itself begins.
+    pub first_seen_epoch: Option<u64>,
+    pub first_seen_at: Option<DateTime<Utc>>,
+}
+
+/// A published client release, as `/releases` serves it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ClientRelease {
+    pub version: String,
+    pub released_at: Option<DateTime<Utc>>,
+    pub url: Option<String>,
 }
 
 /// A city the group's members sit in. `country` is null for a city the geolocation source placed
