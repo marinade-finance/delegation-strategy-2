@@ -127,13 +127,6 @@ pub struct ReleasesParams {
     version_floor_url: String,
 
     #[arg(
-        long = "latest-gates-to-read",
-        help = "How many of the tracker's newest feature gates to read on chain. The floor history is seeded by the migration; a larger window rebuilds more of it, at one account read per gate.",
-        default_value = "30"
-    )]
-    latest_gates_to_read: usize,
-
-    #[arg(
         long = "github-token",
         env = "GITHUB_TOKEN",
         hide_env_values = true,
@@ -159,7 +152,6 @@ pub fn collect_releases_info(
                 fetchers.push(Box::new(feature_gates::FeatureGatesFetcher::new(
                     params.feature_gate_schedule_url.clone(),
                     params.version_floor_url.clone(),
-                    params.latest_gates_to_read,
                     common_params.rpc_url.clone(),
                     common_params.commitment.clone(),
                 )?))
