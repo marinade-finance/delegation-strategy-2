@@ -416,11 +416,15 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 FROM
                     commission_changes
                 WHERE
-                    (commission_advertised > commission_min_observed AND commission_advertised > 10 AND commission_min_observed <= 10)
-                    OR
-                    (prev_commission > 10 AND commission_advertised <= 10 AND next_commission > 10)
-                    OR
-                    (prev_commission <= 10 AND commission_advertised > 10 AND next_commission <= 10)
+                    -- Branches 2 and 3 never read the floor, which close_epoch writes only at close
+                    commission_min_observed IS NOT NULL
+                    AND (
+                        (commission_advertised > commission_min_observed AND commission_advertised > 10 AND commission_min_observed <= 10)
+                        OR
+                        (prev_commission > 10 AND commission_advertised <= 10 AND next_commission > 10)
+                        OR
+                        (prev_commission <= 10 AND commission_advertised > 10 AND next_commission <= 10)
+                    )
             )
             SELECT
                 vote_account,

@@ -423,6 +423,51 @@ async fn load_ruggers_detects_a_rug_after_the_effective_commission_went_null() {
 }
 
 #[tokio::test]
+async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
+    let schema = "ds_test_load_ruggers_null_floor";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // commission_min_observed is written only by update_observed_commission, so every epoch still
+    // waiting on close_epoch carries NULL while the next epoch's hourly rows already give it a LEAD.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityLate', 'voteLate', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityLate', 'voteLate', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, NULL),
+                ('identityLate', 'voteLate', 1033, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityLate', 'voteLate', 1034, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, NULL, NULL),
+                ('identityLate', 'voteLate', 1035, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, NULL, NULL)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    let rugger = ruggers.get("voteLate").expect("the rug must be detected");
+    assert_eq!(
+        rugger.occurrences, 2,
+        "1032 and 1033 match on a known floor; 1034 waits for its epoch to close"
+    );
+    assert_eq!(rugger.epochs, vec![1032, 1033]);
+    assert_eq!(rugger.min_commissions, vec![5, 5]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn collector_flags_and_shared_counts_project_per_epoch() {
     let schema = "ds_test_collector_flags_and_shared_counts";
     if skip_without_database(schema) {
