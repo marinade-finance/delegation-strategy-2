@@ -8,9 +8,6 @@ use std::time::Duration;
 
 pub const SFDP_API: &str = "https://api.solana.org";
 const REQUIRED_VERSIONS_PATH: &str = "/api/community/v1/sfdp_required_versions";
-/// The floor for epochs that have not started yet is published ahead of them.
-pub const UPCOMING_EPOCHS: u64 = 4;
-
 /// One request per epoch, and the endpoint starts answering 429 a few hundred requests in, so a
 /// full backfill has to pace itself.
 const REQUEST_INTERVAL: Duration = Duration::from_millis(300);
@@ -52,7 +49,9 @@ impl SfdpFetcher {
             api_url,
             from_epoch,
             to_epoch,
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(super::HTTP_TIMEOUT_S))
+                .build()?,
         })
     }
 
@@ -146,7 +145,7 @@ impl ReleaseFetcher for SfdpFetcher {
                 (&mut firedancer, row.firedancer_min_version),
             ] {
                 if let Some(version) = min_version.filter(|v| !v.trim().is_empty()) {
-                    versions.insert(epoch, version.trim().to_string());
+                    versions.insert(epoch, super::normalize_version(&version));
                 }
             }
         }

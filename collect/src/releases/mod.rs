@@ -11,6 +11,8 @@ pub mod sfdp;
 
 const DATA_VERSION: u16 = 1;
 
+pub(crate) const HTTP_TIMEOUT_S: u64 = 30;
+
 /// Which columns of a release row the entry fills: a new source is a new [`ReleaseFetcher`] plus a
 /// variant here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +158,7 @@ pub struct ReleasesParams {
     #[arg(
         long = "github-token",
         env = "GITHUB_TOKEN",
+        hide_env_values = true,
         help = "Raises the GitHub rate limit from 60 requests per hour; unauthenticated works for a single run."
     )]
     github_token: Option<String>,
@@ -187,8 +190,8 @@ pub fn collect_releases_info(
                 fetchers.push(Box::new(sfdp::SfdpFetcher::new(
                     params.sfdp_api_url.clone(),
                     from_epoch,
-                    // The floor for upcoming epochs is published ahead of them.
-                    current_epoch + sfdp::UPCOMING_EPOCHS,
+                    // A floor is revisable until its epoch starts.
+                    current_epoch,
                 )?));
             }
         }

@@ -4,6 +4,7 @@ use crate::solana_service::is_plausible_node_version;
 use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::Deserialize;
+use std::time::Duration;
 
 pub const GITHUB_API: &str = "https://api.github.com";
 const PER_PAGE: usize = 100;
@@ -40,6 +41,7 @@ impl GithubFetcher {
             client: reqwest::blocking::Client::builder()
                 // GitHub answers 403 to a request without one.
                 .user_agent("marinade-delegation-strategy")
+                .timeout(Duration::from_secs(super::HTTP_TIMEOUT_S))
                 .build()?,
         })
     }

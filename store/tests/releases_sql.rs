@@ -176,6 +176,37 @@ async fn the_two_fetchers_fill_one_row_without_blanking_each_other() {
 }
 
 #[tokio::test]
+async fn a_run_with_no_epoch_to_place_a_release_in_keeps_the_epoch_it_had() {
+    let schema = "releases_keeps_available_epoch";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    close_epochs(&client, 1000..=1002).await;
+    run_epoch(&client, 1003).await;
+    let published_in_1003 = vec![shipped("4.2.2", epoch_start(1003) + Duration::hours(1))];
+
+    store(&mut client, schema, published_in_1003.clone()).await;
+    assert_eq!(
+        load_releases(&client, None, None).await.unwrap()[0].available_epoch,
+        Some(1003)
+    );
+
+    // cluster_info stops reporting past the closed epochs, so the release has no epoch to land in.
+    client
+        .execute("DELETE FROM cluster_info", &[])
+        .await
+        .unwrap();
+    store(&mut client, schema, published_in_1003).await;
+
+    assert_eq!(
+        load_releases(&client, None, None).await.unwrap()[0].available_epoch,
+        Some(1003)
+    );
+}
+
+#[tokio::test]
 async fn storing_the_same_snapshot_twice_stores_the_same_rows() {
     let schema = "releases_idempotent";
     if skip_without_database(schema) {
