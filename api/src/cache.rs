@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorGroupTree,
-    ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
+    ClientRelease, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord,
+    ValidatorGroupTree, ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
 };
-use store::groups::ValidatorGroupings;
+use store::group_history::GroupFirstSeen;
+use store::groups::{GroupOverlays, ValidatorGroupings};
 use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -24,7 +25,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 7;
+const WARM_STEPS: usize = 9;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Raw incident material the served `incidents` arrays are projected from, per vote account.
@@ -36,6 +37,10 @@ type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedEpochRewardMix = HashMap<u64, RewardMixShares>;
+/// What the group rows carry from outside the epochs `validators` holds.
+type CachedGroupFirstSeen = GroupFirstSeen;
+/// Newest published release per lowercased client lineage.
+type CachedClientReleases = HashMap<String, ClientRelease>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {
@@ -82,6 +87,8 @@ pub struct Cache {
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
     pub epoch_reward_mix: CachedEpochRewardMix,
+    pub group_first_seen: CachedGroupFirstSeen,
+    pub client_releases: CachedClientReleases,
     pub validators_single_run_scores: CachedSingleRunScores,
     pub validators_multi_run_scores: CachedMultiRunScores,
     pub per_epoch: Option<PerEpochCache>,
@@ -167,6 +174,11 @@ impl Cache {
 
     pub fn get_client_groups(&self) -> ValidatorGroupTree {
         self.validator_groups.clients.clone()
+    }
+
+    /// The floor the client rows' `first_seen_epoch` cannot reach below.
+    pub fn client_history_since_epoch(&self) -> Option<u64> {
+        self.group_first_seen.client_floor_epoch
     }
 
     pub fn get_provider_groups(&self) -> ValidatorGroups {
@@ -409,6 +421,15 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
+    // Warmed by their own steps, which run before this one.
+    let overlays = {
+        let cache = &context.read().await.cache;
+        GroupOverlays {
+            first_seen: cache.group_first_seen.clone(),
+            releases: cache.client_releases.clone(),
+        }
+    };
+
     // Off the executor thread: walks every cached epoch of every validator.
     let (validators, validator_incidents, validator_groups) =
         tokio::task::spawn_blocking(move || {
@@ -421,7 +442,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
                 record.incidents =
                     validator_incidents.into_response_incidents(vote_account, &filters);
             }
-            let validator_groups = store::groups::aggregate_all(&validators);
+            let validator_groups = store::groups::aggregate_all(&validators, &overlays);
             (validators, validator_incidents, validator_groups)
         })
         .await?;
@@ -460,6 +481,37 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
     context.write().await.cache.commissions = commissions;
     info!(
         "Loaded {commissions_len} commissions to cache in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+pub async fn warm_group_first_seen_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading group first seen epochs from DB");
+    let warmup_timer = Instant::now();
+    let group_first_seen =
+        store::group_history::load_group_first_seen(&context.read().await.psql_client).await?;
+
+    let providers_len = group_first_seen.providers.len();
+    context.write().await.cache.group_first_seen = group_first_seen;
+    info!(
+        "Loaded first seen epochs of {providers_len} providers to cache in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+pub async fn warm_client_releases_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading client releases from DB");
+    let warmup_timer = Instant::now();
+    let releases = store::releases::load_releases(&context.read().await.psql_client, None, None)
+        .await
+        .map(store::releases::latest_releases)?;
+
+    let releases_len = releases.len();
+    context.write().await.cache.client_releases = releases;
+    info!(
+        "Loaded the newest release of {releases_len} clients to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -605,6 +657,12 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
         ("epoch_reward_mix", |c| {
             Box::pin(warm_epoch_reward_mix_cache(c))
+        }),
+        ("group_first_seen", |c| {
+            Box::pin(warm_group_first_seen_cache(c))
+        }),
+        ("client_releases", |c| {
+            Box::pin(warm_client_releases_cache(c))
         }),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
     ]

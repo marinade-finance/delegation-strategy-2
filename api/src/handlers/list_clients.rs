@@ -18,6 +18,9 @@ pub struct ResponseClients {
     total_activated_stake: Decimal,
     current_epoch: Option<u64>,
     net_apy_updated_at: Option<DateTime<Utc>>,
+    /// Earliest epoch any stored row names a client. A `first_seen_epoch` sitting on it is a floor,
+    /// not a start: the client identity columns were added late and what predated them was dropped.
+    client_history_since_epoch: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -62,11 +65,12 @@ pub async fn handler(
 
     log::info!("Query clients {config:?}");
 
-    let (tree, net_apy_updated_at) = {
+    let (tree, net_apy_updated_at, client_history_since_epoch) = {
         let cache = &context.read().await.cache;
         (
             cache.get_client_groups(),
             cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+            cache.client_history_since_epoch(),
         )
     };
     let page = page_tree(tree, &config);
@@ -78,6 +82,7 @@ pub async fn handler(
             total_activated_stake: page.total_activated_stake,
             current_epoch: page.current_epoch,
             net_apy_updated_at,
+            client_history_since_epoch,
         }),
         StatusCode::OK,
     ))

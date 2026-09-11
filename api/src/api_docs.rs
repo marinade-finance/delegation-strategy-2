@@ -61,6 +61,7 @@ use utoipa::OpenApi;
         schemas(store::dto::PerformanceRecord),
         schemas(store::dto::ValidatorEpochStats),
         schemas(store::dto::ClientDetails),
+        schemas(store::dto::ClientRelease),
         schemas(store::dto::GroupCity),
         schemas(store::dto::GroupShare),
         schemas(store::dto::ProviderDetails),
