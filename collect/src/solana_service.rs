@@ -98,11 +98,11 @@ struct ClientIdRow {
     client_name: String,
 }
 
-fn parse_client_registry(csv: &str) -> anyhow::Result<ClientRegistry> {
+fn parse_client_registry(text: &str) -> anyhow::Result<ClientRegistry> {
     let mut names = HashMap::new();
     let mut ids_by_name = HashMap::new();
 
-    for row in csv::parse::<ClientIdRow>(csv, &CLIENT_ID_COLUMNS, "client-ids.csv")? {
+    for row in csv::parse::<ClientIdRow>(text, &CLIENT_ID_COLUMNS, "client-ids.csv")? {
         ids_by_name.insert(canonical_client_name(&row.client_name), row.client_id);
         names.insert(row.client_id, row.client_name);
     }
