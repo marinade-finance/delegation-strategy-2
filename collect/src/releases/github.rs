@@ -60,6 +60,7 @@ impl GithubFetcher {
 
     fn fetch_repo(&self, repo: &str, lineage: Option<&str>) -> anyhow::Result<Vec<ReleaseEntry>> {
         let mut entries = Vec::new();
+        let mut truncated = true;
 
         for page in 1..=MAX_PAGES {
             let releases = retry_blocking(
@@ -95,8 +96,13 @@ impl GithubFetcher {
             }
 
             if page_size < PER_PAGE {
+                truncated = false;
                 break;
             }
+        }
+
+        if truncated {
+            warn!("Stopped at {MAX_PAGES} pages of {repo} releases, the older ones are missing");
         }
 
         info!("Fetched {} releases from {repo}", entries.len());
