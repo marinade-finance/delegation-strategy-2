@@ -26,7 +26,7 @@ docker run -d --rm --name marinade-directory --network host \
   -e JWT_SECRET="$JWT_SECRET" \
   -e PORT=$DIRECTORY_PORT \
   -e METRICS_PORT=0 \
-  marinade-directory:v0.1.0
+  marinade-directory:test
 
 curl -sf "http://localhost:$DIRECTORY_PORT/ready"
 ```

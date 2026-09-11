@@ -50,18 +50,19 @@ jobs:
         run: cargo fmt -- --check && cargo clippy
 
       # The store-backed suites start fake-gcs-server and marinade-directory
-      # themselves and fail, not skip, when the image is missing; the image is
-      # built from the tag the suites were verified against.
+      # themselves and fail, not skip, when the image is missing. marinade-directory
+      # is unreleased, and its main branch predates the bucket-backed store these
+      # suites talk to, so the image comes from the branch carrying that server.
       - name: 📦 Checkout marinade-directory
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: marinade-finance/marinade-directory
-          ref: v0.1.0
+          ref: 20260618_go
           path: marinade-directory
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: 📦 Build the marinade-directory image
-        run: docker build -t marinade-directory:v0.1.0 marinade-directory
+        run: docker build -t marinade-directory:test marinade-directory
 
       - name: 🧨 Run cargo tests
         run: cargo test --all-features

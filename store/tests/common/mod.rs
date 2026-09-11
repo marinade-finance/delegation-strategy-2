@@ -56,7 +56,7 @@ pub fn validator(vote_account: &str, epoch: u64) -> Validator {
 /// The tests own their store: fake-gcs-server plus marinade-directory, both on
 /// the host network, torn down when the handle drops.
 pub const GCS_IMAGE: &str = "fsouza/fake-gcs-server:1.56.1";
-pub const DIRECTORY_IMAGE: &str = "marinade-directory:v0.1.0";
+pub const DIRECTORY_IMAGE: &str = "marinade-directory:test";
 const JWT_SECRET: &str = "delegation-strategy-test-secret-at-least-32b";
 const BUCKET: &str = "delegation-strategy";
 
