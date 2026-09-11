@@ -59,14 +59,14 @@ Runs are stateless (no synced-epoch cursor): each run re-queries its whole windo
 
 ## releases
 
-Release metadata for the `releases` table: when a version was published, and when it became the
-minimum the Solana Foundation Delegation Program required. Mainnet only. One fetcher per source,
-selected with `--source`:
+Release metadata for the `releases` table: when a version was published, and the two floors it had
+to clear. Mainnet only. One fetcher per source, selected with `--source`:
 
 | Source | Fetcher | Gives |
 |---|---|---|
 | `github` | GitHub releases for `anza-xyz/agave` and `firedancer-io/firedancer` | publish timestamps, full history, no floors |
 | `sfdp` | `api.solana.org/api/community/v1/sfdp_required_versions`, one request per epoch | the Solana Foundation Delegation Program floor, per epoch, from epoch 688 on |
+| `feature-gates` | Anza's feature gate tracker wiki plus the gates' own accounts on chain | the floor the cluster enforces, from the epoch each gate activated |
 
 ```bash
 export RPC_URL=...
@@ -87,8 +87,12 @@ the fetcher paces itself: a full backfill from epoch 688 takes about four minute
 answer for reply 404, which is recorded as "no floor stated", not as a failure. `GITHUB_TOKEN`
 raises the GitHub rate limit but is not needed for a single run.
 
-`available_epoch` is not resolved here: placing a timestamp in an epoch needs the `epochs` table, so
-`collect` emits `released_at` and `store releases` does the mapping.
+`available_epoch` is not stored at all: `collect` emits `released_at` and the read resolves the
+epoch against the `epochs` table.
 
-The cluster's own feature-gate floors are not collected: no API serves them, so they are a static
-table, `store/release_feature_gates.csv`, read through `store::feature_gates`.
+The feature-gate floor is the running maximum, over the gates activated so far, of the version each
+gate shipped in -- the rule Anza's wiki states. The tracker JSON gives the version, the gate's own
+account gives the activation slot, and `version-floor.json` is read as a cross-check: a derived
+newest floor that disagrees with Anza's published `current` is a `warn!`. Only the newest
+`--latest-gates-to-read` gates are read, since each one costs an account read; the older history is
+seeded by `migrations/0027-releases.sql`, and a larger window rebuilds more of it.

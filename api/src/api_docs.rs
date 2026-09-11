@@ -71,7 +71,7 @@ use utoipa::OpenApi;
         schemas(store::dto::VersionRecord),
         schemas(store::dto::ReleaseRecord),
         schemas(store::dto::SfdpFloor),
-        schemas(store::feature_gates::FeatureGateFloor),
+        schemas(store::dto::FeatureGateFloor),
         schemas(store::dto::JitoMevRecord),
         schemas(store::dto::JitoRecord),
         schemas(store::dto::ValidatorBlockRewardsRecord),

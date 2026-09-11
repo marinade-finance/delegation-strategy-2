@@ -4,16 +4,14 @@ use crate::utils::order::{directed, OrderDirection, DEFAULT_ORDER_DIRECTION};
 use crate::utils::response::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use store::dto::{ReleaseRecord, SfdpFloor};
-use store::feature_gates::{self, FeatureGateFloor};
-use store::releases::{load_releases, load_sfdp_floors};
+use store::dto::{FeatureGateFloor, ReleaseRecord, SfdpFloor};
+use store::releases::{load_feature_gate_floors, load_releases, load_sfdp_floors};
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseReleases {
     releases: Vec<ReleaseRecord>,
     sfdp_floors: Vec<SfdpFloor>,
-    /// Not filtered by `client` or `since_epoch`.
     feature_gate_floors: Vec<FeatureGateFloor>,
 }
 
@@ -32,7 +30,7 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "List client releases",
-    description = "Mainnet client releases and the two version floors, as three lists: what was published (`releases`), what the Solana Foundation Delegation Program required (`sfdp_floors`), and what the cluster required (`feature_gate_floors`).",
+    description = "Mainnet client releases and the two version floors, as three lists: what was published (`releases`), what the Solana Foundation Delegation Program required (`sfdp_floors`), and what the cluster's feature gates required (`feature_gate_floors`).",
     path = "/releases",
     params(QueryParams),
     responses(
@@ -55,9 +53,10 @@ pub async fn handler(
         .order_direction
         .unwrap_or(DEFAULT_ORDER_DIRECTION);
 
-    let (mut releases, mut sfdp_floors) = match tokio::try_join!(
+    let (mut releases, mut sfdp_floors, mut feature_gate_floors) = match tokio::try_join!(
         load_releases(&ctx.psql_client, client, since_epoch),
         load_sfdp_floors(&ctx.psql_client, client, since_epoch),
+        load_feature_gate_floors(&ctx.psql_client, client, since_epoch),
     ) {
         Ok(fetched) => fetched,
         Err(err) => {
@@ -69,7 +68,6 @@ pub async fn handler(
         }
     };
 
-    let mut feature_gate_floors = feature_gates::all().to_vec();
     releases.sort_by(|a, b| directed(a.released_at.cmp(&b.released_at), &order_direction));
     sfdp_floors
         .sort_by(|a, b| directed(a.effective_epoch.cmp(&b.effective_epoch), &order_direction));

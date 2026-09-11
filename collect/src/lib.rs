@@ -4,6 +4,7 @@ pub mod releases;
 pub mod slot_params;
 pub mod solana_service;
 pub mod take_rates;
+pub mod validator_version;
 pub mod validators;
 pub mod validators_block_rewards;
 pub mod validators_events;
