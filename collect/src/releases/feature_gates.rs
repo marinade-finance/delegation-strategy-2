@@ -157,14 +157,8 @@ impl FeatureGatesFetcher {
         Ok(epochs)
     }
 
-    /// Each epoch the floor rose to the version Anza publishes as current, or past it.
-    ///
-    /// Only gates requiring at least the published floor are read. Anything below it cannot raise
-    /// the floor -- the published floor is by definition the maximum over everything already
-    /// activated -- so its activation epoch is history, and history is seeded by the migration.
-    /// Selecting by version rather than by recency is what keeps the running maximum honest: a
-    /// subset chosen by any other key can omit a higher gate that activated earlier, and the
-    /// maximum over that subset is then not the floor.
+    /// Each epoch the floor rose, reading only gates at or above the published floor; everything
+    /// below it is history the migration seeds.
     pub fn derive(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
         let schedule: BTreeMap<String, Vec<Gate>> = self.get_json(&self.schedule_url)?;
         let gates: Vec<Gate> = schedule.into_values().flatten().collect();
