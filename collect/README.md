@@ -91,8 +91,7 @@ raises the GitHub rate limit but is not needed for a single run.
 epoch against the `epochs` table.
 
 The feature-gate floor is the running maximum, over the gates activated so far, of the version each
-gate shipped in -- the rule Anza's wiki states. The tracker JSON gives the version, the gate's own
-account gives the activation slot, and `version-floor.json` is read as a cross-check: a derived
-newest floor that disagrees with Anza's published `current` is a `warn!`. Only the newest
-`--latest-gates-to-read` gates are read, since each one costs an account read; the older history is
-seeded by `migrations/0027-releases.sql`, and a larger window rebuilds more of it.
+gate shipped in. The tracker JSON gives the version, the gate's account gives the activation epoch.
+
+Only gates requiring at least the floor `version-floor.json` publishes are read: that floor is the
+maximum over everything already activated, so anything below it is history the migration seeds.

@@ -22,9 +22,6 @@ const ACCOUNTS_PER_CALL: usize = 100;
 struct Gate {
     #[serde(rename = "Feature ID")]
     feature_id: String,
-    /// A gate reaches testnet before mainnet, so this is how recent it is.
-    #[serde(rename = "Testnet Epoch")]
-    testnet_epoch: Option<u64>,
     #[serde(rename = "Min Agave Versions")]
     agave: Vec<String>,
     #[serde(rename = "Min FRD Versions")]
@@ -62,6 +59,19 @@ fn gate_version(values: &[String]) -> Option<ValidatorVersion> {
         .min()
 }
 
+/// Whether a gate could raise the floor: only one requiring at least the published floor can, and
+/// the published floor is the maximum over every gate already activated.
+fn could_raise_floor(gate: &Gate, published: &BTreeMap<&str, ValidatorVersion>) -> bool {
+    LINEAGES.iter().any(
+        |lineage| match (gate.version_for(lineage), published.get(*lineage)) {
+            (Some(required), Some(floor)) => required >= *floor,
+            // No published floor for the lineage, so nothing rules the gate out.
+            (Some(_), None) => true,
+            (None, _) => false,
+        },
+    )
+}
+
 /// Each epoch the floor rose, and the version it rose to: the running maximum over the gates
 /// activated by then, which is how the tracker itself defines the floor.
 fn floor_timeline(
@@ -89,7 +99,6 @@ fn floor_timeline(
 pub struct FeatureGatesFetcher {
     schedule_url: String,
     version_floor_url: String,
-    latest_gates_to_read: usize,
     http: reqwest::blocking::Client,
     rpc: RpcClient,
 }
@@ -98,14 +107,12 @@ impl FeatureGatesFetcher {
     pub fn new(
         schedule_url: String,
         version_floor_url: String,
-        latest_gates_to_read: usize,
         rpc_url: String,
         commitment: String,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             schedule_url,
             version_floor_url,
-            latest_gates_to_read,
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(super::HTTP_TIMEOUT_S))
                 .build()?,
@@ -150,37 +157,44 @@ impl FeatureGatesFetcher {
         Ok(epochs)
     }
 
-    /// The floor each epoch it rose, over the newest gates the tracker lists.
+    /// Each epoch the floor rose to the version Anza publishes as current, or past it.
     ///
-    /// Only the newest are read: the history is seeded by the migration, and one account read per
-    /// gate is the cost of looking further back.
+    /// Only gates requiring at least the published floor are read. Anything below it cannot raise
+    /// the floor -- the published floor is by definition the maximum over everything already
+    /// activated -- so its activation epoch is history, and history is seeded by the migration.
+    /// Selecting by version rather than by recency is what keeps the running maximum honest: a
+    /// subset chosen by any other key can omit a higher gate that activated earlier, and the
+    /// maximum over that subset is then not the floor.
     pub fn derive(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
         let schedule: BTreeMap<String, Vec<Gate>> = self.get_json(&self.schedule_url)?;
         let gates: Vec<Gate> = schedule.into_values().flatten().collect();
+        let published = self.published_floors()?;
 
-        let mut newest: Vec<&Gate> = gates.iter().collect();
-        // A gate reaches testnet before mainnet, so this orders by recency; one that never reached
-        // testnet sorts last.
-        newest.sort_by_key(|gate| std::cmp::Reverse(gate.testnet_epoch));
-        newest.truncate(self.latest_gates_to_read);
+        let candidates: Vec<&Gate> = gates
+            .iter()
+            .filter(|gate| could_raise_floor(gate, &published))
+            .collect();
 
-        let activated = self.activation_epochs(&newest)?;
+        let activated = self.activation_epochs(&candidates)?;
         info!(
-            "{} feature gates in the tracker, read the newest {}, {} of those activated",
+            "{} feature gates in the tracker, {} require at least the published floor, {} of those activated",
             gates.len(),
-            newest.len(),
+            candidates.len(),
             activated.len()
         );
 
         let mut entries = Vec::new();
         for lineage in LINEAGES {
             let mut activations: BTreeMap<Epoch, Vec<ValidatorVersion>> = BTreeMap::new();
-            for gate in &newest {
+            for gate in &candidates {
                 let Some(epoch) = activated.get(&gate.feature_id) else {
                     continue;
                 };
                 if let Some(version) = gate.version_for(lineage) {
-                    activations.entry(*epoch).or_default().push(version);
+                    // A gate below the published floor is history the migration owns.
+                    if published.get(lineage).is_none_or(|floor| version >= *floor) {
+                        activations.entry(*epoch).or_default().push(version);
+                    }
                 }
             }
 
@@ -197,40 +211,47 @@ impl FeatureGatesFetcher {
             }
         }
 
-        self.warn_on_drift(&entries)?;
+        self.check_published_floor_was_derived(&published, &entries);
 
         Ok(entries)
     }
 
-    /// The newest derived floor has to be the one Anza publishes; a mismatch means the versions or
-    /// the activations were read wrong.
-    fn warn_on_drift(&self, derived: &[ReleaseEntry]) -> anyhow::Result<()> {
-        let published: VersionFloorFile = self.get_json(&self.version_floor_url)?;
+    /// The floor Anza publishes per lineage, which is the maximum over every gate already
+    /// activated, and so the line below which a gate cannot raise anything.
+    fn published_floors(&self) -> anyhow::Result<BTreeMap<&'static str, ValidatorVersion>> {
+        let file: VersionFloorFile = self.get_json(&self.version_floor_url)?;
+        let mut floors = BTreeMap::new();
 
         for (lineage, published) in [
-            ("agave", &published.mainnet_beta.current.agave),
-            ("frankendancer", &published.mainnet_beta.current.frd),
-            ("firedancer", &published.mainnet_beta.current.fd),
+            ("agave", &file.mainnet_beta.current.agave),
+            ("frankendancer", &file.mainnet_beta.current.frd),
+            ("firedancer", &file.mainnet_beta.current.fd),
         ] {
-            let Ok(published) = published.parse::<ValidatorVersion>() else {
-                // Empty while no floor is published for that client.
-                continue;
-            };
-            match derived
-                .iter()
-                .filter(|entry| entry.client_lineage == lineage)
-                .max_by_key(|entry| entry.feature_gate_epoch)
-            {
-                Some(newest) if newest.client_version == published => {}
-                Some(newest) => warn!(
-                    "Derived {lineage} floor {} at epoch {:?} is not the published {published}",
-                    newest.client_version, newest.feature_gate_epoch
-                ),
-                None => warn!("Derived no {lineage} floor, the published one is {published}"),
+            // Empty while no floor is published for that client.
+            if let Ok(published) = published.parse::<ValidatorVersion>() {
+                floors.insert(lineage, published);
             }
         }
 
-        Ok(())
+        Ok(floors)
+    }
+
+    /// The published floor is the version some activated gate requires, so it has to appear in what
+    /// was derived. Missing means the versions or the activations were read wrong, and the gap is
+    /// silent everywhere else.
+    fn check_published_floor_was_derived(
+        &self,
+        published: &BTreeMap<&str, ValidatorVersion>,
+        derived: &[ReleaseEntry],
+    ) {
+        for (lineage, floor) in published {
+            if !derived
+                .iter()
+                .any(|entry| entry.client_lineage == *lineage && entry.client_version == *floor)
+            {
+                warn!("Derived no epoch for the published {lineage} floor {floor}");
+            }
+        }
     }
 }
 
@@ -269,16 +290,6 @@ mod tests {
         values.iter().map(|v| v.to_string()).collect()
     }
 
-    fn gate_with_testnet_epoch(testnet_epoch: Option<u64>) -> Gate {
-        Gate {
-            feature_id: String::new(),
-            testnet_epoch,
-            agave: vec![],
-            frankendancer: vec![],
-            firedancer: vec![],
-        }
-    }
-
     #[test]
     fn the_lowest_alternative_satisfies_the_gate() {
         // One value in the tracker names a version per release line.
@@ -292,6 +303,39 @@ mod tests {
         assert!(gate_version(&versions(&["v2.1"])).is_none());
         assert!(gate_version(&versions(&["0.403"])).is_none());
         assert!(gate_version(&versions(&[""])).is_none());
+    }
+
+    fn gate_requiring(agave: &str) -> Gate {
+        Gate {
+            feature_id: String::new(),
+            agave: vec![agave.to_string()],
+            frankendancer: vec![],
+            firedancer: vec![],
+        }
+    }
+
+    #[test]
+    fn only_a_gate_at_or_above_the_published_floor_is_read() {
+        // The published floor is the maximum over everything already activated, so a gate below it
+        // is history the migration owns -- and reading it would restart the running maximum from
+        // there, reporting a floor lower than the one in force.
+        let published = BTreeMap::from([("agave", "4.2.0".parse().unwrap())]);
+
+        assert!(could_raise_floor(&gate_requiring("v4.2.0"), &published));
+        assert!(could_raise_floor(&gate_requiring("v4.2.2"), &published));
+        assert!(!could_raise_floor(&gate_requiring("v3.0.0"), &published));
+        assert!(!could_raise_floor(
+            &gate_requiring("v4.1.0-beta.1"),
+            &published
+        ));
+    }
+
+    #[test]
+    fn a_lineage_with_no_published_floor_reads_every_gate() {
+        assert!(could_raise_floor(
+            &gate_requiring("v3.0.0"),
+            &BTreeMap::new()
+        ));
     }
 
     #[test]
@@ -327,25 +371,6 @@ mod tests {
                 .map(|(epoch, version)| (*epoch, version.as_str()))
                 .collect::<Vec<_>>(),
             vec![(1019, "4.2.0-beta.1"), (1027, "4.2.0")]
-        );
-    }
-
-    #[test]
-    fn the_newest_gates_are_the_ones_read() {
-        // Recency comes from the testnet epoch, and a gate that never reached testnet sorts last.
-        let mut gates = vec![
-            gate_with_testnet_epoch(Some(1000)),
-            gate_with_testnet_epoch(None),
-            gate_with_testnet_epoch(Some(1020)),
-        ];
-        gates.sort_by_key(|gate| std::cmp::Reverse(gate.testnet_epoch));
-
-        assert_eq!(
-            gates
-                .iter()
-                .map(|gate| gate.testnet_epoch)
-                .collect::<Vec<_>>(),
-            vec![Some(1020), Some(1000), None]
         );
     }
 
