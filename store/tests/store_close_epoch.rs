@@ -10,16 +10,19 @@ use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use store::commissions::{store_commissions, StoreCommissionsParams};
 use store::directory::Directory;
+use store::directory::Precondition;
 use store::docs::{
     epoch_doc_path, ClusterInfoDoc, CommissionsDoc, EpochDoc, SealedClusterInfoDoc,
-    SealedCommissionsDoc, SealedUptimesDoc, SealedVersionsDoc, SnapshotDoc, UptimesDoc,
-    VersionsDoc, CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR, LIVE_CLUSTER_INFO,
-    LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, SNAPSHOT_DIR, UPTIMES_DIR, VERSIONS_DIR,
+    SealedCommissionsDoc, SealedUptimesDoc, SealedVersionsDoc, SnapshotDoc, UptimeInterval,
+    UptimeStatus, UptimesDoc, VersionsDoc, CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR,
+    LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, SNAPSHOT_DIR, UPTIMES_DIR,
+    VERSIONS_DIR,
 };
 use store::ls_open_epochs::open_epochs;
 use store::uptime::{store_uptime, StoreUptimeParams};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
+use store::warehouse::Warehouse;
 use structopt::StructOpt;
 
 mod common;
@@ -46,8 +49,13 @@ fn performance(commission: u8, delinquent: bool) -> ValidatorPerformance {
     }
 }
 
+/// Fixtures are written under one directory and removed by the test that wrote them, so
+/// the name carries a counter: two tests naming the same snapshot run in parallel threads
+/// and would otherwise delete each other's file.
 fn write_yaml<T: serde::Serialize>(name: &str, snapshot: &T) -> String {
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.yaml"));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{nth}.yaml"));
     std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
     path.to_str().expect("snapshot path").to_string()
 }
@@ -198,7 +206,7 @@ async fn run_close_epoch(directory: &Directory) {
 }
 
 #[tokio::test]
-async fn close_epoch_seals_derives_and_writes_the_epoch_last() {
+async fn close_epoch_seals_derives_and_marks_the_epoch_closed() {
     let Some(store) = common::directory_store("close-epoch").await else {
         return;
     };
@@ -318,5 +326,72 @@ async fn close_epoch_seals_derives_and_writes_the_epoch_last() {
             .expect("open epochs")
             .is_empty(),
         "a sealed epoch is no longer open"
+    );
+}
+
+/// The epochs document is written before the accumulators are trimmed, so a run that dies
+/// between the two leaves the epoch sealed and `live/` still holding its samples. Readers
+/// must take the sealed document and ignore what is left behind, or the next warm would
+/// count the epoch twice.
+#[tokio::test]
+async fn a_sealed_epoch_is_read_from_its_seal_while_live_still_holds_it() {
+    let Some(store) = common::directory_store("close-epoch-leftover").await else {
+        return;
+    };
+    let directory = store.client();
+
+    seed_validators(&directory).await;
+    seed_streams(&directory).await;
+    run_close_epoch(&directory).await;
+
+    assert!(
+        open_epochs(&directory)
+            .await
+            .expect("open epochs")
+            .is_empty(),
+        "the epochs document marks the epoch closed"
+    );
+    let sealed: SealedUptimesDoc = directory
+        .get(&epoch_doc_path(UPTIMES_DIR, EPOCH))
+        .await
+        .expect("get sealed uptimes")
+        .expect("sealed uptimes document")
+        .body;
+    let sealed_count = sealed[VOTE_ACCOUNT].len();
+
+    // What a trim that never ran would have left behind.
+    let live = directory
+        .get::<UptimesDoc>(LIVE_UPTIMES)
+        .await
+        .expect("get live uptimes")
+        .expect("live uptimes document");
+    let mut leftover = live.body;
+    leftover
+        .get_mut(VOTE_ACCOUNT)
+        .expect("validator in live uptimes")
+        .closed
+        .push(UptimeInterval {
+            status: UptimeStatus::Up,
+            epoch: EPOCH,
+            start_at: at("2026-08-03T00:00:00Z"),
+            end_at: at("2026-08-03T00:00:30Z"),
+        });
+    directory
+        .put(LIVE_UPTIMES, &leftover, Precondition::IfMatch(live.etag))
+        .await
+        .expect("put leftover");
+
+    let mut warehouse = Warehouse::default();
+    warehouse.warm(&directory, 80).await.expect("warm");
+    let counted = warehouse
+        .uptime_intervals(80)
+        .into_iter()
+        .filter(|(vote_account, interval)| {
+            vote_account.as_str() == VOTE_ACCOUNT && interval.epoch == EPOCH
+        })
+        .count();
+    assert_eq!(
+        counted, sealed_count,
+        "the leftover live interval is ignored once the epoch has a sealed document"
     );
 }

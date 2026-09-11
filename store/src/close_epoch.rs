@@ -95,6 +95,18 @@ pub async fn close_epoch(
     .await?;
     info!("Sealed the streams of epoch {epoch}");
 
+    // The presence of this document is what marks the epoch sealed, and it is written
+    // before the accumulators are trimmed: a failure up to here leaves every `live/`
+    // document untouched, so the hourly re-run repeats this whole function byte for
+    // byte. Trimming first would let a failed trim hand the re-run an accumulator the
+    // epoch's samples had already been taken out of, and the reseal would then replace
+    // good sealed documents with the remnant.
+    let path = epoch_doc_path(EPOCHS_DIR, epoch);
+    put_whole(directory, &path, &epoch_record).await?;
+    info!("Closed epoch {epoch}");
+
+    // Cleanup. A sealed epoch is served from its sealed document, so anything left here
+    // is ignored until the next close-epoch retains only what follows it.
     directory
         .put(
             LIVE_UPTIMES,
@@ -124,11 +136,6 @@ pub async fn close_epoch(
         )
         .await?;
     info!("Trimmed the accumulators to epoch {}", epoch + 1);
-
-    // Last: the presence of this document is what marks the epoch sealed.
-    let path = epoch_doc_path(EPOCHS_DIR, epoch);
-    put_whole(directory, &path, &epoch_record).await?;
-    info!("Closed epoch {epoch}");
 
     Ok(())
 }
