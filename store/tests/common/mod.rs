@@ -99,6 +99,12 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
                 skip_rate: 0f64,
                 delinquent: false,
             },
+            inflation_rewards_collector: None,
+            block_revenue_collector: None,
+            inflation_rewards_commission_bps: None,
+            inflation_rewards_commission_bps_is_v4: None,
+            block_revenue_commission_bps: None,
+            pending_delegator_rewards: None,
         }],
     }
 }

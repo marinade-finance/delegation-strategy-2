@@ -440,6 +440,8 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.validators = validators;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
+        // Inside the commit, so a warm that fails after loading cannot leave the gauge describing records no request ever saw
+        record_inflation_commission_sources(ctx.cache.validators.values());
     }
 
     info!(
@@ -621,6 +623,56 @@ fn next_retry_s(current: u64) -> u64 {
 fn seconds_until_next_window() -> u64 {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     CACHE_WARMUP_TIME_S - now.as_secs() % CACHE_WARMUP_TIME_S
+}
+
+/// Neither an epoch-close source nor an advertised rate: nothing left to read.
+const COMMISSION_SOURCE_NONE: &str = "none";
+/// No epoch-close source yet, but the open epoch's snapshot carries a rate.
+const COMMISSION_SOURCE_ADVERTISED: &str = "advertised";
+/// A `commission_effective_source` this build does not know, folded in rather than labelled with itself.
+const COMMISSION_SOURCE_UNKNOWN: &str = "unknown";
+
+/// The label set is closed so that every series can be reset on every refresh; a free-text column value would otherwise mint a series nothing ever zeroes again.
+const COMMISSION_SOURCES: [&str; 5] = [
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+    COMMISSION_SOURCE_ADVERTISED,
+    COMMISSION_SOURCE_NONE,
+    COMMISSION_SOURCE_UNKNOWN,
+];
+
+fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &'static str {
+    match source {
+        Some(source) => COMMISSION_SOURCES
+            .into_iter()
+            .find(|known| *known == source)
+            .unwrap_or(COMMISSION_SOURCE_UNKNOWN),
+        None if has_advertised => COMMISSION_SOURCE_ADVERTISED,
+        None => COMMISSION_SOURCE_NONE,
+    }
+}
+
+// Every series is set on every refresh, including to zero, so an alert on `source="none"` reads a
+// resolved fleet as a zero rather than as a series that stopped being reported.
+fn record_inflation_commission_sources<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) {
+    let mut counts: HashMap<&str, i64> = COMMISSION_SOURCES
+        .into_iter()
+        .map(|source| (source, 0))
+        .collect();
+    for record in validators {
+        let label = commission_source_label(
+            record.commission_effective_source.as_deref(),
+            record.commission_advertised.is_some(),
+        );
+        *counts.entry(label).or_insert(0) += 1;
+    }
+    for (source, count) in counts {
+        metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+            .with_label_values(&[source])
+            .set(count);
+    }
 }
 
 // Zero, not absent: an unregistered series makes a cache that never loaded invisible to a staleness alert.
@@ -1008,5 +1060,63 @@ mod tests {
     fn refresh_window_is_within_the_refresh_interval() {
         let seconds = seconds_until_next_window();
         assert!(seconds > 0 && seconds <= CACHE_WARMUP_TIME_S, "{seconds}");
+    }
+}
+
+#[cfg(test)]
+mod commission_source_metric_tests {
+    use super::*;
+
+    #[test]
+    fn an_epoch_close_source_is_reported_as_itself() {
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE
+        );
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW
+        );
+    }
+
+    // The fleet-wide state through epoch 1031: no epoch-close source, every consumer on the fallback.
+    #[test]
+    fn a_validator_on_the_advertised_fallback_is_told_apart_from_one_with_nothing() {
+        assert_eq!(
+            commission_source_label(None, true),
+            COMMISSION_SOURCE_ADVERTISED
+        );
+        assert_eq!(commission_source_label(None, false), COMMISSION_SOURCE_NONE);
+    }
+
+    // A source the column carries but this build does not know must not mint a series of its own: only COMMISSION_SOURCES is ever reset, so such a series would hold its last count forever.
+    #[test]
+    fn an_unrecognised_source_folds_into_one_that_gets_reset() {
+        assert_eq!(
+            commission_source_label(Some("backfilled_by_hand"), true),
+            COMMISSION_SOURCE_UNKNOWN
+        );
+        assert!(COMMISSION_SOURCES.contains(&COMMISSION_SOURCE_UNKNOWN));
+    }
+
+    #[test]
+    fn every_series_reports_a_zero_rather_than_disappearing() {
+        record_inflation_commission_sources(std::iter::empty());
+        for source in COMMISSION_SOURCES {
+            assert_eq!(
+                metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+                    .get_metric_with_label_values(&[source])
+                    .unwrap()
+                    .get(),
+                0,
+                "{source} has to be alertable before it ever has a validator in it"
+            );
+        }
     }
 }

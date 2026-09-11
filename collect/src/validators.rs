@@ -135,6 +135,20 @@ pub struct ValidatorSnapshot {
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
+    // Absent in a snapshot written before this collector read raw vote accounts, and absent again
+    // per validator wherever the vote state is still pre-v4; store reads both back post-deploy.
+    #[serde(default)]
+    pub inflation_rewards_collector: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps: Option<u16>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_commission_bps: Option<u16>,
+    #[serde(default)]
+    pub pending_delegator_rewards: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -192,6 +206,8 @@ pub fn collect_validators_info(
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
+    // One vote-program scan feeds both the self-stake withdraw authorities and the per-validator vote state below
+    let vote_account_states = get_vote_account_states(&client)?;
     let self_stake = get_self_stake(
         &client,
         epoch,
@@ -199,6 +215,7 @@ pub fn collect_validators_info(
         &validator_params.bonds_url,
         allow_zero_funded_bonds,
         validator_params.rpc_attempts,
+        &vote_account_states,
     )?;
     let validators_info = get_validators_info(&client)?;
     let node_info = get_cluster_nodes_info(&client)?;
@@ -251,6 +268,9 @@ pub fn collect_validators_info(
             .unwrap_or_else(Default::default);
 
         let node = node_info.get(&identity);
+        // A vote account getVoteAccounts lists but the program scan could not parse leaves every
+        // v4 field null rather than defaulting it to something the runtime never read.
+        let vote_state = vote_account_states.get(&vote_pubkey);
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -283,6 +303,20 @@ pub fn collect_validators_info(
                 .saturating_sub(vote_account.activated_stake),
 
             performance: performance.get(&vote_pubkey).unwrap().clone(),
+
+            inflation_rewards_collector: vote_state
+                .and_then(|state| state.inflation_rewards_collector)
+                .map(|collector| collector.to_string()),
+            block_revenue_collector: vote_state
+                .and_then(|state| state.block_revenue_collector)
+                .map(|collector| collector.to_string()),
+            inflation_rewards_commission_bps: vote_state
+                .and_then(|state| state.inflation_rewards_commission_bps),
+            inflation_rewards_commission_bps_is_v4: vote_state
+                .and_then(|state| state.inflation_rewards_commission_bps_is_v4),
+            block_revenue_commission_bps: vote_state
+                .and_then(|state| state.block_revenue_commission_bps),
+            pending_delegator_rewards: vote_state.and_then(|state| state.pending_delegator_rewards),
         });
     }
 
