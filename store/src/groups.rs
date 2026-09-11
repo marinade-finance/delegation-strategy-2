@@ -1,6 +1,7 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, GroupIncidents, ValidatorEpochStats,
-    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
+    client_label, client_lineage, effective_client_id, ClientDetails, GroupCity, GroupIncidents,
+    GroupShare, ProviderDetails, ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord,
+    ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -29,6 +30,11 @@ impl GroupKind {
 
     fn carries_incidents_as_records(self) -> bool {
         matches!(self, GroupKind::Operator)
+    }
+
+    /// The two groupings whose rows carry an information panel.
+    fn carries_breakdowns(self) -> bool {
+        matches!(self, GroupKind::ProviderAso | GroupKind::ClientLineage)
     }
 }
 
@@ -112,6 +118,133 @@ fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
 }
 
+/// Members carrying the value, and the stake behind them.
+#[derive(Default)]
+struct Tally {
+    validator_count: u64,
+    total_stake: Decimal,
+}
+
+impl Tally {
+    fn add(&mut self, stake: Decimal) {
+        self.validator_count += 1;
+        self.total_stake += stake;
+    }
+}
+
+/// The slices a group's information panel reads, folded as the members are added. A member the
+/// slicing cannot classify is left out of that slice, so its shares sum to less than 1.
+#[derive(Default)]
+struct Breakdowns {
+    asns: HashMap<i32, Decimal>,
+    /// Keyed by city and the country it sits in; two countries name the same city.
+    cities: HashMap<(String, Option<String>), Tally>,
+    countries: HashSet<String>,
+    versions: HashMap<String, Tally>,
+    lineages: HashMap<String, Tally>,
+    superminority_count: u64,
+}
+
+impl Breakdowns {
+    fn add(&mut self, stats: &ValidatorEpochStats) {
+        let stake = stats.activated_stake;
+
+        if let Some(asn) = stats.dc_asn {
+            *self.asns.entry(asn).or_default() += stake;
+        }
+
+        let country = normalized(stats.dc_country.clone());
+        if let Some(city) = normalized(stats.dc_city.clone()) {
+            self.cities
+                .entry((city, country.clone()))
+                .or_default()
+                .add(stake);
+        }
+        if let Some(country) = country {
+            self.countries.insert(country);
+        }
+
+        if let Some(version) = normalized(stats.version.clone()) {
+            self.versions.entry(version).or_default().add(stake);
+        }
+
+        let client_id = effective_client_id(stats.client_id, stats.client_id_raw.as_deref());
+        if let Some(lineage) = normalized(client_lineage(client_id)).map(as_client_name) {
+            self.lineages.entry(lineage).or_default().add(stake);
+        }
+
+        if stats.superminority {
+            self.superminority_count += 1;
+        }
+    }
+
+    /// Stake-sorted; ties break on the key, since members arrive in hash order.
+    fn shares(tallies: HashMap<String, Tally>, group_stake: Decimal) -> Vec<GroupShare> {
+        let mut shares: Vec<_> = tallies
+            .into_iter()
+            .map(|(key, tally)| GroupShare {
+                key,
+                validator_count: tally.validator_count,
+                stake_share: if group_stake.is_zero() {
+                    0.0
+                } else {
+                    (tally.total_stake / group_stake).to_f64().unwrap_or_default()
+                },
+                total_stake: tally.total_stake,
+            })
+            .collect();
+        shares.sort_by(|a, b| b.total_stake.cmp(&a.total_stake).then_with(|| a.key.cmp(&b.key)));
+        shares
+    }
+
+    fn asns(&self) -> Vec<i32> {
+        let mut asns: Vec<_> = self.asns.iter().collect();
+        asns.sort_by(|(a_asn, a_stake), (b_asn, b_stake)| {
+            b_stake.cmp(a_stake).then_with(|| a_asn.cmp(b_asn))
+        });
+        asns.into_iter().map(|(asn, _)| *asn).collect()
+    }
+
+    fn data_centers(&self) -> Vec<GroupCity> {
+        let mut cities: Vec<_> = self
+            .cities
+            .iter()
+            .map(|((city, country), tally)| GroupCity {
+                city: city.clone(),
+                country: country.clone(),
+                validator_count: tally.validator_count,
+                total_stake: tally.total_stake,
+            })
+            .collect();
+        cities.sort_by(|a, b| {
+            b.total_stake
+                .cmp(&a.total_stake)
+                .then_with(|| a.city.cmp(&b.city))
+        });
+        cities
+    }
+
+    fn into_provider(self, group_stake: Decimal) -> ProviderDetails {
+        ProviderDetails {
+            asns: self.asns(),
+            data_centers: self.data_centers(),
+            country_count: self.countries.len() as u64,
+            superminority_count: self.superminority_count,
+            client_mix: Self::shares(self.lineages, group_stake),
+        }
+    }
+
+    /// `block_engines` are filled by the client tree, which knows the group's children.
+    fn into_client(self, group_stake: Decimal) -> ClientDetails {
+        ClientDetails {
+            country_count: self.countries.len() as u64,
+            data_center_count: self.cities.len() as u64,
+            version_spread: Self::shares(self.versions, group_stake),
+            block_engines: Vec::new(),
+        }
+    }
+}
+
 /// A member without the value is left out of both sums, so it neither dilutes the mean nor reads as zero.
 #[derive(Default)]
 struct StakeWeighted {
@@ -134,6 +267,7 @@ impl StakeWeighted {
 
 // Not `Default`: `incidents` takes its shape from the kind.
 struct Accumulator {
+    kind: GroupKind,
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -147,11 +281,13 @@ struct Accumulator {
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
     incidents: GroupIncidents,
+    breakdowns: Option<Breakdowns>,
 }
 
 impl Accumulator {
     fn new(kind: GroupKind) -> Self {
         Self {
+            kind,
             spellings: Default::default(),
             validator_count: 0,
             total_stake: Decimal::ZERO,
@@ -169,6 +305,7 @@ impl Accumulator {
             } else {
                 GroupIncidents::empty_count()
             },
+            breakdowns: kind.carries_breakdowns().then(Breakdowns::default),
         }
     }
 
@@ -196,6 +333,10 @@ impl Accumulator {
 
         if let Some(name) = name {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
+        }
+
+        if let Some(breakdowns) = &mut self.breakdowns {
+            breakdowns.add(stats);
         }
 
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
@@ -227,12 +368,22 @@ impl Accumulator {
     }
 
     fn finish(
-        self,
+        mut self,
         folded_key: &FoldedKey,
         total_activated_stake: Decimal,
         baseline_7d: Option<&ReferenceStake>,
         baseline_30d: Option<&ReferenceStake>,
     ) -> ValidatorGroupRecord {
+        let (provider, client) = match (self.kind, self.breakdowns.take()) {
+            (GroupKind::ProviderAso, Some(breakdowns)) => {
+                (Some(breakdowns.into_provider(self.total_stake)), None)
+            }
+            (GroupKind::ClientLineage, Some(breakdowns)) => {
+                (None, Some(breakdowns.into_client(self.total_stake)))
+            }
+            _ => (None, None),
+        };
+
         let delta = |reference: Option<&ReferenceStake>| {
             reference.map(|group_stake| {
                 self.total_stake - group_stake.get(folded_key).copied().unwrap_or_default()
@@ -266,6 +417,8 @@ impl Accumulator {
                 incidents.sort();
                 incidents
             },
+            provider,
+            client,
         }
     }
 }
@@ -304,6 +457,8 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         delegation_relationship_count: validator.unique_delegators,
         // `top_level_ranks` reads nothing off this row but the sort key and the name.
         incidents: GroupIncidents::Count(validator.incidents.len() as u64),
+        provider: None,
+        client: None,
     }
 }
 
@@ -488,18 +643,23 @@ fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
     let nodes = clients
         .rows
         .into_iter()
-        .map(|(folded_client, client)| {
+        .map(|(folded_client, mut client)| {
             let engines = engines_by_client.get(&folded_client);
+            let children: Vec<_> = block_engines
+                .rows
+                .iter()
+                .filter(|(folded_engine, _)| {
+                    engines.is_some_and(|engines| engines.contains(folded_engine))
+                })
+                .map(|(_, engine)| engine.clone())
+                .collect();
+
+            if let Some(details) = &mut client.client {
+                details.block_engines = paired_block_engines(&children);
+            }
 
             ValidatorGroupNode {
-                children: block_engines
-                    .rows
-                    .iter()
-                    .filter(|(folded_engine, _)| {
-                        engines.is_some_and(|engines| engines.contains(folded_engine))
-                    })
-                    .map(|(_, engine)| engine.clone())
-                    .collect(),
+                children,
                 group: client,
             }
         })
@@ -510,6 +670,20 @@ fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
         total_activated_stake: clients.groups.total_activated_stake,
         current_epoch: clients.groups.current_epoch,
     }
+}
+
+/// The engine half of each child's label, `Agave + Jito` -> `Jito`; a child labelled with the bare
+/// lineage is the client running on its own. Keeps the children's stake order.
+fn paired_block_engines(children: &[ValidatorGroupRecord]) -> Vec<String> {
+    let mut engines: Vec<String> = Vec::new();
+    for child in children {
+        if let Some((_, engine)) = child.key.split_once(" + ") {
+            if !engines.iter().any(|seen| seen == engine) {
+                engines.push(engine.to_string());
+            }
+        }
+    }
+    engines
 }
 
 fn block_engines_by_client(
@@ -602,6 +776,13 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
+        /// Reported on every epoch row the member has, as the collector would for a node that
+        /// never moved.
+        dc_city: Option<&'static str>,
+        dc_country: Option<&'static str>,
+        dc_asn: Option<i32>,
+        version: Option<&'static str>,
+        superminority: bool,
         /// Days ago each incident interval began. Each lasts long enough to clear any floor.
         incidents_days_ago: Vec<i64>,
     }
@@ -622,6 +803,11 @@ mod tests {
                 expected_take_rate: None,
                 unique_delegators: None,
                 client_id_raw: None,
+                dc_city: None,
+                dc_country: None,
+                dc_asn: None,
+                version: None,
+                superminority: false,
                 incidents_days_ago: Vec::new(),
             }
         }
@@ -649,6 +835,11 @@ mod tests {
                         client_id: *client_id,
                         client_id_raw: member.client_id_raw.map(str::to_string),
                         dc_aso: dc_aso.map(str::to_string),
+                        dc_city: member.dc_city.map(str::to_string),
+                        dc_country: member.dc_country.map(str::to_string),
+                        dc_asn: member.dc_asn,
+                        version: member.version.map(str::to_string),
+                        superminority: member.superminority,
                         ..Default::default()
                     })
                     .collect();
@@ -752,6 +943,226 @@ mod tests {
             vec!["Hetzner".to_string(), "Latitude".to_string()]
         );
         assert_eq!(group(&groups, "Hetzner").validator_count, 2);
+    }
+
+    #[test]
+    fn a_provider_row_reads_its_members_locations() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                dc_asn: Some(24940),
+                ..Member::new("big", last_two_epochs(300, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Helsinki"),
+                dc_country: Some("Finland"),
+                dc_asn: Some(213230),
+                ..Member::new("small", last_two_epochs(100, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                dc_asn: Some(213230),
+                ..Member::new("same-city", last_two_epochs(200, AGAVE, Some("Hetzner")))
+            },
+        ]);
+
+        let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let provider = group(&groups, "Hetzner").provider.clone().unwrap();
+
+        // 213230 carries 300 across its two members, 24940 only 300 on its own; ties break on the number.
+        assert_eq!(provider.asns, vec![24940, 213230]);
+        assert_eq!(
+            provider
+                .data_centers
+                .iter()
+                .map(|city| (city.city.as_str(), city.validator_count, city.total_stake))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Frankfurt", 2, Decimal::from(500)),
+                ("Helsinki", 1, Decimal::from(100))
+            ]
+        );
+        assert_eq!(provider.country_count, 2);
+    }
+
+    #[test]
+    fn a_location_the_source_left_unknown_is_counted_nowhere() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("placed", last_two_epochs(300, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Unknown"),
+                dc_country: Some("   "),
+                ..Member::new("unplaced", last_two_epochs(100, AGAVE, Some("Hetzner")))
+            },
+        ]);
+
+        let provider = group(
+            &aggregate_groups(&validators, GroupKind::ProviderAso),
+            "Hetzner",
+        )
+        .provider
+        .clone()
+        .unwrap();
+
+        assert_eq!(provider.data_centers.len(), 1);
+        assert_eq!(provider.country_count, 1);
+    }
+
+    #[test]
+    fn a_provider_row_counts_the_superminority_it_hosts() {
+        let validators = validators(vec![
+            Member {
+                superminority: true,
+                ..Member::new("whale", last_two_epochs(900, AGAVE, Some("Hetzner")))
+            },
+            Member::new("minnow", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+        ]);
+
+        let provider = group(
+            &aggregate_groups(&validators, GroupKind::ProviderAso),
+            "Hetzner",
+        )
+        .provider
+        .clone()
+        .unwrap();
+
+        assert_eq!(provider.superminority_count, 1);
+    }
+
+    #[test]
+    fn client_mix_splits_the_providers_stake_by_lineage() {
+        let validators = validators(vec![
+            Member::new("agave", last_two_epochs(600, AGAVE, Some("Hetzner"))),
+            Member::new("bam", last_two_epochs(200, JITO_BAM, Some("Hetzner"))),
+            Member::new("frank", last_two_epochs(200, FRANKENDANCER, Some("Hetzner"))),
+        ]);
+
+        let provider = group(
+            &aggregate_groups(&validators, GroupKind::ProviderAso),
+            "Hetzner",
+        )
+        .provider
+        .clone()
+        .unwrap();
+
+        // `Agave + JitoBAM` is agave lineage, so it lands in the same slice as plain Agave.
+        assert_eq!(
+            provider
+                .client_mix
+                .iter()
+                .map(|share| (share.key.as_str(), share.validator_count, share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("Agave", 2, 0.8), ("Frankendancer", 1, 0.2)]
+        );
+    }
+
+    #[test]
+    fn a_member_with_no_client_leaves_the_mix_short_of_one() {
+        let validators = validators(vec![
+            Member::new("known", last_two_epochs(700, AGAVE, Some("Hetzner"))),
+            Member::new("silent", last_two_epochs(300, None, Some("Hetzner"))),
+        ]);
+
+        let provider = group(
+            &aggregate_groups(&validators, GroupKind::ProviderAso),
+            "Hetzner",
+        )
+        .provider
+        .clone()
+        .unwrap();
+
+        assert_eq!(provider.client_mix.len(), 1);
+        assert_eq!(provider.client_mix[0].stake_share, 0.7);
+    }
+
+    #[test]
+    fn a_client_row_spreads_the_versions_its_members_report() {
+        let validators = validators(vec![
+            Member {
+                version: Some("2.3.9"),
+                ..Member::new("newest", last_two_epochs(600, AGAVE, None))
+            },
+            Member {
+                version: Some("2.3.7"),
+                ..Member::new("behind", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                version: Some("2.2.14"),
+                ..Member::new("stale", last_two_epochs(100, AGAVE, None))
+            },
+        ]);
+
+        let client = group(
+            &aggregate_groups(&validators, GroupKind::ClientLineage),
+            "Agave",
+        )
+        .client
+        .clone()
+        .unwrap();
+
+        // Served as reported: the patch versions are never rolled up into a `2.2.x` bucket.
+        assert_eq!(
+            client
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("2.3.9", 0.6), ("2.3.7", 0.3), ("2.2.14", 0.1)]
+        );
+    }
+
+    #[test]
+    fn a_client_row_counts_the_countries_its_members_sit_in() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("de", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                dc_city: Some("Warsaw"),
+                dc_country: Some("Poland"),
+                ..Member::new("pl", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("de-too", last_two_epochs(300, AGAVE, None))
+            },
+        ]);
+
+        let client = group(
+            &aggregate_groups(&validators, GroupKind::ClientLineage),
+            "Agave",
+        )
+        .client
+        .clone()
+        .unwrap();
+
+        assert_eq!(client.country_count, 2);
+        assert_eq!(client.data_center_count, 2);
+    }
+
+    #[test]
+    fn only_the_two_panels_carry_details() {
+        let validators = validators(vec![Member::new(
+            "one",
+            last_two_epochs(100, JITO_BAM, Some("Hetzner")),
+        )]);
+
+        let engines = aggregate_groups(&validators, GroupKind::ClientLabel);
+        let engine = group(&engines, "Agave + JitoBAM");
+        assert!(engine.provider.is_none());
+        assert!(engine.client.is_none());
+
+        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        assert!(group(&providers, "Hetzner").client.is_none());
     }
 
     #[test]
@@ -1263,6 +1674,35 @@ mod tests {
         assert_eq!(
             child_keys(&tree.nodes[1]),
             vec!["Frankendancer".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_chips_a_client_row_carries_are_its_own_children() {
+        let validators = validators(vec![
+            Member::new("plain", last_two_epochs(100, AGAVE, None)),
+            Member::new("jito", last_two_epochs(400, Some(1), None)),
+            Member::new("bam", last_two_epochs(200, JITO_BAM, None)),
+            Member::new("frank", last_two_epochs(300, FRANKENDANCER, None)),
+        ]);
+
+        let tree = tree(&validators);
+        let agave = &tree.nodes[0];
+        assert_eq!(
+            agave.group.client.as_ref().unwrap().block_engines,
+            vec!["Jito".to_string(), "JitoBAM".to_string()],
+            "the bare `Agave` child is the client running on its own, not an engine"
+        );
+        assert!(tree.nodes[1]
+            .group
+            .client
+            .as_ref()
+            .unwrap()
+            .block_engines
+            .is_empty());
+        assert!(
+            agave.children.iter().all(|child| child.client.is_none()),
+            "a block engine row carries no panel of its own"
         );
     }
 

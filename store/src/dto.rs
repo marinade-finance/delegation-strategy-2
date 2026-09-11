@@ -646,6 +646,55 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
+/// What the members of a provider group are, beside their aggregated columns. Only the rows
+/// `/providers` serves carry it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ProviderDetails {
+    /// Stake-sorted. One hosting organisation commonly announces from several.
+    pub asns: Vec<i32>,
+    /// One entry per city, stake-sorted; the data never resolves the building.
+    pub data_centers: Vec<GroupCity>,
+    /// Distinct countries behind `data_centers`.
+    pub country_count: u64,
+    /// Stake share per client lineage, biggest first.
+    pub client_mix: Vec<GroupShare>,
+    pub superminority_count: u64,
+}
+
+/// What the members of a client group are running. Only the client rows `/clients` serves carry it,
+/// never their block engine children.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ClientDetails {
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    pub version_spread: Vec<GroupShare>,
+    /// Block engines paired with this client, from the group's own children.
+    pub block_engines: Vec<String>,
+    /// Distinct countries the members sit in.
+    pub country_count: u64,
+    /// Distinct cities the members sit in; the data never resolves the building.
+    pub data_center_count: u64,
+}
+
+/// A city the group's members sit in. `country` is null for a city the geolocation source placed
+/// without one.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupCity {
+    pub city: String,
+    pub country: Option<String>,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+}
+
+/// One slice of a group. `stake_share` is of the group, not of the cluster, and the shares of a
+/// group holding members the slicing cannot classify sum to less than 1.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupShare {
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+}
+
 /// Group can be a hosting provider, validator client or node operator
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorGroupRecord {
@@ -666,6 +715,10 @@ pub struct ValidatorGroupRecord {
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
     pub incidents: GroupIncidents,
+    /// Set on the rows `/providers` serves, null on every other grouping.
+    pub provider: Option<ProviderDetails>,
+    /// Set on the client rows `/clients` serves, null on every other grouping.
+    pub client: Option<ClientDetails>,
 }
 
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
