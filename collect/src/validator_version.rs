@@ -19,7 +19,24 @@ pub struct ValidatorVersion {
     text: String,
     numbers: [u64; 3],
     /// Empty for a release.
-    prerelease: String,
+    prerelease: Vec<Identifier>,
+}
+
+/// One dot-separated part of a prerelease. Semver orders a numeric part by value and puts it below
+/// an alphanumeric one, so `beta.9` sits below `beta.10` where a text compare has it above.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Identifier {
+    Numeric(u64),
+    Text(String),
+}
+
+impl Identifier {
+    fn parse(part: &str) -> Self {
+        match part.parse() {
+            Ok(number) => Identifier::Numeric(number),
+            Err(_) => Identifier::Text(part.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,7 +88,11 @@ impl FromStr for ValidatorVersion {
         Ok(Self {
             text,
             numbers,
-            prerelease: prerelease.to_string(),
+            prerelease: prerelease
+                .split('.')
+                .filter(|part| !part.is_empty())
+                .map(Identifier::parse)
+                .collect(),
         })
     }
 }
@@ -165,6 +186,17 @@ mod tests {
         assert!(version("0.1106.40201") > version("0.812.30108"));
         assert!(version("4.10.0") > version("4.2.2"));
         assert!(version("4.2.2") > version("4.2.1"));
+    }
+
+    #[test]
+    fn a_prerelease_counter_orders_by_value() {
+        // A text compare puts beta.10 below beta.9 and drops a floor step with it.
+        assert!(version("4.2.0-beta.10") > version("4.2.0-beta.9"));
+        assert!(version("4.2.0-rc.10") > version("4.2.0-rc.2"));
+        // The Frankendancer spelling, where the prerelease carries the agave number.
+        assert!(version("0.905.0-beta.40007") > version("0.905.0-beta.9"));
+        // Semver puts a numeric identifier below an alphanumeric one.
+        assert!(version("4.2.0-1") < version("4.2.0-alpha"));
     }
 
     #[test]

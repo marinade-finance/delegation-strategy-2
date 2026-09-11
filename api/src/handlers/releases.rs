@@ -20,7 +20,7 @@ pub struct ResponseReleases {
 pub struct QueryParams {
     /// Client lineage, e.g. `agave` or `frankendancer`. An unknown one serves an empty list.
     client: Option<String>,
-    /// Lower-bound epoch, inclusive. Matches on either `available_epoch` or `sfdp_floor_epoch`.
+    /// Lower-bound epoch, inclusive. Each list is filtered on its own epoch.
     since_epoch: Option<u64>,
     /// Orders `releases` by publish time and both floor lists by the epoch they took effect.
     order_direction: Option<OrderDirection>,

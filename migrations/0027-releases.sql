@@ -41,4 +41,5 @@ VALUES
   ('frankendancer', '0.1001.40101',   999, NOW(), NOW()),
   ('frankendancer', '0.1102.40201',  1019, NOW(), NOW()),
   ('firedancer',    '1.1.1',         1019, NOW(), NOW()),
-  ('firedancer',    '26.8.0',        1026, NOW(), NOW());
+  ('firedancer',    '26.8.0',        1026, NOW(), NOW())
+ON CONFLICT (client_lineage, client_version) DO NOTHING;
