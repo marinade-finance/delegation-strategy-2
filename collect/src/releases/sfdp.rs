@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
 
-const SFDP_URL: &str = "https://api.solana.org/api/community/v1/sfdp_required_versions";
+pub const SFDP_API: &str = "https://api.solana.org";
+const REQUIRED_VERSIONS_PATH: &str = "/api/community/v1/sfdp_required_versions";
 /// The floor for epochs that have not started yet is published ahead of them.
 pub const UPCOMING_EPOCHS: u64 = 4;
 
@@ -39,26 +40,31 @@ struct SfdpRow {
 }
 
 pub struct SfdpFetcher {
+    api_url: String,
     from_epoch: u64,
     to_epoch: u64,
     client: reqwest::blocking::Client,
 }
 
 impl SfdpFetcher {
-    pub fn new(from_epoch: u64, to_epoch: u64) -> anyhow::Result<Self> {
+    pub fn new(api_url: String, from_epoch: u64, to_epoch: u64) -> anyhow::Result<Self> {
         Ok(Self {
+            api_url,
             from_epoch,
             to_epoch,
             client: reqwest::blocking::Client::new(),
         })
     }
 
-    fn epoch_url(epoch: u64) -> String {
-        format!("{SFDP_URL}?cluster=mainnet-beta&epoch={epoch}")
+    fn epoch_url(&self, epoch: u64) -> String {
+        format!(
+            "{}{REQUIRED_VERSIONS_PATH}?cluster=mainnet-beta&epoch={epoch}",
+            self.api_url
+        )
     }
 
     fn fetch_epoch(&self, epoch: u64) -> anyhow::Result<Option<SfdpRow>> {
-        let url = Self::epoch_url(epoch);
+        let url = self.epoch_url(epoch);
         let response = self.client.get(&url).send()?;
         // An epoch the program stated nothing for answers 404 with the reason in the body, which is
         // an answer and not a failure: everything before epoch 688 is one.
