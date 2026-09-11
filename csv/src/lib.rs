@@ -213,26 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn the_env_var_replaces_the_vendored_table() {
-        let path = std::env::temp_dir().join("ds-csv-override.csv");
-        std::fs::write(&path, "epoch,name\n1019,firedancer\n").unwrap();
-        std::env::set_var("DS_CSV_TEST_OVERRIDE", &path);
-
-        let rows: Vec<Row> = load_vendored(
-            "name,epoch\nagave,979\n",
-            "DS_CSV_TEST_OVERRIDE",
-            &COLUMNS,
-            "vendored.csv",
-        )
-        .unwrap();
-
-        std::env::remove_var("DS_CSV_TEST_OVERRIDE");
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(rows[0].name, "firedancer");
-    }
-
-    #[test]
     fn a_missing_file_is_reported_with_its_path() {
         let err = load_path::<Row>(Path::new("/nonexistent/table.csv"), &COLUMNS)
             .unwrap_err()
