@@ -2,6 +2,7 @@ use crate::dto::{FeatureGateFloor, ReleaseRecord, SfdpFloor};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::releases::{ReleaseEntry, ReleaseSource, ReleasesSnapshot};
+use collect::validator_version::ValidatorVersion;
 use log::{info, warn};
 use rust_decimal::prelude::*;
 use std::collections::BTreeMap;
@@ -268,8 +269,18 @@ pub async fn load_releases(
         -- floor list, not here.
         WHERE released_at IS NOT NULL
           AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
-          AND ($2::NUMERIC IS NULL
-               OR released_at >= (SELECT start_at FROM epochs WHERE epoch = $2::NUMERIC))
+          AND ($2::NUMERIC IS NULL OR released_at >= (
+              -- The epoch asked for may have no row: older than the history we keep takes
+              -- everything, newer than it -- the running epoch -- takes what followed the last
+              -- close.
+              SELECT CASE
+                  WHEN $2::NUMERIC <= (SELECT MIN(epoch) FROM epochs) THEN '-infinity'::TIMESTAMPTZ
+                  ELSE COALESCE(
+                      (SELECT MIN(start_at) FROM epochs WHERE epoch >= $2::NUMERIC),
+                      (SELECT MAX(end_at) FROM epochs)
+                  )
+              END
+          ))
         ORDER BY released_at DESC, client_lineage, client_version
     "
             ),
@@ -428,26 +439,41 @@ async fn floor_at_epoch(
         .query(
             &format!(
                 "
-        SELECT DISTINCT ON (client_lineage)
-            client_lineage, client_version, {column} AS effective_epoch
+        SELECT client_lineage, client_version, {column} AS effective_epoch
         FROM {RELEASES_TABLE}
         WHERE {column} IS NOT NULL
           AND {column} <= $1::NUMERIC
           AND ($2::TEXT IS NULL OR client_lineage = $2::TEXT)
-        ORDER BY client_lineage, {column} DESC, updated_at DESC, client_version
     "
             ),
             &[&epoch, &client_lineage],
         )
         .await?;
 
-    rows.into_iter()
-        .map(|row| {
-            Ok((
-                row.get("client_lineage"),
-                row.get("client_version"),
-                row.get::<_, Decimal>("effective_epoch").try_into()?,
-            ))
-        })
-        .collect()
+    // Picked here rather than with DISTINCT ON: two rows can share the newest epoch, and the higher
+    // version settles that, which SQL would order as text.
+    let mut newest: BTreeMap<String, (u64, ValidatorVersion)> = BTreeMap::new();
+    for row in rows {
+        let lineage: String = row.get("client_lineage");
+        let version: String = row.get("client_version");
+        let effective_epoch: u64 = row.get::<_, Decimal>("effective_epoch").try_into()?;
+        let Ok(version) = version.parse::<ValidatorVersion>() else {
+            warn!("Floor row {lineage} {version} is not a version, skipping it");
+            continue;
+        };
+
+        newest
+            .entry(lineage)
+            .and_modify(|floor| {
+                if (effective_epoch, &version) > (floor.0, &floor.1) {
+                    *floor = (effective_epoch, version.clone());
+                }
+            })
+            .or_insert((effective_epoch, version));
+    }
+
+    Ok(newest
+        .into_iter()
+        .map(|(lineage, (epoch, version))| (lineage, version.to_string(), epoch))
+        .collect())
 }

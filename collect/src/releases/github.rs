@@ -82,13 +82,23 @@ impl GithubFetcher {
                     debug!("Skipping {repo} tag {}", release.tag_name);
                     continue;
                 };
+                let Some(released_at) = release.published_at else {
+                    // Nothing to place in an epoch, and storing it would blank a timestamp a
+                    // previous run had.
+                    debug!(
+                        "Skipping {repo} tag {} with no publish time",
+                        release.tag_name
+                    );
+                    continue;
+                };
+
                 entries.push(ReleaseEntry {
                     client_lineage: lineage
                         .unwrap_or_else(|| firedancer_lineage(&version))
                         .to_string(),
                     client_version: version,
                     feature_gate_epoch: None,
-                    released_at: release.published_at,
+                    released_at: Some(released_at),
                     sfdp_floor_epoch: None,
                     release_url: release.html_url,
                     source: ReleaseSource::Github,

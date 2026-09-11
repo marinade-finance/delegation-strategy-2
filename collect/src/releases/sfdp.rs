@@ -83,8 +83,8 @@ impl SfdpFetcher {
 
 /// First epoch of each version's latest run as the floor.
 ///
-/// The per-epoch endpoint always answers `inherited_from_prev_epoch: false`, so the effective epoch
-/// has to come from where the value changes, not from that flag.
+/// The effective epoch comes from where the value changes; the endpoint's own
+/// `inherited_from_prev_epoch` is not load-bearing here.
 ///
 /// A floor already in force at `anchor_epoch`, the epoch fetched ahead of the window, started
 /// outside it and is left unrecorded rather than stamped with the window's own first epoch.
