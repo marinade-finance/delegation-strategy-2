@@ -1,12 +1,13 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, ClientDetails, ClientRelease, GroupCity,
-    GroupIncidents, GroupShare, ProviderDetails, ValidatorEpochStats, ValidatorGroupNode,
-    ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
+    client_label, client_lineage, effective_client_id, ClientRelease, GroupCity, GroupIncidents,
+    GroupShare, ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorRecord,
 };
 use crate::group_history::{FirstSeen, GroupFirstSeen};
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
+use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -239,33 +240,37 @@ impl Breakdowns {
         cities
     }
 
-    fn into_provider(self, group_stake: Decimal, first_seen: Option<FirstSeen>) -> ProviderDetails {
-        ProviderDetails {
-            first_seen_epoch: first_seen.map(|first_seen| first_seen.epoch),
-            first_seen_at: first_seen.and_then(|first_seen| first_seen.at),
-            asns: self.asns(),
-            data_centers: self.data_centers(),
-            country_count: self.countries.len() as u64,
-            superminority_count: self.superminority_count,
-            client_mix: Self::shares(self.lineages, group_stake),
-        }
-    }
-
-    /// `block_engines` are filled by the client tree, which knows the group's children.
-    fn into_client(
+    /// The panel fields the `kind` renders; the rest stay empty. `block_engines` is filled by the
+    /// client tree, which knows the group's children.
+    fn into_panel(
         self,
+        kind: GroupKind,
         group_stake: Decimal,
         first_seen: Option<FirstSeen>,
         latest_release: Option<ClientRelease>,
-    ) -> ClientDetails {
-        ClientDetails {
-            latest_release,
+    ) -> Panel {
+        let panel = Panel {
+            country_count: Some(self.countries.len() as u64),
+            data_center_count: Some(self.cities.len() as u64),
             first_seen_epoch: first_seen.map(|first_seen| first_seen.epoch),
             first_seen_at: first_seen.and_then(|first_seen| first_seen.at),
-            country_count: self.countries.len() as u64,
-            data_center_count: self.cities.len() as u64,
-            version_spread: Self::shares(self.versions, group_stake),
-            block_engines: Vec::new(),
+            ..Default::default()
+        };
+
+        match kind {
+            GroupKind::ProviderAso => Panel {
+                asns: self.asns(),
+                data_centers: self.data_centers(),
+                superminority_count: Some(self.superminority_count),
+                client_mix: Self::shares(self.lineages, group_stake),
+                ..panel
+            },
+            GroupKind::ClientLineage => Panel {
+                latest_release,
+                version_spread: Self::shares(self.versions, group_stake),
+                ..panel
+            },
+            _ => Default::default(),
         }
     }
 }
@@ -291,6 +296,21 @@ impl StakeWeighted {
 }
 
 // Not `Default`: `incidents` takes its shape from the kind.
+/// The flat fields a group row carries beside its aggregated columns.
+#[derive(Default)]
+struct Panel {
+    asns: Vec<i32>,
+    data_centers: Vec<GroupCity>,
+    data_center_count: Option<u64>,
+    country_count: Option<u64>,
+    client_mix: Vec<GroupShare>,
+    version_spread: Vec<GroupShare>,
+    superminority_count: Option<u64>,
+    first_seen_epoch: Option<u64>,
+    first_seen_at: Option<DateTime<Utc>>,
+    latest_release: Option<ClientRelease>,
+}
+
 struct Accumulator {
     kind: GroupKind,
     spellings: HashMap<String, Decimal>,
@@ -407,28 +427,23 @@ impl Accumulator {
                 .copied()
         };
 
-        let (provider, client) = match (self.kind, self.breakdowns.take()) {
-            (GroupKind::ProviderAso, Some(breakdowns)) => (
-                Some(
-                    breakdowns
-                        .into_provider(self.total_stake, overlaid(&overlays.first_seen.providers)),
-                ),
-                None,
-            ),
-            (GroupKind::ClientLineage, Some(breakdowns)) => (
-                None,
-                Some(
-                    breakdowns.into_client(
-                        self.total_stake,
-                        overlaid(&overlays.first_seen.client_lineages),
-                        folded_key
-                            .as_ref()
-                            .and_then(|key| overlays.releases.get(key.as_str()))
-                            .cloned(),
-                    ),
-                ),
-            ),
-            _ => (None, None),
+        let panel = match self.breakdowns.take() {
+            Some(breakdowns) => {
+                let first_seen = match self.kind {
+                    GroupKind::ProviderAso => overlaid(&overlays.first_seen.providers),
+                    _ => overlaid(&overlays.first_seen.client_lineages),
+                };
+                breakdowns.into_panel(
+                    self.kind,
+                    self.total_stake,
+                    first_seen,
+                    folded_key
+                        .as_ref()
+                        .and_then(|key| overlays.releases.get(key.as_str()))
+                        .cloned(),
+                )
+            }
+            None => Default::default(),
         };
 
         let delta = |reference: Option<&ReferenceStake>| {
@@ -464,8 +479,17 @@ impl Accumulator {
                 incidents.sort();
                 incidents
             },
-            provider,
-            client,
+            asns: panel.asns,
+            data_centers: panel.data_centers,
+            data_center_count: panel.data_center_count,
+            country_count: panel.country_count,
+            client_mix: panel.client_mix,
+            version_spread: panel.version_spread,
+            block_engines: Vec::new(),
+            superminority_count: panel.superminority_count,
+            first_seen_epoch: panel.first_seen_epoch,
+            first_seen_at: panel.first_seen_at,
+            latest_release: panel.latest_release,
         }
     }
 }
@@ -504,8 +528,7 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         delegation_relationship_count: validator.unique_delegators,
         // `top_level_ranks` reads nothing off this row but the sort key and the name.
         incidents: GroupIncidents::Count(validator.incidents.len() as u64),
-        provider: None,
-        client: None,
+        ..Default::default()
     }
 }
 
@@ -720,9 +743,7 @@ fn aggregate_client_tree(population: &Population, overlays: &GroupOverlays) -> V
                 .map(|(_, engine)| engine.clone())
                 .collect();
 
-            if let Some(details) = &mut client.client {
-                details.block_engines = paired_block_engines(&children);
-            }
+            client.block_engines = paired_block_engines(&children);
 
             ValidatorGroupNode {
                 children,
@@ -1038,7 +1059,7 @@ mod tests {
         ]);
 
         let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
-        let provider = group(&groups, "Hetzner").provider.clone().unwrap();
+        let provider = group(&groups, "Hetzner");
 
         // 213230 carries 300 across its two members, 24940 only 300 on its own; ties break on the number.
         assert_eq!(provider.asns, vec![24940, 213230]);
@@ -1053,7 +1074,7 @@ mod tests {
                 ("Helsinki", 1, Decimal::from(100))
             ]
         );
-        assert_eq!(provider.country_count, 2);
+        assert_eq!(provider.country_count, Some(2));
     }
 
     #[test]
@@ -1071,16 +1092,11 @@ mod tests {
             },
         ]);
 
-        let provider = group(
-            &aggregate_groups(&validators, GroupKind::ProviderAso),
-            "Hetzner",
-        )
-        .provider
-        .clone()
-        .unwrap();
+        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let provider = group(&providers, "Hetzner");
 
         assert_eq!(provider.data_centers.len(), 1);
-        assert_eq!(provider.country_count, 1);
+        assert_eq!(provider.country_count, Some(1));
     }
 
     #[test]
@@ -1093,15 +1109,10 @@ mod tests {
             Member::new("minnow", last_two_epochs(100, AGAVE, Some("Hetzner"))),
         ]);
 
-        let provider = group(
-            &aggregate_groups(&validators, GroupKind::ProviderAso),
-            "Hetzner",
-        )
-        .provider
-        .clone()
-        .unwrap();
+        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let provider = group(&providers, "Hetzner");
 
-        assert_eq!(provider.superminority_count, 1);
+        assert_eq!(provider.superminority_count, Some(1));
     }
 
     #[test]
@@ -1115,13 +1126,8 @@ mod tests {
             ),
         ]);
 
-        let provider = group(
-            &aggregate_groups(&validators, GroupKind::ProviderAso),
-            "Hetzner",
-        )
-        .provider
-        .clone()
-        .unwrap();
+        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let provider = group(&providers, "Hetzner");
 
         // `Agave + JitoBAM` is agave lineage, so it lands in the same slice as plain Agave.
         assert_eq!(
@@ -1141,13 +1147,8 @@ mod tests {
             Member::new("silent", last_two_epochs(300, None, Some("Hetzner"))),
         ]);
 
-        let provider = group(
-            &aggregate_groups(&validators, GroupKind::ProviderAso),
-            "Hetzner",
-        )
-        .provider
-        .clone()
-        .unwrap();
+        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let provider = group(&providers, "Hetzner");
 
         assert_eq!(provider.client_mix.len(), 1);
         assert_eq!(provider.client_mix[0].stake_share, 0.7);
@@ -1170,13 +1171,8 @@ mod tests {
             },
         ]);
 
-        let client = group(
-            &aggregate_groups(&validators, GroupKind::ClientLineage),
-            "Agave",
-        )
-        .client
-        .clone()
-        .unwrap();
+        let clients = aggregate_groups(&validators, GroupKind::ClientLineage);
+        let client = group(&clients, "Agave");
 
         // Served as reported: the patch versions are never rolled up into a `2.2.x` bucket.
         assert_eq!(
@@ -1209,16 +1205,11 @@ mod tests {
             },
         ]);
 
-        let client = group(
-            &aggregate_groups(&validators, GroupKind::ClientLineage),
-            "Agave",
-        )
-        .client
-        .clone()
-        .unwrap();
+        let clients = aggregate_groups(&validators, GroupKind::ClientLineage);
+        let client = group(&clients, "Agave");
 
-        assert_eq!(client.country_count, 2);
-        assert_eq!(client.data_center_count, 2);
+        assert_eq!(client.country_count, Some(2));
+        assert_eq!(client.data_center_count, Some(2));
     }
 
     #[test]
@@ -1256,28 +1247,20 @@ mod tests {
         };
 
         let providers = aggregate_groups_with(&validators, GroupKind::ProviderAso, &overlays);
+        assert_eq!(group(&providers, "Hetzner").first_seen_epoch, Some(342));
         assert_eq!(
-            group(&providers, "Hetzner")
-                .provider
-                .as_ref()
-                .unwrap()
-                .first_seen_epoch,
-            Some(342)
-        );
-        assert_eq!(
-            group(&providers, "Latitude")
-                .provider
-                .as_ref()
-                .unwrap()
-                .first_seen_epoch,
+            group(&providers, "Latitude").first_seen_epoch,
             None,
             "a provider the history has no row for reads as unknown, not as the current epoch"
         );
 
         let clients = aggregate_groups_with(&validators, GroupKind::ClientLineage, &overlays);
-        let agave = group(&clients, "Agave").client.clone().unwrap();
+        let agave = group(&clients, "Agave");
         assert_eq!(agave.first_seen_epoch, Some(500));
-        assert_eq!(agave.latest_release.unwrap().version, "2.3.9");
+        assert_eq!(
+            agave.latest_release.as_ref().unwrap().version,
+            "2.3.9".to_string()
+        );
     }
 
     #[test]
@@ -1289,11 +1272,22 @@ mod tests {
 
         let engines = aggregate_groups(&validators, GroupKind::ClientLabel);
         let engine = group(&engines, "Agave + JitoBAM");
-        assert!(engine.provider.is_none());
-        assert!(engine.client.is_none());
+        assert_eq!(engine.country_count, None);
+        assert_eq!(engine.data_center_count, None);
+        assert!(engine.version_spread.is_empty());
 
         let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
-        assert!(group(&providers, "Hetzner").client.is_none());
+        let provider = group(&providers, "Hetzner");
+        assert!(
+            provider.version_spread.is_empty() && provider.latest_release.is_none(),
+            "the client panel's own columns stay off a provider row"
+        );
+        let clients = aggregate_groups(&validators, GroupKind::ClientLineage);
+        let client = group(&clients, "Agave");
+        assert!(
+            client.asns.is_empty() && client.data_centers.is_empty(),
+            "and the provider panel's stay off a client row"
+        );
     }
 
     #[test]
@@ -1820,19 +1814,16 @@ mod tests {
         let tree = tree(&validators);
         let agave = &tree.nodes[0];
         assert_eq!(
-            agave.group.client.as_ref().unwrap().block_engines,
+            agave.group.block_engines,
             vec!["Jito".to_string(), "JitoBAM".to_string()],
             "the bare `Agave` child is the client running on its own, not an engine"
         );
-        assert!(tree.nodes[1]
-            .group
-            .client
-            .as_ref()
-            .unwrap()
-            .block_engines
-            .is_empty());
+        assert!(tree.nodes[1].group.block_engines.is_empty());
         assert!(
-            agave.children.iter().all(|child| child.client.is_none()),
+            agave
+                .children
+                .iter()
+                .all(|child| child.block_engines.is_empty()),
             "a block engine row carries no panel of its own"
         );
     }

@@ -743,54 +743,6 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
-/// What the members of a provider group are, beside their aggregated columns. Only the rows
-/// `/providers` serves carry it.
-#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
-pub struct ProviderDetails {
-    /// Stake-sorted. One hosting organisation commonly announces from several.
-    pub asns: Vec<i32>,
-    /// One entry per city, stake-sorted; the data never resolves the building.
-    pub data_centers: Vec<GroupCity>,
-    /// Distinct countries behind `data_centers`.
-    pub country_count: u64,
-    /// Stake share per client lineage, biggest first.
-    pub client_mix: Vec<GroupShare>,
-    pub superminority_count: u64,
-    /// First epoch a validator reported this provider, over the whole history the DB holds. The
-    /// name is the one the geolocation source returned at the time, so a renamed organisation
-    /// reads as first seen when it was renamed.
-    pub first_seen_epoch: Option<u64>,
-    pub first_seen_at: Option<DateTime<Utc>>,
-}
-
-/// What the members of a client group are running. Only the client rows `/clients` serves carry it,
-/// never their block engine children.
-#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
-pub struct ClientDetails {
-    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
-    pub version_spread: Vec<GroupShare>,
-    /// Block engines paired with this client, from the group's own children.
-    pub block_engines: Vec<String>,
-    /// Distinct countries the members sit in.
-    pub country_count: u64,
-    /// Distinct cities the members sit in; the data never resolves the building.
-    pub data_center_count: u64,
-    /// Newest release published for the lineage, pre-releases included.
-    pub latest_release: Option<ClientRelease>,
-    /// First epoch a validator reported this client. Never earlier than
-    /// `client_history_since_epoch`, which is where the stored client identity itself begins.
-    pub first_seen_epoch: Option<u64>,
-    pub first_seen_at: Option<DateTime<Utc>>,
-}
-
-/// A published client release, as `/releases` serves it.
-#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
-pub struct ClientRelease {
-    pub version: String,
-    pub released_at: Option<DateTime<Utc>>,
-    pub url: Option<String>,
-}
-
 /// A city the group's members sit in. `country` is null for a city the geolocation source placed
 /// without one.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
@@ -809,6 +761,14 @@ pub struct GroupShare {
     pub validator_count: u64,
     pub total_stake: Decimal,
     pub stake_share: f64,
+}
+
+/// A published client release, as `/releases` serves it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ClientRelease {
+    pub version: String,
+    pub released_at: Option<DateTime<Utc>>,
+    pub url: Option<String>,
 }
 
 /// Group can be a hosting provider, validator client or node operator
@@ -831,10 +791,43 @@ pub struct ValidatorGroupRecord {
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
     pub incidents: GroupIncidents,
-    /// Set on the rows `/providers` serves, null on every other grouping.
-    pub provider: Option<ProviderDetails>,
-    /// Set on the client rows `/clients` serves, null on every other grouping.
-    pub client: Option<ClientDetails>,
+    /// The fields below describe what the group is made of, and are served only by the two
+    /// groupings whose rows render an information panel: `/providers` and the client rows of
+    /// `/clients`. A grouping that computes none of them omits them all.
+    ///
+    /// Stake-sorted. One hosting organisation commonly announces from several.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asns: Vec<i32>,
+    /// One entry per city, stake-sorted; the data never resolves the building.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_centers: Vec<GroupCity>,
+    /// Distinct cities the members sit in, whether or not `data_centers` lists them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_center_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_count: Option<u64>,
+    /// Stake share per client lineage, biggest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_mix: Vec<GroupShare>,
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub version_spread: Vec<GroupShare>,
+    /// Block engines paired with this client, from the group's own children.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_engines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superminority_count: Option<u64>,
+    /// First epoch a validator reported this group, over the whole history the DB holds. A provider
+    /// is named by whatever the geolocation source returned at the time, so a renamed organisation
+    /// reads as first seen when it was renamed; a client can be no older than
+    /// `client_history_since_epoch`, which is where the stored client identity itself begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_at: Option<DateTime<Utc>>,
+    /// Newest release published for the client lineage, pre-releases included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_release: Option<ClientRelease>,
 }
 
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
