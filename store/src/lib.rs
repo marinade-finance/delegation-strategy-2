@@ -1,5 +1,4 @@
 pub mod dto;
-pub mod group_history;
 pub mod groups;
 pub mod incidents;
 pub mod ip_info;

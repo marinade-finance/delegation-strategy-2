@@ -7,13 +7,13 @@ use crate::utils::validator_groups::{page_groups, GetGroupsConfig, DEFAULT_LIMIT
 use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use store::dto::ValidatorGroupRecord;
+use store::dto::ValidatorProviderGroupRecord;
 use warp::{http::StatusCode, reply::json, Reply};
 
 /// Groups by hosting organisation (`dc_aso`); the data never resolves the building.
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseProviders {
-    providers: Vec<ValidatorGroupRecord>,
+    providers: Vec<ValidatorProviderGroupRecord>,
     /// Number of providers matching `query`, before `offset`/`limit`.
     total_count: usize,
     /// Activated stake of every validator counted, in lamports — the denominator behind `stake_share`.

@@ -2,7 +2,10 @@ use crate::utils::order::{compare_keys, OrderDirection, OrderField, SortKey};
 use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use store::dto::{ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups};
+use store::dto::{
+    GroupRow, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorProviderGroupRecord, ValidatorProviderGroups,
+};
 
 pub const DEFAULT_LIMIT: usize = 100;
 
@@ -17,7 +20,7 @@ pub struct GetGroupsConfig {
 
 #[derive(Debug)]
 pub struct GroupsPage {
-    pub groups: Vec<ValidatorGroupRecord>,
+    pub groups: Vec<ValidatorProviderGroupRecord>,
     /// Number of groups matching the query, before `offset`/`limit`.
     pub total_count: usize,
     pub total_activated_stake: Decimal,
@@ -95,35 +98,36 @@ pub fn compare_group_rows(
     })
 }
 
-pub fn sort_groups(
-    groups: Vec<ValidatorGroupRecord>,
+pub fn sort_groups<T: GroupRow>(
+    groups: Vec<T>,
     order_field: OrderField,
     order_direction: &OrderDirection,
-) -> Vec<ValidatorGroupRecord> {
+) -> Vec<T> {
     // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
-    let mut keyed: Vec<(SortKey, ValidatorGroupRecord)> = groups
+    let mut keyed: Vec<(SortKey, T)> = groups
         .into_iter()
-        .map(|group| (group_column(&group, order_field), group))
+        .map(|group| (group_column(group.row(), order_field), group))
         .collect();
 
     keyed.sort_by(|(a_column, a), (b_column, b)| {
-        compare_group_rows((a_column, &a.key), (b_column, &b.key), order_direction)
+        compare_group_rows(
+            (a_column, &a.row().key),
+            (b_column, &b.row().key),
+            order_direction,
+        )
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
 }
 
-fn filter_groups(
-    groups: Vec<ValidatorGroupRecord>,
-    config: &GetGroupsConfig,
-) -> Vec<ValidatorGroupRecord> {
+fn filter_groups<T: GroupRow>(groups: Vec<T>, config: &GetGroupsConfig) -> Vec<T> {
     let Some(query) = search_term(config) else {
         return groups;
     };
 
     groups
         .into_iter()
-        .filter(|group| group.key.to_lowercase().contains(&query))
+        .filter(|group| group.row().key.to_lowercase().contains(&query))
         .collect()
 }
 
@@ -135,8 +139,8 @@ fn search_term(config: &GetGroupsConfig) -> Option<String> {
         .filter(|query| !query.is_empty())
 }
 
-pub fn page_groups(groups: ValidatorGroups, config: &GetGroupsConfig) -> GroupsPage {
-    let ValidatorGroups {
+pub fn page_groups(groups: ValidatorProviderGroups, config: &GetGroupsConfig) -> GroupsPage {
+    let ValidatorProviderGroups {
         groups,
         total_activated_stake,
         current_epoch,
@@ -249,10 +253,16 @@ mod tests {
         }
     }
 
-    fn groups(groups: Vec<ValidatorGroupRecord>) -> ValidatorGroups {
-        ValidatorGroups {
+    fn groups(groups: Vec<ValidatorGroupRecord>) -> ValidatorProviderGroups {
+        ValidatorProviderGroups {
             total_activated_stake: groups.iter().map(|group| group.total_stake).sum(),
-            groups,
+            groups: groups
+                .into_iter()
+                .map(|group| ValidatorProviderGroupRecord {
+                    group,
+                    ..Default::default()
+                })
+                .collect(),
             current_epoch: Some(100),
         }
     }
@@ -277,7 +287,10 @@ mod tests {
 
     fn node(key: &str, stake: i64, children: Vec<ValidatorGroupRecord>) -> ValidatorGroupNode {
         ValidatorGroupNode {
-            group: group(key, stake),
+            group: store::dto::ValidatorClientGroupRecord {
+                group: group(key, stake),
+                ..Default::default()
+            },
             children,
         }
     }
@@ -651,7 +664,7 @@ mod tests {
         );
     }
 
-    fn providers() -> ValidatorGroups {
+    fn providers() -> ValidatorProviderGroups {
         groups(vec![
             group("Hetzner Online GmbH", 300),
             group("Latitude.sh", 200),
