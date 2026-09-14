@@ -83,6 +83,7 @@ pub async fn store_validators(
             foundation_stake = u.foundation_stake,
             marinade_native_stake = u.marinade_native_stake,
             institutional_stake = u.institutional_stake,
+            direct_stake = u.direct_stake,
             self_stake = u.self_stake,
             superminority = u.superminority,
             stake_to_become_superminority = u.stake_to_become_superminority,
@@ -124,6 +125,7 @@ pub async fn store_validators(
                 foundation_stake,
                 marinade_native_stake,
                 institutional_stake,
+                direct_stake,
                 self_stake,
                 superminority,
                 stake_to_become_superminority,
@@ -172,6 +174,7 @@ pub async fn store_validators(
                     &v.foundation_stake,
                     &v.marinade_native_stake,
                     &v.institutional_stake,
+                    &v.direct_stake,
                     &v.self_stake,
                     &v.superminority,
                     &v.stake_to_become_superminority,
@@ -203,23 +206,24 @@ pub async fn store_validators(
                         (19, "NUMERIC".into()),                  // foundation_stake
                         (20, "NUMERIC".into()),                  // marinade_native_stake
                         (21, "NUMERIC".into()),                  // institutional_stake
-                        (22, "NUMERIC".into()),                  // selft_stake
-                        (23, "BOOL".into()),                     // superminority
-                        (24, "NUMERIC".into()),                  // stake_to_become_superminority
-                        (25, "NUMERIC".into()),                  // credits
-                        (26, "NUMERIC".into()),                  // leader_slots
-                        (27, "NUMERIC".into()),                  // blocks_produced
-                        (28, "DOUBLE PRECISION".into()),         // skip_rate
-                        (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                        (30, "TEXT".into()),                     // icon_url
-                        (31, "INTEGER".into()),                  // client_id
-                        (32, "TEXT".into()),                     // client_id_raw
-                        (33, "BIGINT".into()),                   // feature_set
-                        (34, "INTEGER".into()),                  // shred_version
-                        (35, "INTEGER".into()),                  // gossip_port
-                        (36, "BOOL".into()),                     // rpc_public
-                        (37, "BOOL".into()),                     // pubsub_public
-                        (38, "BOOL".into()),                     // dc_resolved
+                        (22, "NUMERIC".into()),                  // direct_stake
+                        (23, "NUMERIC".into()),                  // selft_stake
+                        (24, "BOOL".into()),                     // superminority
+                        (25, "NUMERIC".into()),                  // stake_to_become_superminority
+                        (26, "NUMERIC".into()),                  // credits
+                        (27, "NUMERIC".into()),                  // leader_slots
+                        (28, "NUMERIC".into()),                  // blocks_produced
+                        (29, "DOUBLE PRECISION".into()),         // skip_rate
+                        (30, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                        (31, "TEXT".into()),                     // icon_url
+                        (32, "INTEGER".into()),                  // client_id
+                        (33, "TEXT".into()),                     // client_id_raw
+                        (34, "BIGINT".into()),                   // feature_set
+                        (35, "INTEGER".into()),                  // shred_version
+                        (36, "INTEGER".into()),                  // gossip_port
+                        (37, "BOOL".into()),                     // rpc_public
+                        (38, "BOOL".into()),                     // pubsub_public
+                        (39, "BOOL".into()),                     // dc_resolved
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -270,6 +274,7 @@ pub async fn store_validators(
         foundation_stake,
         marinade_native_stake,
         institutional_stake,
+        direct_stake,
         self_stake,
         superminority,
         stake_to_become_superminority,
@@ -323,6 +328,7 @@ pub async fn store_validators(
                 &v.foundation_stake,
                 &v.marinade_native_stake,
                 &v.institutional_stake,
+                &v.direct_stake,
                 &v.self_stake,
                 &v.superminority,
                 &v.stake_to_become_superminority,

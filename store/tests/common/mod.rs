@@ -84,6 +84,7 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             marinade_stake: 0,
             marinade_native_stake: 0,
             institutional_stake: 0,
+            direct_stake: 0,
             superminority: false,
             stake_to_become_superminority: 0,
             performance: ValidatorPerformance {

@@ -50,6 +50,21 @@ pub fn get_institutional_stakes(
     Ok(institutional_stakes)
 }
 
+pub fn get_direct_stakes(
+    rpc_client: &RpcClient,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> anyhow::Result<HashMap<String, u64>> {
+    let direct_stake_authority = pubkey!("psrStL2hNx4c7hLUUks8SmDngeYriB8pF7uyHFhM8ir");
+    get_stakes_grouped_by_validator(
+        rpc_client,
+        &direct_stake_authority,
+        None,
+        epoch,
+        stake_history,
+    )
+}
+
 pub fn get_foundation_stakes(
     rpc_client: &RpcClient,
     epoch: Epoch,
