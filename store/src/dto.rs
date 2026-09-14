@@ -714,21 +714,14 @@ pub struct ValidatorProviderGroupRecord {
     #[serde(flatten)]
     pub group: ValidatorGroupRecord,
     /// Stake-sorted. One hosting organisation commonly announces from several.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asns: Vec<i32>,
-    /// One entry per city, stake-sorted; the data never resolves the building.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_centers: Vec<GroupCity>,
-    /// Distinct cities the members sit in, whether or not `data_centers` lists them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_center_count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub country_count: Option<u64>,
+    /// Stake-sorted
+    pub cities: Vec<GroupCity>,
+    pub city_count: u64,
+    pub country_count: u64,
     /// Stake share per client lineage, biggest first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_mix: Vec<GroupShare>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub superminority_count: Option<u64>,
+    pub superminority_count: u64,
 }
 
 impl GroupRow for ValidatorProviderGroupRecord {
@@ -751,19 +744,14 @@ impl std::ops::Deref for ValidatorProviderGroupRecord {
 pub struct ValidatorClientGroupRecord {
     #[serde(flatten)]
     pub group: ValidatorGroupRecord,
-    /// Distinct cities the members sit in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_center_count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub country_count: Option<u64>,
+    /// Distinct cities the members sit in; the client rows serve no per-city breakdown.
+    pub city_count: u64,
+    pub country_count: u64,
     /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub version_spread: Vec<GroupShare>,
     /// Block engines paired with this client, from the group's own children.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block_engines: Vec<String>,
-    /// Newest release published for the client lineage, pre-releases included.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Null when the lineage has published no release we know of.
     pub latest_release: Option<ClientRelease>,
 }
 
@@ -1107,7 +1095,7 @@ mod tests {
 
         let provider = serde_json::to_value(ValidatorProviderGroupRecord {
             group: group.clone(),
-            country_count: Some(3),
+            country_count: 3,
             ..Default::default()
         })
         .unwrap();

@@ -215,7 +215,7 @@ impl Breakdowns {
         asns.into_iter().map(|(asn, _)| *asn).collect()
     }
 
-    fn data_centers(&self) -> Vec<GroupCity> {
+    fn cities(&self) -> Vec<GroupCity> {
         let mut cities: Vec<_> = self
             .cities
             .iter()
@@ -240,11 +240,11 @@ impl Breakdowns {
         group_stake: Decimal,
     ) -> ValidatorProviderGroupRecord {
         ValidatorProviderGroupRecord {
-            country_count: Some(self.countries.len() as u64),
-            data_center_count: Some(self.cities.len() as u64),
+            country_count: self.countries.len() as u64,
+            city_count: self.cities.len() as u64,
             asns: self.asns(),
-            data_centers: self.data_centers(),
-            superminority_count: Some(self.superminority_count),
+            cities: self.cities(),
+            superminority_count: self.superminority_count,
             client_mix: Self::shares(self.lineages, group_stake),
             group,
         }
@@ -258,8 +258,8 @@ impl Breakdowns {
         latest_release: Option<ClientRelease>,
     ) -> ValidatorClientGroupRecord {
         ValidatorClientGroupRecord {
-            country_count: Some(self.countries.len() as u64),
-            data_center_count: Some(self.cities.len() as u64),
+            country_count: self.countries.len() as u64,
+            city_count: self.cities.len() as u64,
             version_spread: Self::shares(self.versions, group_stake),
             block_engines: Vec::new(),
             latest_release,
@@ -1081,7 +1081,7 @@ mod tests {
         assert_eq!(provider.asns, vec![24940, 213230]);
         assert_eq!(
             provider
-                .data_centers
+                .cities
                 .iter()
                 .map(|city| (city.city.as_str(), city.validator_count, city.total_stake))
                 .collect::<Vec<_>>(),
@@ -1090,7 +1090,7 @@ mod tests {
                 ("Helsinki", 1, Decimal::from(100))
             ]
         );
-        assert_eq!(provider.country_count, Some(2));
+        assert_eq!(provider.country_count, 2);
     }
 
     #[test]
@@ -1111,8 +1111,8 @@ mod tests {
         let providers = aggregate_provider_rows(&validators);
         let provider = group(&providers, "Hetzner");
 
-        assert_eq!(provider.data_centers.len(), 1);
-        assert_eq!(provider.country_count, Some(1));
+        assert_eq!(provider.cities.len(), 1);
+        assert_eq!(provider.country_count, 1);
     }
 
     #[test]
@@ -1128,7 +1128,7 @@ mod tests {
         let providers = aggregate_provider_rows(&validators);
         let provider = group(&providers, "Hetzner");
 
-        assert_eq!(provider.superminority_count, Some(1));
+        assert_eq!(provider.superminority_count, 1);
     }
 
     #[test]
@@ -1224,8 +1224,8 @@ mod tests {
         let clients = aggregate_client_rows(&validators, &Default::default());
         let client = group(&clients, "Agave");
 
-        assert_eq!(client.country_count, Some(2));
-        assert_eq!(client.data_center_count, Some(2));
+        assert_eq!(client.country_count, 2);
+        assert_eq!(client.city_count, 2);
     }
 
     #[test]
