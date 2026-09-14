@@ -71,12 +71,7 @@ pub async fn handler(
             cache.net_apy_updated_at().map(DateTime::<Utc>::from),
         )
     };
-    let page = page_groups(
-        groups.groups,
-        groups.total_activated_stake,
-        groups.current_epoch,
-        &config,
-    );
+    let page = page_groups(groups, &config);
 
     Ok(warp::reply::with_status(
         json(&ResponseProviders {
