@@ -3,6 +3,7 @@ use crate::dto::{
     ValidatorScoreRecord,
 };
 use chrono::{DateTime, Utc};
+use csv::{required, Column};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
@@ -10,12 +11,11 @@ use tokio_postgres::Client;
 const MAX_ALLOWED_COMMISSION: u8 = 10;
 const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
 
+const BLACKLIST_COLUMNS: [Column; 2] = [required("vote_account"), required("code")];
+
 fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, HashSet<String>>> {
-    let mut blacklist: Vec<BlacklistRecord> = Default::default();
-    let mut rdr = csv::Reader::from_path(blacklist_path)?;
-    for result in rdr.deserialize() {
-        blacklist.push(result?);
-    }
+    let blacklist: Vec<BlacklistRecord> =
+        csv::load_path(std::path::Path::new(blacklist_path), &BLACKLIST_COLUMNS)?;
 
     Ok(blacklist.into_iter().fold(
         HashMap::new(),
@@ -296,4 +296,20 @@ pub async fn load_scoring_runs(psql_client: &Client) -> anyhow::Result<Vec<Scori
             ui_id: scoring_run.get("ui_id"),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_repos_blacklist_loads() {
+        // The scoring pipeline fetches this file from master; if its shape drifts, fail here.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../blacklist.csv").to_string();
+        let blacklist = load_blacklist(&path).unwrap();
+        assert!(blacklist.len() > 400);
+        assert!(blacklist
+            .get("9Bnti5HezjTHQ2uqZtr5V9YSdCuzuQTUZNoaZrVtxy5T")
+            .is_some_and(|codes| codes.contains("BLACKLIST_COMMISSION_RUG")));
+    }
 }

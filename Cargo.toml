@@ -2,6 +2,7 @@
 members = [
     "api",
     "collect",
+    "csv",
     "store",
     "check",
 ]

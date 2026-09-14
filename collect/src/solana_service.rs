@@ -3,6 +3,7 @@ use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
+use csv::{required, Column};
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
@@ -89,23 +90,30 @@ struct ClientRegistry {
     ids_by_name: HashMap<String, u16>,
 }
 
+const CLIENT_ID_COLUMNS: [Column; 2] = [required("client_id"), required("client_name")];
+
+#[derive(Deserialize)]
+struct ClientIdRow {
+    client_id: u16,
+    client_name: String,
+}
+
+fn parse_client_registry(text: &str) -> anyhow::Result<ClientRegistry> {
+    let mut names = HashMap::new();
+    let mut ids_by_name = HashMap::new();
+
+    for row in csv::parse::<ClientIdRow>(text, &CLIENT_ID_COLUMNS, "client-ids.csv")? {
+        ids_by_name.insert(canonical_client_name(&row.client_name), row.client_id);
+        names.insert(row.client_id, row.client_name);
+    }
+
+    Ok(ClientRegistry { names, ids_by_name })
+}
+
 fn client_registry() -> &'static ClientRegistry {
     static REGISTRY: OnceLock<ClientRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        let mut names = HashMap::new();
-        let mut ids_by_name = HashMap::new();
-        let mut reader = csv::Reader::from_reader(CLIENT_IDS_CSV.as_bytes());
-        for record in reader.records().flatten() {
-            let (Some(id), Some(name)) = (record.get(0), record.get(1)) else {
-                continue;
-            };
-            let Ok(id) = id.trim().parse::<u16>() else {
-                continue;
-            };
-            ids_by_name.insert(canonical_client_name(name), id);
-            names.insert(id, name.trim().to_string());
-        }
-        ClientRegistry { names, ids_by_name }
+        parse_client_registry(CLIENT_IDS_CSV).unwrap_or_else(|err| panic!("{err:#}"))
     })
 }
 
@@ -209,21 +217,8 @@ impl ClientId {
 }
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
-fn is_plausible_node_version(version: &str) -> bool {
-    let numeric = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-    let mut parts = version.splitn(3, '.');
-    parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(|p| match p.split_once('-') {
-            None => numeric(p),
-            Some((patch, prerelease)) => {
-                numeric(patch)
-                    && !prerelease.is_empty()
-                    && prerelease
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'.')
-            }
-        })
+pub fn is_plausible_node_version(version: &str) -> bool {
+    crate::validator_version::ValidatorVersion::from_gossip(version).is_ok()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -996,6 +991,7 @@ mod tests {
     // grouping arm fails here instead of silently becoming an unclassified validator.
     #[test]
     fn every_registered_client_id_has_groupings() {
+        assert!(!client_registry().names.is_empty());
         for (id, name) in client_registry().names.iter() {
             assert!(
                 ClientId::Registered(*id).groupings().is_some(),

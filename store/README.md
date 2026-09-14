@@ -47,6 +47,9 @@ cargo run --bin store -- --postgres-url $POSTGRES_URL \
 
 
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  releases --snapshot-file "$OUTPUT_DIR"/releases.yaml
+
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml

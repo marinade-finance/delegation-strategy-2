@@ -9,6 +9,7 @@ use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use node_observations::{store_node_observations, StoreNodeObservationsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
@@ -47,6 +48,7 @@ enum StoreCommand {
     ValidatorsBlockRewards(StoreBlockRewardsParams),
     ValidatorsEvents(StoreEventsParams),
     TakeRates(StoreTakeRatesParams),
+    Releases(StoreReleasesParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
@@ -130,6 +132,9 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::TakeRates(store_params) => {
             store_take_rates(store_params, &mut psql_client).await
+        }
+        StoreCommand::Releases(store_params) => {
+            store_releases(store_params, &mut psql_client).await
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,

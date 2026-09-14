@@ -1,0 +1,16 @@
+[package]
+# The package id differs from the lib so `cargo -p` is not ambiguous with the external csv crate;
+# callers still say `csv::parse`.
+name = "ds-csv"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "csv"
+
+[dependencies]
+anyhow = { workspace = true }
+# Renamed so this lib can be `csv` to callers without rustdoc seeing two crates by that name.
+csv_reader = { package = "csv", version = "1.1" }
+serde = { workspace = true }

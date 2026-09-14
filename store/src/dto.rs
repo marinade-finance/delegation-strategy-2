@@ -497,6 +497,35 @@ pub struct VersionRecord {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ReleaseRecord {
+    /// `agave`, `frankendancer`, `firedancer` or `sig`.
+    pub client_lineage: String,
+    /// As the client reports it in gossip, e.g. `4.2.2` or `0.1106.40201`.
+    pub client_version: String,
+    /// Epoch the release was published in, resolved from `released_at` against the epochs we hold.
+    pub available_epoch: Option<u64>,
+    pub released_at: Option<DateTime<Utc>>,
+    pub release_url: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A version the Solana Foundation Delegation Program required, and the epoch it started requiring it.
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct SfdpFloor {
+    pub client_lineage: String,
+    pub client_version: String,
+    pub effective_epoch: u64,
+}
+
+/// A version the cluster's feature gates required, and the epoch it started requiring it.
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct FeatureGateFloor {
+    pub client_lineage: String,
+    pub client_version: String,
+    pub effective_epoch: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct SettlementRecord {
     /// Raw upstream JSON tagged enum, e.g. `"Bidding"` or `{"ProtectedEvent":{...}}`.
     pub reason: String,
