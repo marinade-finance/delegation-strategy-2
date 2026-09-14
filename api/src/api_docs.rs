@@ -65,6 +65,8 @@ use utoipa::OpenApi;
         schemas(store::dto::GroupShare),
         schemas(store::dto::ValidatorGroupNode),
         schemas(store::dto::ValidatorGroupRecord),
+        schemas(store::dto::ValidatorProviderGroupRecord),
+        schemas(store::dto::ValidatorClientGroupRecord),
         schemas(store::dto::ValidatorRecord),
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),

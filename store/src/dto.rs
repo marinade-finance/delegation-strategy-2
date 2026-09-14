@@ -694,10 +694,25 @@ pub struct ValidatorGroupRecord {
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
     pub incidents: GroupIncidents,
-    /// The fields below describe what the group is made of, and are served only by the two
-    /// groupings whose rows render an information panel: `/providers` and the client rows of
-    /// `/clients`. A grouping that computes none of them omits them all.
-    ///
+}
+
+/// The columns every group row carries, whatever the grouping.
+pub trait GroupRow {
+    fn row(&self) -> &ValidatorGroupRecord;
+}
+
+impl GroupRow for ValidatorGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        self
+    }
+}
+
+/// A hosting provider, as `/providers` serves it: the common columns flattened, plus what the
+/// provider information panel renders.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorProviderGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
     /// Stake-sorted. One hosting organisation commonly announces from several.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asns: Vec<i32>,
@@ -712,25 +727,58 @@ pub struct ValidatorGroupRecord {
     /// Stake share per client lineage, biggest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_mix: Vec<GroupShare>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superminority_count: Option<u64>,
+}
+
+impl GroupRow for ValidatorProviderGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorProviderGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
+/// A client lineage, as the parent rows of `/clients` serve it. Its block engines are served as
+/// children, which carry the common columns alone.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorClientGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    /// Distinct cities the members sit in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_center_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_count: Option<u64>,
     /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub version_spread: Vec<GroupShare>,
     /// Block engines paired with this client, from the group's own children.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block_engines: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub superminority_count: Option<u64>,
-    /// First epoch a validator reported this group, over the whole history the DB holds. A provider
-    /// is named by whatever the geolocation source returned at the time, so a renamed organisation
-    /// reads as first seen when it was renamed; a client can be no older than
-    /// `client_history_since_epoch`, which is where the stored client identity itself begins.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_seen_epoch: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_seen_at: Option<DateTime<Utc>>,
     /// Newest release published for the client lineage, pre-releases included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_release: Option<ClientRelease>,
+}
+
+impl GroupRow for ValidatorClientGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorClientGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
 }
 
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
@@ -814,10 +862,17 @@ pub struct ValidatorGroups {
     pub current_epoch: Option<u64>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorProviderGroups {
+    pub groups: Vec<ValidatorProviderGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
 /// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the block engines it runs with.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorGroupNode {
-    pub group: ValidatorGroupRecord,
+    pub group: ValidatorClientGroupRecord,
     pub children: Vec<ValidatorGroupRecord>,
 }
 
@@ -1039,5 +1094,40 @@ mod tests {
         assert_eq!(GroupIncidents::Records(vec![incident(); 3]).count(), 3);
         assert_eq!(GroupIncidents::Count(3).count(), 3);
         assert_eq!(GroupIncidents::default().count(), 0);
+    }
+
+    /// The split into per-grouping types must not reach the wire: consumers read one flat object.
+    #[test]
+    fn a_panel_row_serializes_flat() {
+        let group = ValidatorGroupRecord {
+            key: "Hetzner".to_string(),
+            validator_count: 2,
+            ..Default::default()
+        };
+
+        let provider = serde_json::to_value(ValidatorProviderGroupRecord {
+            group: group.clone(),
+            country_count: Some(3),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(provider["key"], "Hetzner");
+        assert_eq!(provider["validator_count"], 2);
+        assert_eq!(provider["country_count"], 3);
+        assert!(provider.get("group").is_none());
+
+        let client = serde_json::to_value(ValidatorClientGroupRecord {
+            group,
+            block_engines: vec!["Agave + JitoBAM".to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(client["key"], "Hetzner");
+        assert_eq!(client["block_engines"][0], "Agave + JitoBAM");
+        assert!(client.get("group").is_none());
+        assert!(
+            client.get("asns").is_none(),
+            "a client row has no provider columns at all"
+        );
     }
 }
