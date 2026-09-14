@@ -440,7 +440,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.validators = validators;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
-        // Inside the commit, so a warm that fails after loading cannot leave the gauge describing records no request ever saw
+        // Inside the commit: a failed warm must not leave the gauge describing unserved records.
         record_inflation_commission_sources(ctx.cache.validators.values());
     }
 
@@ -652,8 +652,7 @@ fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &'stat
     }
 }
 
-// Every series is set on every refresh, including to zero, so an alert on `source="none"` reads a
-// resolved fleet as a zero rather than as a series that stopped being reported.
+// Every series is set on every refresh, so an alert reads a resolved fleet as 0, not as gone.
 fn record_inflation_commission_sources<'a>(
     validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
 ) {
@@ -1085,7 +1084,7 @@ mod commission_source_metric_tests {
         );
     }
 
-    // The fleet-wide state through epoch 1031: no epoch-close source, every consumer on the fallback.
+    // The fleet-wide state through epoch 1031: no close source, every consumer on the fallback.
     #[test]
     fn a_validator_on_the_advertised_fallback_is_told_apart_from_one_with_nothing() {
         assert_eq!(
@@ -1095,7 +1094,7 @@ mod commission_source_metric_tests {
         assert_eq!(commission_source_label(None, false), COMMISSION_SOURCE_NONE);
     }
 
-    // A source the column carries but this build does not know must not mint a series of its own: only COMMISSION_SOURCES is ever reset, so such a series would hold its last count forever.
+    // Only COMMISSION_SOURCES is reset, so a series minted off an unknown source would never clear.
     #[test]
     fn an_unrecognised_source_folds_into_one_that_gets_reset() {
         assert_eq!(

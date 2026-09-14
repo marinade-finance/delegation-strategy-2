@@ -97,8 +97,7 @@ lazy_static! {
         &["cache"]
     )
     .unwrap();
-    // The upstream shape change behind SIMD-0232 ran for a full epoch before a downstream audit
-    // found it, because nothing exported how many validators had no rate left to read.
+    // SIMD-0232 ran a full epoch before an audit caught it: nothing exported who had no rate left.
     pub static ref VALIDATOR_INFLATION_COMMISSION_SOURCE: IntGaugeVec = register_int_gauge_vec!(
         "ds_validator_inflation_commission_source",
         "Validators in the cache by where their inflation commission was resolved from",

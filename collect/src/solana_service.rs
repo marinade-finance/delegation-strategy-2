@@ -508,15 +508,14 @@ fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> 
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-// Bincode discriminants of VoteStateVersions. 0 carries no withdrawer to read: it is Uninitialized on the current interface, and the retired V0_23_5 it replaced put the withdrawer elsewhere.
+// Bincode discriminants of VoteStateVersions; 0 is Uninitialized and carries no withdrawer to read.
 const VOTE_STATE_VERSION_UNINITIALIZED: u32 = 0;
 const VOTE_STATE_VERSION_V1_14_11: u32 = 1;
 const VOTE_STATE_VERSION_V3: u32 = 2;
 const VOTE_STATE_VERSION_V4: u32 = 3;
 
 const VOTE_AUTHORIZED_WITHDRAWER_OFFSET: usize = 4 + 32;
-// Byte 68 is the legacy u8 commission on v1/v3 and the first collector on v4, so every read past
-// the withdrawer has to be version-dispatched: a length check alone would decode lockouts as a pubkey.
+// Byte 68 is the v1/v3 commission and the v4 collector, so reads past it dispatch on version.
 const VOTE_PRE_V4_COMMISSION_OFFSET: usize = 68;
 const VOTE_V4_INFLATION_REWARDS_COLLECTOR_OFFSET: usize = 68;
 const VOTE_V4_BLOCK_REVENUE_COLLECTOR_OFFSET: usize = 100;
@@ -524,12 +523,11 @@ const VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET: usize = 132;
 const VOTE_V4_BLOCK_REVENUE_COMMISSION_BPS_OFFSET: usize = 134;
 const VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET: usize = 136;
 
-// Field names and null semantics match solana-snapshot-parser's ValidatorMeta so the two
-// derivations of the same on-chain state stay reconcilable.
+// Names and null semantics match solana-snapshot-parser's ValidatorMeta so both stay reconcilable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoteStateFields {
     pub authorized_withdrawer: Pubkey,
-    // None on a version whose commission offset this build does not know; the withdrawer is still read, since it has sat at the same offset on every version since v1_14_11
+    // None where this build does not know the commission offset; the withdrawer still reads.
     pub inflation_rewards_commission_bps: Option<u16>,
     pub inflation_rewards_commission_bps_is_v4: Option<bool>,
     pub inflation_rewards_collector: Option<Pubkey>,
@@ -571,7 +569,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
             let commission = read_array::<1>(data, VOTE_PRE_V4_COMMISSION_OFFSET, "commission")?[0];
             Ok(VoteStateFields {
                 authorized_withdrawer,
-                // agave synthesizes this same projection when it converts a pre-v4 state, so it is what the runtime applies either way; is_v4 is what says it was not set in basis points
+                // agave synthesizes the same projection, so the runtime applies it either way.
                 inflation_rewards_commission_bps: Some(u16::from(commission).saturating_mul(100)),
                 inflation_rewards_commission_bps_is_v4: Some(false),
                 inflation_rewards_collector: None,
@@ -609,7 +607,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 "pending_delegator_rewards",
             )?)),
         }),
-        // Self-stake only needs the withdrawer, so an unknown version keeps resolving it rather than dropping the account; the SIMD-0185 fields stay unread because a new version may move them
+        // An unknown version still yields the withdrawer; its SIMD-0185 offsets may have moved.
         _ => Ok(VoteStateFields {
             authorized_withdrawer,
             inflation_rewards_commission_bps: None,
@@ -622,6 +620,9 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
     }
 }
 
+// Half the fleet unparsed is a layout change, not the usual few uninitialized accounts.
+const MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT: usize = 50;
+
 // Relies on the vote account layout and needs updating if any field position changes.
 pub fn get_vote_account_states(
     rpc_client: &RpcClient,
@@ -629,33 +630,50 @@ pub fn get_vote_account_states(
     info!("Getting vote account states");
     let vote_program_id = solana_vote_program::id();
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
+    let accounts: Vec<(String, &[u8])> = vote_accounts
+        .iter()
+        .map(|(account_pubkey, account)| (account_pubkey.to_string(), account.data.as_slice()))
+        .collect();
 
-    let mut states: HashMap<String, VoteStateFields> = HashMap::with_capacity(vote_accounts.len());
+    parse_vote_account_states(&accounts)
+}
+
+fn parse_vote_account_states(
+    accounts: &[(String, &[u8])],
+) -> anyhow::Result<HashMap<String, VoteStateFields>> {
+    let mut states: HashMap<String, VoteStateFields> = HashMap::with_capacity(accounts.len());
     let mut unparsed = 0usize;
     let mut first_error = None;
-    for (account_pubkey, account) in vote_accounts.iter() {
-        match parse_vote_state(&account.data) {
+    for (account_pubkey, data) in accounts.iter() {
+        match parse_vote_state(data) {
             Ok(state) => {
-                states.insert(account_pubkey.to_string(), state);
+                states.insert(account_pubkey.clone(), state);
             }
             Err(err) => {
                 unparsed += 1;
-                // Aggregated: one line per account would be thousands on a cluster-wide shape change
+                // Aggregated: one line each would be thousands on a cluster-wide shape change
                 first_error.get_or_insert_with(|| format!("{account_pubkey}: {err}"));
             }
         }
     }
     if let Some(first_error) = first_error {
+        // A run writing zero self stake fleet-wide leaves nothing saying the data was wrong.
+        if unparsed * 100 > accounts.len() * MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT {
+            anyhow::bail!(
+                "Could not parse {unparsed} of {} vote accounts, first: {first_error}",
+                accounts.len()
+            );
+        }
         warn!(
             "Could not parse {unparsed} of {} vote accounts, first: {first_error}",
-            vote_accounts.len()
+            accounts.len()
         );
     }
     let v4 = states
         .values()
         .filter(|state| state.inflation_rewards_commission_bps_is_v4 == Some(true))
         .count();
-    // The withdrawer still resolved for these, so self stake survives; only the commission is gone, and silence here is how a version bump would reach close_epoch unnoticed
+    // Self stake survives these; silence is how a version bump would reach close_epoch unnoticed.
     let without_commission = states
         .values()
         .filter(|state| state.inflation_rewards_commission_bps.is_none())
@@ -709,7 +727,7 @@ struct CommissionStats {
     no_reward: usize,
 }
 
-// Rounds up where agave's own commission_percent() floors: rounding down would let a validator above the 10% eligibility cap read as exactly at it.
+// Rounds up where agave's commission_percent() floors: down reads just over the 10% cap as at it.
 pub fn bps_to_percent(bps: u16) -> u8 {
     bps.min(10_000).div_ceil(100) as u8
 }
@@ -1383,8 +1401,7 @@ mod vote_state_tests {
     const INFLATION_COLLECTOR: [u8; 32] = [3; 32];
     const BLOCK_COLLECTOR: [u8; 32] = [4; 32];
 
-    // Built byte by byte rather than through the SDK on purpose: the pinned solana-client predates
-    // VoteStateV4, and hand-laid bytes are what pins the offsets against agave's frame_v4.rs.
+    // By hand because the pinned solana-client predates VoteStateV4; this pins agave's frame_v4.rs.
     fn pre_v4_account(version: u32, commission: u8, total_len: usize) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&version.to_le_bytes());
@@ -1459,7 +1476,7 @@ mod vote_state_tests {
         assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(false));
     }
 
-    // A commission byte above 100 is invalid on chain; agave's own conversion saturates rather than overflowing.
+    // A commission byte above 100 is invalid on chain; agave saturates rather than overflows.
     #[test]
     fn a_pre_v4_commission_beyond_the_full_range_saturates() {
         let state =
@@ -1505,7 +1522,7 @@ mod vote_state_tests {
         );
     }
 
-    // Self stake reads the withdrawer alone, so a version bump must not drop the account from the set; the fields whose offsets it could move stay unread.
+    // Self stake reads the withdrawer alone, so a version bump must not drop the account.
     #[test]
     fn an_unknown_version_yields_the_withdrawer_and_no_commission() {
         for version in [4u32, u32::MAX] {
@@ -1525,6 +1542,35 @@ mod vote_state_tests {
             assert_eq!(state.block_revenue_commission_bps, None);
             assert_eq!(state.pending_delegator_rewards, None);
         }
+    }
+
+    #[test]
+    fn a_minority_of_unparsed_vote_accounts_still_yields_the_rest() {
+        let good = v4_account(733, 1234, 0, 3762);
+        let bad = pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762);
+        let mut accounts: Vec<(String, &[u8])> = (0..6)
+            .map(|i| (format!("vote{i}"), good.as_slice()))
+            .collect();
+        accounts.push(("voteBad".to_string(), bad.as_slice()));
+
+        let states = parse_vote_account_states(&accounts).unwrap();
+        assert_eq!(states.len(), 6);
+        assert!(!states.contains_key("voteBad"));
+    }
+
+    #[test]
+    fn a_majority_of_unparsed_vote_accounts_fails_the_run() {
+        let good = v4_account(733, 1234, 0, 3762);
+        let bad = pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762);
+        let mut accounts: Vec<(String, &[u8])> = (0..6)
+            .map(|i| (format!("voteBad{i}"), bad.as_slice()))
+            .collect();
+        accounts.push(("voteGood".to_string(), good.as_slice()));
+
+        assert!(
+            parse_vote_account_states(&accounts).is_err(),
+            "a layout change must fail the run, not write zero self stake for the fleet"
+        );
     }
 
     #[test]

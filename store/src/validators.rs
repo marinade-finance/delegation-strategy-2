@@ -99,7 +99,7 @@ pub async fn store_validators(
             gossip_port = u.gossip_port,
             rpc_public = u.rpc_public,
             pubsub_public = u.pubsub_public,
-            -- is_v4 is set exactly where a commission was read, so an account whose state went unparsed or unrecognised keeps the epoch's last good sample instead of erasing the only commission close_epoch can still fall back on; a pre-v4 state that did parse writes its nulls through
+            -- is_v4 marks a read state, so an unparsed one keeps close_epoch's fallback sample
             inflation_rewards_collector = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector ELSE validators.inflation_rewards_collector END,
             block_revenue_collector = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector ELSE validators.block_revenue_collector END,
             inflation_rewards_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_commission_bps ELSE validators.inflation_rewards_commission_bps END,

@@ -55,8 +55,7 @@ async fn load(
     .unwrap()
 }
 
-// The record projects one row per validator and the newest epoch is always still open, where the
-// three epoch-close commission columns are null.
+// One row per validator, newest epoch first, and that one is open: its close columns are null.
 #[tokio::test]
 async fn load_validators_projects_commissions_from_the_newest_closed_epoch() {
     let schema = "ds_test_load_validators_commission_projection";
@@ -206,8 +205,7 @@ async fn expected_take_rate_reads_the_rate_a_commission_gamer_actually_charges()
         .unwrap();
 }
 
-// A validator that rugged two epochs ago and has charged 5 since: with close_epoch yet to run for
-// the epoch below the open one, the only populated row left is the superseded one.
+// Rugged two epochs ago, 5 since: with close_epoch pending, only the superseded row is populated.
 #[tokio::test]
 async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commission() {
     let schema = "ds_test_load_validators_commission_projection_bound";
@@ -285,8 +283,7 @@ async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commiss
         "bounding the walk must not cost the validator its take rate",
     );
 
-    // voteDeparted left the set an epoch ago, so its newest closed epoch is two below the cluster's
-    // tip: reachable from its own seeding row, but not from a bound measured against the tip.
+    // voteDeparted's newest closed epoch is two below the tip, so a tip-measured bound misses it.
     let departed = validators
         .get("voteDeparted")
         .expect("voteDeparted must load");
@@ -306,8 +303,7 @@ async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commiss
         .unwrap();
 }
 
-// SIMD-0232 left commission_effective null from epoch 1031 on, so every warning, rug event and
-// scoring input that read it alone went quiet. The three tests below pin the sources that replaced it.
+// SIMD-0232 nulled commission_effective from 1031 on; these pin the sources that replaced it.
 #[tokio::test]
 async fn high_commission_warning_survives_a_null_effective_commission() {
     let schema = "ds_test_high_commission_warning_null_effective";
@@ -373,9 +369,7 @@ async fn load_ruggers_detects_a_rug_after_the_effective_commission_went_null() {
     }
     let client = migrated_client(schema).await.unwrap();
 
-    // voteRugger alternates 5/15 across five epochs with commission_effective null throughout;
-    // voteSteady never leaves 5. voteCutter ends both its epochs at 5 with a ceiling of 15, the
-    // shape an honest mid-epoch cut leaves - and the one a spike-and-revert leaves too.
+    // voteCutter ends both epochs at 5 under a ceiling of 15: an honest cut and a rug look alike.
     client
         .execute(
             "INSERT INTO validators (
@@ -430,8 +424,7 @@ async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
     }
     let client = migrated_client(schema).await.unwrap();
 
-    // commission_min_observed is written only by update_observed_commission, so every epoch still
-    // waiting on close_epoch carries NULL while the next epoch's hourly rows already give it a LEAD.
+    // The floor lands only at close, so an epoch awaiting it is NULL while the next already LEADs.
     client
         .execute(
             "INSERT INTO validators (
@@ -468,6 +461,105 @@ async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
 }
 
 #[tokio::test]
+async fn load_ruggers_scores_a_closed_epoch_on_the_applied_rate_not_the_last_sample() {
+    let schema = "ds_test_load_ruggers_applied_rate";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // voteHidden spiked between hourly samples, so only commission_effective carries the rug.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityHidden', 'voteHidden', 1020, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityHidden', 'voteHidden', 1021, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, 15),
+                ('identityHidden', 'voteHidden', 1022, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityHidden', 'voteHidden', 1023, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, 15),
+                ('identityHidden', 'voteHidden', 1024, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    let rugger = ruggers
+        .get("voteHidden")
+        .expect("the applied rate must score, not the advertised sample");
+    assert_eq!(rugger.occurrences, 3, "1021, 1022 and 1023 each match");
+    assert_eq!(rugger.epochs, vec![1021, 1022, 1023]);
+    assert_eq!(
+        rugger.observed_commissions,
+        vec![15, 5, 15],
+        "the aggregate carries the applied rate, not the 5 every hourly sample saw"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn load_ruggers_reads_one_series_across_the_epoch_the_applied_rate_went_null() {
+    let schema = "ds_test_load_ruggers_source_boundary";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // The series switches source at 1030; a steady rate across it must not mint an event.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identitySteady', 'voteSteady', 1028, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySteady', 'voteSteady', 1029, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySteady', 'voteSteady', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identitySteady', 'voteSteady', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1028, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityCrosser', 'voteCrosser', 1029, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, 15),
+                ('identityCrosser', 'voteCrosser', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    assert!(
+        !ruggers.contains_key("voteSteady"),
+        "the source changed at 1030, the rate did not"
+    );
+
+    let crosser = ruggers
+        .get("voteCrosser")
+        .expect("a rug spanning the source switch must still be detected");
+    assert_eq!(crosser.occurrences, 3, "1029, 1030 and 1031 each match");
+    assert_eq!(crosser.epochs, vec![1029, 1030, 1031]);
+    assert_eq!(crosser.observed_commissions, vec![15, 5, 15]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn collector_flags_and_shared_counts_project_per_epoch() {
     let schema = "ds_test_collector_flags_and_shared_counts";
     if skip_without_database(schema) {
@@ -484,9 +576,7 @@ async fn collector_flags_and_shared_counts_project_per_epoch() {
         .await
         .unwrap();
 
-    // voteShareA and voteShareB point at one collector; voteHome keeps its own vote account, so its
-    // count must stay 1 rather than being pooled with them. votePreV4 has no collector at all, and
-    // must not join the null partition's count. voteShareA redirected only in the open epoch.
+    // voteShareA and voteShareB share a collector; voteHome and the pre-v4 votePreV4 must not pool.
     client
         .execute(
             "INSERT INTO validators (

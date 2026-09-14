@@ -42,8 +42,7 @@ async fn read_back(client: &Client) -> Stored {
     }
 }
 
-// Both write paths matter: the first store of an epoch inserts, every later one that epoch updates,
-// and the two carry their own positional column lists.
+// The first store of an epoch inserts and later ones update, each on its own column list.
 #[tokio::test]
 async fn vote_state_columns_survive_both_write_paths_at_full_width() {
     let schema = "ds_test_store_vote_state_columns";
@@ -190,9 +189,7 @@ async fn a_snapshot_written_before_these_fields_still_stores() {
         .unwrap();
 }
 
-// An account getVoteAccounts lists but the program scan could not parse arrives here with every
-// field null. Overwriting on that would cost close_epoch the only commission it can still fall back
-// on, for an epoch nothing can backfill.
+// Overwriting on an unparsed account costs close_epoch its fallback for an unbackfillable epoch.
 #[tokio::test]
 async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
     let schema = "ds_test_store_vote_state_columns_unparsed";
@@ -243,8 +240,7 @@ async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
         .unwrap();
 }
 
-// The other half of the same guard: a state that did parse has to write its nulls through, or a
-// validator that converted away from v4 would keep collectors the runtime no longer reads.
+// The other half: a parsed state writes its nulls through, or a conversion away from v4 sticks.
 #[tokio::test]
 async fn a_parsed_pre_v4_state_still_clears_the_v4_only_columns_on_update() {
     let schema = "ds_test_store_vote_state_columns_parsed_clear";

@@ -38,7 +38,7 @@ fn resolve_commission_effective(
     }
 }
 
-// Written hourly by store validators over the open epoch, so by close this is the last sample taken.
+// Written hourly over the open epoch, so by close this is the last sample taken.
 async fn load_sampled_commission_bps(
     psql_client: &Client,
     epoch: &Decimal,

@@ -255,6 +255,7 @@ pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
     pub epoch_end_at: Option<DateTime<Utc>>,
+    /// The epoch's ceiling and floor across every commission sample and the applied rate. Both fold in `commission_effective`, which is a whole-percent projection rounded up from basis points, so either bound can read up to 1pp above the rate actually charged.
     pub commission_max_observed: Option<u8>,
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,

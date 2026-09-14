@@ -391,7 +391,7 @@ pub async fn load_versions(
 
     Ok(records)
 }
-// Reads the epoch's last advertised rate, not commission_effective: SIMD-0232 nulled that, and SQL comparisons against NULL are never true, so no epoch-1031-or-later row could match. It stands in because the runtime charges the rate held at the epoch's last slot, which is what commission_effective recorded; commission_max_observed would not, as a ceiling cannot tell a rug from an honest cut - both leave the same floor and ceiling.
+// Advertised stands in only where SIMD-0232 nulled the applied rate, restating no closed epoch.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -400,10 +400,10 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    commission_advertised,
+                    COALESCE(commission_effective, commission_advertised) AS commission_rate,
                     commission_min_observed,
-                    LAG(commission_advertised) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_advertised) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                    LAG(COALESCE(commission_effective, commission_advertised)) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
+                    LEAD(COALESCE(commission_effective, commission_advertised)) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
                 FROM
                     validators
             ),
@@ -411,26 +411,26 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    commission_advertised,
+                    commission_rate,
                     commission_min_observed
                 FROM
                     commission_changes
                 WHERE
-                    -- Branches 2 and 3 never read the floor, which close_epoch writes only at close
+                    -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
                     commission_min_observed IS NOT NULL
                     AND (
-                        (commission_advertised > commission_min_observed AND commission_advertised > 10 AND commission_min_observed <= 10)
+                        (commission_rate > commission_min_observed AND commission_rate > 10 AND commission_min_observed <= 10)
                         OR
-                        (prev_commission > 10 AND commission_advertised <= 10 AND next_commission > 10)
+                        (prev_commission > 10 AND commission_rate <= 10 AND next_commission > 10)
                         OR
-                        (prev_commission <= 10 AND commission_advertised > 10 AND next_commission <= 10)
+                        (prev_commission <= 10 AND commission_rate > 10 AND next_commission <= 10)
                     )
             )
             SELECT
                 vote_account,
                 COUNT(*) AS events_count,
                 ARRAY_AGG(epoch ORDER BY epoch) AS epochs,
-                ARRAY_AGG(commission_advertised ORDER BY epoch) AS commission_observed_values,
+                ARRAY_AGG(commission_rate ORDER BY epoch) AS commission_observed_values,
                 ARRAY_AGG(commission_min_observed ORDER BY epoch) AS commission_min_observed_values
             FROM
                 filtered_commissions
@@ -543,8 +543,7 @@ pub async fn update_with_warnings(
         if validator.avg_uptime_pct.unwrap_or(0.0) < 0.9 {
             validator.warnings.push(ValidatorWarning::LowUptime);
         }
-        // commission_effective alone went permanently null with SIMD-0232, and folding that absence
-        // into a 0 read as a free validator rather than as an unknown one.
+        // SIMD-0232 nulled commission_effective; folding that into 0 read as a free validator.
         let max_known_commission = validator
             .epoch_stats
             .iter()
@@ -989,13 +988,13 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
-                -- A vote account's own address never changes and only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
+                -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
                 CASE WHEN inflation_rewards_collector IS NOT NULL
                      THEN inflation_rewards_collector <> validators.vote_account END AS inflation_rewards_collector_redirected,
-                -- Compared against the identity, its default: agave stopped re-syncing the two once SIMD-0232 activated, so a changed identity also lands here
+                -- Against the identity, its default: SIMD-0232 stopped agave re-syncing the two
                 CASE WHEN block_revenue_collector IS NOT NULL
                      THEN block_revenue_collector = validators.identity END AS block_revenue_collector_is_identity,
-                -- Partitioning on a null collector would pool every pre-v4 validator into one bogus count, so the CASE nulls those rows out instead
+                -- Partitioning on a null collector would pool every pre-v4 validator into one count
                 CASE WHEN inflation_rewards_collector IS NOT NULL
                      THEN COUNT(*) OVER (PARTITION BY validators.epoch, inflation_rewards_collector) END AS inflation_rewards_collector_shared_count,
                 CASE WHEN block_revenue_collector IS NOT NULL
@@ -1066,9 +1065,9 @@ pub async fn load_validators(
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
                 let (apr, apy) = c.estimate_yields(
                     row.get::<_, Decimal>("credits").try_into().unwrap(),
-                    // SIMD-0232 left commission_effective null for epochs 1030-1031, and nothing can backfill them; falling straight to 100 would read those epochs as zero yield fleet-wide
+                    // Falling straight to 100 would read the epochs SIMD-0232 nulled as zero yield.
                     row.get::<_, Option<i32>>("commission_effective")
-                        .or(row.get::<_, Option<i32>>("commission_advertised"))
+                        .or_else(|| row.get::<_, Option<i32>>("commission_advertised"))
                         .map(|n| n.try_into().unwrap())
                         .unwrap_or(100),
                 );
