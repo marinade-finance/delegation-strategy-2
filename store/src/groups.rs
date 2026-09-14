@@ -242,10 +242,9 @@ impl ProviderAndClientBreakdowns {
         cities
     }
 
-    fn into_provider_panel(
+    fn into_provider_group_record(
         self,
         group: ValidatorGroupRecord,
-        group_stake: Decimal,
     ) -> ValidatorProviderGroupRecord {
         ValidatorProviderGroupRecord {
             country_count: self.countries.len() as u64,
@@ -253,22 +252,21 @@ impl ProviderAndClientBreakdowns {
             asns: self.asns(),
             cities: self.cities(),
             superminority_count: self.superminority_count,
-            client_mix: Self::shares(self.lineages, group_stake),
+            client_mix: Self::shares(self.lineages, group.total_stake),
             group,
         }
     }
 
     /// `block_engines` is filled by the client tree, which knows the group's children.
-    fn into_client_panel(
+    fn into_client_group_record(
         self,
         group: ValidatorGroupRecord,
-        group_stake: Decimal,
         latest_release: Option<ClientRelease>,
     ) -> ValidatorClientGroupRecord {
         ValidatorClientGroupRecord {
             country_count: self.countries.len() as u64,
             city_count: self.cities.len() as u64,
-            version_spread: Self::shares(self.versions, group_stake),
+            version_spread: Self::shares(self.versions, group.total_stake),
             block_engines: Vec::new(),
             latest_release,
             group,
@@ -436,9 +434,8 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
 
 impl Accumulator<ProviderAndClientBreakdowns> {
     fn finish_provider(mut self, ctx: &FinishContext) -> ValidatorProviderGroupRecord {
-        let group_stake = self.total_stake;
         let breakdowns = std::mem::take(&mut self.breakdowns);
-        breakdowns.into_provider_panel(self.finish_base(ctx), group_stake)
+        breakdowns.into_provider_group_record(self.finish_base(ctx))
     }
 
     fn finish_client(
@@ -451,9 +448,8 @@ impl Accumulator<ProviderAndClientBreakdowns> {
             .as_ref()
             .and_then(|key| releases.get(key.as_str()))
             .cloned();
-        let group_stake = self.total_stake;
         let breakdowns = std::mem::take(&mut self.breakdowns);
-        breakdowns.into_client_panel(self.finish_base(ctx), group_stake, latest_release)
+        breakdowns.into_client_group_record(self.finish_base(ctx), latest_release)
     }
 }
 
