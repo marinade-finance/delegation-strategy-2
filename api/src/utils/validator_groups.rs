@@ -2,10 +2,7 @@ use crate::utils::order::{compare_keys, OrderDirection, OrderField, SortKey};
 use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use store::dto::{
-    GroupRow, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
-    ValidatorProviderGroupRecord, ValidatorProviderGroups,
-};
+use store::dto::{GroupRow, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree};
 
 pub const DEFAULT_LIMIT: usize = 100;
 
@@ -19,8 +16,8 @@ pub struct GetGroupsConfig {
 }
 
 #[derive(Debug)]
-pub struct GroupsPage {
-    pub groups: Vec<ValidatorProviderGroupRecord>,
+pub struct GroupsPage<T> {
+    pub groups: Vec<T>,
     /// Number of groups matching the query, before `offset`/`limit`.
     pub total_count: usize,
     pub total_activated_stake: Decimal,
@@ -139,13 +136,12 @@ fn search_term(config: &GetGroupsConfig) -> Option<String> {
         .filter(|query| !query.is_empty())
 }
 
-pub fn page_groups(groups: ValidatorProviderGroups, config: &GetGroupsConfig) -> GroupsPage {
-    let ValidatorProviderGroups {
-        groups,
-        total_activated_stake,
-        current_epoch,
-    } = groups;
-
+pub fn page_groups<T: GroupRow>(
+    groups: Vec<T>,
+    total_activated_stake: Decimal,
+    current_epoch: Option<u64>,
+    config: &GetGroupsConfig,
+) -> GroupsPage<T> {
     let matching = filter_groups(groups, config);
     let total_count = matching.len();
     let page = sort_groups(matching, config.order_field, &config.order_direction)
@@ -229,6 +225,7 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
 mod tests {
     use super::*;
     use chrono::Utc;
+    use store::dto::ValidatorProviderGroupRecord;
     use store::dto::{GroupIncidentRecord, GroupIncidents, IncidentDetail};
     use store::groups::UNKNOWN_GROUP;
 
@@ -253,18 +250,22 @@ mod tests {
         }
     }
 
-    fn groups(groups: Vec<ValidatorGroupRecord>) -> ValidatorProviderGroups {
-        ValidatorProviderGroups {
-            total_activated_stake: groups.iter().map(|group| group.total_stake).sum(),
-            groups: groups
-                .into_iter()
-                .map(|group| ValidatorProviderGroupRecord {
-                    group,
-                    ..Default::default()
-                })
-                .collect(),
-            current_epoch: Some(100),
-        }
+    fn groups(groups: Vec<ValidatorGroupRecord>) -> Vec<ValidatorProviderGroupRecord> {
+        groups
+            .into_iter()
+            .map(|group| ValidatorProviderGroupRecord {
+                group,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn paged(
+        groups: Vec<ValidatorProviderGroupRecord>,
+        config: &GetGroupsConfig,
+    ) -> GroupsPage<ValidatorProviderGroupRecord> {
+        let total_activated_stake = groups.iter().map(|group| group.total_stake).sum();
+        page_groups(groups, total_activated_stake, Some(100), config)
     }
 
     fn config() -> GetGroupsConfig {
@@ -277,8 +278,11 @@ mod tests {
         }
     }
 
-    fn keys(page: &GroupsPage) -> Vec<String> {
-        page.groups.iter().map(|group| group.key.clone()).collect()
+    fn keys<T: GroupRow>(page: &GroupsPage<T>) -> Vec<String> {
+        page.groups
+            .iter()
+            .map(|group| group.row().key.clone())
+            .collect()
     }
 
     fn named(keys: &[&str]) -> Vec<String> {
@@ -465,7 +469,7 @@ mod tests {
 
     #[test]
     fn stake_orders_both_ways() {
-        let page = page_groups(
+        let page = paged(
             groups(vec![
                 group("mid", 200),
                 group("low", 100),
@@ -475,7 +479,7 @@ mod tests {
         );
         assert_eq!(keys(&page), named(&["high", "mid", "low"]));
 
-        let page = page_groups(
+        let page = paged(
             groups(vec![
                 group("mid", 200),
                 group("low", 100),
@@ -499,7 +503,7 @@ mod tests {
     #[test]
     fn groups_without_a_value_sink_in_both_directions() {
         for order_direction in [OrderDirection::ASC, OrderDirection::DESC] {
-            let page = page_groups(
+            let page = paged(
                 groups(vec![
                     with_net_apy("aaaMissing", None),
                     with_net_apy("zero", Some(0.0)),
@@ -526,7 +530,7 @@ mod tests {
                 order_direction,
                 ..config()
             };
-            let page = page_groups(
+            let page = paged(
                 groups(vec![
                     group("ccc", 100),
                     group("aaa", 100),
@@ -615,7 +619,7 @@ mod tests {
             (OrderField::Uptime, "uptime"),
             (OrderField::ExpectedTakeRate, "expectedTakeRate"),
         ] {
-            let page = page_groups(
+            let page = paged(
                 groups(rows.clone()),
                 &GetGroupsConfig {
                     order_field,
@@ -634,7 +638,7 @@ mod tests {
     // both are paged by the same sort, so the column has to read the same quantity off either.
     #[test]
     fn rows_carrying_records_and_rows_carrying_a_count_order_against_each_other() {
-        let page = page_groups(
+        let page = paged(
             groups(vec![
                 ValidatorGroupRecord {
                     incidents: GroupIncidents::Count(2),
@@ -664,7 +668,7 @@ mod tests {
         );
     }
 
-    fn providers() -> ValidatorProviderGroups {
+    fn providers() -> Vec<ValidatorProviderGroupRecord> {
         groups(vec![
             group("Hetzner Online GmbH", 300),
             group("Latitude.sh", 200),
@@ -674,7 +678,7 @@ mod tests {
 
     #[test]
     fn a_query_cuts_the_rows_and_the_count_but_not_the_totals() {
-        let page = page_groups(
+        let page = paged(
             providers(),
             &GetGroupsConfig {
                 query: Some("HETZ".to_string()),
@@ -692,7 +696,7 @@ mod tests {
 
     #[test]
     fn a_query_of_only_whitespace_serves_every_row() {
-        let page = page_groups(
+        let page = paged(
             providers(),
             &GetGroupsConfig {
                 query: Some("  ".to_string()),
@@ -718,7 +722,7 @@ mod tests {
             group("c", 300),
             group("d", 200),
         ]);
-        let page = page_groups(
+        let page = paged(
             all,
             &GetGroupsConfig {
                 offset: 1,
