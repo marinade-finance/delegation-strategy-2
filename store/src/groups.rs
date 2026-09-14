@@ -32,11 +32,6 @@ impl GroupKind {
     fn carries_incidents_as_records(self) -> bool {
         matches!(self, GroupKind::Operator)
     }
-
-    /// The two groupings whose rows carry an information panel.
-    fn carries_breakdowns(self) -> bool {
-        matches!(self, GroupKind::ProviderAso | GroupKind::ClientLineage)
-    }
 }
 
 /// Key of the bucket holding validators whose value is unknown.
@@ -136,10 +131,11 @@ impl Tally {
     }
 }
 
-/// The slices a group's information panel reads, folded as the members are added. A member the
-/// slicing cannot classify is left out of that slice, so its shares sum to less than 1.
+/// Stake tallied per ASN, city, version and client lineage as the members are added, for the
+/// columns only the provider and client rows carry. A member the slicing cannot classify is left
+/// out of that slice, so its shares sum to less than 1.
 #[derive(Default)]
-struct Breakdowns {
+struct ProviderAndClientBreakdowns {
     asns: HashMap<i32, Decimal>,
     /// Keyed by city and the country it sits in; two countries name the same city.
     cities: HashMap<(String, Option<String>), Tally>,
@@ -149,7 +145,17 @@ struct Breakdowns {
     superminority_count: u64,
 }
 
-impl Breakdowns {
+/// What an accumulator folds out of each member's epoch stats beside the common columns. `()` for
+/// the row types that carry no extra columns.
+trait EpochStatBreakdowns: Default {
+    fn add(&mut self, stats: &ValidatorEpochStats);
+}
+
+impl EpochStatBreakdowns for () {
+    fn add(&mut self, _stats: &ValidatorEpochStats) {}
+}
+
+impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
     fn add(&mut self, stats: &ValidatorEpochStats) {
         let stake = stats.activated_stake;
 
@@ -181,7 +187,9 @@ impl Breakdowns {
             self.superminority_count += 1;
         }
     }
+}
 
+impl ProviderAndClientBreakdowns {
     /// Stake-sorted; ties break on the key, since members arrive in hash order.
     fn shares(tallies: HashMap<String, Tally>, group_stake: Decimal) -> Vec<GroupShare> {
         let mut shares: Vec<_> = tallies
@@ -288,7 +296,7 @@ impl StakeWeighted {
     }
 }
 
-struct Accumulator {
+struct Accumulator<B> {
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -302,10 +310,10 @@ struct Accumulator {
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
     incidents: GroupIncidents,
-    breakdowns: Option<Breakdowns>,
+    breakdowns: B,
 }
 
-impl Accumulator {
+impl<B: EpochStatBreakdowns> Accumulator<B> {
     fn new(kind: GroupKind) -> Self {
         Self {
             spellings: Default::default(),
@@ -325,7 +333,7 @@ impl Accumulator {
             } else {
                 GroupIncidents::empty_count()
             },
-            breakdowns: kind.carries_breakdowns().then(Breakdowns::default),
+            breakdowns: B::default(),
         }
     }
 
@@ -355,9 +363,7 @@ impl Accumulator {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
         }
 
-        if let Some(breakdowns) = &mut self.breakdowns {
-            breakdowns.add(stats);
-        }
+        self.breakdowns.add(stats);
 
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
@@ -384,47 +390,6 @@ impl Accumulator {
         if let Some(unique_delegators) = validator.unique_delegators {
             self.delegation_relationship_count =
                 Some(self.delegation_relationship_count.unwrap_or_default() + unique_delegators);
-        }
-    }
-
-    /// The common columns, and the breakdowns the caller's row type may still want.
-    fn finish_parts(
-        mut self,
-        ctx: &FinishContext,
-    ) -> (ValidatorGroupRecord, Option<Breakdowns>, Decimal) {
-        let breakdowns = self.breakdowns.take();
-        let group_stake = self.total_stake;
-        (self.finish_base(ctx), breakdowns, group_stake)
-    }
-
-    fn finish_provider(self, ctx: &FinishContext) -> ValidatorProviderGroupRecord {
-        let (group, breakdowns, group_stake) = self.finish_parts(ctx);
-        match breakdowns {
-            Some(breakdowns) => breakdowns.into_provider_panel(group, group_stake),
-            None => ValidatorProviderGroupRecord {
-                group,
-                ..Default::default()
-            },
-        }
-    }
-
-    fn finish_client(
-        self,
-        ctx: &FinishContext,
-        releases: &ClientReleases,
-    ) -> ValidatorClientGroupRecord {
-        let latest_release = ctx
-            .folded_key
-            .as_ref()
-            .and_then(|key| releases.get(key.as_str()))
-            .cloned();
-        let (group, breakdowns, group_stake) = self.finish_parts(ctx);
-        match breakdowns {
-            Some(breakdowns) => breakdowns.into_client_panel(group, group_stake, latest_release),
-            None => ValidatorClientGroupRecord {
-                group,
-                ..Default::default()
-            },
         }
     }
 
@@ -466,6 +431,29 @@ impl Accumulator {
                 incidents
             },
         }
+    }
+}
+
+impl Accumulator<ProviderAndClientBreakdowns> {
+    fn finish_provider(mut self, ctx: &FinishContext) -> ValidatorProviderGroupRecord {
+        let group_stake = self.total_stake;
+        let breakdowns = std::mem::take(&mut self.breakdowns);
+        breakdowns.into_provider_panel(self.finish_base(ctx), group_stake)
+    }
+
+    fn finish_client(
+        mut self,
+        ctx: &FinishContext,
+        releases: &ClientReleases,
+    ) -> ValidatorClientGroupRecord {
+        let latest_release = ctx
+            .folded_key
+            .as_ref()
+            .and_then(|key| releases.get(key.as_str()))
+            .cloned();
+        let group_stake = self.total_stake;
+        let breakdowns = std::mem::take(&mut self.breakdowns);
+        breakdowns.into_client_panel(self.finish_base(ctx), group_stake, latest_release)
     }
 }
 
@@ -612,7 +600,7 @@ struct KeyedGroups<T> {
 }
 
 fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
-    let keyed = aggregate_keyed(population, kind, Accumulator::finish_base);
+    let keyed = aggregate_keyed(population, kind, Accumulator::<()>::finish_base);
     ValidatorGroups {
         groups: keyed.rows.into_iter().map(|(_, record)| record).collect(),
         total_activated_stake: keyed.total_activated_stake,
@@ -620,10 +608,10 @@ fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
     }
 }
 
-fn aggregate_keyed<T: GroupRow>(
+fn aggregate_keyed<B: EpochStatBreakdowns, T: GroupRow>(
     population: &Population,
     kind: GroupKind,
-    finish: impl Fn(Accumulator, &FinishContext) -> T,
+    finish: impl Fn(Accumulator<B>, &FinishContext) -> T,
 ) -> KeyedGroups<T> {
     let current_epoch = population.current_epoch;
     let (delta_7d_epoch, delta_30d_epoch) = delta_epochs(population.all.iter().copied());
@@ -631,7 +619,7 @@ fn aggregate_keyed<T: GroupRow>(
     let baseline_30d =
         delta_30d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
 
-    let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
+    let mut accumulators: HashMap<FoldedKey, Accumulator<B>> = Default::default();
     for validator in &population.eligible {
         let Some(stats) = validator
             .epoch_stats
@@ -703,8 +691,11 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
     let clients = aggregate_keyed(population, GroupKind::ClientLineage, |accumulator, ctx| {
         accumulator.finish_client(ctx, releases)
     });
-    let block_engines =
-        aggregate_keyed(population, GroupKind::ClientLabel, Accumulator::finish_base);
+    let block_engines = aggregate_keyed(
+        population,
+        GroupKind::ClientLabel,
+        Accumulator::<()>::finish_base,
+    );
     let engines_by_client = block_engines_by_client(&population.eligible, population.current_epoch);
 
     let nodes = clients
@@ -806,10 +797,10 @@ mod tests {
     use chrono::{DateTime, Duration, Utc};
 
     /// One grouping on its own; `aggregate_all` is what the cache warms.
-    fn aggregate_rows<T: GroupRow>(
+    fn aggregate_rows<B: EpochStatBreakdowns, T: GroupRow>(
         validators: &HashMap<String, ValidatorRecord>,
         kind: GroupKind,
-        finish: impl Fn(Accumulator, &FinishContext) -> T,
+        finish: impl Fn(Accumulator<B>, &FinishContext) -> T,
     ) -> Vec<T> {
         let Some(population) = Population::new(validators) else {
             return Vec::new();
@@ -826,7 +817,7 @@ mod tests {
         validators: &HashMap<String, ValidatorRecord>,
         kind: GroupKind,
     ) -> Vec<ValidatorGroupRecord> {
-        aggregate_rows(validators, kind, Accumulator::finish_base)
+        aggregate_rows(validators, kind, Accumulator::<()>::finish_base)
     }
 
     fn aggregate_provider_rows(
