@@ -23,9 +23,8 @@ pub const MAX_SKIP_RATE_THRESHOLD: f64 = 0.05;
 /// Under this many seconds a `DOWN` interval is restart noise, not an incident.
 pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 
-/// Whole percent. `commissions` carries agave's own `commission_percent()`, which floors, so
-/// 8999 bps reads 89 here.
-pub const COMMISSION_SPIKE_THRESHOLD: u8 = 90;
+// Validator raised commission to this or more in an epoch -> incident
+pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
 pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
 
@@ -130,16 +129,6 @@ impl EpochBlockProduction {
     }
 }
 
-/// One `commissions` row. Whole percent, and only the inflation rate: MEV and block-revenue
-/// commissions live in their own tables.
-#[derive(Debug, Clone)]
-pub struct CommissionSample {
-    pub epoch: u64,
-    pub epoch_slot: u64,
-    pub created_at: DateTime<Utc>,
-    pub commission: u8,
-}
-
 #[derive(Debug, Clone)]
 pub struct CommissionRaise {
     pub epoch: u64,
@@ -147,36 +136,6 @@ pub struct CommissionRaise {
     pub changed_at: DateTime<Utc>,
     pub commission_before: u8,
     pub commission_after: u8,
-}
-
-/// Every crossing of `COMMISSION_SPIKE_THRESHOLD` from below.
-pub fn commission_raises(samples: &[CommissionSample]) -> Vec<CommissionRaise> {
-    // `created_at` is the snapshot's own timestamp, so a backfilled epoch carries one newer than
-    // the epochs after it; the slot within the epoch is the only key a backfill cannot reorder.
-    let mut samples: Vec<&CommissionSample> = samples.iter().collect();
-    samples.sort_by_key(|sample| (sample.epoch, sample.epoch_slot));
-
-    let mut raises = Vec::new();
-    let mut previous: Option<u8> = None;
-
-    for sample in samples {
-        if let Some(commission_before) = previous {
-            if commission_before < COMMISSION_SPIKE_THRESHOLD
-                && sample.commission >= COMMISSION_SPIKE_THRESHOLD
-            {
-                raises.push(CommissionRaise {
-                    epoch: sample.epoch,
-                    epoch_slot: sample.epoch_slot,
-                    changed_at: sample.created_at,
-                    commission_before,
-                    commission_after: sample.commission,
-                });
-            }
-        }
-        previous = Some(sample.commission);
-    }
-
-    raises
 }
 
 /// Window and floors one response is judged under.
@@ -559,23 +518,6 @@ mod tests {
         }
     }
 
-    fn sample(epoch: u64, epoch_slot: u64, commission: u8) -> CommissionSample {
-        let created_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
-        CommissionSample {
-            epoch,
-            epoch_slot,
-            created_at: created_at + chrono::Duration::days(epoch as i64),
-            commission,
-        }
-    }
-
-    fn raised_to(samples: &[CommissionSample]) -> Vec<(u64, u8, u8)> {
-        commission_raises(samples)
-            .iter()
-            .map(|raise| (raise.epoch, raise.commission_before, raise.commission_after))
-            .collect()
-    }
-
     fn served_types(incidents: &[dto::IncidentRecord]) -> Vec<&'static str> {
         incidents
             .iter()
@@ -773,65 +715,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![99, 100, 101]
         );
-    }
-
-    #[test]
-    fn a_raise_over_the_bar_carries_the_rate_it_came_from() {
-        let samples = [sample(100, 100, 5), sample(100, 200, 100)];
-
-        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
-    }
-
-    #[test]
-    fn a_rate_already_over_the_bar_is_read_where_it_moved_there() {
-        let samples = [
-            sample(99, 100, 5),
-            sample(100, 100, 100),
-            sample(101, 100, 100),
-            sample(102, 100, 100),
-        ];
-
-        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
-    }
-
-    #[test]
-    fn a_first_sample_over_the_bar_has_nothing_to_have_moved_from() {
-        let samples = [sample(100, 100, 100), sample(101, 100, 100)];
-
-        assert!(raised_to(&samples).is_empty());
-    }
-
-    #[test]
-    fn a_drop_back_under_the_bar_is_no_raise_but_the_next_climb_is() {
-        let samples = [
-            sample(100, 100, 5),
-            sample(100, 200, 100),
-            sample(100, 300, 5),
-            sample(100, 400, 100),
-        ];
-
-        assert_eq!(raised_to(&samples), vec![(100, 5, 100), (100, 5, 100)]);
-    }
-
-    #[test]
-    fn the_bar_is_read_at_ninety() {
-        assert_eq!(
-            raised_to(&[sample(100, 100, 89), sample(100, 200, 90)]),
-            vec![(100, 89, 90)]
-        );
-        assert!(raised_to(&[sample(100, 100, 88), sample(100, 200, 89)]).is_empty());
-    }
-
-    #[test]
-    fn samples_are_read_in_slot_order_whatever_order_they_arrive_in() {
-        let samples = [
-            sample(100, 300, 5),
-            sample(100, 100, 5),
-            sample(100, 200, 100),
-        ];
-
-        // Read as 5, 100, 5: one raise. Read as they arrive, the 5 at slot 300 would open a second.
-        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
     }
 
     #[test]

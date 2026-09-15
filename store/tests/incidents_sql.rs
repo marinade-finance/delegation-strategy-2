@@ -502,3 +502,47 @@ async fn a_spike_is_served_beside_the_epoch_s_downtime() {
         .iter()
         .any(|incident| matches!(incident.detail, IncidentDetail::CommissionSpike { .. })));
 }
+
+#[tokio::test]
+async fn the_bar_is_read_at_ninety() {
+    let schema = "ds_test_incidents_commission_bar";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 89, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 90, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteB", 99, 100, 88, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteB", 100, 100, 89, "2026-02-01T00:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(raises(&incidents, "voteA"), vec![(100, 89, 90)]);
+    assert!(incidents.get("voteB").is_none());
+}
+
+#[tokio::test]
+async fn a_drop_back_under_the_bar_opens_a_second_raise() {
+    let schema = "ds_test_incidents_commission_second_raise";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 100, 100, 5, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 100, "2026-02-01T01:00:00Z").await;
+    commission(&client, "voteA", 100, 300, 5, "2026-02-01T02:00:00Z").await;
+    commission(&client, "voteA", 100, 400, 100, "2026-02-01T03:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        raises(&incidents, "voteA"),
+        vec![(100, 5, 100), (100, 5, 100)]
+    );
+}

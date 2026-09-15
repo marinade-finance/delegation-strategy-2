@@ -7,8 +7,8 @@ use crate::dto::{
     VersionRecord,
 };
 use crate::incidents::{
-    commission_raises, CommissionRaise, CommissionSample, DowntimeInterval, EpochBlockProduction,
-    ValidatorIncidents,
+    CommissionRaise, DowntimeInterval, EpochBlockProduction, ValidatorIncidents,
+    COMMISSION_SPIKE_THRESHOLD_PERCENTAGE,
 };
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
@@ -261,28 +261,34 @@ async fn load_commission_raises(
         )
         .await?;
 
-    let mut samples: HashMap<String, Vec<CommissionSample>> = Default::default();
+    // Count commission raise incidents from SQL response
+    let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
+    let mut previous: Option<(String, u8)> = None;
     for row in rows {
         let vote_account: String = row.get("vote_account");
-        samples
-            .entry(vote_account)
-            .or_default()
-            .push(CommissionSample {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
-                created_at: row.get("created_at"),
-                commission: row.get::<_, i32>("commission").try_into()?,
-            });
-    }
+        let commission: u8 = row.get::<_, i32>("commission").try_into()?;
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
 
-    let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
-    for (vote_account, samples) in samples {
-        // The epoch under the window is read for its rate alone.
-        let mut raised = commission_raises(&samples);
-        raised.retain(|raise| raise.epoch >= from_epoch);
-        if !raised.is_empty() {
-            raises.insert(vote_account, raised);
+        if let Some((before_account, commission_before)) = &previous {
+            // The epoch under the window is read for its rate alone: a raise there sits before it.
+            if *before_account == vote_account
+                && *commission_before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+                && commission >= COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+                && epoch >= from_epoch
+            {
+                raises
+                    .entry(vote_account.clone())
+                    .or_default()
+                    .push(CommissionRaise {
+                        epoch,
+                        epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
+                        changed_at: row.get("created_at"),
+                        commission_before: *commission_before,
+                        commission_after: commission,
+                    });
+            }
         }
+        previous = Some((vote_account, commission));
     }
 
     Ok(raises)

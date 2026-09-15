@@ -477,16 +477,14 @@ pub enum IncidentDetail {
         epoch_end_at: DateTime<Utc>,
         block_production: BlockProductionDetail,
     },
-    /// An epoch the validator raised its inflation commission to 90% or above in. MEV and
-    /// block-revenue commissions are not read for it.
+    /// An epoch the validator raised its inflation commission to 90% or above in
+    /// Excludes MEV and block-revenue commissions.
     CommissionSpike {
-        /// Whole percent, as the vote account carried it.
         commission_before: u8,
         /// 90 or above.
         commission_after: u8,
         /// When the raised rate was first sampled.
         changed_at: DateTime<Utc>,
-        /// Slot within the epoch at that sample.
         epoch_slot: u64,
     },
 }
