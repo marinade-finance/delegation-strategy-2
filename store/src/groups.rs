@@ -1,5 +1,5 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, ClientRelease, GroupCity, GroupIncidents,
+    client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents, GroupLocation,
     GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats, ValidatorGroupNode,
     ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorProviderGroupRecord,
     ValidatorProviderGroups, ValidatorRecord,
@@ -137,9 +137,9 @@ impl Tally {
 #[derive(Default)]
 struct ProviderAndClientBreakdowns {
     asns: HashMap<i32, Decimal>,
-    /// Keyed by city and the country it sits in; two countries name the same city.
-    cities: HashMap<(String, Option<String>), Tally>,
-    countries: HashSet<String>,
+    /// Keyed by country and the city within it; two countries name the same city. A member the
+    /// source placed in no country is left out, city or not.
+    locations: HashMap<(String, Option<String>), Tally>,
     versions: HashMap<String, Tally>,
     lineages: HashMap<String, Tally>,
     superminority_count: u64,
@@ -163,15 +163,9 @@ impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
             *self.asns.entry(asn).or_default() += stake;
         }
 
-        let country = normalized(stats.dc_country.clone());
-        if let Some(city) = normalized(stats.dc_city.clone()) {
-            self.cities
-                .entry((city, country.clone()))
-                .or_default()
-                .add(stake);
-        }
-        if let Some(country) = country {
-            self.countries.insert(country);
+        let city = normalized(stats.dc_city.clone());
+        if let Some(country) = normalized(stats.dc_country.clone()) {
+            self.locations.entry((country, city)).or_default().add(stake);
         }
 
         if let Some(version) = normalized(stats.version.clone()) {
@@ -223,23 +217,39 @@ impl ProviderAndClientBreakdowns {
         asns.into_iter().map(|(asn, _)| *asn).collect()
     }
 
-    fn cities(&self) -> Vec<GroupCity> {
-        let mut cities: Vec<_> = self
-            .cities
+    fn locations(&self) -> Vec<GroupLocation> {
+        let mut locations: Vec<_> = self
+            .locations
             .iter()
-            .map(|((city, country), tally)| GroupCity {
-                city: city.clone(),
+            .map(|((country, city), tally)| GroupLocation {
                 country: country.clone(),
+                city: city.clone(),
                 validator_count: tally.validator_count,
                 total_stake: tally.total_stake,
             })
             .collect();
-        cities.sort_by(|a, b| {
+        locations.sort_by(|a, b| {
             b.total_stake
                 .cmp(&a.total_stake)
+                .then_with(|| a.country.cmp(&b.country))
                 .then_with(|| a.city.cmp(&b.city))
         });
-        cities
+        locations
+    }
+
+    fn city_count(&self) -> u64 {
+        self.locations
+            .keys()
+            .filter(|(_, city)| city.is_some())
+            .count() as u64
+    }
+
+    fn country_count(&self) -> u64 {
+        self.locations
+            .keys()
+            .map(|(country, _)| country.as_str())
+            .collect::<HashSet<_>>()
+            .len() as u64
     }
 
     fn into_provider_group_record(
@@ -247,10 +257,8 @@ impl ProviderAndClientBreakdowns {
         group: ValidatorGroupRecord,
     ) -> ValidatorProviderGroupRecord {
         ValidatorProviderGroupRecord {
-            country_count: self.countries.len() as u64,
-            city_count: self.cities.len() as u64,
             asns: self.asns(),
-            cities: self.cities(),
+            locations: self.locations(),
             superminority_count: self.superminority_count,
             client_mix: Self::shares(self.lineages, group.total_stake),
             group,
@@ -264,8 +272,8 @@ impl ProviderAndClientBreakdowns {
         latest_release: Option<ClientRelease>,
     ) -> ValidatorClientGroupRecord {
         ValidatorClientGroupRecord {
-            country_count: self.countries.len() as u64,
-            city_count: self.cities.len() as u64,
+            country_count: self.country_count(),
+            city_count: self.city_count(),
             version_spread: Self::shares(self.versions, group.total_stake),
             block_engines: Vec::new(),
             latest_release,
@@ -1066,16 +1074,20 @@ mod tests {
         assert_eq!(provider.asns, vec![24940, 213230]);
         assert_eq!(
             provider
-                .cities
+                .locations
                 .iter()
-                .map(|city| (city.city.as_str(), city.validator_count, city.total_stake))
+                .map(|location| (
+                    location.country.as_str(),
+                    location.city.as_deref(),
+                    location.validator_count,
+                    location.total_stake
+                ))
                 .collect::<Vec<_>>(),
             vec![
-                ("Frankfurt", 2, Decimal::from(500)),
-                ("Helsinki", 1, Decimal::from(100))
+                ("Germany", Some("Frankfurt"), 2, Decimal::from(500)),
+                ("Finland", Some("Helsinki"), 1, Decimal::from(100))
             ]
         );
-        assert_eq!(provider.country_count, 2);
     }
 
     #[test]
@@ -1096,8 +1108,7 @@ mod tests {
         let providers = aggregate_provider_rows(&validators);
         let provider = group(&providers, "Hetzner");
 
-        assert_eq!(provider.cities.len(), 1);
-        assert_eq!(provider.country_count, 1);
+        assert_eq!(provider.locations.len(), 1);
     }
 
     #[test]
