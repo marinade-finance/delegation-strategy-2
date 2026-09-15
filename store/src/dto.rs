@@ -711,6 +711,22 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
+/// Validator stats on the level of a datacenter location.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupLocation {
+    pub country: String,
+    pub city: Option<String>,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+}
+/// A published client release, as `/releases` serves it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ClientRelease {
+    pub version: String,
+    pub released_at: Option<DateTime<Utc>>,
+    pub url: Option<String>,
+}
+
 /// Group can be a hosting provider, validator client or node operator
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorGroupRecord {
@@ -731,6 +747,82 @@ pub struct ValidatorGroupRecord {
     pub expected_take_rate: Option<f64>,
     pub delegation_relationship_count: Option<u64>,
     pub incidents: GroupIncidents,
+}
+
+/// The columns every group row carries, whatever the grouping.
+pub trait GroupRow {
+    fn row(&self) -> &ValidatorGroupRecord;
+}
+
+impl GroupRow for ValidatorGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        self
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupShare {
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+}
+
+/// A hosting provider, as `/providers` serves it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorProviderGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    /// Stake-sorted. One hosting organisation commonly announces from several.
+    pub asns: Vec<i32>,
+    /// Stake-sorted
+    pub locations: Vec<GroupLocation>,
+    /// Stake share per client lineage, biggest first.
+    pub client_mix: Vec<GroupShare>,
+    pub superminority_count: u64,
+}
+
+impl GroupRow for ValidatorProviderGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorProviderGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
+/// A client lineage, as the parent rows of `/clients` serve it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorClientGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    pub city_count: u64,
+    pub country_count: u64,
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    pub version_spread: Vec<GroupShare>,
+    /// Block engines paired with this client, from the group's own children.
+    pub block_engines: Vec<String>,
+    /// Null when the lineage has published no release we know of.
+    pub latest_release: Option<ClientRelease>,
+}
+
+impl GroupRow for ValidatorClientGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorClientGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
 }
 
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
@@ -814,10 +906,17 @@ pub struct ValidatorGroups {
     pub current_epoch: Option<u64>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorProviderGroups {
+    pub groups: Vec<ValidatorProviderGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
 /// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the block engines it runs with.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorGroupNode {
-    pub group: ValidatorGroupRecord,
+    pub group: ValidatorClientGroupRecord,
     pub children: Vec<ValidatorGroupRecord>,
 }
 
@@ -1039,5 +1138,40 @@ mod tests {
         assert_eq!(GroupIncidents::Records(vec![incident(); 3]).count(), 3);
         assert_eq!(GroupIncidents::Count(3).count(), 3);
         assert_eq!(GroupIncidents::default().count(), 0);
+    }
+
+    /// The split into per-grouping types must not reach the wire: consumers read one flat object.
+    #[test]
+    fn a_panel_row_serializes_flat() {
+        let group = ValidatorGroupRecord {
+            key: "Hetzner".to_string(),
+            validator_count: 2,
+            ..Default::default()
+        };
+
+        let provider = serde_json::to_value(ValidatorProviderGroupRecord {
+            group: group.clone(),
+            superminority_count: 3,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(provider["key"], "Hetzner");
+        assert_eq!(provider["validator_count"], 2);
+        assert_eq!(provider["superminority_count"], 3);
+        assert!(provider.get("group").is_none());
+
+        let client = serde_json::to_value(ValidatorClientGroupRecord {
+            group,
+            block_engines: vec!["Agave + JitoBAM".to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(client["key"], "Hetzner");
+        assert_eq!(client["block_engines"][0], "Agave + JitoBAM");
+        assert!(client.get("group").is_none());
+        assert!(
+            client.get("asns").is_none(),
+            "a client row has no provider columns at all"
+        );
     }
 }
