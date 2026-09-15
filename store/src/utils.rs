@@ -309,9 +309,8 @@ async fn load_commission_raises(
 }
 
 /// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, the block production of every closed epoch, and every inflation commission
-/// raise over the bar. None of it is judged or merged here;
-/// `ValidatorIncidentRecords::into_response_incidents` does both under a caller's floors.
+/// interval as recorded, the block production of every closed epoch, every inflation commission
+/// raise over the bar, and every epoch spent behind the validator's own client lineage.
 pub async fn load_validator_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -378,6 +377,17 @@ pub async fn load_validator_incidents(
                 .records(vote_account)
                 .block_production
                 .push(production);
+        }
+    }
+
+    let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
+    for (vote_account, record) in records {
+        let outdated = crate::incidents::outdated_after_grace(
+            crate::incidents::outdated_epochs(record, &newer_stake_shares),
+            from_epoch..=last_epoch,
+        );
+        if !outdated.is_empty() {
+            incidents.records(vote_account).outdated_clients = outdated;
         }
     }
 
