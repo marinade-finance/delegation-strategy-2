@@ -18,7 +18,7 @@ pub struct CloseEpochParams {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
-// A reward row still wins where one exists, so pre-1031 epochs reprocess to the same values.
+// A reward row still wins where one exists, so pre-1030 epochs reprocess to the same values.
 fn resolve_commission_effective(
     from_reward_row: Option<u8>,
     sampled_bps: Option<u16>,

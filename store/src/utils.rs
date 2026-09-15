@@ -391,7 +391,7 @@ pub async fn load_versions(
 
     Ok(records)
 }
-// Advertised stands in only where SIMD-0232 nulled the applied rate, restating no closed epoch.
+// From 1030 on commission_effective is close_epoch's vote-state sample or the 0029 backfill.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -400,10 +400,10 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    COALESCE(commission_effective, commission_advertised) AS commission_rate,
+                    commission_effective,
                     commission_min_observed,
-                    LAG(COALESCE(commission_effective, commission_advertised)) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(COALESCE(commission_effective, commission_advertised)) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                    LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
+                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
                 FROM
                     validators
             ),
@@ -411,7 +411,7 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 SELECT
                     vote_account,
                     epoch,
-                    commission_rate,
+                    commission_effective,
                     commission_min_observed
                 FROM
                     commission_changes
@@ -419,18 +419,18 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                     -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
                     commission_min_observed IS NOT NULL
                     AND (
-                        (commission_rate > commission_min_observed AND commission_rate > 10 AND commission_min_observed <= 10)
+                        (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
                         OR
-                        (prev_commission > 10 AND commission_rate <= 10 AND next_commission > 10)
+                        (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
                         OR
-                        (prev_commission <= 10 AND commission_rate > 10 AND next_commission <= 10)
+                        (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
                     )
             )
             SELECT
                 vote_account,
                 COUNT(*) AS events_count,
                 ARRAY_AGG(epoch ORDER BY epoch) AS epochs,
-                ARRAY_AGG(commission_rate ORDER BY epoch) AS commission_observed_values,
+                ARRAY_AGG(commission_effective ORDER BY epoch) AS commission_observed_values,
                 ARRAY_AGG(commission_min_observed ORDER BY epoch) AS commission_min_observed_values
             FROM
                 filtered_commissions
@@ -1065,9 +1065,7 @@ pub async fn load_validators(
             let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
                 let (apr, apy) = c.estimate_yields(
                     row.get::<_, Decimal>("credits").try_into().unwrap(),
-                    // Falling straight to 100 would read the epochs SIMD-0232 nulled as zero yield.
                     row.get::<_, Option<i32>>("commission_effective")
-                        .or_else(|| row.get::<_, Option<i32>>("commission_advertised"))
                         .map(|n| n.try_into().unwrap())
                         .unwrap_or(100),
                 );
