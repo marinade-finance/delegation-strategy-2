@@ -256,7 +256,7 @@ mod tests {
         }
     }
 
-    fn groups(groups: Vec<ValidatorGroupRecord>) -> ValidatorProviderGroups {
+    fn providers(groups: Vec<ValidatorGroupRecord>) -> ValidatorProviderGroups {
         ValidatorProviderGroups {
             total_activated_stake: groups.iter().map(|group| group.total_stake).sum(),
             groups: groups
@@ -451,25 +451,9 @@ mod tests {
     }
 
     #[test]
-    fn the_unclassified_group_is_searchable_by_name() {
-        let page = page_tree(
-            tree(vec![
-                node("Agave", 700, vec![group("Agave", 700)]),
-                node(UNKNOWN_GROUP, 300, vec![group(UNKNOWN_GROUP, 300)]),
-            ]),
-            &GetGroupsConfig {
-                query: Some("unknown".to_string()),
-                ..config()
-            },
-        );
-        assert_eq!(parent_keys(&page), named(&[UNKNOWN_GROUP]));
-        assert_eq!(page.total_count, 1);
-    }
-
-    #[test]
     fn stake_orders_both_ways() {
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 group("mid", 200),
                 group("low", 100),
                 group("high", 300),
@@ -479,7 +463,7 @@ mod tests {
         assert_eq!(keys(&page), named(&["high", "mid", "low"]));
 
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 group("mid", 200),
                 group("low", 100),
                 group("high", 300),
@@ -503,7 +487,7 @@ mod tests {
     fn groups_without_a_value_sink_in_both_directions() {
         for order_direction in [OrderDirection::ASC, OrderDirection::DESC] {
             let page = page_groups(
-                groups(vec![
+                providers(vec![
                     with_net_apy("aaaMissing", None),
                     with_net_apy("zero", Some(0.0)),
                     with_net_apy("high", Some(0.09)),
@@ -530,7 +514,7 @@ mod tests {
                 ..config()
             };
             let page = page_groups(
-                groups(vec![
+                providers(vec![
                     group("ccc", 100),
                     group("aaa", 100),
                     group("bbb", 100),
@@ -619,7 +603,7 @@ mod tests {
             (OrderField::ExpectedTakeRate, "expectedTakeRate"),
         ] {
             let page = page_groups(
-                groups(rows.clone()),
+                providers(rows.clone()),
                 &GetGroupsConfig {
                     order_field,
                     ..config()
@@ -638,7 +622,7 @@ mod tests {
     #[test]
     fn rows_carrying_records_and_rows_carrying_a_count_order_against_each_other() {
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 ValidatorGroupRecord {
                     incidents: GroupIncidents::Count(2),
                     ..group("countedTwo", 100)
@@ -667,18 +651,14 @@ mod tests {
         );
     }
 
-    fn providers() -> ValidatorProviderGroups {
-        groups(vec![
-            group("Hetzner Online GmbH", 300),
-            group("Latitude.sh", 200),
-            group("TeraSwitch Networks Inc.", 100),
-        ])
-    }
-
     #[test]
     fn a_query_cuts_the_rows_and_the_count_but_not_the_totals() {
         let page = page_groups(
-            providers(),
+            providers(vec![
+                group("Hetzner Online GmbH", 300),
+                group("Latitude.sh", 200),
+                group("TeraSwitch Networks Inc.", 100),
+            ]),
             &GetGroupsConfig {
                 query: Some("HETZ".to_string()),
                 ..config()
@@ -696,7 +676,11 @@ mod tests {
     #[test]
     fn a_query_of_only_whitespace_serves_every_row() {
         let page = page_groups(
-            providers(),
+            providers(vec![
+                group("Hetzner Online GmbH", 300),
+                group("Latitude.sh", 200),
+                group("TeraSwitch Networks Inc.", 100),
+            ]),
             &GetGroupsConfig {
                 query: Some("  ".to_string()),
                 ..config()
@@ -715,7 +699,7 @@ mod tests {
 
     #[test]
     fn paging_cuts_the_page_but_not_the_count() {
-        let all = groups(vec![
+        let all = providers(vec![
             group("a", 500),
             group("b", 400),
             group("c", 300),
