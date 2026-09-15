@@ -1,5 +1,7 @@
 use crate::dto;
 use chrono::{DateTime, Utc};
+use collect::validator_version::ValidatorVersion;
+use rust_decimal::prelude::*;
 use std::collections::HashMap;
 
 /// Leader slots an epoch needs before its block production is judged at all. Below this there is
@@ -26,6 +28,8 @@ pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 // Validator raised commission to this or more in an epoch -> incident
 pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
+pub const OUTDATED_CLIENT_NEWER_STAKE_SHARE: f64 = 0.80;
+
 pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +37,7 @@ pub enum IncidentType {
     Downtime,
     BlockProduction,
     CommissionSpike,
+    OutdatedClient,
 }
 
 impl IncidentType {
@@ -44,6 +49,7 @@ impl IncidentType {
                 "Downtime" => Ok(Self::Downtime),
                 "BlockProduction" => Ok(Self::BlockProduction),
                 "CommissionSpike" => Ok(Self::CommissionSpike),
+                "OutdatedClient" => Ok(Self::OutdatedClient),
                 other => Err(other.to_string()),
             })
             .collect()
@@ -138,6 +144,126 @@ pub struct CommissionRaise {
     pub commission_after: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct EpochClientVersion {
+    pub epoch: u64,
+    pub epoch_start_at: DateTime<Utc>,
+    pub epoch_end_at: DateTime<Utc>,
+    pub version: String,
+    pub client_lineage: String,
+    /// Share of the lineage's stake on a strictly newer version, as a fraction.
+    pub newer_stake_share: f64,
+}
+
+impl EpochClientVersion {
+    pub fn counts_as_incident(&self) -> bool {
+        self.newer_stake_share >= OUTDATED_CLIENT_NEWER_STAKE_SHARE
+    }
+}
+
+/// `None` for an epoch still running, a client id absent from the registry, or a version string
+/// nothing can parse.
+fn epoch_client_version(stats: &dto::ValidatorEpochStats) -> Option<(ValidatorVersion, String)> {
+    let version = stats.version.as_deref()?.parse().ok()?;
+    let lineage = stats.client_lineage.clone()?;
+    stats.epoch_start_at?;
+    stats.epoch_end_at?;
+    Some((version, lineage))
+}
+
+/// Keyed by epoch and lineage, then by the version the share is measured from. A validator
+/// `epoch_client_version` rejects weighs on neither side.
+pub fn newer_stake_shares<'a>(
+    records: impl IntoIterator<Item = &'a dto::ValidatorRecord>,
+) -> HashMap<(u64, String), HashMap<String, f64>> {
+    let mut stake: HashMap<(u64, String), HashMap<ValidatorVersion, Decimal>> = Default::default();
+
+    for stats in records.into_iter().flat_map(|record| &record.epoch_stats) {
+        let Some((version, lineage)) = epoch_client_version(stats) else {
+            continue;
+        };
+        *stake
+            .entry((stats.epoch, lineage))
+            .or_default()
+            .entry(version)
+            .or_default() += stats.activated_stake;
+    }
+
+    stake
+        .into_iter()
+        .map(|(key, by_version)| {
+            let total: Decimal = by_version.values().sum();
+            let mut versions: Vec<(ValidatorVersion, Decimal)> = by_version.into_iter().collect();
+            // Newest first, so the running sum ahead of each version is the stake above it.
+            versions.sort_by(|(a, _), (b, _)| b.cmp(a));
+
+            let mut newer = Decimal::ZERO;
+            let mut shares = HashMap::new();
+            for (version, version_stake) in versions {
+                let share = if total.is_zero() {
+                    0.0
+                } else {
+                    (newer / total).to_f64().unwrap_or(0.0)
+                };
+                shares.insert(version.as_str().to_string(), share);
+                newer += version_stake;
+            }
+            (key, shares)
+        })
+        .collect()
+}
+
+/// Oldest first, across every epoch the records carry so the grace still sees a predecessor
+/// outside the window.
+pub fn outdated_epochs(
+    record: &dto::ValidatorRecord,
+    newer_stake_shares: &HashMap<(u64, String), HashMap<String, f64>>,
+) -> Vec<EpochClientVersion> {
+    let mut outdated: Vec<EpochClientVersion> = record
+        .epoch_stats
+        .iter()
+        .filter_map(|stats| {
+            let (version, client_lineage) = epoch_client_version(stats)?;
+            let newer_stake_share = *newer_stake_shares
+                .get(&(stats.epoch, client_lineage.clone()))?
+                .get(version.as_str())?;
+
+            Some(EpochClientVersion {
+                epoch: stats.epoch,
+                epoch_start_at: stats.epoch_start_at?,
+                epoch_end_at: stats.epoch_end_at?,
+                version: version.as_str().to_string(),
+                client_lineage,
+                newer_stake_share,
+            })
+        })
+        .filter(EpochClientVersion::counts_as_incident)
+        .collect();
+
+    outdated.sort_by_key(|epoch| epoch.epoch);
+    outdated
+}
+
+/// An epoch counts only where the one before it was over the bar too. An epoch with nothing usable
+/// reported is no breach, so it closes the run.
+pub fn outdated_after_grace(
+    outdated: Vec<EpochClientVersion>,
+    epochs: std::ops::RangeInclusive<u64>,
+) -> Vec<EpochClientVersion> {
+    let breached: std::collections::HashSet<u64> =
+        outdated.iter().map(|epoch| epoch.epoch).collect();
+    outdated
+        .into_iter()
+        .filter(|epoch| epochs.contains(&epoch.epoch))
+        .filter(|epoch| {
+            epoch
+                .epoch
+                .checked_sub(1)
+                .is_some_and(|before| breached.contains(&before))
+        })
+        .collect()
+}
+
 /// Window and floors one response is judged under.
 #[derive(Debug, Clone)]
 pub struct IncidentFilters {
@@ -176,6 +302,7 @@ pub struct ValidatorIncidentRecords {
     pub downtimes: Vec<DowntimeInterval>,
     pub block_production: Vec<EpochBlockProduction>,
     pub commission_raises: Vec<CommissionRaise>,
+    pub outdated_clients: Vec<EpochClientVersion>,
 }
 
 impl ValidatorIncidentRecords {
@@ -239,6 +366,25 @@ impl ValidatorIncidentRecords {
                         commission_after: raise.commission_after,
                         changed_at: raise.changed_at,
                         epoch_slot: raise.epoch_slot,
+                    },
+                });
+            }
+        }
+
+        if filters.wants(IncidentType::OutdatedClient) {
+            for outdated in self
+                .outdated_clients
+                .iter()
+                .filter(|outdated| outdated.epoch >= filters.from_epoch)
+            {
+                incidents.push(dto::IncidentRecord {
+                    epoch: outdated.epoch,
+                    detail: dto::IncidentDetail::OutdatedClient {
+                        epoch_start_at: outdated.epoch_start_at,
+                        epoch_end_at: outdated.epoch_end_at,
+                        version: outdated.version.clone(),
+                        client_lineage: outdated.client_lineage.clone(),
+                        newer_stake_share: outdated.newer_stake_share,
                     },
                 });
             }
@@ -518,6 +664,59 @@ mod tests {
         }
     }
 
+    fn outdated(epoch: u64, newer_stake_share: f64) -> EpochClientVersion {
+        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        EpochClientVersion {
+            epoch,
+            epoch_start_at,
+            epoch_end_at: epoch_start_at + chrono::Duration::days(2),
+            version: "4.2.0".to_string(),
+            client_lineage: "agave".to_string(),
+            newer_stake_share,
+        }
+    }
+
+    /// One epoch of one validator, as the version comparison reads it.
+    fn client(
+        epoch: u64,
+        version: Option<&str>,
+        lineage: Option<&str>,
+        stake: u64,
+    ) -> dto::ValidatorEpochStats {
+        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        dto::ValidatorEpochStats {
+            epoch,
+            epoch_start_at: Some(epoch_start_at),
+            epoch_end_at: Some(epoch_start_at + chrono::Duration::days(2)),
+            version: version.map(str::to_string),
+            client_lineage: lineage.map(str::to_string),
+            activated_stake: Decimal::from(stake),
+            ..Default::default()
+        }
+    }
+
+    fn agave(epoch: u64, version: &str, stake: u64) -> dto::ValidatorEpochStats {
+        client(epoch, Some(version), Some("agave"), stake)
+    }
+
+    /// Epochs the validator is served as outdated for, given the whole cluster's epoch stats.
+    fn outdated_served(
+        subject: Vec<dto::ValidatorEpochStats>,
+        others: Vec<Vec<dto::ValidatorEpochStats>>,
+        epochs: std::ops::RangeInclusive<u64>,
+    ) -> Vec<u64> {
+        let subject = validator(subject);
+        let cluster: Vec<dto::ValidatorRecord> = std::iter::once(subject.clone())
+            .chain(others.into_iter().map(validator))
+            .collect();
+        let shares = newer_stake_shares(&cluster);
+
+        outdated_after_grace(outdated_epochs(&subject, &shares), epochs)
+            .iter()
+            .map(|epoch| epoch.epoch)
+            .collect()
+    }
+
     fn served_types(incidents: &[dto::IncidentRecord]) -> Vec<&'static str> {
         incidents
             .iter()
@@ -525,6 +724,7 @@ mod tests {
                 dto::IncidentDetail::Downtime { .. } => "Downtime",
                 dto::IncidentDetail::BlockProduction { .. } => "BlockProduction",
                 dto::IncidentDetail::CommissionSpike { .. } => "CommissionSpike",
+                dto::IncidentDetail::OutdatedClient { .. } => "OutdatedClient",
             })
             .collect()
     }
@@ -538,6 +738,7 @@ mod tests {
                 block_production, ..
             } => Some(block_production),
             dto::IncidentDetail::CommissionSpike { .. } => None,
+            dto::IncidentDetail::OutdatedClient { .. } => None,
         }
     }
 
@@ -632,12 +833,14 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            outdated_clients: vec![outdated(EPOCH, 0.9)],
         };
 
         for (incident_type, served) in [
             (IncidentType::Downtime, "Downtime"),
             (IncidentType::BlockProduction, "BlockProduction"),
             (IncidentType::CommissionSpike, "CommissionSpike"),
+            (IncidentType::OutdatedClient, "OutdatedClient"),
         ] {
             let filters = IncidentFilters {
                 types: Some(vec![incident_type]),
@@ -723,6 +926,7 @@ mod tests {
             downtimes: vec![],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -737,6 +941,7 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -752,6 +957,7 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            outdated_clients: vec![outdated(EPOCH, 0.9)],
         };
         let filters = IncidentFilters {
             types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
@@ -788,16 +994,257 @@ mod tests {
     #[test]
     fn parse_list_takes_every_name_the_response_emits() {
         assert_eq!(
-            IncidentType::parse_list("Downtime, BlockProduction,CommissionSpike"),
+            IncidentType::parse_list("Downtime, BlockProduction,CommissionSpike,OutdatedClient"),
             Ok(vec![
                 IncidentType::Downtime,
                 IncidentType::BlockProduction,
                 IncidentType::CommissionSpike,
+                IncidentType::OutdatedClient,
             ])
         );
         assert_eq!(
             IncidentType::parse_list("Downtime,Commission"),
             Err("Commission".to_string())
+        );
+    }
+
+    #[test]
+    fn the_newest_version_has_nothing_above_it_and_the_oldest_has_everything() {
+        let cluster = [
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![agave(EPOCH, "4.1.0", 300)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+        let agave_epoch = shares.get(&(EPOCH, "agave".to_string())).unwrap();
+
+        assert_eq!(agave_epoch.get("4.2.0"), Some(&0.0));
+        assert_eq!(agave_epoch.get("4.1.0"), Some(&0.25));
+    }
+
+    #[test]
+    fn the_share_is_stake_weighted_not_one_vote_each() {
+        // Four validators newer, but they carry a twentieth of the stake between them.
+        let cluster = [
+            validator(vec![agave(EPOCH, "4.1.0", 1000)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        let behind = shares.get(&(EPOCH, "agave".to_string())).unwrap()["4.1.0"];
+        assert!(behind < 0.05, "{behind}");
+    }
+
+    #[test]
+    fn a_lineage_is_never_judged_against_another() {
+        let cluster = [
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![client(EPOCH, Some("26.8.2"), Some("firedancer"), 900)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        // Firedancer's 26.8.2 orders above agave's 4.2.0 numerically, and must not count here.
+        assert_eq!(shares[&(EPOCH, "agave".to_string())]["4.2.0"], 0.0);
+        assert_eq!(shares[&(EPOCH, "firedancer".to_string())]["26.8.2"], 0.0);
+    }
+
+    #[test]
+    fn versions_order_by_number_rather_than_text() {
+        // A text compare puts 0.812 above 0.1106 and would read this validator as current.
+        let cluster = [
+            validator(vec![client(
+                EPOCH,
+                Some("0.812.30108"),
+                Some("frankendancer"),
+                1,
+            )]),
+            validator(vec![client(
+                EPOCH,
+                Some("0.1106.40201"),
+                Some("frankendancer"),
+                9,
+            )]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(
+            shares[&(EPOCH, "frankendancer".to_string())]["0.812.30108"],
+            0.9
+        );
+    }
+
+    #[test]
+    fn a_version_nothing_can_parse_weighs_on_neither_side() {
+        let cluster = [
+            validator(vec![agave(EPOCH, "4.1.0", 100)]),
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![agave(EPOCH, "not-a-version", 800)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        // 100 of the 200 stake that could be compared, not 100 of 1000.
+        assert_eq!(shares[&(EPOCH, "agave".to_string())]["4.1.0"], 0.5);
+    }
+
+    #[test]
+    fn a_client_the_registry_does_not_know_is_left_out() {
+        let cluster = [
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![client(EPOCH, Some("4.1.0"), None, 900)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        assert!(!shares[&(EPOCH, "agave".to_string())].contains_key("4.1.0"));
+    }
+
+    /// A cluster that left 4.1.0 behind: 90% of agave stake sits on 4.2.0 every epoch.
+    fn moved_on(epochs: std::ops::RangeInclusive<u64>) -> Vec<Vec<dto::ValidatorEpochStats>> {
+        vec![epochs.map(|epoch| agave(epoch, "4.2.0", 900)).collect()]
+    }
+
+    #[test]
+    fn one_epoch_behind_alone_is_forgiven() {
+        let served = outdated_served(vec![agave(100, "4.1.0", 100)], moved_on(99..=101), 99..=101);
+
+        assert!(served.is_empty());
+    }
+
+    #[test]
+    fn a_second_epoch_behind_opens_the_incident() {
+        let served = outdated_served(
+            vec![agave(100, "4.1.0", 100), agave(101, "4.1.0", 100)],
+            moved_on(99..=101),
+            99..=101,
+        );
+
+        assert_eq!(served, vec![101]);
+    }
+
+    #[test]
+    fn every_epoch_after_the_grace_is_its_own_record() {
+        let subject = (100..=104)
+            .map(|epoch| agave(epoch, "4.1.0", 100))
+            .collect();
+        let served = outdated_served(subject, moved_on(100..=104), 100..=104);
+
+        assert_eq!(served, vec![101, 102, 103, 104]);
+    }
+
+    #[test]
+    fn upgrading_ends_the_run() {
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(101, "4.1.0", 100),
+            agave(102, "4.2.0", 100),
+            agave(103, "4.2.0", 100),
+        ];
+        let served = outdated_served(subject, moved_on(100..=103), 100..=103);
+
+        assert_eq!(served, vec![101]);
+    }
+
+    #[test]
+    fn an_epoch_the_validator_reported_nothing_for_breaks_the_run() {
+        // Nothing at 101, so 102 has no predecessor over the bar to clear it.
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(102, "4.1.0", 100),
+            agave(103, "4.1.0", 100),
+        ];
+        let served = outdated_served(subject, moved_on(100..=103), 100..=103);
+
+        assert_eq!(served, vec![103]);
+    }
+
+    #[test]
+    fn a_validator_holding_a_fifth_of_its_lineage_can_never_fall_behind() {
+        let subject = (100..=104)
+            .map(|epoch| agave(epoch, "4.1.0", 250))
+            .collect();
+        let others = vec![(100..=104)
+            .map(|epoch| agave(epoch, "4.2.0", 750))
+            .collect()];
+
+        assert!(outdated_served(subject, others, 100..=104).is_empty());
+    }
+
+    #[test]
+    fn the_bar_is_read_at_eighty_percent() {
+        let subject = vec![agave(100, "4.1.0", 200), agave(101, "4.1.0", 200)];
+        let at_the_bar = vec![vec![agave(100, "4.2.0", 800), agave(101, "4.2.0", 800)]];
+        let under_it = vec![vec![agave(100, "4.2.0", 799), agave(101, "4.2.0", 799)]];
+
+        assert_eq!(
+            outdated_served(subject.clone(), at_the_bar, 100..=101),
+            vec![101]
+        );
+        assert!(outdated_served(subject, under_it, 100..=101).is_empty());
+    }
+
+    #[test]
+    fn each_epoch_is_judged_in_the_lineage_it_ran() {
+        // Behind on agave, then current on firedancer: the switch clears it.
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(101, "4.1.0", 100),
+            client(102, Some("26.8.2"), Some("firedancer"), 100),
+        ];
+        let others = vec![
+            (100..=102)
+                .map(|epoch| agave(epoch, "4.2.0", 900))
+                .collect(),
+            vec![client(102, Some("26.8.2"), Some("firedancer"), 900)],
+        ];
+
+        assert_eq!(outdated_served(subject, others, 100..=102), vec![101]);
+    }
+
+    #[test]
+    fn the_window_trims_the_records_but_not_the_predecessor_that_clears_them() {
+        let subject = (100..=102)
+            .map(|epoch| agave(epoch, "4.1.0", 100))
+            .collect();
+
+        // 101 is the window's first epoch, and 100 outside it still grants its grace.
+        assert_eq!(
+            outdated_served(subject, moved_on(100..=102), 101..=102),
+            vec![101, 102]
+        );
+    }
+
+    #[test]
+    fn the_epoch_in_flight_is_not_judged() {
+        let mut running = agave(101, "4.1.0", 100);
+        running.epoch_end_at = None;
+        let served = outdated_served(
+            vec![agave(100, "4.1.0", 100), running],
+            moved_on(100..=101),
+            100..=101,
+        );
+
+        assert!(served.is_empty());
+    }
+
+    #[test]
+    fn an_outdated_epoch_before_the_window_is_dropped() {
+        let records = ValidatorIncidentRecords {
+            outdated_clients: vec![outdated(99, 0.9), outdated(100, 0.9)],
+            ..Default::default()
+        };
+        let filters = IncidentFilters {
+            from_epoch: 100,
+            ..Default::default()
+        };
+
+        let incidents = records.into_response_incidents(&filters);
+        assert_eq!(
+            incidents
+                .iter()
+                .map(|incident| incident.epoch)
+                .collect::<Vec<_>>(),
+            vec![100]
         );
     }
 
