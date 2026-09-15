@@ -546,3 +546,42 @@ async fn a_drop_back_under_the_bar_opens_a_second_raise() {
         vec![(100, 5, 100), (100, 5, 100)]
     );
 }
+
+#[tokio::test]
+async fn a_raise_carries_the_epoch_peak_rather_than_the_crossing_sample() {
+    let schema = "ds_test_incidents_commission_peak";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 100, 100, 1, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 95, "2026-02-01T01:00:00Z").await;
+    commission(&client, "voteA", 100, 300, 100, "2026-02-01T02:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(raises(&incidents, "voteA"), vec![(100, 1, 100)]);
+}
+
+// A later epoch's higher rate is its own epoch's business, not this raise's peak.
+#[tokio::test]
+async fn the_peak_does_not_reach_past_the_epoch_it_was_raised_in() {
+    let schema = "ds_test_incidents_commission_peak_window";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 1, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 95, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteA", 101, 100, 100, "2026-03-01T00:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 101, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(raises(&incidents, "voteA"), vec![(100, 1, 95)]);
+}

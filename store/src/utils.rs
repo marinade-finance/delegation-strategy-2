@@ -264,30 +264,44 @@ async fn load_commission_raises(
     // Count commission raise incidents from SQL response
     let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
     let mut previous: Option<(String, u8)> = None;
+    // Vote account, epoch and index of the raise whose peak later rows of the same epoch still lift.
+    let mut peak: Option<(String, u64, usize)> = None;
     for row in rows {
         let vote_account: String = row.get("vote_account");
         let commission: u8 = row.get::<_, i32>("commission").try_into()?;
         let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
 
-        if let Some((before_account, commission_before)) = &previous {
-            // The epoch under the window is read for its rate alone: a raise there sits before it.
-            if *before_account == vote_account
-                && *commission_before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+        // The epoch under the window is read for its rate alone: a raise there sits before it.
+        let crossed = previous.as_ref().is_some_and(|(before_account, before)| {
+            *before_account == vote_account
+                && *before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
                 && commission >= COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
                 && epoch >= from_epoch
-            {
-                raises
-                    .entry(vote_account.clone())
-                    .or_default()
-                    .push(CommissionRaise {
-                        epoch,
-                        epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
-                        changed_at: row.get("created_at"),
-                        commission_before: *commission_before,
-                        commission_after: commission,
-                    });
+        });
+
+        if crossed {
+            let commission_before = previous.as_ref().map_or(0, |(_, before)| *before);
+            let raised = raises.entry(vote_account.clone()).or_default();
+            raised.push(CommissionRaise {
+                epoch,
+                epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
+                changed_at: row.get("created_at"),
+                commission_before,
+                commission_after: commission,
+            });
+            peak = Some((vote_account.clone(), epoch, raised.len() - 1));
+        } else if commission < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE {
+            peak = None;
+        } else if let Some((peak_account, peak_epoch, index)) = &peak {
+            if *peak_account == vote_account && *peak_epoch == epoch {
+                if let Some(raise) = raises.get_mut(peak_account).and_then(|r| r.get_mut(*index)) {
+                    raise.commission_after = raise.commission_after.max(commission);
+                }
+            } else {
+                peak = None;
             }
         }
+
         previous = Some((vote_account, commission));
     }
 
