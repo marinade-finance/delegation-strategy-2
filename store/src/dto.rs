@@ -488,7 +488,7 @@ pub enum IncidentDetail {
         changed_at: DateTime<Utc>,
         epoch_slot: u64,
     },
-    /// Version numbering differs per lineage, so the comparison never crosses one.
+    /// Only ever compared against the same client lineage: version numbering differs between them.
     OutdatedClient {
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
