@@ -74,7 +74,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `OutdatedClient` (defaults to just `Downtime`). `OutdatedClient` reports one record per epoch behind.
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `OutdatedClient` (defaults to just `Downtime`).
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
