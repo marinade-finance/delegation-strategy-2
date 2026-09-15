@@ -42,6 +42,7 @@ use std::{
 
 const RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS: u64 = 200;
 const WITHDRAW_AUTHORITY_OFFSET: usize = 4 + 8 + 32;
+const MAX_GET_INFLATION_REWARD_ADDRESSES: usize = 32;
 
 pub fn solana_client(url: String, commitment: String) -> RpcClient {
     RpcClient::new_with_commitment(url, CommitmentConfig::from_str(&commitment).unwrap())
@@ -767,7 +768,7 @@ pub fn get_commission_from_inflation_rewards(
         .collect();
     let mut result: HashMap<String, u8> = Default::default();
     let mut stats = CommissionStats::default();
-    for vote_addresses_chunk in vote_addresses.chunks(100) {
+    for vote_addresses_chunk in vote_addresses.chunks(MAX_GET_INFLATION_REWARD_ADDRESSES) {
         let addresses: Vec<String> = vote_addresses_chunk
             .iter()
             .map(|address| address.to_string())
