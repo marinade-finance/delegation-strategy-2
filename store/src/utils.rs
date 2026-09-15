@@ -391,12 +391,7 @@ pub async fn load_versions(
 
     Ok(records)
 }
-/*
-We are checking if:
-- Current commission is greater than previous minimum, and it's above 10 OR
-- Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
-- Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10 OR
- */
+// From 1030 on commission_effective is close_epoch's vote-state sample or the 0029 backfill.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -421,18 +416,22 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                 FROM
                     commission_changes
                 WHERE
-                    (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
-                    OR
-                    (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
-                    OR
-                    (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
+                    -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
+                    commission_min_observed IS NOT NULL
+                    AND (
+                        (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
+                        OR
+                        (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
+                        OR
+                        (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
+                    )
             )
             SELECT
                 vote_account,
                 COUNT(*) AS events_count,
-                ARRAY_AGG(epoch) AS epochs,
-                ARRAY_AGG(commission_effective) AS commission_observed_values,
-                ARRAY_AGG(commission_min_observed) AS commission_min_observed_values
+                ARRAY_AGG(epoch ORDER BY epoch) AS epochs,
+                ARRAY_AGG(commission_effective ORDER BY epoch) AS commission_observed_values,
+                ARRAY_AGG(commission_min_observed ORDER BY epoch) AS commission_min_observed_values
             FROM
                 filtered_commissions
             GROUP BY
@@ -544,17 +543,19 @@ pub async fn update_with_warnings(
         if validator.avg_uptime_pct.unwrap_or(0.0) < 0.9 {
             validator.warnings.push(ValidatorWarning::LowUptime);
         }
-        let max_effective_commission = validator
+        // SIMD-0232 nulled commission_effective; folding that into 0 read as a free validator.
+        let max_known_commission = validator
             .epoch_stats
             .iter()
             .filter(|stat| epochs_range.contains(&stat.epoch))
-            .fold(0, |max_commission, epoch_stats: &ValidatorEpochStats| {
-                epoch_stats
-                    .commission_effective
-                    .unwrap_or(0)
-                    .max(max_commission)
-            });
-        if max_effective_commission > 10 {
+            .filter_map(|epoch_stats: &ValidatorEpochStats| {
+                worst_known_commission(
+                    epoch_stats.commission_max_observed.map(i32::from),
+                    epoch_stats.commission_advertised.map(i32::from),
+                )
+            })
+            .max();
+        if max_known_commission.is_some_and(|commission| commission > 10) {
             validator.warnings.push(ValidatorWarning::HighCommission);
         }
     }
@@ -980,6 +981,24 @@ pub async fn load_validators(
                 commission_min_observed,
                 commission_advertised,
                 commission_effective,
+                commission_effective_source,
+                inflation_rewards_commission_bps,
+                inflation_rewards_commission_bps_is_v4,
+                inflation_rewards_collector,
+                block_revenue_collector,
+                block_revenue_commission_bps,
+                pending_delegator_rewards,
+                -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
+                CASE WHEN inflation_rewards_collector IS NOT NULL
+                     THEN inflation_rewards_collector <> validators.vote_account END AS inflation_rewards_collector_redirected,
+                -- Against the identity, its default: SIMD-0232 stopped agave re-syncing the two
+                CASE WHEN block_revenue_collector IS NOT NULL
+                     THEN block_revenue_collector = validators.identity END AS block_revenue_collector_is_identity,
+                -- Partitioning on a null collector would pool every pre-v4 validator into one count
+                CASE WHEN inflation_rewards_collector IS NOT NULL
+                     THEN COUNT(*) OVER (PARTITION BY validators.epoch, inflation_rewards_collector) END AS inflation_rewards_collector_shared_count,
+                CASE WHEN block_revenue_collector IS NOT NULL
+                     THEN COUNT(*) OVER (PARTITION BY validators.epoch, block_revenue_collector) END AS block_revenue_collector_shared_count,
                 version,
                 mev.mev_commission AS mev_commission_bps,
                 jpf.validator_commission AS priority_commission_bps,
@@ -1121,6 +1140,28 @@ pub async fn load_validators(
                     commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
                     commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
+                    commission_effective_source: row
+                        .get::<_, Option<String>>("commission_effective_source"),
+                    inflation_rewards_commission_bps: row
+                        .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
+                    inflation_rewards_commission_bps_is_v4: row
+                        .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4"),
+                    inflation_rewards_collector: row
+                        .get::<_, Option<String>>("inflation_rewards_collector"),
+                    inflation_rewards_collector_redirected: row
+                        .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
+                    inflation_rewards_collector_shared_count: row
+                        .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                    block_revenue_collector: row
+                        .get::<_, Option<String>>("block_revenue_collector"),
+                    block_revenue_collector_is_identity: row
+                        .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
+                    block_revenue_collector_shared_count: row
+                        .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                    block_revenue_commission_bps: row
+                        .get::<_, Option<i32>>("block_revenue_commission_bps"),
+                    pending_delegator_rewards: row
+                        .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                     commission_aggregated: None,
                     version: version.clone(),
                     client_id,
@@ -1204,6 +1245,8 @@ pub async fn load_validators(
                 record.commission_min_observed =
                     row.get::<_, Option<i32>>("commission_min_observed");
                 record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
+                record.commission_effective_source =
+                    row.get::<_, Option<String>>("commission_effective_source");
             }
 
             let rug_info = ruggers.get(&vote_account);
@@ -1243,6 +1286,27 @@ pub async fn load_validators(
                 commission_effective: row
                     .get::<_, Option<i32>>("commission_effective")
                     .map(|n| n.try_into().unwrap()),
+                commission_effective_source: row
+                    .get::<_, Option<String>>("commission_effective_source"),
+                inflation_rewards_commission_bps: row
+                    .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
+                inflation_rewards_commission_bps_is_v4: row
+                    .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4"),
+                inflation_rewards_collector: row
+                    .get::<_, Option<String>>("inflation_rewards_collector"),
+                inflation_rewards_collector_redirected: row
+                    .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
+                inflation_rewards_collector_shared_count: row
+                    .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                block_revenue_collector: row.get::<_, Option<String>>("block_revenue_collector"),
+                block_revenue_collector_is_identity: row
+                    .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
+                block_revenue_collector_shared_count: row
+                    .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                block_revenue_commission_bps: row
+                    .get::<_, Option<i32>>("block_revenue_commission_bps"),
+                pending_delegator_rewards: row
+                    .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                 version,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),

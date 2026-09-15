@@ -3,7 +3,7 @@ mod common;
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::dto::ValidatorRecord;
+use store::dto::{ValidatorRecord, ValidatorWarning};
 use store::utils::{
     load_validators, worst_known_commission, RewardMixShares, TakeRates, ValidatorOverlays,
 };
@@ -17,6 +17,13 @@ const MIX: RewardMixShares = RewardMixShares {
     mev: 0.044,
     block: 0.056,
 };
+
+fn warns_high_commission(record: &ValidatorRecord) -> bool {
+    record
+        .warnings
+        .iter()
+        .any(|warning| matches!(warning, ValidatorWarning::HighCommission))
+}
 
 fn approx(actual: Option<f64>, expected: f64, context: &str) {
     let actual = actual.unwrap_or_else(|| panic!("expected a rate: {context}"));
@@ -48,8 +55,7 @@ async fn load(
     .unwrap()
 }
 
-// The record projects one row per validator and the newest epoch is always still open, where the
-// three epoch-close commission columns are null.
+// One row per validator, newest epoch first, and that one is open: its close columns are null.
 #[tokio::test]
 async fn load_validators_projects_commissions_from_the_newest_closed_epoch() {
     let schema = "ds_test_load_validators_commission_projection";
@@ -199,8 +205,7 @@ async fn expected_take_rate_reads_the_rate_a_commission_gamer_actually_charges()
         .unwrap();
 }
 
-// A validator that rugged two epochs ago and has charged 5 since: with close_epoch yet to run for
-// the epoch below the open one, the only populated row left is the superseded one.
+// Rugged two epochs ago, 5 since: with close_epoch pending, only the superseded row is populated.
 #[tokio::test]
 async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commission() {
     let schema = "ds_test_load_validators_commission_projection_bound";
@@ -278,8 +283,7 @@ async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commiss
         "bounding the walk must not cost the validator its take rate",
     );
 
-    // voteDeparted left the set an epoch ago, so its newest closed epoch is two below the cluster's
-    // tip: reachable from its own seeding row, but not from a bound measured against the tip.
+    // voteDeparted's newest closed epoch is two below the tip, so a tip-measured bound misses it.
     let departed = validators
         .get("voteDeparted")
         .expect("voteDeparted must load");
@@ -292,6 +296,483 @@ async fn load_validators_does_not_reach_past_the_newest_closed_epoch_for_commiss
         (Some(7), Some(7), Some(7)),
         "the bound is one epoch below the record's own seeding epoch, not below the cluster's tip"
     );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+const COMMISSION_EFFECTIVE_BACKFILL: &str =
+    include_str!("../../migrations/0029-commission-effective-backfill.sql");
+
+async fn close_epochs_and_backfill(
+    client: &tokio_postgres::Client,
+    epochs: std::ops::RangeInclusive<u64>,
+) {
+    for epoch in epochs {
+        client
+            .execute(
+                "INSERT INTO epochs (epoch, start_at, end_at, transaction_count, supply, inflation, inflation_taper, slots_per_year)
+                 VALUES ($1, NOW(), NOW(), 0, 0, 0, 0, 0)",
+                &[&Decimal::from(epoch)],
+            )
+            .await
+            .unwrap();
+    }
+    client
+        .batch_execute(COMMISSION_EFFECTIVE_BACKFILL)
+        .await
+        .unwrap();
+}
+
+// SIMD-0232 nulled commission_effective from 1030 on; these pin the sources that replaced it.
+#[tokio::test]
+async fn high_commission_warning_survives_a_null_effective_commission() {
+    let schema = "ds_test_high_commission_warning_null_effective";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW()), (1, $2, 0, NOW())",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at, uptime_pct,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityDear', 'voteDear', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, 12, 12, 12, NULL),
+                ('identityDear', 'voteDear', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, 12, NULL, NULL, NULL),
+                ('identityCheap', 'voteCheap', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, 5, 5, 5, NULL),
+                ('identityCheap', 'voteCheap', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, 5, NULL, NULL, NULL),
+                ('identityBlank', 'voteBlank', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, NULL, NULL, NULL, NULL),
+                ('identityBlank', 'voteBlank', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 1, NULL, NULL, NULL, NULL)",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    let validators = load(&client, 2).await;
+
+    assert!(
+        warns_high_commission(validators.get("voteDear").unwrap()),
+        "a 12% ceiling must still warn when the applied rate is null"
+    );
+    assert!(
+        !warns_high_commission(validators.get("voteCheap").unwrap()),
+        "a 5% validator must not warn"
+    );
+    assert!(
+        !warns_high_commission(validators.get("voteBlank").unwrap()),
+        "an entirely unknown commission is not evidence of a high one"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn load_ruggers_detects_a_rug_in_epochs_the_backfill_filled() {
+    let schema = "ds_test_load_ruggers_null_effective";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // voteCutter ends both epochs at 5 under a ceiling of 15: an honest cut and a rug look alike.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityRugger', 'voteRugger', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityRugger', 'voteRugger', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, NULL),
+                ('identityRugger', 'voteRugger', 1033, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityRugger', 'voteRugger', 1034, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, NULL),
+                ('identityRugger', 'voteRugger', 1035, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identitySteady', 'voteSteady', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identitySteady', 'voteSteady', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identitySteady', 'voteSteady', 1033, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityCutter', 'voteCutter', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL),
+                ('identityCutter', 'voteCutter', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, NULL)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        store::utils::load_ruggers(&client)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a null applied rate scores nothing until the backfill writes one"
+    );
+
+    close_epochs_and_backfill(&client, 1031..=1035).await;
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    let rugger = ruggers.get("voteRugger").expect("the rug must be detected");
+    assert_eq!(rugger.occurrences, 3, "1032, 1033 and 1034 each match");
+    assert_eq!(rugger.epochs, vec![1032, 1033, 1034]);
+    assert_eq!(rugger.observed_commissions, vec![15, 5, 15]);
+
+    assert!(
+        !ruggers.contains_key("voteSteady"),
+        "a validator that never crossed 10 must not be flagged"
+    );
+    assert!(
+        !ruggers.contains_key("voteCutter"),
+        "both epochs ended at 5, so nothing above 10 was ever charged; reading the ceiling instead flagged this twice"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
+    let schema = "ds_test_load_ruggers_null_floor";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // close_epoch writes the rate before the floor, so a close failing in between leaves 1034 unfloored.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityLate', 'voteLate', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityLate', 'voteLate', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, 15),
+                ('identityLate', 'voteLate', 1033, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityLate', 'voteLate', 1034, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, NULL, NULL, 15),
+                ('identityLate', 'voteLate', 1035, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    let rugger = ruggers.get("voteLate").expect("the rug must be detected");
+    assert_eq!(
+        rugger.occurrences, 2,
+        "1032 and 1033 match on a known floor; 1034 matches only without one"
+    );
+    assert_eq!(rugger.epochs, vec![1032, 1033]);
+    assert_eq!(rugger.min_commissions, vec![5, 5]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn load_ruggers_scores_a_closed_epoch_on_the_applied_rate_not_the_last_sample() {
+    let schema = "ds_test_load_ruggers_applied_rate";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // voteHidden spiked between hourly samples, so only commission_effective carries the rug.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityHidden', 'voteHidden', 1020, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityHidden', 'voteHidden', 1021, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, 15),
+                ('identityHidden', 'voteHidden', 1022, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityHidden', 'voteHidden', 1023, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 15, 5, 15),
+                ('identityHidden', 'voteHidden', 1024, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    let rugger = ruggers
+        .get("voteHidden")
+        .expect("the applied rate must score, not the advertised sample");
+    assert_eq!(rugger.occurrences, 3, "1021, 1022 and 1023 each match");
+    assert_eq!(rugger.epochs, vec![1021, 1022, 1023]);
+    assert_eq!(
+        rugger.observed_commissions,
+        vec![15, 5, 15],
+        "the aggregate carries the applied rate, not the 5 every hourly sample saw"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn load_ruggers_reads_one_series_across_the_epoch_the_applied_rate_went_null() {
+    let schema = "ds_test_load_ruggers_source_boundary";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // The backfill takes over at 1030; a steady rate across it must not mint an event.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identitySteady', 'voteSteady', 1028, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySteady', 'voteSteady', 1029, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySteady', 'voteSteady', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identitySteady', 'voteSteady', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1028, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityCrosser', 'voteCrosser', 1029, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, 15),
+                ('identityCrosser', 'voteCrosser', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, NULL),
+                ('identityCrosser', 'voteCrosser', 1032, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, NULL)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    close_epochs_and_backfill(&client, 1028..=1032).await;
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    assert!(
+        !ruggers.contains_key("voteSteady"),
+        "the source changed at 1030, the rate did not"
+    );
+
+    let crosser = ruggers
+        .get("voteCrosser")
+        .expect("a rug spanning the source switch must still be detected");
+    assert_eq!(crosser.occurrences, 3, "1029, 1030 and 1031 each match");
+    assert_eq!(crosser.epochs, vec![1029, 1030, 1031]);
+    assert_eq!(crosser.observed_commissions, vec![15, 5, 15]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn backfill_fills_only_closed_epochs_from_1030_and_leaves_older_verdicts_alone() {
+    let schema = "ds_test_commission_effective_backfill";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // voteShutdown mirrors mainnet: a pre-1030 epoch with no reward row, advertising 100 as it left.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityShutdown', 'voteShutdown', 1027, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShutdown', 'voteShutdown', 1028, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 15, 15, 5, 15),
+                ('identityShutdown', 'voteShutdown', 1029, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 100, 100, 5, NULL),
+                ('identityLive', 'voteLive', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, NULL),
+                ('identityLive', 'voteLive', 1031, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL),
+                ('identitySampled', 'voteSampled', 1030, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 8, 8, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    close_epochs_and_backfill(&client, 1027..=1030).await;
+    client
+        .batch_execute(COMMISSION_EFFECTIVE_BACKFILL)
+        .await
+        .unwrap();
+
+    let effective: Vec<(String, u64, Option<i32>)> = client
+        .query(
+            "SELECT vote_account, epoch, commission_effective FROM validators ORDER BY vote_account, epoch",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row.get(0),
+                row.get::<_, Decimal>(1).try_into().unwrap(),
+                row.get(2),
+            )
+        })
+        .collect();
+    assert_eq!(
+        effective,
+        vec![
+            ("voteLive".to_string(), 1030, Some(7)),
+            ("voteLive".to_string(), 1031, None,),
+            ("voteSampled".to_string(), 1030, Some(5)),
+            ("voteShutdown".to_string(), 1027, Some(5)),
+            ("voteShutdown".to_string(), 1028, Some(15)),
+            ("voteShutdown".to_string(), 1029, None),
+        ],
+        "only closed epochs from 1030 with no rate get one; a rerun changes nothing"
+    );
+
+    assert!(
+        !store::utils::load_ruggers(&client)
+            .await
+            .unwrap()
+            .contains_key("voteShutdown"),
+        "reading advertised at 1029 would add a second event and flag a closed pre-SIMD epoch"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn collector_flags_and_shared_counts_project_per_epoch() {
+    let schema = "ds_test_collector_flags_and_shared_counts";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW()), (1, $2, 0, NOW())",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    // voteShareA and voteShareB share a collector; voteHome and the pre-v4 votePreV4 must not pool.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                inflation_rewards_collector, block_revenue_collector,
+                inflation_rewards_commission_bps, inflation_rewards_commission_bps_is_v4,
+                block_revenue_commission_bps
+            ) VALUES
+                ('idShareA', 'voteShareA', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 'voteShareA', 'idShareA', 500, true, 10000),
+                ('idShareA', 'voteShareA', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 'sharedCollector', 'idOther', 749, true, 10000),
+                ('idShareB', 'voteShareB', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 'sharedCollector', 'idShareB', 300, true, 10000),
+                ('idHome', 'voteHome', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 'voteHome', 'idHome', 700, false, 10000),
+                ('idPreV4', 'votePreV4', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, 700, false, NULL)",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    let validators = load(&client, 2).await;
+
+    let share_a = validators.get("voteShareA").unwrap();
+    assert_eq!(
+        share_a.inflation_rewards_collector.as_deref(),
+        Some("sharedCollector"),
+        "the record reads the open epoch, where the collector was sampled last"
+    );
+    assert_eq!(share_a.inflation_rewards_collector_redirected, Some(true));
+    assert_eq!(share_a.inflation_rewards_collector_shared_count, Some(2));
+    assert_eq!(
+        share_a.block_revenue_collector_is_identity,
+        Some(false),
+        "a block revenue collector that is not the current identity reads false"
+    );
+    assert_eq!(share_a.inflation_rewards_commission_bps, Some(749));
+    assert_eq!(share_a.inflation_rewards_commission_bps_is_v4, Some(true));
+
+    let share_b = validators.get("voteShareB").unwrap();
+    assert_eq!(
+        share_b.inflation_rewards_collector_shared_count,
+        Some(2),
+        "the count shows on every sharer, so a griefed validator can see it"
+    );
+
+    let home = validators.get("voteHome").unwrap();
+    assert_eq!(home.inflation_rewards_collector_redirected, Some(false));
+    assert_eq!(
+        home.inflation_rewards_collector_shared_count,
+        Some(1),
+        "a validator collecting to itself must not be pooled with the shared partition"
+    );
+    assert_eq!(home.block_revenue_collector_is_identity, Some(true));
+    assert_eq!(home.inflation_rewards_commission_bps_is_v4, Some(false));
+
+    let pre_v4 = validators.get("votePreV4").unwrap();
+    assert_eq!(pre_v4.inflation_rewards_collector, None);
+    assert_eq!(
+        pre_v4.inflation_rewards_collector_redirected, None,
+        "absence is not 'not redirected'"
+    );
+    assert_eq!(
+        pre_v4.inflation_rewards_collector_shared_count, None,
+        "partitioning on a null collector must not count every pre-v4 validator as sharing one"
+    );
+    assert_eq!(pre_v4.block_revenue_collector_is_identity, None);
+    assert_eq!(pre_v4.block_revenue_commission_bps, None);
+
+    // The per-epoch rows keep each epoch's own sample, where the record keeps only the newest.
+    let closed = share_a
+        .epoch_stats
+        .iter()
+        .find(|stat| stat.epoch == EPOCH_CLOSED)
+        .expect("the closed epoch must be in the stats");
+    assert_eq!(
+        closed.inflation_rewards_collector.as_deref(),
+        Some("voteShareA")
+    );
+    assert_eq!(closed.inflation_rewards_collector_redirected, Some(false));
+    assert_eq!(
+        closed.inflation_rewards_collector_shared_count,
+        Some(1),
+        "the count is scoped per epoch, and in the closed epoch nothing shared this collector"
+    );
+    assert_eq!(closed.inflation_rewards_commission_bps, Some(500));
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
