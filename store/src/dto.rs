@@ -646,11 +646,11 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
-/// Validator stats on the level of a city
+/// Validator stats on the level of a datacenter location.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
-pub struct GroupCity {
-    pub city: String,
-    pub country: Option<String>,
+pub struct GroupLocation {
+    pub country: String,
+    pub city: Option<String>,
     pub validator_count: u64,
     pub total_stake: Decimal,
 }
@@ -711,9 +711,7 @@ pub struct ValidatorProviderGroupRecord {
     /// Stake-sorted. One hosting organisation commonly announces from several.
     pub asns: Vec<i32>,
     /// Stake-sorted
-    pub cities: Vec<GroupCity>,
-    pub city_count: u64,
-    pub country_count: u64,
+    pub locations: Vec<GroupLocation>,
     /// Stake share per client lineage, biggest first.
     pub client_mix: Vec<GroupShare>,
     pub superminority_count: u64,
@@ -738,7 +736,6 @@ impl std::ops::Deref for ValidatorProviderGroupRecord {
 pub struct ValidatorClientGroupRecord {
     #[serde(flatten)]
     pub group: ValidatorGroupRecord,
-    /// Distinct cities the members sit in; the client rows serve no per-city breakdown.
     pub city_count: u64,
     pub country_count: u64,
     /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
@@ -1089,13 +1086,13 @@ mod tests {
 
         let provider = serde_json::to_value(ValidatorProviderGroupRecord {
             group: group.clone(),
-            country_count: 3,
+            superminority_count: 3,
             ..Default::default()
         })
         .unwrap();
         assert_eq!(provider["key"], "Hetzner");
         assert_eq!(provider["validator_count"], 2);
-        assert_eq!(provider["country_count"], 3);
+        assert_eq!(provider["superminority_count"], 3);
         assert!(provider.get("group").is_none());
 
         let client = serde_json::to_value(ValidatorClientGroupRecord {
