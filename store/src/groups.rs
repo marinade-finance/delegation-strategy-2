@@ -148,15 +148,15 @@ struct ProviderAndClientBreakdowns {
 /// What an accumulator folds out of each member's epoch stats beside the common columns. `()` for
 /// the row types that carry no extra columns.
 trait EpochStatBreakdowns: Default {
-    fn add(&mut self, stats: &ValidatorEpochStats);
+    fn add(&mut self, validator: &ValidatorRecord, stats: &ValidatorEpochStats);
 }
 
 impl EpochStatBreakdowns for () {
-    fn add(&mut self, _stats: &ValidatorEpochStats) {}
+    fn add(&mut self, _validator: &ValidatorRecord, _stats: &ValidatorEpochStats) {}
 }
 
 impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
-    fn add(&mut self, stats: &ValidatorEpochStats) {
+    fn add(&mut self, validator: &ValidatorRecord, stats: &ValidatorEpochStats) {
         let stake = stats.activated_stake;
 
         if let Some(asn) = stats.dc_asn {
@@ -171,12 +171,11 @@ impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
                 .add(stake);
         }
 
-        if let Some(version) = normalized(stats.version.clone()) {
+        if let Some(version) = normalized(validator.version.clone()) {
             self.versions.entry(version).or_default().add(stake);
         }
 
-        let client_id = effective_client_id(stats.client_id, stats.client_id_raw.as_deref());
-        if let Some(lineage) = normalized(client_lineage(client_id)).map(as_client_name) {
+        if let Some(lineage) = normalized(validator.client_lineage.clone()).map(as_client_name) {
             self.lineages.entry(lineage).or_default().add(stake);
         }
 
@@ -372,7 +371,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
         }
 
-        self.breakdowns.add(stats);
+        self.breakdowns.add(validator, stats);
 
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
@@ -945,7 +944,10 @@ mod tests {
                         dc_city: member.dc_city.map(str::to_string),
                         dc_country: member.dc_country.map(str::to_string),
                         dc_asn: member.dc_asn,
-                        version: member.version.map(str::to_string),
+                        // A row gossip missed reports no version either.
+                        version: (client_id.is_some() || member.client_id_raw.is_some())
+                            .then(|| member.version.map(str::to_string))
+                            .flatten(),
                         superminority: member.superminority,
                         ..Default::default()
                     })
@@ -987,6 +989,7 @@ mod tests {
                         client_label: client_label(projected_client_id),
                         client_vendor: client_vendor(projected_client_id),
                         client_lineage: client_lineage(projected_client_id),
+                        version: member.version.map(str::to_string),
                         epoch_stats,
                         net_apy: member.net_apy,
                         avg_take_rate: member.take_rate,
@@ -1296,6 +1299,43 @@ mod tests {
         assert_eq!(
             keys(&aggregate_client_rows(&validators, &Default::default())),
             vec!["Agave".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_node_not_yet_crawled_this_epoch_keeps_its_slice_of_the_breakdowns() {
+        let validators = validators(vec![Member {
+            version: Some("2.1.11"),
+            ..Member::new(
+                "uncrawled",
+                vec![
+                    (CURRENT_EPOCH, 100, None, Some("Hetzner")),
+                    (PREVIOUS_EPOCH, 100, AGAVE, Some("Hetzner")),
+                ],
+            )
+        }]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+        assert_eq!(
+            provider
+                .client_mix
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("Agave", 1.0)],
+            "the member the client rows still call Agave must not leave a hole in the shares"
+        );
+
+        let clients = aggregate_client_rows(&validators, &Default::default());
+        let client = group(&clients, "Agave");
+        assert_eq!(
+            client
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("2.1.11", 1.0)]
         );
     }
 
