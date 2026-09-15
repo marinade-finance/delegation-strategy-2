@@ -410,7 +410,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // `load_releases` answers newest first, so the first row a lineage gets is the one it keeps.
+    // Load newest releases per lineage.
     let releases = {
         let psql_client = &context.read().await.psql_client;
         let mut latest = ClientReleases::default();

@@ -874,8 +874,6 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
-        /// Reported on every epoch row the member has, as the collector would for a node that
-        /// never moved.
         dc_city: Option<&'static str>,
         dc_country: Option<&'static str>,
         dc_asn: Option<i32>,
