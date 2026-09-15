@@ -743,8 +743,7 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
-/// A city the group's members sit in. `country` is null for a city the geolocation source placed
-/// without one.
+/// Validator stats on the level of a city
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct GroupCity {
     pub city: String,
@@ -752,17 +751,6 @@ pub struct GroupCity {
     pub validator_count: u64,
     pub total_stake: Decimal,
 }
-
-/// One slice of a group. `stake_share` is of the group, not of the cluster, and the shares of a
-/// group holding members the slicing cannot classify sum to less than 1.
-#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
-pub struct GroupShare {
-    pub key: String,
-    pub validator_count: u64,
-    pub total_stake: Decimal,
-    pub stake_share: f64,
-}
-
 /// A published client release, as `/releases` serves it.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ClientRelease {
@@ -804,8 +792,15 @@ impl GroupRow for ValidatorGroupRecord {
     }
 }
 
-/// A hosting provider, as `/providers` serves it: the common columns flattened, plus what the
-/// provider information panel renders.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupShare {
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+}
+
+/// A hosting provider, as `/providers` serves it.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorProviderGroupRecord {
     #[serde(flatten)]
@@ -835,8 +830,7 @@ impl std::ops::Deref for ValidatorProviderGroupRecord {
     }
 }
 
-/// A client lineage, as the parent rows of `/clients` serve it. Its block engines are served as
-/// children, which carry the common columns alone.
+/// A client lineage, as the parent rows of `/clients` serve it.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ValidatorClientGroupRecord {
     #[serde(flatten)]
