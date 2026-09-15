@@ -488,7 +488,7 @@ pub enum IncidentDetail {
         epoch_slot: u64,
     },
     /// Only ever compared against the same client lineage: version numbering differs between them.
-    OutdatedClient {
+    RunningLateClientVersion {
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
         version: String,
@@ -496,7 +496,16 @@ pub enum IncidentDetail {
         client_lineage: String,
         /// Share of the lineage's stake on a strictly newer version, as a fraction.
         newer_stake_share: f64,
+        /// Every version above this one, newest first. The shares sum to `newer_stake_share`.
+        newer_version_stake_shares: Vec<VersionStakeShare>,
     },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct VersionStakeShare {
+    pub version: String,
+    /// Share of the lineage's stake in that epoch, as a fraction.
+    pub share: f64,
 }
 
 /// What a validator produced of its leader slots in one epoch, and the bar it was held to.
@@ -524,7 +533,7 @@ impl IncidentDetail {
             Self::Downtime { start_at, .. } => *start_at,
             Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
             Self::CommissionSpike { changed_at, .. } => *changed_at,
-            Self::OutdatedClient { epoch_start_at, .. } => *epoch_start_at,
+            Self::RunningLateClientVersion { epoch_start_at, .. } => *epoch_start_at,
         }
     }
 }
@@ -1081,15 +1090,19 @@ mod tests {
     }
 
     #[test]
-    fn an_outdated_client_serializes_flat_under_its_own_type() {
+    fn a_late_client_version_serializes_flat_under_its_own_type() {
         let record = IncidentRecord {
             epoch: 1000,
-            detail: IncidentDetail::OutdatedClient {
+            detail: IncidentDetail::RunningLateClientVersion {
                 epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
                 epoch_end_at: "2026-01-03T00:00:00Z".parse().unwrap(),
                 version: "4.1.0".to_string(),
                 client_lineage: "agave".to_string(),
                 newer_stake_share: 0.9,
+                newer_version_stake_shares: vec![VersionStakeShare {
+                    version: "4.2.0".to_string(),
+                    share: 0.9,
+                }],
             },
         };
 
@@ -1097,12 +1110,13 @@ mod tests {
             serde_json::to_value(&record).unwrap(),
             serde_json::json!({
                 "epoch": 1000,
-                "incident_type": "OutdatedClient",
+                "incident_type": "RunningLateClientVersion",
                 "epoch_start_at": "2026-01-01T00:00:00Z",
                 "epoch_end_at": "2026-01-03T00:00:00Z",
                 "version": "4.1.0",
                 "client_lineage": "agave",
                 "newer_stake_share": 0.9,
+                "newer_version_stake_shares": [{"version": "4.2.0", "share": 0.9}],
             })
         );
     }
