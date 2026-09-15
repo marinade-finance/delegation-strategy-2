@@ -1,8 +1,8 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents, GroupLocation,
-    GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats, ValidatorGroupNode,
-    ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorProviderGroupRecord,
-    ValidatorProviderGroups, ValidatorRecord,
+    client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents,
+    GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats,
+    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups,
+    ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -165,7 +165,10 @@ impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
 
         let city = normalized(stats.dc_city.clone());
         if let Some(country) = normalized(stats.dc_country.clone()) {
-            self.locations.entry((country, city)).or_default().add(stake);
+            self.locations
+                .entry((country, city))
+                .or_default()
+                .add(stake);
         }
 
         if let Some(version) = normalized(stats.version.clone()) {
