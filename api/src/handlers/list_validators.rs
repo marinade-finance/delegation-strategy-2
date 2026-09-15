@@ -74,7 +74,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `OutdatedClient` (defaults to just `Downtime`).
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `RunningLateClientVersion` (defaults to just `Downtime`).
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
@@ -582,7 +582,7 @@ pub async fn handler(
                 return Ok(response_error(
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "query_incident_types does not know {unknown:?}, expected Downtime, BlockProduction, CommissionSpike or OutdatedClient"
+                        "query_incident_types does not know {unknown:?}, expected Downtime, BlockProduction, CommissionSpike or RunningLateClientVersion"
                     ),
                 ))
             }
@@ -1018,11 +1018,11 @@ mod tests {
         }
 
         /// An epoch the validator ran 4.1.0 while its lineage had moved to 4.2.0.
-        fn outdated(mut self, vote_account: &str, epoch: u64) -> Self {
+        fn late_patch(mut self, vote_account: &str, epoch: u64) -> Self {
             let epoch_end_at = Utc::now();
             self.0
                 .records(vote_account)
-                .outdated_clients
+                .running_late_client_versions
                 .push(EpochClientVersion {
                     epoch,
                     epoch_start_at: epoch_end_at - chrono::Duration::days(2),
@@ -1030,6 +1030,7 @@ mod tests {
                     version: "4.1.0".to_string(),
                     client_lineage: "agave".to_string(),
                     newer_stake_share: 0.9,
+                    newer_version_stake_shares: Vec::new(),
                 });
             self
         }
@@ -1245,13 +1246,13 @@ mod tests {
             .down("outage", 100, 600)
             .skipped("skipper", 100)
             .spiked("gouger", 100)
-            .outdated("laggard", 100)
+            .late_patch("laggard", 100)
             .build();
         for (incident_type, served) in [
             (IncidentType::Downtime, "outage"),
             (IncidentType::BlockProduction, "skipper"),
             (IncidentType::CommissionSpike, "gouger"),
-            (IncidentType::OutdatedClient, "laggard"),
+            (IncidentType::RunningLateClientVersion, "laggard"),
         ] {
             let validators = map(vec![
                 validator("outage", 100, vec![]),

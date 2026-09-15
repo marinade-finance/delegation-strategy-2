@@ -382,12 +382,12 @@ pub async fn load_validator_incidents(
 
     let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
     for (vote_account, record) in records {
-        let outdated = crate::incidents::outdated_after_grace(
-            crate::incidents::outdated_epochs(record, &newer_stake_shares),
+        let late_patch = crate::incidents::running_late_client_version_incidents(
+            crate::incidents::epochs_running_late_client_version(record, &newer_stake_shares),
             from_epoch..=last_epoch,
         );
-        if !outdated.is_empty() {
-            incidents.records(vote_account).outdated_clients = outdated;
+        if !late_patch.is_empty() {
+            incidents.records(vote_account).running_late_client_versions = late_patch;
         }
     }
 
