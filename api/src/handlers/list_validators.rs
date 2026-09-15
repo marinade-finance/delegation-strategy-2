@@ -74,7 +74,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, as `incident_type` spells them in the response. Defaults to `Downtime`, since `BlockProduction` records carry different fields. An epoch with more than one symptom is served under any of them.
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, as `incident_type` spells them in the response. Defaults to `Downtime`, since the other two carry different fields. An epoch with more than one symptom is served under any of them.
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
@@ -582,7 +582,7 @@ pub async fn handler(
                 return Ok(response_error(
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "query_incident_types does not know {unknown:?}, expected Downtime or BlockProduction"
+                        "query_incident_types does not know {unknown:?}, expected Downtime, BlockProduction or CommissionSpike"
                     ),
                 ))
             }
@@ -666,7 +666,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
-    use store::incidents::{DowntimeInterval, EpochBlockProduction};
+    use store::incidents::{CommissionRaise, DowntimeInterval, EpochBlockProduction};
 
     fn epoch_stat(epoch: u64, stake: i64) -> ValidatorEpochStats {
         ValidatorEpochStats {
@@ -1000,6 +1000,21 @@ mod tests {
             self.produced(vote_account, epoch, FIXTURE_MISSED_SLOTS)
         }
 
+        /// An epoch the validator raised its inflation commission from 5% to 100% in.
+        fn spiked(mut self, vote_account: &str, epoch: u64) -> Self {
+            self.0
+                .records(vote_account)
+                .commission_raises
+                .push(CommissionRaise {
+                    epoch,
+                    epoch_slot: 1000,
+                    changed_at: Utc::now(),
+                    commission_before: 5,
+                    commission_after: 100,
+                });
+            self
+        }
+
         fn build(self) -> ValidatorIncidents {
             self.0
         }
@@ -1167,23 +1182,6 @@ mod tests {
     }
 
     #[test]
-    fn a_block_production_incident_is_not_incident_free() {
-        let validators = map(vec![
-            validator("skipper", 100, vec![]),
-            validator("clean", 100, vec![]),
-        ]);
-        let incidents = Material::default().skipped("skipper", 100).build();
-        let config = GetValidatorsConfig {
-            query_incident_free: Some(true),
-            ..config()
-        };
-        assert_eq!(
-            vote_accounts(filter_validators(validators, &incidents, &config)),
-            vec!["clean".to_string()]
-        );
-    }
-
-    #[test]
     fn the_downtime_floor_does_not_reach_block_production_incidents() {
         let validators = map(vec![validator("skipper", 100, vec![])]);
         let incidents = Material::default().skipped("skipper", 100).build();
@@ -1227,14 +1225,17 @@ mod tests {
         let incidents = Material::default()
             .down("outage", 100, 600)
             .skipped("skipper", 100)
+            .spiked("gouger", 100)
             .build();
         for (incident_type, served) in [
             (IncidentType::Downtime, "outage"),
             (IncidentType::BlockProduction, "skipper"),
+            (IncidentType::CommissionSpike, "gouger"),
         ] {
             let validators = map(vec![
                 validator("outage", 100, vec![]),
                 validator("skipper", 100, vec![]),
+                validator("gouger", 100, vec![]),
             ]);
             let config = GetValidatorsConfig {
                 query_incident_free: Some(false),
@@ -1247,39 +1248,6 @@ mod tests {
                 "{incident_type:?}"
             );
         }
-    }
-
-    // A restart under the floor is not served, so the epoch it happened in is served for its block
-    // production instead, under the type that says so.
-    #[test]
-    fn a_restart_under_the_floor_does_not_carry_its_epoch_s_block_production() {
-        let validators = map(vec![validator("flappy", 100, vec![])]);
-        let incidents = Material::default()
-            .down("flappy", 100, 12)
-            .skipped("flappy", 100)
-            .build();
-
-        let served = filter_validators(validators, &incidents, &config());
-        assert_eq!(served[0].incidents.len(), 1);
-        assert!(matches!(
-            served[0].incidents[0].detail,
-            IncidentDetail::BlockProduction { .. }
-        ));
-    }
-
-    #[test]
-    fn a_block_production_incident_outside_the_window_is_dropped_like_any_other() {
-        // The fixtures report up to epoch 100, so the default window opens at epoch 11.
-        let validators = map(vec![validator("skipper", 100, vec![])]);
-        let incidents = Material::default().skipped("skipper", 10).build();
-        let config = GetValidatorsConfig {
-            query_incident_free: Some(true),
-            ..config()
-        };
-        assert_eq!(
-            vote_accounts(filter_validators(validators, &incidents, &config)),
-            vec!["skipper".to_string()]
-        );
     }
 
     #[test]

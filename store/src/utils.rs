@@ -6,7 +6,10 @@ use crate::dto::{
     ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
     VersionRecord,
 };
-use crate::incidents::{DowntimeInterval, EpochBlockProduction, ValidatorIncidents};
+use crate::incidents::{
+    commission_raises, CommissionRaise, CommissionSample, DowntimeInterval, EpochBlockProduction,
+    ValidatorIncidents,
+};
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
@@ -229,10 +232,66 @@ async fn get_apy_calculators(
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
+/// Every raise over the bar per vote account. Reads one epoch further back than the window: a raise
+/// in its first epoch needs the rate it moved from, and `commissions` carries a row per vote account
+/// per epoch even where nothing changed. A validator that never raised is left out, so the caller
+/// does not mint a cache entry for every vote account the table ever saw.
+async fn load_commission_raises(
+    psql_client: &Client,
+    from_epoch: u64,
+    last_epoch: u64,
+) -> anyhow::Result<HashMap<String, Vec<CommissionRaise>>> {
+    let rows = psql_client
+        .query(
+            "
+            SELECT
+                vote_account,
+                epoch,
+                epoch_slot,
+                commission,
+                created_at
+            FROM commissions
+            WHERE epoch >= $1::NUMERIC
+              AND epoch <= $2::NUMERIC
+            ORDER BY vote_account, epoch ASC, epoch_slot ASC, created_at ASC",
+            &[
+                &Decimal::from(from_epoch.saturating_sub(1)),
+                &Decimal::from(last_epoch),
+            ],
+        )
+        .await?;
+
+    let mut samples: HashMap<String, Vec<CommissionSample>> = Default::default();
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        samples
+            .entry(vote_account)
+            .or_default()
+            .push(CommissionSample {
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
+                epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
+                created_at: row.get("created_at"),
+                commission: row.get::<_, i32>("commission").try_into()?,
+            });
+    }
+
+    let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
+    for (vote_account, samples) in samples {
+        // The epoch under the window is read for its rate alone.
+        let mut raised = commission_raises(&samples);
+        raised.retain(|raise| raise.epoch >= from_epoch);
+        if !raised.is_empty() {
+            raises.insert(vote_account, raised);
+        }
+    }
+
+    Ok(raises)
+}
+
 /// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, and the block production of every closed epoch. Neither is judged or
-/// merged here; `ValidatorIncidentRecords::into_response_incidents` does both under a caller's
-/// floors.
+/// interval as recorded, the block production of every closed epoch, and every inflation commission
+/// raise over the bar. None of it is judged or merged here;
+/// `ValidatorIncidentRecords::into_response_incidents` does both under a caller's floors.
 pub async fn load_validator_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -269,6 +328,12 @@ pub async fn load_validator_incidents(
                 end_at: row.get("end_at"),
                 downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
             });
+    }
+
+    for (vote_account, raises) in
+        load_commission_raises(psql_client, from_epoch, last_epoch).await?
+    {
+        incidents.records(&vote_account).commission_raises = raises;
     }
 
     // Read off the same epoch stats the incidents are handed back for, so the cluster figure and

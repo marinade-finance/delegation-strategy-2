@@ -23,12 +23,17 @@ pub const MAX_SKIP_RATE_THRESHOLD: f64 = 0.05;
 /// Under this many seconds a `DOWN` interval is restart noise, not an incident.
 pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 
+/// Whole percent. `commissions` carries agave's own `commission_percent()`, which floors, so
+/// 8999 bps reads 89 here.
+pub const COMMISSION_SPIKE_THRESHOLD: u8 = 90;
+
 pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IncidentType {
     Downtime,
     BlockProduction,
+    CommissionSpike,
 }
 
 impl IncidentType {
@@ -39,6 +44,7 @@ impl IncidentType {
             .map(|name| match name.trim() {
                 "Downtime" => Ok(Self::Downtime),
                 "BlockProduction" => Ok(Self::BlockProduction),
+                "CommissionSpike" => Ok(Self::CommissionSpike),
                 other => Err(other.to_string()),
             })
             .collect()
@@ -124,6 +130,55 @@ impl EpochBlockProduction {
     }
 }
 
+/// One `commissions` row. Whole percent, and only the inflation rate: MEV and block-revenue
+/// commissions live in their own tables.
+#[derive(Debug, Clone)]
+pub struct CommissionSample {
+    pub epoch: u64,
+    pub epoch_slot: u64,
+    pub created_at: DateTime<Utc>,
+    pub commission: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommissionRaise {
+    pub epoch: u64,
+    pub epoch_slot: u64,
+    pub changed_at: DateTime<Utc>,
+    pub commission_before: u8,
+    pub commission_after: u8,
+}
+
+/// Every crossing of `COMMISSION_SPIKE_THRESHOLD` from below.
+pub fn commission_raises(samples: &[CommissionSample]) -> Vec<CommissionRaise> {
+    // `created_at` is the snapshot's own timestamp, so a backfilled epoch carries one newer than
+    // the epochs after it; the slot within the epoch is the only key a backfill cannot reorder.
+    let mut samples: Vec<&CommissionSample> = samples.iter().collect();
+    samples.sort_by_key(|sample| (sample.epoch, sample.epoch_slot));
+
+    let mut raises = Vec::new();
+    let mut previous: Option<u8> = None;
+
+    for sample in samples {
+        if let Some(commission_before) = previous {
+            if commission_before < COMMISSION_SPIKE_THRESHOLD
+                && sample.commission >= COMMISSION_SPIKE_THRESHOLD
+            {
+                raises.push(CommissionRaise {
+                    epoch: sample.epoch,
+                    epoch_slot: sample.epoch_slot,
+                    changed_at: sample.created_at,
+                    commission_before,
+                    commission_after: sample.commission,
+                });
+            }
+        }
+        previous = Some(sample.commission);
+    }
+
+    raises
+}
+
 /// Window and floors one response is judged under.
 #[derive(Debug, Clone)]
 pub struct IncidentFilters {
@@ -161,19 +216,23 @@ impl IncidentFilters {
 pub struct ValidatorIncidentRecords {
     pub downtimes: Vec<DowntimeInterval>,
     pub block_production: Vec<EpochBlockProduction>,
+    pub commission_raises: Vec<CommissionRaise>,
 }
 
 impl ValidatorIncidentRecords {
     /// An epoch's block production is reported once: on that epoch's downtime records if any are
-    /// served, otherwise as a record of its own.
+    /// served, otherwise as a record of its own. A commission spike is never folded into either.
     pub fn into_response_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
         let mut incidents: Vec<dto::IncidentRecord> = Vec::new();
+        // Epochs whose block production a downtime record already carries.
+        let mut carried: Vec<u64> = Vec::new();
 
         if filters.wants(IncidentType::Downtime) {
             for downtime in self.downtimes.iter().filter(|downtime| {
                 downtime.epoch >= filters.from_epoch
                     && downtime.downtime_seconds >= filters.min_downtime_seconds
             }) {
+                carried.push(downtime.epoch);
                 incidents.push(dto::IncidentRecord {
                     epoch: downtime.epoch,
                     detail: dto::IncidentDetail::Downtime {
@@ -189,7 +248,6 @@ impl ValidatorIncidentRecords {
         }
 
         if filters.wants(IncidentType::BlockProduction) {
-            let carried: Vec<u64> = incidents.iter().map(|incident| incident.epoch).collect();
             for production in self
                 .block_production
                 .iter()
@@ -206,6 +264,24 @@ impl ValidatorIncidentRecords {
                         },
                     });
                 }
+            }
+        }
+
+        if filters.wants(IncidentType::CommissionSpike) {
+            for raise in self
+                .commission_raises
+                .iter()
+                .filter(|raise| raise.epoch >= filters.from_epoch)
+            {
+                incidents.push(dto::IncidentRecord {
+                    epoch: raise.epoch,
+                    detail: dto::IncidentDetail::CommissionSpike {
+                        commission_before: raise.commission_before,
+                        commission_after: raise.commission_after,
+                        changed_at: raise.changed_at,
+                        epoch_slot: raise.epoch_slot,
+                    },
+                });
             }
         }
 
@@ -468,7 +544,36 @@ mod tests {
         ValidatorIncidentRecords {
             downtimes,
             block_production,
+            ..Default::default()
         }
+    }
+
+    /// A raise from 5% to 100%, at 06:00 of the epoch the other fixtures place at 00:00.
+    fn raise(epoch: u64) -> CommissionRaise {
+        CommissionRaise {
+            epoch,
+            epoch_slot: 1000,
+            changed_at: "2026-01-01T06:00:00Z".parse().unwrap(),
+            commission_before: 5,
+            commission_after: 100,
+        }
+    }
+
+    fn sample(epoch: u64, epoch_slot: u64, commission: u8) -> CommissionSample {
+        let created_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        CommissionSample {
+            epoch,
+            epoch_slot,
+            created_at: created_at + chrono::Duration::days(epoch as i64),
+            commission,
+        }
+    }
+
+    fn raised_to(samples: &[CommissionSample]) -> Vec<(u64, u8, u8)> {
+        commission_raises(samples)
+            .iter()
+            .map(|raise| (raise.epoch, raise.commission_before, raise.commission_after))
+            .collect()
     }
 
     fn served_types(incidents: &[dto::IncidentRecord]) -> Vec<&'static str> {
@@ -477,6 +582,7 @@ mod tests {
             .map(|incident| match incident.detail {
                 dto::IncidentDetail::Downtime { .. } => "Downtime",
                 dto::IncidentDetail::BlockProduction { .. } => "BlockProduction",
+                dto::IncidentDetail::CommissionSpike { .. } => "CommissionSpike",
             })
             .collect()
     }
@@ -489,6 +595,7 @@ mod tests {
             dto::IncidentDetail::BlockProduction {
                 block_production, ..
             } => Some(block_production),
+            dto::IncidentDetail::CommissionSpike { .. } => None,
         }
     }
 
@@ -579,11 +686,16 @@ mod tests {
     // The epoch both went down and breached, so each type has something of its own to serve.
     #[test]
     fn each_type_serves_the_epoch_under_its_own_name() {
-        let records = records(vec![downtime(EPOCH, 600)], vec![breached(EPOCH)]);
+        let records = ValidatorIncidentRecords {
+            downtimes: vec![downtime(EPOCH, 600)],
+            block_production: vec![breached(EPOCH)],
+            commission_raises: vec![raise(EPOCH)],
+        };
 
         for (incident_type, served) in [
             (IncidentType::Downtime, "Downtime"),
             (IncidentType::BlockProduction, "BlockProduction"),
+            (IncidentType::CommissionSpike, "CommissionSpike"),
         ] {
             let filters = IncidentFilters {
                 types: Some(vec![incident_type]),
@@ -660,6 +772,149 @@ mod tests {
                 .map(|incident| incident.epoch)
                 .collect::<Vec<_>>(),
             vec![99, 100, 101]
+        );
+    }
+
+    #[test]
+    fn a_raise_over_the_bar_carries_the_rate_it_came_from() {
+        let samples = [sample(100, 100, 5), sample(100, 200, 100)];
+
+        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
+    }
+
+    #[test]
+    fn a_rate_already_over_the_bar_is_read_where_it_moved_there() {
+        let samples = [
+            sample(99, 100, 5),
+            sample(100, 100, 100),
+            sample(101, 100, 100),
+            sample(102, 100, 100),
+        ];
+
+        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
+    }
+
+    #[test]
+    fn a_first_sample_over_the_bar_has_nothing_to_have_moved_from() {
+        let samples = [sample(100, 100, 100), sample(101, 100, 100)];
+
+        assert!(raised_to(&samples).is_empty());
+    }
+
+    #[test]
+    fn a_drop_back_under_the_bar_is_no_raise_but_the_next_climb_is() {
+        let samples = [
+            sample(100, 100, 5),
+            sample(100, 200, 100),
+            sample(100, 300, 5),
+            sample(100, 400, 100),
+        ];
+
+        assert_eq!(raised_to(&samples), vec![(100, 5, 100), (100, 5, 100)]);
+    }
+
+    #[test]
+    fn the_bar_is_read_at_ninety() {
+        assert_eq!(
+            raised_to(&[sample(100, 100, 89), sample(100, 200, 90)]),
+            vec![(100, 89, 90)]
+        );
+        assert!(raised_to(&[sample(100, 100, 88), sample(100, 200, 89)]).is_empty());
+    }
+
+    #[test]
+    fn samples_are_read_in_slot_order_whatever_order_they_arrive_in() {
+        let samples = [
+            sample(100, 300, 5),
+            sample(100, 100, 5),
+            sample(100, 200, 100),
+        ];
+
+        // Read as 5, 100, 5: one raise. Read as they arrive, the 5 at slot 300 would open a second.
+        assert_eq!(raised_to(&samples), vec![(100, 5, 100)]);
+    }
+
+    #[test]
+    fn a_spike_is_no_part_of_whether_the_validator_was_up() {
+        let records = ValidatorIncidentRecords {
+            downtimes: vec![],
+            block_production: vec![breached(EPOCH)],
+            commission_raises: vec![raise(EPOCH)],
+        };
+
+        assert_eq!(
+            served_types(&records.into_response_incidents(&Default::default())),
+            vec!["BlockProduction", "CommissionSpike"]
+        );
+    }
+
+    #[test]
+    fn an_outage_does_not_swallow_the_epoch_s_spike() {
+        let records = ValidatorIncidentRecords {
+            downtimes: vec![downtime(EPOCH, 600)],
+            block_production: vec![breached(EPOCH)],
+            commission_raises: vec![raise(EPOCH)],
+        };
+
+        assert_eq!(
+            served_types(&records.into_response_incidents(&Default::default())),
+            vec!["CommissionSpike", "Downtime"]
+        );
+    }
+
+    // What a caller naming no types gets.
+    #[test]
+    fn the_default_types_serve_downtime_alone() {
+        let records = ValidatorIncidentRecords {
+            downtimes: vec![downtime(EPOCH, 600)],
+            block_production: vec![breached(EPOCH)],
+            commission_raises: vec![raise(EPOCH)],
+        };
+        let filters = IncidentFilters {
+            types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            served_types(&records.into_response_incidents(&filters)),
+            vec!["Downtime"]
+        );
+    }
+
+    #[test]
+    fn from_epoch_drops_a_spike_before_the_window() {
+        let records = ValidatorIncidentRecords {
+            commission_raises: vec![raise(99), raise(100)],
+            ..Default::default()
+        };
+        let filters = IncidentFilters {
+            from_epoch: 100,
+            ..Default::default()
+        };
+
+        let incidents = records.into_response_incidents(&filters);
+        assert_eq!(
+            incidents
+                .iter()
+                .map(|incident| incident.epoch)
+                .collect::<Vec<_>>(),
+            vec![100]
+        );
+    }
+
+    #[test]
+    fn parse_list_takes_every_name_the_response_emits() {
+        assert_eq!(
+            IncidentType::parse_list("Downtime, BlockProduction,CommissionSpike"),
+            Ok(vec![
+                IncidentType::Downtime,
+                IncidentType::BlockProduction,
+                IncidentType::CommissionSpike,
+            ])
+        );
+        assert_eq!(
+            IncidentType::parse_list("Downtime,Commission"),
+            Err("Commission".to_string())
         );
     }
 

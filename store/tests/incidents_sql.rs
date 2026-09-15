@@ -73,6 +73,42 @@ async fn down(client: &Client, vote_account: &str, epoch: u64, start_at: &str, e
     interval(client, vote_account, "DOWN", epoch, start_at, end_at).await
 }
 
+// `identity` and `vote_account` are the same string here, as they are for the uptime rows.
+async fn commission(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+    epoch_slot: u64,
+    commission: i32,
+    created_at: &str,
+) {
+    client
+        .execute(
+            "INSERT INTO commissions (identity, vote_account, commission, epoch_slot, epoch, created_at)
+             VALUES ($1, $1, $2, $3::TEXT::NUMERIC, $4::TEXT::NUMERIC, $5::TEXT::TIMESTAMPTZ)",
+            &[
+                &vote_account,
+                &commission,
+                &epoch_slot.to_string(),
+                &epoch.to_string(),
+                &created_at,
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+/// Epoch, rate before and rate after, for each raise loaded.
+fn raises(incidents: &ValidatorIncidents, vote_account: &str) -> Vec<(u64, u8, u8)> {
+    incidents
+        .get(vote_account)
+        .expect("the validator has incident material")
+        .commission_raises
+        .iter()
+        .map(|raise| (raise.epoch, raise.commission_before, raise.commission_after))
+        .collect()
+}
+
 fn downtime_epochs(incidents: &ValidatorIncidents, vote_account: &str) -> Vec<u64> {
     incidents
         .get(vote_account)
@@ -301,4 +337,168 @@ async fn each_validator_is_keyed_by_its_own_vote_account() {
         incidents.into_response_incidents("voteB", &filters)[0].detail,
         IncidentDetail::BlockProduction { .. }
     ));
+}
+
+#[tokio::test]
+async fn a_raise_over_the_bar_is_loaded_with_the_rate_it_came_from() {
+    let schema = "ds_test_incidents_commission_raise";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 5, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 100, "2026-02-01T00:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(raises(&incidents, "voteA"), vec![(100, 5, 100)]);
+    let loaded = &incidents.get("voteA").unwrap().commission_raises[0];
+    assert_eq!(loaded.epoch_slot, 200);
+    assert_eq!(
+        loaded.changed_at,
+        "2026-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+}
+
+// The epoch under the window is queried for the rate the window's first epoch moved from, and for
+// nothing else.
+#[tokio::test]
+async fn a_raise_inside_the_baseline_epoch_is_not_served() {
+    let schema = "ds_test_incidents_commission_baseline";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 5, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 99, 200, 100, "2026-01-01T01:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 100, "2026-02-01T00:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert!(incidents.is_empty());
+}
+
+#[tokio::test]
+async fn a_validator_first_sampled_over_the_bar_opens_nothing() {
+    let schema = "ds_test_incidents_commission_no_baseline";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 100, 100, 100, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 100, "2026-02-01T01:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert!(incidents.is_empty());
+}
+
+// `commissions` carries a row per vote account per epoch, so every validator would reach the cache
+// if the loader filed them before judging their samples.
+#[tokio::test]
+async fn a_validator_that_never_raised_is_not_filed_at_all() {
+    let schema = "ds_test_incidents_commission_quiet";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 5, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 5, "2026-02-01T00:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert!(incidents.is_empty());
+}
+
+// Read in the order the rows arrive, the 5 at slot 300 would open a second raise.
+#[tokio::test]
+async fn rows_are_read_in_slot_order_whatever_order_they_were_written_in() {
+    let schema = "ds_test_incidents_commission_slot_order";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 100, 300, 5, "2026-02-01T02:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 5, "2026-02-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 100, "2026-02-01T01:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(raises(&incidents, "voteA"), vec![(100, 5, 100)]);
+}
+
+// Only the inflation commission is read: a validator taking every MEV tip is no spike.
+#[tokio::test]
+async fn a_mev_commission_over_the_bar_opens_nothing() {
+    let schema = "ds_test_incidents_commission_mev";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    commission(&client, "voteA", 99, 100, 5, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 100, 5, "2026-02-01T00:00:00Z").await;
+    client
+        .execute(
+            "INSERT INTO mev (vote_account, mev_commission, epoch_slot, epoch, created_at)
+             VALUES ($1, 10000, 100::TEXT::NUMERIC, $2::TEXT::NUMERIC, $3::TEXT::TIMESTAMPTZ)",
+            &[&"voteA", &"100", &"2026-02-01T00:00:00Z"],
+        )
+        .await
+        .unwrap();
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    assert!(incidents.is_empty());
+}
+
+#[tokio::test]
+async fn a_spike_is_served_beside_the_epoch_s_downtime() {
+    let schema = "ds_test_incidents_commission_beside_downtime";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    down(
+        &client,
+        "voteA",
+        100,
+        "2026-02-01T00:00:00Z",
+        "2026-02-01T00:10:00Z",
+    )
+    .await;
+    commission(&client, "voteA", 99, 100, 5, "2026-01-01T00:00:00Z").await;
+    commission(&client, "voteA", 100, 200, 100, "2026-02-01T01:00:00Z").await;
+
+    let incidents = load_validator_incidents(&client, 100, 100, &no_records())
+        .await
+        .unwrap();
+
+    let filters = IncidentFilters {
+        types: None,
+        ..Default::default()
+    };
+    let served = incidents.into_response_incidents("voteA", &filters);
+    assert_eq!(served.len(), 2);
+    assert!(served
+        .iter()
+        .any(|incident| matches!(incident.detail, IncidentDetail::CommissionSpike { .. })));
 }
