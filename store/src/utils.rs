@@ -358,6 +358,7 @@ pub async fn load_validator_incidents(
     // Read off the same epoch stats the incidents are handed back for, so the cluster figure and
     // the validator it judges come from one snapshot.
     let cluster_skip_rates = crate::incidents::cluster_skip_rates(records.values());
+    let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
 
     for (vote_account, record) in records {
         // Same window the query above read.
@@ -378,10 +379,7 @@ pub async fn load_validator_incidents(
                 .block_production
                 .push(production);
         }
-    }
 
-    let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
-    for (vote_account, record) in records {
         let late_patch = crate::incidents::running_late_client_version_incidents(
             crate::incidents::epochs_running_late_client_version(record, &newer_stake_shares),
             from_epoch..=last_epoch,

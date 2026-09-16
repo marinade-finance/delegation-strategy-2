@@ -30,6 +30,9 @@ pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
 pub const MIN_NEWER_VERSION_STAKE_SHARE: f64 = 0.80;
 
+/// Validators a lineage-epoch needs before anyone in it is judged late.
+pub const MIN_LINEAGE_VALIDATORS: usize = 10;
+
 pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -174,15 +177,18 @@ fn epoch_client_version(stats: &dto::ValidatorEpochStats) -> Option<(ValidatorVe
 
 /// Keyed by epoch and lineage, then by the version the share is measured from. A validator
 /// `epoch_client_version` rejects weighs on neither side.
+/// A lineage-epoch under `MIN_LINEAGE_VALIDATORS` is absent.
 pub fn newer_stake_shares<'a>(
     records: impl IntoIterator<Item = &'a dto::ValidatorRecord>,
 ) -> HashMap<(u64, String), Vec<(ValidatorVersion, f64)>> {
     let mut stake: HashMap<(u64, String), HashMap<ValidatorVersion, Decimal>> = Default::default();
+    let mut members: HashMap<(u64, String), usize> = Default::default();
 
     for stats in records.into_iter().flat_map(|record| &record.epoch_stats) {
         let Some((version, lineage)) = epoch_client_version(stats) else {
             continue;
         };
+        *members.entry((stats.epoch, lineage.clone())).or_default() += 1;
         *stake
             .entry((stats.epoch, lineage))
             .or_default()
@@ -192,6 +198,7 @@ pub fn newer_stake_shares<'a>(
 
     stake
         .into_iter()
+        .filter(|(key, _)| members[key] >= MIN_LINEAGE_VALIDATORS)
         .map(|(key, by_version)| {
             let total: Decimal = by_version.values().sum();
             let mut versions: Vec<(ValidatorVersion, f64)> = by_version
@@ -492,6 +499,26 @@ mod tests {
         }
     }
 
+    /// Pads every lineage-epoch to [`MIN_LINEAGE_VALIDATORS`] with members that hold no stake.
+    fn judged(
+        members: impl IntoIterator<Item = dto::ValidatorRecord>,
+    ) -> Vec<dto::ValidatorRecord> {
+        let mut cluster: Vec<dto::ValidatorRecord> = members.into_iter().collect();
+        let lineage_epochs: std::collections::HashSet<(u64, String)> = cluster
+            .iter()
+            .flat_map(|record| &record.epoch_stats)
+            .filter_map(|stats| Some((stats.epoch, stats.client_lineage.clone()?)))
+            .collect();
+
+        for (epoch, lineage) in lineage_epochs {
+            cluster.extend(
+                (0..MIN_LINEAGE_VALIDATORS)
+                    .map(|_| validator(vec![client(epoch, Some("0.0.0"), Some(&lineage), 0)])),
+            );
+        }
+        cluster
+    }
+
     fn production(
         leader_slots: u64,
         blocks_produced: u64,
@@ -734,9 +761,8 @@ mod tests {
         epochs: std::ops::RangeInclusive<u64>,
     ) -> Vec<u64> {
         let subject = validator(subject);
-        let cluster: Vec<dto::ValidatorRecord> = std::iter::once(subject.clone())
-            .chain(others.into_iter().map(validator))
-            .collect();
+        let cluster =
+            judged(std::iter::once(subject.clone()).chain(others.into_iter().map(validator)));
         let shares = newer_stake_shares(&cluster);
 
         running_late_client_version_incidents(
@@ -1046,10 +1072,10 @@ mod tests {
 
     #[test]
     fn the_newest_version_has_nothing_above_it_and_the_oldest_has_everything() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.2.0", 100)]),
             validator(vec![agave(EPOCH, "4.1.0", 300)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         assert_eq!(newer_share(&shares, "agave", "4.2.0"), Some(0.0));
@@ -1059,13 +1085,13 @@ mod tests {
     #[test]
     fn the_share_is_stake_weighted_not_one_vote_each() {
         // Four validators newer, but they carry a twentieth of the stake between them.
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.1.0", 1000)]),
             validator(vec![agave(EPOCH, "4.2.0", 10)]),
             validator(vec![agave(EPOCH, "4.2.0", 10)]),
             validator(vec![agave(EPOCH, "4.2.0", 10)]),
             validator(vec![agave(EPOCH, "4.2.0", 10)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         let behind = newer_share(&shares, "agave", "4.1.0").unwrap();
@@ -1074,10 +1100,10 @@ mod tests {
 
     #[test]
     fn a_lineage_is_never_judged_against_another() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.2.0", 100)]),
             validator(vec![client(EPOCH, Some("26.8.2"), Some("firedancer"), 900)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         // Firedancer's 26.8.2 orders above agave's 4.2.0 numerically, and must not count here.
@@ -1088,7 +1114,7 @@ mod tests {
     #[test]
     fn versions_order_by_number_rather_than_text() {
         // A text compare puts 0.812 above 0.1106 and would read this validator as current.
-        let cluster = [
+        let cluster = judged([
             validator(vec![client(
                 EPOCH,
                 Some("0.812.30108"),
@@ -1101,7 +1127,7 @@ mod tests {
                 Some("frankendancer"),
                 9,
             )]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         assert_eq!(
@@ -1112,11 +1138,11 @@ mod tests {
 
     #[test]
     fn a_version_nothing_can_parse_weighs_on_neither_side() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.1.0", 100)]),
             validator(vec![agave(EPOCH, "4.2.0", 100)]),
             validator(vec![agave(EPOCH, "not-a-version", 800)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         // 100 of the 200 stake that could be compared, not 100 of 1000.
@@ -1125,13 +1151,25 @@ mod tests {
 
     #[test]
     fn a_client_the_registry_does_not_know_is_left_out() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.2.0", 100)]),
             validator(vec![client(EPOCH, Some("4.1.0"), None, 900)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
 
         assert_eq!(newer_share(&shares, "agave", "4.1.0"), None);
+    }
+
+    #[test]
+    fn a_lineage_too_small_to_judge_is_left_out() {
+        // Two members, unpadded.
+        let cluster = [
+            validator(vec![client(EPOCH, Some("0.5.0"), Some("sig"), 100)]),
+            validator(vec![client(EPOCH, Some("0.6.0"), Some("sig"), 900)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(newer_share(&shares, "sig", "0.5.0"), None);
     }
 
     /// A cluster that left 4.1.0 behind: 90% of agave stake sits on 4.2.0 every epoch.
@@ -1286,11 +1324,11 @@ mod tests {
 
     #[test]
     fn the_newer_versions_are_listed_newest_first_and_sum_to_the_share() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.1.0", 100)]),
             validator(vec![agave(EPOCH, "4.1.2", 300)]),
             validator(vec![agave(EPOCH, "4.2.0", 100)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
         let subject = validator(vec![agave(EPOCH, "4.1.0", 100)]);
         let late_patch = epochs_running_late_client_version(&subject, &shares);
@@ -1309,11 +1347,11 @@ mod tests {
 
     #[test]
     fn the_validators_own_version_is_not_listed_as_newer() {
-        let cluster = [
+        let cluster = judged([
             validator(vec![agave(EPOCH, "4.1.0", 100)]),
             validator(vec![agave(EPOCH, "4.1.0", 100)]),
             validator(vec![agave(EPOCH, "4.2.0", 800)]),
-        ];
+        ]);
         let shares = newer_stake_shares(&cluster);
         let subject = validator(vec![agave(EPOCH, "4.1.0", 100)]);
         let late_patch = epochs_running_late_client_version(&subject, &shares);

@@ -488,7 +488,7 @@ pub enum IncidentDetail {
         changed_at: DateTime<Utc>,
         epoch_slot: u64,
     },
-    /// Only ever compared against the same client lineage: version numbering differs between them.
+    /// Measured against adoption in the same lineage, not the floors `/releases` publishes.
     RunningLateClientVersion {
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
