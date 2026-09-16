@@ -100,3 +100,43 @@ async fn documents_round_trip_through_the_store() {
 
     directory.ready().await.expect("ready");
 }
+
+/// The store answers a listing 100 rows at a time and names the next page in
+/// `Link: rel="next"`; a parent with more children than one page must still
+/// come back whole.
+#[tokio::test]
+async fn a_listing_longer_than_one_page_comes_back_whole() {
+    let Some(store) = common::directory_store("long-listing").await else {
+        return;
+    };
+    let directory = store.client();
+
+    let epochs: Vec<u64> = (900..1050).collect();
+    for epoch in epochs.iter().copied() {
+        directory
+            .put(
+                &format!("/validators/snapshot/{epoch}"),
+                &Doc { epoch },
+                Precondition::Create,
+            )
+            .await
+            .expect("create");
+    }
+
+    let names: Vec<String> = directory
+        .list("/validators/snapshot")
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    let expected: Vec<String> = epochs.iter().map(u64::to_string).collect();
+    assert_eq!(names, expected);
+
+    let last = directory
+        .resolve("/validators/snapshot/@last")
+        .await
+        .expect("resolve")
+        .expect("a resolved path");
+    assert_eq!(last, "/validators/snapshot/1049");
+}

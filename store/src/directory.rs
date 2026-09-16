@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use log::debug;
-use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
+use reqwest::header::{CONTENT_LOCATION, CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH, LINK};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,7 @@ pub enum DirectoryError {
         source: serde_json::Error,
     },
     NoEtag(String),
+    NoLocation(String),
 }
 
 impl std::fmt::Display for DirectoryError {
@@ -71,6 +72,9 @@ impl std::fmt::Display for DirectoryError {
                 write!(f, "Body of {path} is not the expected JSON: {source}")
             }
             Self::NoEtag(path) => write!(f, "Reply for {path} carries no ETag"),
+            Self::NoLocation(path) => {
+                write!(f, "Reply for {path} carries no Content-Location")
+            }
         }
     }
 }
@@ -173,26 +177,58 @@ impl Directory {
         }
     }
 
-    /// One level of children, in the store's natural order (`9 < 10 < 750`).
+    /// Every child, one level deep, in the store's natural order
+    /// (`9 < 10 < 750`). The store answers a bounded page and names the one
+    /// after it in `Link: rel="next"`; a caller that stops at the first page
+    /// sees only the oldest children.
     pub async fn list(&self, dir: &str) -> Result<Vec<Entry>, DirectoryError> {
         let path = format!("{}/*", dir.trim_end_matches('/'));
-        let response = self
-            .send(self.request(reqwest::Method::GET, &path), &path)
-            .await?;
-        if response.status() != StatusCode::OK {
-            return Err(self.unexpected(response, &path).await);
-        }
-        let body = self.text(response, &path).await?;
+        let mut url = self.url_for(&path);
         let mut entries = Vec::new();
-        for line in body.lines().filter(|line| !line.trim().is_empty()) {
-            entries.push(
-                serde_json::from_str(line).map_err(|source| DirectoryError::Json {
-                    path: path.clone(),
-                    source,
-                })?,
-            );
+        loop {
+            let response = self.send(self.at(reqwest::Method::GET, url), &path).await?;
+            if response.status() != StatusCode::OK {
+                return Err(self.unexpected(response, &path).await);
+            }
+            let next = next_page(&response);
+            let body = self.text(response, &path).await?;
+            for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                entries.push(serde_json::from_str(line).map_err(|source| {
+                    DirectoryError::Json {
+                        path: path.clone(),
+                        source,
+                    }
+                })?);
+            }
+            let Some(link) = next else {
+                return Ok(entries);
+            };
+            url = format!("{}{link}", self.url);
         }
-        Ok(entries)
+    }
+
+    /// The path an `@last`/`@first` selector resolves to, or `None` where the
+    /// collection holds nothing. The store resolves it against the whole
+    /// collection, so unlike a listing it cannot be cut short by a page. HEAD
+    /// because only the resolved name is wanted, never the document.
+    pub async fn resolve(&self, path: &str) -> Result<Option<String>, DirectoryError> {
+        let response = self
+            .send(self.request(reqwest::Method::HEAD, path), path)
+            .await?;
+        match response.status() {
+            StatusCode::OK => {
+                let location = response
+                    .headers()
+                    .get(CONTENT_LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| DirectoryError::NoLocation(path.to_string()))?;
+                // The header carries the version the read answered from.
+                let resolved = location.split('?').next().unwrap_or(location);
+                Ok(Some(resolved.to_string()))
+            }
+            StatusCode::NOT_FOUND => Ok(None),
+            _ => Err(self.unexpected(response, path).await),
+        }
     }
 
     /// Readiness probe; the only endpoint that takes no token.
@@ -207,7 +243,16 @@ impl Directory {
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> RequestBuilder {
-        let url = format!("{}/v1/{}", self.url, path.trim_start_matches('/'));
+        self.at(method, self.url_for(path))
+    }
+
+    fn url_for(&self, path: &str) -> String {
+        format!("{}/v1/{}", self.url, path.trim_start_matches('/'))
+    }
+
+    /// A page after the first is addressed by the URL the store handed back,
+    /// which already carries the `/v1` prefix.
+    fn at(&self, method: reqwest::Method, url: String) -> RequestBuilder {
         self.http.request(method, url).bearer_auth(&self.token)
     }
 
@@ -260,6 +305,17 @@ impl Directory {
             body,
         }
     }
+}
+
+/// The URL of the listing page after this one, from `Link: <uri>; rel="next"`.
+fn next_page(response: &Response) -> Option<String> {
+    let value = response.headers().get(LINK)?.to_str().ok()?;
+    if !value.contains("rel=\"next\"") {
+        return None;
+    }
+    let start = value.find('<')? + 1;
+    let end = start + value[start..].find('>')?;
+    Some(value[start..end].to_string())
 }
 
 fn read_etag(response: &Response) -> Option<String> {

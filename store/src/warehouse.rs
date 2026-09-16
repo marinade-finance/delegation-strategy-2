@@ -10,6 +10,7 @@ use crate::docs::{
     COMMISSIONS_DIR, EPOCHS_DIR, EVENTS_DIR, LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES,
     LIVE_VERSIONS, MEV_DIR, PRIORITY_FEE_DIR, SNAPSHOT_DIR, UPTIMES_DIR, VERSIONS_DIR,
 };
+use anyhow::Context;
 use log::info;
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashMap};
@@ -307,16 +308,18 @@ impl Warehouse {
 /// The newest epoch under `/validators/snapshot`, in the store's natural
 /// order, or `None` before the first snapshot is written.
 async fn last_epoch(directory: &Directory) -> anyhow::Result<Option<u64>> {
-    Ok(directory
-        .list(SNAPSHOT_DIR)
-        .await?
-        .into_iter()
-        .filter_map(|entry| entry.name.parse::<u64>().ok())
-        .max())
+    let Some(path) = directory.resolve(&format!("{SNAPSHOT_DIR}/@last")).await? else {
+        return Ok(None);
+    };
+    let name = path.rsplit('/').next().unwrap_or_default();
+    let epoch = name
+        .parse::<u64>()
+        .with_context(|| format!("{path} is not an epoch, so no window can be built on it"))?;
+    Ok(Some(epoch))
 }
 
 /// Whether the store holds a snapshot at all, which a cold cache cannot tell
 /// from lost data on its own.
 pub async fn has_validators(directory: &Directory) -> anyhow::Result<bool> {
-    Ok(!directory.list(SNAPSHOT_DIR).await?.is_empty())
+    Ok(last_epoch(directory).await?.is_some())
 }

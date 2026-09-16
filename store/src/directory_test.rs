@@ -17,12 +17,18 @@ struct CannedServer {
 
 impl CannedServer {
     async fn start(response: &str) -> Self {
+        Self::start_each(&[response]).await
+    }
+
+    /// Answers the nth request with the nth response, so a client that makes
+    /// more than one call can be driven through all of them.
+    async fn start_each(responses: &[&str]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("test port");
         let url = format!("http://{}", listener.local_addr().expect("test addr"));
         let requests: Arc<Mutex<Vec<String>>> = Default::default();
         tokio::spawn(answer(
             listener,
-            response.to_string(),
+            responses.iter().map(|r| r.to_string()).collect(),
             Arc::clone(&requests),
         ));
         Self { url, requests }
@@ -33,32 +39,44 @@ impl CannedServer {
     }
 
     fn request(&self) -> String {
-        self.requests.lock().expect("test requests")[0].clone()
+        self.request_at(0)
+    }
+
+    fn request_at(&self, index: usize) -> String {
+        self.requests.lock().expect("test requests")[index].clone()
+    }
+
+    fn requests(&self) -> usize {
+        self.requests.lock().expect("test requests").len()
     }
 }
 
-async fn answer(listener: TcpListener, response: String, requests: Arc<Mutex<Vec<String>>>) {
-    let (mut socket, _) = listener.accept().await.expect("test connection");
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if socket.read(&mut byte).await.expect("test request") == 0 {
-            break;
+async fn answer(listener: TcpListener, responses: Vec<String>, requests: Arc<Mutex<Vec<String>>>) {
+    for response in responses {
+        let (mut socket, _) = listener.accept().await.expect("test connection");
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if socket.read(&mut byte).await.expect("test request") == 0 {
+                break;
+            }
+            head.push(byte[0]);
         }
-        head.push(byte[0]);
+        let head = String::from_utf8_lossy(&head).to_string();
+        // Draining the body keeps the client from seeing a reset before it reads the reply.
+        if let Some(length) = content_length(&head) {
+            let mut body = vec![0u8; length];
+            socket.read_exact(&mut body).await.expect("test body");
+        }
+        requests.lock().expect("test requests").push(head);
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("test reply");
+        // Closing the connection is what stops the client reusing it, so the
+        // next request arrives as the next accept.
+        socket.shutdown().await.expect("test shutdown");
     }
-    let head = String::from_utf8_lossy(&head).to_string();
-    // Draining the body keeps the client from seeing a reset before it reads the reply.
-    if let Some(length) = content_length(&head) {
-        let mut body = vec![0u8; length];
-        socket.read_exact(&mut body).await.expect("test body");
-    }
-    requests.lock().expect("test requests").push(head);
-    socket
-        .write_all(response.as_bytes())
-        .await
-        .expect("test reply");
-    socket.shutdown().await.expect("test shutdown");
 }
 
 fn content_length(head: &str) -> Option<usize> {
@@ -186,11 +204,18 @@ async fn an_unexpected_status_carries_it() {
     assert!(format!("{error}").contains("403"), "{error}");
 }
 
+/// One NDJSON listing line for an epoch under `/validators/snapshot`.
+fn entry_line(epoch: &str) -> String {
+    format!(
+        "{{\"path\":\"/validators/snapshot/{epoch}\",\"name\":\"{epoch}\",\"version\":\"1\",\
+         \"etag\":\"\\\"{epoch}-1\\\"\",\"created_at\":\"2026-09-10T20:01:37.512018Z\"}}\n"
+    )
+}
+
 #[tokio::test]
 async fn list_reads_one_entry_per_ndjson_line() {
-    let lines = "{\"path\":\"/validators/snapshot/9\",\"name\":\"9\",\"version\":\"1\",\"etag\":\"\\\"a-1\\\"\",\"created_at\":\"2026-09-10T20:01:37.512018Z\"}\n\
-                 {\"path\":\"/validators/snapshot/750\",\"name\":\"750\",\"version\":\"2\",\"etag\":\"\\\"b-2\\\"\",\"created_at\":\"2026-09-10T20:01:38.512018Z\"}\n";
-    let server = CannedServer::start(&reply("200 OK", "", lines)).await;
+    let lines = entry_line("9") + &entry_line("750");
+    let server = CannedServer::start(&reply("200 OK", "", &lines)).await;
 
     let entries = server
         .client()
@@ -204,4 +229,70 @@ async fn list_reads_one_entry_per_ndjson_line() {
     assert!(server
         .request()
         .starts_with("GET /v1/validators/snapshot/* "));
+}
+
+#[tokio::test]
+async fn list_follows_the_next_link_until_the_store_stops_sending_one() {
+    let first = reply(
+        "200 OK",
+        "Link: </v1/validators/snapshot/*?cursor=9>; rel=\"next\"\r\n",
+        &entry_line("9"),
+    );
+    let second = reply(
+        "200 OK",
+        "Link: </v1/validators/snapshot/*?cursor=750>; rel=\"next\"\r\n",
+        &entry_line("750"),
+    );
+    let last = reply("200 OK", "", &entry_line("1000"));
+    let server = CannedServer::start_each(&[&first, &second, &last]).await;
+
+    let entries = server
+        .client()
+        .list("/validators/snapshot")
+        .await
+        .expect("list");
+
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(names, ["9", "750", "1000"]);
+    assert_eq!(server.requests(), 3);
+    assert!(server
+        .request_at(1)
+        .starts_with("GET /v1/validators/snapshot/*?cursor=9 "));
+    assert!(server
+        .request_at(2)
+        .starts_with("GET /v1/validators/snapshot/*?cursor=750 "));
+}
+
+#[tokio::test]
+async fn resolve_reads_the_path_the_selector_landed_on() {
+    let server = CannedServer::start(&reply(
+        "200 OK",
+        "Content-Location: /validators/snapshot/1049?v=7\r\n",
+        "",
+    ))
+    .await;
+
+    let path = server
+        .client()
+        .resolve("/validators/snapshot/@last")
+        .await
+        .expect("resolve");
+
+    assert_eq!(path.as_deref(), Some("/validators/snapshot/1049"));
+    assert!(server
+        .request()
+        .starts_with("HEAD /v1/validators/snapshot/@last "));
+}
+
+#[tokio::test]
+async fn resolve_of_an_empty_collection_is_none() {
+    let server = CannedServer::start(&reply("404 Not Found", "", "")).await;
+
+    let path = server
+        .client()
+        .resolve("/validators/snapshot/@last")
+        .await
+        .expect("resolve");
+
+    assert!(path.is_none());
 }
