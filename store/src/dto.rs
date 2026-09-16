@@ -312,8 +312,11 @@ pub struct ValidatorRecord {
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
     pub commission_aggregated: Option<i32>,
+    /// How many rugs fall in the window described on `rugged_commission`.
     pub rugged_commission_occurrences: u64,
+    /// Whether the validator rugged its commission inside the warm epoch window. Rugs are found by folding over the epochs the cache holds, so a rug older than the window is not reported at all, and the window's own oldest epoch has no predecessor to be judged against.
     pub rugged_commission: bool,
+    /// The rugs `rugged_commission_occurrences` counts, over the same window.
     pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
@@ -473,6 +476,9 @@ pub struct CommissionRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// One validator's commission rugs, over the epochs the cache holds: a rug
+/// older than that window is absent, and the window's oldest epoch has no
+/// predecessor to be judged against.
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct RuggerRecord {
     pub epochs: Vec<u64>,

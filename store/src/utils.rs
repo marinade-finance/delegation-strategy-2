@@ -1529,9 +1529,10 @@ pub fn load_validators_aggregated_flat(
         }
     }
 
-    // last_version is deliberately left unbounded while the client columns are bounded to
-    // last_epoch: adding the bound changes what historical scoring runs see, so it needs a
-    // ds-sam side check.
+    // The client columns are bounded to this call's window; last_version is not,
+    // and sees every change the warehouse holds, which is the warm window rather
+    // than all of history. Tightening it to the call's window changes what
+    // historical scoring runs see, so it needs a ds-sam side check.
     let versions = version_changes_by_validator(warehouse);
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
