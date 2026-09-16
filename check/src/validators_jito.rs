@@ -1,7 +1,7 @@
 use clap::Parser;
 use log::{debug, info};
 use rust_decimal::prelude::*;
-use solana_client::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use tokio_postgres::Client;
 
 use collect::common::measure_milliseconds_per_slot;

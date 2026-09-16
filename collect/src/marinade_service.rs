@@ -1,16 +1,14 @@
 use crate::validators::BondsResponse;
 use crate::validators::ValidatorBond;
 use solana_account_decoder::*;
-use solana_client::{
-    rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
-};
 use solana_program::{
     clock::*,
     pubkey::Pubkey,
     stake_history::{StakeHistory, StakeHistoryEntry},
 };
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_rpc_client_api::filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
 use solana_sdk::pubkey;
 use solana_stake_interface as stake;
 use std::collections::*;

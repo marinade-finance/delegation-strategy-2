@@ -4,7 +4,7 @@ use crate::validator_version::ValidatorVersion;
 use anyhow::Context;
 use log::{debug, info, warn};
 use serde::Deserialize;
-use solana_client::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::BTreeMap;

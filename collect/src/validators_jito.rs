@@ -7,12 +7,10 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{
-    rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, RpcFilterType},
-};
 use solana_program::pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_sdk::account::Account;
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;

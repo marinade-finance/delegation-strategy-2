@@ -1,5 +1,5 @@
 use log::{debug, info};
-use solana_client::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
 
