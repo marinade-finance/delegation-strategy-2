@@ -477,7 +477,8 @@ pub enum IncidentDetail {
         epoch_end_at: DateTime<Utc>,
         block_production: BlockProductionDetail,
     },
-    /// An epoch the validator raised its inflation commission to 90% or above in
+    /// An epoch the validator raised its inflation commission in, to
+    /// [`crate::incidents::COMMISSION_SPIKE_THRESHOLD_PERCENTAGE`] or above.
     /// Excludes MEV and block-revenue commissions.
     CommissionSpike {
         commission_before: u8,
