@@ -2,7 +2,10 @@ use crate::utils::order::{compare_keys, OrderDirection, OrderField, SortKey};
 use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use store::dto::{ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups};
+use store::dto::{
+    GroupRow, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorProviderGroupRecord, ValidatorProviderGroups,
+};
 
 pub const DEFAULT_LIMIT: usize = 100;
 
@@ -16,9 +19,9 @@ pub struct GetGroupsConfig {
 }
 
 #[derive(Debug)]
-pub struct GroupsPage {
-    pub groups: Vec<ValidatorGroupRecord>,
-    /// Number of groups matching the query, before `offset`/`limit`.
+pub struct ProviderGroupsPage {
+    pub groups: Vec<ValidatorProviderGroupRecord>,
+    /// Number of providers matching the query, before `offset`/`limit`.
     pub total_count: usize,
     pub total_activated_stake: Decimal,
     pub current_epoch: Option<u64>,
@@ -95,35 +98,36 @@ pub fn compare_group_rows(
     })
 }
 
-pub fn sort_groups(
-    groups: Vec<ValidatorGroupRecord>,
+pub fn sort_groups<T: GroupRow>(
+    groups: Vec<T>,
     order_field: OrderField,
     order_direction: &OrderDirection,
-) -> Vec<ValidatorGroupRecord> {
+) -> Vec<T> {
     // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
-    let mut keyed: Vec<(SortKey, ValidatorGroupRecord)> = groups
+    let mut keyed: Vec<(SortKey, T)> = groups
         .into_iter()
-        .map(|group| (group_column(&group, order_field), group))
+        .map(|group| (group_column(group.row(), order_field), group))
         .collect();
 
     keyed.sort_by(|(a_column, a), (b_column, b)| {
-        compare_group_rows((a_column, &a.key), (b_column, &b.key), order_direction)
+        compare_group_rows(
+            (a_column, &a.row().key),
+            (b_column, &b.row().key),
+            order_direction,
+        )
     });
 
     keyed.into_iter().map(|(_, group)| group).collect()
 }
 
-fn filter_groups(
-    groups: Vec<ValidatorGroupRecord>,
-    config: &GetGroupsConfig,
-) -> Vec<ValidatorGroupRecord> {
+fn filter_groups<T: GroupRow>(groups: Vec<T>, config: &GetGroupsConfig) -> Vec<T> {
     let Some(query) = search_term(config) else {
         return groups;
     };
 
     groups
         .into_iter()
-        .filter(|group| group.key.to_lowercase().contains(&query))
+        .filter(|group| group.row().key.to_lowercase().contains(&query))
         .collect()
 }
 
@@ -135,8 +139,11 @@ fn search_term(config: &GetGroupsConfig) -> Option<String> {
         .filter(|query| !query.is_empty())
 }
 
-pub fn page_groups(groups: ValidatorGroups, config: &GetGroupsConfig) -> GroupsPage {
-    let ValidatorGroups {
+pub fn page_groups(
+    groups: ValidatorProviderGroups,
+    config: &GetGroupsConfig,
+) -> ProviderGroupsPage {
+    let ValidatorProviderGroups {
         groups,
         total_activated_stake,
         current_epoch,
@@ -150,7 +157,7 @@ pub fn page_groups(groups: ValidatorGroups, config: &GetGroupsConfig) -> GroupsP
         .take(config.limit)
         .collect();
 
-    GroupsPage {
+    ProviderGroupsPage {
         groups: page,
         total_count,
         total_activated_stake,
@@ -249,10 +256,16 @@ mod tests {
         }
     }
 
-    fn groups(groups: Vec<ValidatorGroupRecord>) -> ValidatorGroups {
-        ValidatorGroups {
+    fn providers(groups: Vec<ValidatorGroupRecord>) -> ValidatorProviderGroups {
+        ValidatorProviderGroups {
             total_activated_stake: groups.iter().map(|group| group.total_stake).sum(),
-            groups,
+            groups: groups
+                .into_iter()
+                .map(|group| ValidatorProviderGroupRecord {
+                    group,
+                    ..Default::default()
+                })
+                .collect(),
             current_epoch: Some(100),
         }
     }
@@ -267,7 +280,7 @@ mod tests {
         }
     }
 
-    fn keys(page: &GroupsPage) -> Vec<String> {
+    fn keys(page: &ProviderGroupsPage) -> Vec<String> {
         page.groups.iter().map(|group| group.key.clone()).collect()
     }
 
@@ -277,7 +290,10 @@ mod tests {
 
     fn node(key: &str, stake: i64, children: Vec<ValidatorGroupRecord>) -> ValidatorGroupNode {
         ValidatorGroupNode {
-            group: group(key, stake),
+            group: store::dto::ValidatorClientGroupRecord {
+                group: group(key, stake),
+                ..Default::default()
+            },
             children,
         }
     }
@@ -410,12 +426,14 @@ mod tests {
 
     #[test]
     fn the_unclassified_client_is_a_row_like_any_other() {
-        let with_unknown = tree(vec![
-            node(UNKNOWN_GROUP, 900, vec![group("Sonic", 900)]),
-            node("Agave", 100, vec![group("Agave", 100)]),
-        ]);
+        let with_unknown = || {
+            tree(vec![
+                node(UNKNOWN_GROUP, 900, vec![group("Sonic", 900)]),
+                node("Agave", 100, vec![group("Agave", 100)]),
+            ])
+        };
         let page = page_tree(
-            with_unknown,
+            with_unknown(),
             &GetGroupsConfig {
                 order_field: OrderField::Name,
                 order_direction: OrderDirection::ASC,
@@ -432,28 +450,26 @@ mod tests {
             1,
             "its block engines are still served"
         );
-    }
 
-    #[test]
-    fn the_unclassified_group_is_searchable_by_name() {
-        let page = page_tree(
-            tree(vec![
-                node("Agave", 700, vec![group("Agave", 700)]),
-                node(UNKNOWN_GROUP, 300, vec![group(UNKNOWN_GROUP, 300)]),
-            ]),
+        // The only client here whose name no block engine of its own repeats.
+        let searched = page_tree(
+            with_unknown(),
             &GetGroupsConfig {
-                query: Some("unknown".to_string()),
+                query: Some(UNKNOWN_GROUP.to_string()),
                 ..config()
             },
         );
-        assert_eq!(parent_keys(&page), named(&[UNKNOWN_GROUP]));
-        assert_eq!(page.total_count, 1);
+        assert_eq!(
+            parent_keys(&searched),
+            named(&[UNKNOWN_GROUP]),
+            "a search reads the client's own name, not only its block engines'"
+        );
     }
 
     #[test]
     fn stake_orders_both_ways() {
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 group("mid", 200),
                 group("low", 100),
                 group("high", 300),
@@ -463,7 +479,7 @@ mod tests {
         assert_eq!(keys(&page), named(&["high", "mid", "low"]));
 
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 group("mid", 200),
                 group("low", 100),
                 group("high", 300),
@@ -487,7 +503,7 @@ mod tests {
     fn groups_without_a_value_sink_in_both_directions() {
         for order_direction in [OrderDirection::ASC, OrderDirection::DESC] {
             let page = page_groups(
-                groups(vec![
+                providers(vec![
                     with_net_apy("aaaMissing", None),
                     with_net_apy("zero", Some(0.0)),
                     with_net_apy("high", Some(0.09)),
@@ -514,7 +530,7 @@ mod tests {
                 ..config()
             };
             let page = page_groups(
-                groups(vec![
+                providers(vec![
                     group("ccc", 100),
                     group("aaa", 100),
                     group("bbb", 100),
@@ -603,7 +619,7 @@ mod tests {
             (OrderField::ExpectedTakeRate, "expectedTakeRate"),
         ] {
             let page = page_groups(
-                groups(rows.clone()),
+                providers(rows.clone()),
                 &GetGroupsConfig {
                     order_field,
                     ..config()
@@ -622,7 +638,7 @@ mod tests {
     #[test]
     fn rows_carrying_records_and_rows_carrying_a_count_order_against_each_other() {
         let page = page_groups(
-            groups(vec![
+            providers(vec![
                 ValidatorGroupRecord {
                     incidents: GroupIncidents::Count(2),
                     ..group("countedTwo", 100)
@@ -651,18 +667,14 @@ mod tests {
         );
     }
 
-    fn providers() -> ValidatorGroups {
-        groups(vec![
-            group("Hetzner Online GmbH", 300),
-            group("Latitude.sh", 200),
-            group("TeraSwitch Networks Inc.", 100),
-        ])
-    }
-
     #[test]
     fn a_query_cuts_the_rows_and_the_count_but_not_the_totals() {
         let page = page_groups(
-            providers(),
+            providers(vec![
+                group("Hetzner Online GmbH", 300),
+                group("Latitude.sh", 200),
+                group("TeraSwitch Networks Inc.", 100),
+            ]),
             &GetGroupsConfig {
                 query: Some("HETZ".to_string()),
                 ..config()
@@ -680,7 +692,11 @@ mod tests {
     #[test]
     fn a_query_of_only_whitespace_serves_every_row() {
         let page = page_groups(
-            providers(),
+            providers(vec![
+                group("Hetzner Online GmbH", 300),
+                group("Latitude.sh", 200),
+                group("TeraSwitch Networks Inc.", 100),
+            ]),
             &GetGroupsConfig {
                 query: Some("  ".to_string()),
                 ..config()
@@ -699,7 +715,7 @@ mod tests {
 
     #[test]
     fn paging_cuts_the_page_but_not_the_count() {
-        let all = groups(vec![
+        let all = providers(vec![
             group("a", 500),
             group("b", 400),
             group("c", 300),

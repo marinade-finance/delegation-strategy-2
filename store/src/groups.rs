@@ -1,6 +1,8 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, GroupIncidents, ValidatorEpochStats,
-    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorRecord,
+    client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents,
+    GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats,
+    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups,
+    ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -34,6 +36,9 @@ impl GroupKind {
 
 /// Key of the bucket holding validators whose value is unknown.
 pub const UNKNOWN_GROUP: &str = "Unknown";
+
+/// Newest published release per client lineage, keyed the way the groups fold their keys.
+pub type ClientReleases = HashMap<String, ClientRelease>;
 
 fn normalized(value: Option<String>) -> Option<String> {
     let value = value?;
@@ -112,6 +117,173 @@ fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
 }
 
+/// Members carrying the value, and the stake behind them.
+#[derive(Default)]
+struct Tally {
+    validator_count: u64,
+    total_stake: Decimal,
+}
+
+impl Tally {
+    fn add(&mut self, stake: Decimal) {
+        self.validator_count += 1;
+        self.total_stake += stake;
+    }
+}
+
+/// Stake tallied per ASN, city, version and client lineage as the members are added, for the
+/// columns only the provider and client rows carry. A member the slicing cannot classify is left
+/// out of that slice, so its shares sum to less than 1.
+#[derive(Default)]
+struct ProviderAndClientBreakdowns {
+    asns: HashMap<i32, Decimal>,
+    /// Keyed by country and the city within it; two countries name the same city. A member the
+    /// source placed in no country is left out, city or not.
+    locations: HashMap<(String, Option<String>), Tally>,
+    versions: HashMap<String, Tally>,
+    lineages: HashMap<String, Tally>,
+    superminority_count: u64,
+}
+
+/// What an accumulator folds out of each member's epoch stats beside the common columns. `()` for
+/// the row types that carry no extra columns.
+trait EpochStatBreakdowns: Default {
+    fn add(&mut self, validator: &ValidatorRecord, stats: &ValidatorEpochStats);
+}
+
+impl EpochStatBreakdowns for () {
+    fn add(&mut self, _validator: &ValidatorRecord, _stats: &ValidatorEpochStats) {}
+}
+
+impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
+    fn add(&mut self, validator: &ValidatorRecord, stats: &ValidatorEpochStats) {
+        let stake = stats.activated_stake;
+
+        if let Some(asn) = stats.dc_asn {
+            *self.asns.entry(asn).or_default() += stake;
+        }
+
+        let city = normalized(stats.dc_city.clone());
+        if let Some(country) = normalized(stats.dc_country.clone()) {
+            self.locations
+                .entry((country, city))
+                .or_default()
+                .add(stake);
+        }
+
+        if let Some(version) = normalized(validator.version.clone()) {
+            self.versions.entry(version).or_default().add(stake);
+        }
+
+        if let Some(lineage) = normalized(validator.client_lineage.clone()).map(as_client_name) {
+            self.lineages.entry(lineage).or_default().add(stake);
+        }
+
+        if stats.superminority {
+            self.superminority_count += 1;
+        }
+    }
+}
+
+impl ProviderAndClientBreakdowns {
+    /// Stake-sorted; ties break on the key, since members arrive in hash order.
+    fn shares(tallies: HashMap<String, Tally>, group_stake: Decimal) -> Vec<GroupShare> {
+        let mut shares: Vec<_> = tallies
+            .into_iter()
+            .map(|(key, tally)| GroupShare {
+                key,
+                validator_count: tally.validator_count,
+                stake_share: if group_stake.is_zero() {
+                    0.0
+                } else {
+                    (tally.total_stake / group_stake)
+                        .to_f64()
+                        .unwrap_or_default()
+                },
+                total_stake: tally.total_stake,
+            })
+            .collect();
+        shares.sort_by(|a, b| {
+            b.total_stake
+                .cmp(&a.total_stake)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        shares
+    }
+
+    fn asns(&self) -> Vec<i32> {
+        let mut asns: Vec<_> = self.asns.iter().collect();
+        asns.sort_by(|(a_asn, a_stake), (b_asn, b_stake)| {
+            b_stake.cmp(a_stake).then_with(|| a_asn.cmp(b_asn))
+        });
+        asns.into_iter().map(|(asn, _)| *asn).collect()
+    }
+
+    fn locations(&self) -> Vec<GroupLocation> {
+        let mut locations: Vec<_> = self
+            .locations
+            .iter()
+            .map(|((country, city), tally)| GroupLocation {
+                country: country.clone(),
+                city: city.clone(),
+                validator_count: tally.validator_count,
+                total_stake: tally.total_stake,
+            })
+            .collect();
+        locations.sort_by(|a, b| {
+            b.total_stake
+                .cmp(&a.total_stake)
+                .then_with(|| a.country.cmp(&b.country))
+                .then_with(|| a.city.cmp(&b.city))
+        });
+        locations
+    }
+
+    fn city_count(&self) -> u64 {
+        self.locations
+            .keys()
+            .filter(|(_, city)| city.is_some())
+            .count() as u64
+    }
+
+    fn country_count(&self) -> u64 {
+        self.locations
+            .keys()
+            .map(|(country, _)| country.as_str())
+            .collect::<HashSet<_>>()
+            .len() as u64
+    }
+
+    fn into_provider_group_record(
+        self,
+        group: ValidatorGroupRecord,
+    ) -> ValidatorProviderGroupRecord {
+        ValidatorProviderGroupRecord {
+            asns: self.asns(),
+            locations: self.locations(),
+            superminority_count: self.superminority_count,
+            client_mix: Self::shares(self.lineages, group.total_stake),
+            group,
+        }
+    }
+
+    /// `block_engines` is filled by the client tree, which knows the group's children.
+    fn into_client_group_record(
+        self,
+        group: ValidatorGroupRecord,
+        latest_release: Option<ClientRelease>,
+    ) -> ValidatorClientGroupRecord {
+        ValidatorClientGroupRecord {
+            country_count: self.country_count(),
+            city_count: self.city_count(),
+            version_spread: Self::shares(self.versions, group.total_stake),
+            block_engines: Vec::new(),
+            latest_release,
+            group,
+        }
+    }
+}
+
 /// A member without the value is left out of both sums, so it neither dilutes the mean nor reads as zero.
 #[derive(Default)]
 struct StakeWeighted {
@@ -132,8 +304,7 @@ impl StakeWeighted {
     }
 }
 
-// Not `Default`: `incidents` takes its shape from the kind.
-struct Accumulator {
+struct Accumulator<B> {
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
     total_stake: Decimal,
@@ -147,9 +318,10 @@ struct Accumulator {
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
     incidents: GroupIncidents,
+    breakdowns: B,
 }
 
-impl Accumulator {
+impl<B: EpochStatBreakdowns> Accumulator<B> {
     fn new(kind: GroupKind) -> Self {
         Self {
             spellings: Default::default(),
@@ -169,6 +341,7 @@ impl Accumulator {
             } else {
                 GroupIncidents::empty_count()
             },
+            breakdowns: B::default(),
         }
     }
 
@@ -198,6 +371,8 @@ impl Accumulator {
             *self.spellings.entry(name.clone()).or_default() += stats.activated_stake;
         }
 
+        self.breakdowns.add(validator, stats);
+
         let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
         self.net_apy.add(validator.net_apy, weight);
@@ -226,13 +401,10 @@ impl Accumulator {
         }
     }
 
-    fn finish(
-        self,
-        folded_key: &FoldedKey,
-        total_activated_stake: Decimal,
-        baseline_7d: Option<&ReferenceStake>,
-        baseline_30d: Option<&ReferenceStake>,
-    ) -> ValidatorGroupRecord {
+    fn finish_base(self, ctx: &FinishContext) -> ValidatorGroupRecord {
+        let folded_key = ctx.folded_key;
+        let total_activated_stake = ctx.total_activated_stake;
+
         let delta = |reference: Option<&ReferenceStake>| {
             reference.map(|group_stake| {
                 self.total_stake - group_stake.get(folded_key).copied().unwrap_or_default()
@@ -250,8 +422,8 @@ impl Accumulator {
                     .to_f64()
                     .unwrap_or_default()
             },
-            stake_delta_7d: delta(baseline_7d),
-            stake_delta_30d: delta(baseline_30d),
+            stake_delta_7d: delta(ctx.baseline_7d),
+            stake_delta_30d: delta(ctx.baseline_30d),
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
@@ -268,6 +440,35 @@ impl Accumulator {
             },
         }
     }
+}
+
+impl Accumulator<ProviderAndClientBreakdowns> {
+    fn finish_provider(mut self, ctx: &FinishContext) -> ValidatorProviderGroupRecord {
+        let breakdowns = std::mem::take(&mut self.breakdowns);
+        breakdowns.into_provider_group_record(self.finish_base(ctx))
+    }
+
+    fn finish_client(
+        mut self,
+        ctx: &FinishContext,
+        releases: &ClientReleases,
+    ) -> ValidatorClientGroupRecord {
+        let latest_release = ctx
+            .folded_key
+            .as_ref()
+            .and_then(|key| releases.get(key.as_str()))
+            .cloned();
+        let breakdowns = std::mem::take(&mut self.breakdowns);
+        breakdowns.into_client_group_record(self.finish_base(ctx), latest_release)
+    }
+}
+
+/// What every finisher reads beside the accumulator itself.
+struct FinishContext<'a> {
+    folded_key: &'a FoldedKey,
+    total_activated_stake: Decimal,
+    baseline_7d: Option<&'a ReferenceStake>,
+    baseline_30d: Option<&'a ReferenceStake>,
 }
 
 /// The row a validator belonging to no group stands for on its own. Ordered against the aggregated
@@ -329,19 +530,6 @@ fn group_stake_at(
         .keys()
         .any(|key| key.is_some())
         .then_some(group_stake)
-}
-
-/// One grouping on its own, which only the tests read; `aggregate_all` is what the cache warms.
-#[cfg(test)]
-fn aggregate_groups(
-    validators: &HashMap<String, ValidatorRecord>,
-    kind: GroupKind,
-) -> ValidatorGroups {
-    let Some(population) = Population::new(validators) else {
-        return Default::default();
-    };
-
-    aggregate_kind(&population, kind)
 }
 
 /// Groups are built from `eligible`; the delta baselines are measured over `all`, so stake that has
@@ -410,23 +598,33 @@ fn eligible(validators: &HashMap<String, ValidatorRecord>) -> Vec<&ValidatorReco
 }
 
 /// Rows with the folded key each was bucketed under; the client tree joins its two levels on it.
-struct KeyedGroups {
-    rows: Vec<(FoldedKey, ValidatorGroupRecord)>,
-    groups: ValidatorGroups,
+struct KeyedGroups<T> {
+    rows: Vec<(FoldedKey, T)>,
+    total_activated_stake: Decimal,
+    current_epoch: u64,
 }
 
 fn aggregate_kind(population: &Population, kind: GroupKind) -> ValidatorGroups {
-    aggregate_keyed(population, kind).groups
+    let keyed = aggregate_keyed(population, kind, Accumulator::<()>::finish_base);
+    ValidatorGroups {
+        groups: keyed.rows.into_iter().map(|(_, record)| record).collect(),
+        total_activated_stake: keyed.total_activated_stake,
+        current_epoch: Some(keyed.current_epoch),
+    }
 }
 
-fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
+fn aggregate_keyed<B: EpochStatBreakdowns, T: GroupRow>(
+    population: &Population,
+    kind: GroupKind,
+    finish: impl Fn(Accumulator<B>, &FinishContext) -> T,
+) -> KeyedGroups<T> {
     let current_epoch = population.current_epoch;
     let (delta_7d_epoch, delta_30d_epoch) = delta_epochs(population.all.iter().copied());
     let baseline_7d = delta_7d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
     let baseline_30d =
         delta_30d_epoch.and_then(|epoch| group_stake_at(&population.all, epoch, kind));
 
-    let mut accumulators: HashMap<FoldedKey, Accumulator> = Default::default();
+    let mut accumulators: HashMap<FoldedKey, Accumulator<B>> = Default::default();
     for validator in &population.eligible {
         let Some(stats) = validator
             .epoch_stats
@@ -452,11 +650,14 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
     let mut rows: Vec<_> = accumulators
         .into_iter()
         .map(|(folded_key, accumulator)| {
-            let record = accumulator.finish(
-                &folded_key,
-                total_activated_stake,
-                baseline_7d.as_ref(),
-                baseline_30d.as_ref(),
+            let record = finish(
+                accumulator,
+                &FinishContext {
+                    folded_key: &folded_key,
+                    total_activated_stake,
+                    baseline_7d: baseline_7d.as_ref(),
+                    baseline_30d: baseline_30d.as_ref(),
+                },
             );
             (folded_key, record)
         })
@@ -464,6 +665,7 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
 
     // HashMap iteration order changes on every cache refresh; paged reads need a total order.
     rows.sort_by(|(_, a), (_, b)| {
+        let (a, b) = (a.row(), b.row());
         b.total_stake
             .cmp(&a.total_stake)
             .then_with(|| a.key.to_lowercase().cmp(&b.key.to_lowercase()))
@@ -471,35 +673,54 @@ fn aggregate_keyed(population: &Population, kind: GroupKind) -> KeyedGroups {
     });
 
     KeyedGroups {
-        groups: ValidatorGroups {
-            groups: rows.iter().map(|(_, record)| record.clone()).collect(),
-            total_activated_stake,
-            current_epoch: Some(current_epoch),
-        },
         rows,
+        total_activated_stake,
+        current_epoch,
     }
 }
 
-fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
-    let clients = aggregate_keyed(population, GroupKind::ClientLineage);
-    let block_engines = aggregate_keyed(population, GroupKind::ClientLabel);
+fn aggregate_providers(population: &Population) -> ValidatorProviderGroups {
+    let keyed = aggregate_keyed(
+        population,
+        GroupKind::ProviderAso,
+        Accumulator::finish_provider,
+    );
+    ValidatorProviderGroups {
+        groups: keyed.rows.into_iter().map(|(_, record)| record).collect(),
+        total_activated_stake: keyed.total_activated_stake,
+        current_epoch: Some(keyed.current_epoch),
+    }
+}
+
+fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> ValidatorGroupTree {
+    let clients = aggregate_keyed(population, GroupKind::ClientLineage, |accumulator, ctx| {
+        accumulator.finish_client(ctx, releases)
+    });
+    let block_engines = aggregate_keyed(
+        population,
+        GroupKind::ClientLabel,
+        Accumulator::<()>::finish_base,
+    );
     let engines_by_client = block_engines_by_client(&population.eligible, population.current_epoch);
 
     let nodes = clients
         .rows
         .into_iter()
-        .map(|(folded_client, client)| {
+        .map(|(folded_client, mut client)| {
             let engines = engines_by_client.get(&folded_client);
+            let children: Vec<_> = block_engines
+                .rows
+                .iter()
+                .filter(|(folded_engine, _)| {
+                    engines.is_some_and(|engines| engines.contains(folded_engine))
+                })
+                .map(|(_, engine)| engine.clone())
+                .collect();
+
+            client.block_engines = paired_block_engines(&children);
 
             ValidatorGroupNode {
-                children: block_engines
-                    .rows
-                    .iter()
-                    .filter(|(folded_engine, _)| {
-                        engines.is_some_and(|engines| engines.contains(folded_engine))
-                    })
-                    .map(|(_, engine)| engine.clone())
-                    .collect(),
+                children,
                 group: client,
             }
         })
@@ -507,9 +728,23 @@ fn aggregate_client_tree(population: &Population) -> ValidatorGroupTree {
 
     ValidatorGroupTree {
         nodes,
-        total_activated_stake: clients.groups.total_activated_stake,
-        current_epoch: clients.groups.current_epoch,
+        total_activated_stake: clients.total_activated_stake,
+        current_epoch: Some(clients.current_epoch),
     }
+}
+
+/// The engine half of each child's label, `Agave + Jito` -> `Jito`; a child labelled with the bare
+/// lineage is the client running on its own. Keeps the children's stake order.
+fn paired_block_engines(children: &[ValidatorGroupRecord]) -> Vec<String> {
+    let mut engines: Vec<String> = Vec::new();
+    for child in children {
+        if let Some((_, engine)) = child.key.split_once(" + ") {
+            if !engines.iter().any(|seen| seen == engine) {
+                engines.push(engine.to_string());
+            }
+        }
+    }
+    engines
 }
 
 fn block_engines_by_client(
@@ -540,21 +775,24 @@ fn block_engines_by_client(
     engines
 }
 
-pub fn aggregate_all(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroupings {
+pub fn aggregate_all(
+    validators: &HashMap<String, ValidatorRecord>,
+    releases: &ClientReleases,
+) -> ValidatorGroupings {
     let Some(population) = Population::new(validators) else {
         return Default::default();
     };
 
     ValidatorGroupings {
-        clients: aggregate_client_tree(&population),
-        providers: aggregate_kind(&population, GroupKind::ProviderAso),
+        clients: aggregate_client_tree(&population, releases),
+        providers: aggregate_providers(&population),
     }
 }
 
 #[derive(Default, Clone)]
 pub struct ValidatorGroupings {
     pub clients: ValidatorGroupTree,
-    pub providers: ValidatorGroups,
+    pub providers: ValidatorProviderGroups,
 }
 
 #[cfg(test)]
@@ -562,6 +800,49 @@ mod tests {
     use super::*;
     use crate::dto::{client_name, client_vendor};
     use chrono::{DateTime, Duration, Utc};
+
+    /// One grouping on its own; `aggregate_all` is what the cache warms.
+    fn aggregate_rows<B: EpochStatBreakdowns, T: GroupRow>(
+        validators: &HashMap<String, ValidatorRecord>,
+        kind: GroupKind,
+        finish: impl Fn(Accumulator<B>, &FinishContext) -> T,
+    ) -> Vec<T> {
+        let Some(population) = Population::new(validators) else {
+            return Vec::new();
+        };
+
+        aggregate_keyed(&population, kind, finish)
+            .rows
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect()
+    }
+
+    fn aggregate_groups(
+        validators: &HashMap<String, ValidatorRecord>,
+        kind: GroupKind,
+    ) -> Vec<ValidatorGroupRecord> {
+        aggregate_rows(validators, kind, Accumulator::<()>::finish_base)
+    }
+
+    fn aggregate_provider_rows(
+        validators: &HashMap<String, ValidatorRecord>,
+    ) -> Vec<ValidatorProviderGroupRecord> {
+        aggregate_rows(
+            validators,
+            GroupKind::ProviderAso,
+            Accumulator::finish_provider,
+        )
+    }
+
+    fn aggregate_client_rows(
+        validators: &HashMap<String, ValidatorRecord>,
+        releases: &ClientReleases,
+    ) -> Vec<ValidatorClientGroupRecord> {
+        aggregate_rows(validators, GroupKind::ClientLineage, |accumulator, ctx| {
+            accumulator.finish_client(ctx, releases)
+        })
+    }
 
     const EPOCH_SECONDS: i64 = 2 * 24 * 3600;
 
@@ -602,6 +883,11 @@ mod tests {
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
         client_id_raw: Option<&'static str>,
+        dc_city: Option<&'static str>,
+        dc_country: Option<&'static str>,
+        dc_asn: Option<i32>,
+        version: Option<&'static str>,
+        superminority: bool,
         /// Days ago each incident interval began. Each lasts long enough to clear any floor.
         incidents_days_ago: Vec<i64>,
     }
@@ -622,6 +908,11 @@ mod tests {
                 expected_take_rate: None,
                 unique_delegators: None,
                 client_id_raw: None,
+                dc_city: None,
+                dc_country: None,
+                dc_asn: None,
+                version: None,
+                superminority: false,
                 incidents_days_ago: Vec::new(),
             }
         }
@@ -649,6 +940,14 @@ mod tests {
                         client_id: *client_id,
                         client_id_raw: member.client_id_raw.map(str::to_string),
                         dc_aso: dc_aso.map(str::to_string),
+                        dc_city: member.dc_city.map(str::to_string),
+                        dc_country: member.dc_country.map(str::to_string),
+                        dc_asn: member.dc_asn,
+                        // A row gossip missed reports no version either.
+                        version: (client_id.is_some() || member.client_id_raw.is_some())
+                            .then(|| member.version.map(str::to_string))
+                            .flatten(),
+                        superminority: member.superminority,
                         ..Default::default()
                     })
                     .collect();
@@ -689,6 +988,7 @@ mod tests {
                         client_label: client_label(projected_client_id),
                         client_vendor: client_vendor(projected_client_id),
                         client_lineage: client_lineage(projected_client_id),
+                        version: member.version.map(str::to_string),
                         epoch_stats,
                         net_apy: member.net_apy,
                         avg_take_rate: member.take_rate,
@@ -708,19 +1008,14 @@ mod tests {
             .collect()
     }
 
-    fn keys(groups: &ValidatorGroups) -> Vec<String> {
-        groups
-            .groups
-            .iter()
-            .map(|group| group.key.clone())
-            .collect()
+    fn keys<T: GroupRow>(groups: &[T]) -> Vec<String> {
+        groups.iter().map(|group| group.row().key.clone()).collect()
     }
 
-    fn group<'a>(groups: &'a ValidatorGroups, name: &str) -> &'a ValidatorGroupRecord {
+    fn group<'a, T: GroupRow>(groups: &'a [T], name: &str) -> &'a T {
         groups
-            .groups
             .iter()
-            .find(|group| group.key == name)
+            .find(|group| group.row().key == name)
             .unwrap_or_else(|| panic!("no group for {name:?} in {:?}", keys(groups)))
     }
 
@@ -730,7 +1025,7 @@ mod tests {
     const FIGMENT_TWO: &str = "26pV97Ce83ZQ6Kz9XT4td8tdoUFPTng8Fb8gPyc53dJx";
     const HELIUS: &str = "he1iusunGwqrNtafDtLdhsUQDFvo13z9sUa36PauBtk";
 
-    fn operators(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroups {
+    fn operators(validators: &HashMap<String, ValidatorRecord>) -> Vec<ValidatorGroupRecord> {
         aggregate_groups(validators, GroupKind::Operator)
     }
 
@@ -746,12 +1041,218 @@ mod tests {
             Member::new("three", last_two_epochs(100, AGAVE, Some("Latitude"))),
         ]);
 
-        let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let groups = aggregate_provider_rows(&validators);
         assert_eq!(
             keys(&groups),
             vec!["Hetzner".to_string(), "Latitude".to_string()]
         );
         assert_eq!(group(&groups, "Hetzner").validator_count, 2);
+    }
+
+    #[test]
+    fn a_provider_row_reads_its_members_locations() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                dc_asn: Some(24940),
+                ..Member::new("big", last_two_epochs(300, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Helsinki"),
+                dc_country: Some("Finland"),
+                dc_asn: Some(213230),
+                ..Member::new("small", last_two_epochs(100, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                dc_asn: Some(213230),
+                ..Member::new("same-city", last_two_epochs(200, AGAVE, Some("Hetzner")))
+            },
+        ]);
+
+        let groups = aggregate_provider_rows(&validators);
+        let provider = group(&groups, "Hetzner");
+
+        // 213230 carries 300 across its two members, 24940 only 300 on its own; ties break on the number.
+        assert_eq!(provider.asns, vec![24940, 213230]);
+        assert_eq!(
+            provider
+                .locations
+                .iter()
+                .map(|location| (
+                    location.country.as_str(),
+                    location.city.as_deref(),
+                    location.validator_count,
+                    location.total_stake
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Germany", Some("Frankfurt"), 2, Decimal::from(500)),
+                ("Finland", Some("Helsinki"), 1, Decimal::from(100))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_location_the_source_left_unknown_is_counted_nowhere() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("placed", last_two_epochs(300, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_city: Some("Unknown"),
+                dc_country: Some("   "),
+                ..Member::new("unplaced", last_two_epochs(100, AGAVE, Some("Hetzner")))
+            },
+        ]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+
+        assert_eq!(provider.locations.len(), 1);
+    }
+
+    #[test]
+    fn a_provider_row_counts_the_superminority_it_hosts() {
+        let validators = validators(vec![
+            Member {
+                superminority: true,
+                ..Member::new("whale", last_two_epochs(900, AGAVE, Some("Hetzner")))
+            },
+            Member::new("minnow", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+        ]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+
+        assert_eq!(provider.superminority_count, 1);
+    }
+
+    #[test]
+    fn client_mix_splits_the_providers_stake_by_lineage() {
+        let validators = validators(vec![
+            Member::new("agave", last_two_epochs(600, AGAVE, Some("Hetzner"))),
+            Member::new("bam", last_two_epochs(200, JITO_BAM, Some("Hetzner"))),
+            Member::new(
+                "frank",
+                last_two_epochs(200, FRANKENDANCER, Some("Hetzner")),
+            ),
+        ]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+
+        // `Agave + JitoBAM` is agave lineage, so it lands in the same slice as plain Agave.
+        assert_eq!(
+            provider
+                .client_mix
+                .iter()
+                .map(|share| (share.key.as_str(), share.validator_count, share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("Agave", 2, 0.8), ("Frankendancer", 1, 0.2)]
+        );
+    }
+
+    #[test]
+    fn a_member_with_no_client_leaves_the_mix_short_of_one() {
+        let validators = validators(vec![
+            Member::new("known", last_two_epochs(700, AGAVE, Some("Hetzner"))),
+            Member::new("silent", last_two_epochs(300, None, Some("Hetzner"))),
+        ]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+
+        assert_eq!(provider.client_mix.len(), 1);
+        assert_eq!(provider.client_mix[0].stake_share, 0.7);
+    }
+
+    #[test]
+    fn a_client_row_spreads_the_versions_its_members_report() {
+        let validators = validators(vec![
+            Member {
+                version: Some("2.3.9"),
+                ..Member::new("newest", last_two_epochs(600, AGAVE, None))
+            },
+            Member {
+                version: Some("2.3.7"),
+                ..Member::new("behind", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                version: Some("2.2.14"),
+                ..Member::new("stale", last_two_epochs(100, AGAVE, None))
+            },
+        ]);
+
+        let clients = aggregate_client_rows(&validators, &Default::default());
+        let client = group(&clients, "Agave");
+
+        // Served as reported: the patch versions are never rolled up into a `2.2.x` bucket.
+        assert_eq!(
+            client
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("2.3.9", 0.6), ("2.3.7", 0.3), ("2.2.14", 0.1)]
+        );
+    }
+
+    #[test]
+    fn a_client_row_counts_the_countries_its_members_sit_in() {
+        let validators = validators(vec![
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("de", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                dc_city: Some("Warsaw"),
+                dc_country: Some("Poland"),
+                ..Member::new("pl", last_two_epochs(300, AGAVE, None))
+            },
+            Member {
+                dc_city: Some("Frankfurt"),
+                dc_country: Some("Germany"),
+                ..Member::new("de-too", last_two_epochs(300, AGAVE, None))
+            },
+        ]);
+
+        let clients = aggregate_client_rows(&validators, &Default::default());
+        let client = group(&clients, "Agave");
+
+        assert_eq!(client.country_count, 2);
+        assert_eq!(client.city_count, 2);
+    }
+
+    #[test]
+    fn the_release_lands_on_the_lineage_it_is_keyed_to() {
+        let validators = validators(vec![
+            Member::new("hetzner", last_two_epochs(300, AGAVE, Some("Hetzner"))),
+            Member::new("latitude", last_two_epochs(100, AGAVE, Some("Latitude"))),
+        ]);
+        let releases = ClientReleases::from([(
+            "agave".to_string(),
+            ClientRelease {
+                version: "2.3.9".to_string(),
+                released_at: None,
+                url: None,
+            },
+        )]);
+
+        let clients = aggregate_client_rows(&validators, &releases);
+        assert_eq!(
+            group(&clients, "Agave")
+                .latest_release
+                .as_ref()
+                .unwrap()
+                .version,
+            "2.3.9".to_string()
+        );
     }
 
     #[test]
@@ -795,8 +1296,45 @@ mod tests {
             "gossip lags the epoch boundary; a missing observation is not a client change"
         );
         assert_eq!(
-            keys(&aggregate_groups(&validators, GroupKind::ClientLineage)),
+            keys(&aggregate_client_rows(&validators, &Default::default())),
             vec!["Agave".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_node_not_yet_crawled_this_epoch_keeps_its_slice_of_the_breakdowns() {
+        let validators = validators(vec![Member {
+            version: Some("2.1.11"),
+            ..Member::new(
+                "uncrawled",
+                vec![
+                    (CURRENT_EPOCH, 100, None, Some("Hetzner")),
+                    (PREVIOUS_EPOCH, 100, AGAVE, Some("Hetzner")),
+                ],
+            )
+        }]);
+
+        let providers = aggregate_provider_rows(&validators);
+        let provider = group(&providers, "Hetzner");
+        assert_eq!(
+            provider
+                .client_mix
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("Agave", 1.0)],
+            "the member the client rows still call Agave must not leave a hole in the shares"
+        );
+
+        let clients = aggregate_client_rows(&validators, &Default::default());
+        let client = group(&clients, "Agave");
+        assert_eq!(
+            client
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("2.1.11", 1.0)]
         );
     }
 
@@ -851,7 +1389,7 @@ mod tests {
             "a readable name is a real client, not an unclassified one"
         );
         assert_eq!(
-            keys(&aggregate_groups(&validators, GroupKind::ClientLineage)),
+            keys(&aggregate_client_rows(&validators, &Default::default())),
             vec![UNKNOWN_GROUP.to_string()],
             "which client it is built from is genuinely unknown, so it lands under the unclassified parent"
         );
@@ -1014,8 +1552,11 @@ mod tests {
             Member::new("gone", vec![(PREVIOUS_EPOCH, 900, FRANKENDANCER, None)]),
         ]);
 
-        let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
-        assert_eq!(keys(&groups), vec!["Agave".to_string()]);
+        let groups = aggregate_kind(
+            &Population::new(&validators).unwrap(),
+            GroupKind::ClientLabel,
+        );
+        assert_eq!(keys(&groups.groups), vec!["Agave".to_string()]);
         assert_eq!(groups.total_activated_stake, Decimal::from(100));
     }
 
@@ -1053,7 +1594,7 @@ mod tests {
             Member::new("titled", last_two_epochs(100, AGAVE, Some("Retn Limited"))),
         ]);
 
-        let groups = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let groups = aggregate_provider_rows(&validators);
         assert_eq!(
             keys(&groups),
             vec!["RETN Limited".to_string()],
@@ -1083,7 +1624,7 @@ mod tests {
         assert_eq!(group(&clients, "Agave").stake_delta_7d, None);
         assert_eq!(group(&clients, "Agave").stake_delta_30d, None);
 
-        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
+        let providers = aggregate_provider_rows(&validators);
         assert_eq!(
             group(&providers, "Hetzner").stake_delta_7d,
             Some(Decimal::ZERO)
@@ -1099,7 +1640,7 @@ mod tests {
             idle,
         ]);
 
-        let all = aggregate_all(&validators);
+        let all = aggregate_all(&validators, &Default::default());
         assert_eq!(
             all.clients
                 .nodes
@@ -1109,7 +1650,7 @@ mod tests {
             vec!["Agave".to_string()],
             "the idle validator's client has no live stake, so it has no row"
         );
-        assert_eq!(keys(&all.providers), vec!["Hetzner".to_string()]);
+        assert_eq!(keys(&all.providers.groups), vec!["Hetzner".to_string()]);
         assert_eq!(all.providers.total_activated_stake, Decimal::from(700));
     }
 
@@ -1125,11 +1666,7 @@ mod tests {
         }
 
         assert_eq!(
-            group(
-                &aggregate_groups(&validators, GroupKind::ProviderAso),
-                "Hetzner"
-            )
-            .validator_count,
+            group(&aggregate_provider_rows(&validators), "Hetzner").validator_count,
             2
         );
     }
@@ -1165,19 +1702,14 @@ mod tests {
             ),
         ]);
 
-        let all = aggregate_all(&validators);
+        let all = aggregate_all(&validators, &Default::default());
 
-        let providers = aggregate_groups(&validators, GroupKind::ProviderAso);
-        assert_eq!(keys(&providers), keys(&all.providers));
-        assert_eq!(providers.current_epoch, all.providers.current_epoch);
+        let providers = aggregate_provider_rows(&validators);
+        assert_eq!(keys(&providers), keys(&all.providers.groups));
 
-        let clients = aggregate_groups(&validators, GroupKind::ClientLineage);
+        let clients = aggregate_client_rows(&validators, &Default::default());
         assert_eq!(
-            clients
-                .groups
-                .iter()
-                .map(|group| group.key.clone())
-                .collect::<Vec<_>>(),
+            keys(&clients),
             all.clients
                 .nodes
                 .iter()
@@ -1186,13 +1718,12 @@ mod tests {
             "the tree's parents are the client grouping"
         );
         assert_eq!(
-            clients.groups.first().map(|group| group.stake_delta_7d),
+            clients.first().map(|group| group.stake_delta_7d),
             all.clients
                 .nodes
                 .first()
                 .map(|node| node.group.stake_delta_7d)
         );
-        assert_eq!(clients.current_epoch, all.clients.current_epoch);
     }
 
     #[test]
@@ -1214,7 +1745,7 @@ mod tests {
     }
 
     fn tree(validators: &HashMap<String, ValidatorRecord>) -> ValidatorGroupTree {
-        aggregate_all(validators).clients
+        aggregate_all(validators, &Default::default()).clients
     }
 
     fn child_keys(node: &ValidatorGroupNode) -> Vec<String> {
@@ -1264,6 +1795,25 @@ mod tests {
             child_keys(&tree.nodes[1]),
             vec!["Frankendancer".to_string()]
         );
+    }
+
+    #[test]
+    fn the_chips_a_client_row_carries_are_its_own_children() {
+        let validators = validators(vec![
+            Member::new("plain", last_two_epochs(100, AGAVE, None)),
+            Member::new("jito", last_two_epochs(400, Some(1), None)),
+            Member::new("bam", last_two_epochs(200, JITO_BAM, None)),
+            Member::new("frank", last_two_epochs(300, FRANKENDANCER, None)),
+        ]);
+
+        let tree = tree(&validators);
+        let agave = &tree.nodes[0];
+        assert_eq!(
+            agave.group.block_engines,
+            vec!["Jito".to_string(), "JitoBAM".to_string()],
+            "the bare `Agave` child is the client running on its own, not an engine"
+        );
+        assert!(tree.nodes[1].group.block_engines.is_empty());
     }
 
     #[test]
@@ -1385,19 +1935,22 @@ mod tests {
 
         let all = aggregate_operators(&whole);
         assert_eq!(
-            keys(&all),
+            keys(&all.groups),
             vec!["Helius".to_string(), "Figment".to_string()]
         );
-        assert_eq!(group(&all, "Figment").validator_count, 2);
-        assert_eq!(group(&all, "Figment").total_stake, Decimal::from(500));
+        assert_eq!(group(&all.groups, "Figment").validator_count, 2);
+        assert_eq!(
+            group(&all.groups, "Figment").total_stake,
+            Decimal::from(500)
+        );
 
         let filtered = aggregate_operators(&one_figment);
         assert_eq!(
-            keys(&filtered),
+            keys(&filtered.groups),
             vec!["Figment".to_string()],
             "an operator none of these validators belongs to has no row"
         );
-        let figment = group(&filtered, "Figment");
+        let figment = group(&filtered.groups, "Figment");
         assert_eq!(figment.validator_count, 1);
         assert_eq!(figment.total_stake, Decimal::from(300));
         assert!(
@@ -1414,18 +1967,19 @@ mod tests {
             Member::new("nobody", last_two_epochs(700, AGAVE, None)),
         ]);
 
-        let groups = operators(&validators);
+        let aggregated = aggregate_operators(&validators.values().collect::<Vec<_>>());
+        let groups = &aggregated.groups;
         assert_eq!(
-            keys(&groups),
+            keys(groups),
             vec!["Figment".to_string()],
             "an unmapped validator belongs to no operator, so it gets no bucket of its own"
         );
         assert_eq!(
-            groups.total_activated_stake,
+            aggregated.total_activated_stake,
             Decimal::from(1000),
             "the denominator describes the cluster, not the mapped subset"
         );
-        assert!((group(&groups, "Figment").stake_share - 0.3).abs() < 1e-12);
+        assert!((group(groups, "Figment").stake_share - 0.3).abs() < 1e-12);
     }
 
     #[test]
@@ -1621,14 +2175,12 @@ mod tests {
             let groups = aggregate_groups(&validators, kind);
             assert!(
                 groups
-                    .groups
                     .iter()
                     .all(|group| matches!(group.incidents, GroupIncidents::Count(_))),
                 "{kind:?} rows span most of the cluster"
             );
             assert_eq!(
                 groups
-                    .groups
                     .iter()
                     .map(|group| group.incidents.count())
                     .sum::<u64>(),

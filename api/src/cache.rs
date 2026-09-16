@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorGroupTree,
-    ValidatorGroups, ValidatorRecord, ValidatorScoreRecord, VersionRecord,
+    ClientRelease, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord,
+    ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord, ValidatorScoreRecord,
+    VersionRecord,
 };
-use store::groups::ValidatorGroupings;
+use store::groups::{ClientReleases, ValidatorGroupings};
 use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -169,7 +170,7 @@ impl Cache {
         self.validator_groups.clients.clone()
     }
 
-    pub fn get_provider_groups(&self) -> ValidatorGroups {
+    pub fn get_provider_groups(&self) -> ValidatorProviderGroups {
         self.validator_groups.providers.clone()
     }
 
@@ -409,6 +410,21 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
+    let releases = {
+        let psql_client = &context.read().await.psql_client;
+        let mut latest = ClientReleases::default();
+        for release in store::releases::load_releases(psql_client, None, None).await? {
+            latest
+                .entry(release.client_lineage.to_lowercase())
+                .or_insert(ClientRelease {
+                    version: release.client_version,
+                    released_at: release.released_at,
+                    url: release.release_url,
+                });
+        }
+        latest
+    };
+
     // Off the executor thread: walks every cached epoch of every validator.
     let (validators, validator_incidents, validator_groups) =
         tokio::task::spawn_blocking(move || {
@@ -421,7 +437,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
                 record.incidents =
                     validator_incidents.into_response_incidents(vote_account, &filters);
             }
-            let validator_groups = store::groups::aggregate_all(&validators);
+            let validator_groups = store::groups::aggregate_all(&validators, &releases);
             (validators, validator_incidents, validator_groups)
         })
         .await?;
