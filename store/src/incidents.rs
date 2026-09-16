@@ -212,8 +212,8 @@ pub fn newer_stake_shares<'a>(
         .collect()
 }
 
-/// Oldest first, across every epoch the records carry so the grace still sees a predecessor
-/// outside the window.
+/// Oldest first, across every epoch the records carry. The oldest one has no predecessor, so it
+/// never opens a run.
 pub fn epochs_running_late_client_version(
     record: &dto::ValidatorRecord,
     newer_stake_shares: &HashMap<(u64, String), Vec<(ValidatorVersion, f64)>>,
