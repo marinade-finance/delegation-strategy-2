@@ -1,5 +1,7 @@
 use crate::dto;
 use chrono::{DateTime, Utc};
+use collect::validator_version::ValidatorVersion;
+use rust_decimal::prelude::*;
 use std::collections::HashMap;
 
 /// Leader slots an epoch needs before its block production is judged at all. Below this there is
@@ -26,6 +28,11 @@ pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 // Validator raised commission to this or more in an epoch -> incident
 pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
+pub const MIN_NEWER_VERSION_STAKE_SHARE: f64 = 0.80;
+
+/// Validators a lineage-epoch needs before anyone in it is judged late.
+pub const MIN_LINEAGE_VALIDATORS: usize = 10;
+
 pub const DEFAULT_INCIDENT_TYPES: &[IncidentType] = &[IncidentType::Downtime];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +40,7 @@ pub enum IncidentType {
     Downtime,
     BlockProduction,
     CommissionSpike,
+    RunningLateClientVersion,
 }
 
 impl IncidentType {
@@ -44,6 +52,7 @@ impl IncidentType {
                 "Downtime" => Ok(Self::Downtime),
                 "BlockProduction" => Ok(Self::BlockProduction),
                 "CommissionSpike" => Ok(Self::CommissionSpike),
+                "RunningLateClientVersion" => Ok(Self::RunningLateClientVersion),
                 other => Err(other.to_string()),
             })
             .collect()
@@ -138,6 +147,137 @@ pub struct CommissionRaise {
     pub commission_after: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct EpochClientVersion {
+    pub epoch: u64,
+    pub epoch_start_at: DateTime<Utc>,
+    pub epoch_end_at: DateTime<Utc>,
+    pub version: String,
+    pub client_lineage: String,
+    /// Share of the lineage's stake on a strictly newer version, as a fraction.
+    pub newer_stake_share: f64,
+    pub newer_version_stake_shares: Vec<dto::VersionStakeShare>,
+}
+
+impl EpochClientVersion {
+    pub fn counts_as_incident(&self) -> bool {
+        self.newer_stake_share >= MIN_NEWER_VERSION_STAKE_SHARE
+    }
+}
+
+/// `None` for an epoch still running, a client id absent from the registry, or a version string
+/// nothing can parse.
+fn epoch_client_version(stats: &dto::ValidatorEpochStats) -> Option<(ValidatorVersion, String)> {
+    let version = stats.version.as_deref()?.parse().ok()?;
+    let lineage = stats.client_lineage.clone()?;
+    stats.epoch_start_at?;
+    stats.epoch_end_at?;
+    Some((version, lineage))
+}
+
+/// Keyed by epoch and lineage, then by the version the share is measured from. A validator
+/// `epoch_client_version` rejects weighs on neither side.
+/// A lineage-epoch under `MIN_LINEAGE_VALIDATORS` is absent.
+pub fn newer_stake_shares<'a>(
+    records: impl IntoIterator<Item = &'a dto::ValidatorRecord>,
+) -> HashMap<(u64, String), Vec<(ValidatorVersion, f64)>> {
+    let mut stake: HashMap<(u64, String), HashMap<ValidatorVersion, Decimal>> = Default::default();
+    let mut members: HashMap<(u64, String), usize> = Default::default();
+
+    for stats in records.into_iter().flat_map(|record| &record.epoch_stats) {
+        let Some((version, lineage)) = epoch_client_version(stats) else {
+            continue;
+        };
+        *members.entry((stats.epoch, lineage.clone())).or_default() += 1;
+        *stake
+            .entry((stats.epoch, lineage))
+            .or_default()
+            .entry(version)
+            .or_default() += stats.activated_stake;
+    }
+
+    stake
+        .into_iter()
+        .filter(|(key, _)| members[key] >= MIN_LINEAGE_VALIDATORS)
+        .map(|(key, by_version)| {
+            let total: Decimal = by_version.values().sum();
+            let mut versions: Vec<(ValidatorVersion, f64)> = by_version
+                .into_iter()
+                .map(|(version, version_stake)| {
+                    let share = if total.is_zero() {
+                        0.0
+                    } else {
+                        (version_stake / total).to_f64().unwrap_or(0.0)
+                    };
+                    (version, share)
+                })
+                .collect();
+            // Newest first, so everything above a version is the prefix ahead of it.
+            versions.sort_by(|(a, _), (b, _)| b.cmp(a));
+            (key, versions)
+        })
+        .collect()
+}
+
+/// Oldest first, across every epoch the records carry. The oldest one has no predecessor, so it
+/// never opens a run.
+pub fn epochs_running_late_client_version(
+    record: &dto::ValidatorRecord,
+    newer_stake_shares: &HashMap<(u64, String), Vec<(ValidatorVersion, f64)>>,
+) -> Vec<EpochClientVersion> {
+    let mut late_patch: Vec<EpochClientVersion> = record
+        .epoch_stats
+        .iter()
+        .filter_map(|stats| {
+            let (version, client_lineage) = epoch_client_version(stats)?;
+            let lineage = newer_stake_shares.get(&(stats.epoch, client_lineage.clone()))?;
+            let newer: Vec<dto::VersionStakeShare> = lineage
+                .iter()
+                .take_while(|(above, _)| *above > version)
+                .map(|(above, share)| dto::VersionStakeShare {
+                    version: above.as_str().to_string(),
+                    share: *share,
+                })
+                .collect();
+            let newer_stake_share = newer.iter().map(|above| above.share).sum();
+
+            Some(EpochClientVersion {
+                epoch: stats.epoch,
+                epoch_start_at: stats.epoch_start_at?,
+                epoch_end_at: stats.epoch_end_at?,
+                version: version.as_str().to_string(),
+                client_lineage,
+                newer_version_stake_shares: newer,
+                newer_stake_share,
+            })
+        })
+        .filter(EpochClientVersion::counts_as_incident)
+        .collect();
+
+    late_patch.sort_by_key(|epoch| epoch.epoch);
+    late_patch
+}
+
+/// An epoch counts only where the one before it was over the bar too. An epoch with nothing usable
+/// reported is no breach, so it closes the run.
+pub fn running_late_client_version_incidents(
+    late_patch: Vec<EpochClientVersion>,
+    epochs: std::ops::RangeInclusive<u64>,
+) -> Vec<EpochClientVersion> {
+    let breached: std::collections::HashSet<u64> =
+        late_patch.iter().map(|epoch| epoch.epoch).collect();
+    late_patch
+        .into_iter()
+        .filter(|epoch| epochs.contains(&epoch.epoch))
+        .filter(|epoch| {
+            epoch
+                .epoch
+                .checked_sub(1)
+                .is_some_and(|before| breached.contains(&before))
+        })
+        .collect()
+}
+
 /// Window and floors one response is judged under.
 #[derive(Debug, Clone)]
 pub struct IncidentFilters {
@@ -176,6 +316,7 @@ pub struct ValidatorIncidentRecords {
     pub downtimes: Vec<DowntimeInterval>,
     pub block_production: Vec<EpochBlockProduction>,
     pub commission_raises: Vec<CommissionRaise>,
+    pub running_late_client_versions: Vec<EpochClientVersion>,
 }
 
 impl ValidatorIncidentRecords {
@@ -239,6 +380,26 @@ impl ValidatorIncidentRecords {
                         commission_after: raise.commission_after,
                         changed_at: raise.changed_at,
                         epoch_slot: raise.epoch_slot,
+                    },
+                });
+            }
+        }
+
+        if filters.wants(IncidentType::RunningLateClientVersion) {
+            for late_patch in self
+                .running_late_client_versions
+                .iter()
+                .filter(|late_patch| late_patch.epoch >= filters.from_epoch)
+            {
+                incidents.push(dto::IncidentRecord {
+                    epoch: late_patch.epoch,
+                    detail: dto::IncidentDetail::RunningLateClientVersion {
+                        epoch_start_at: late_patch.epoch_start_at,
+                        epoch_end_at: late_patch.epoch_end_at,
+                        version: late_patch.version.clone(),
+                        client_lineage: late_patch.client_lineage.clone(),
+                        newer_stake_share: late_patch.newer_stake_share,
+                        newer_version_stake_shares: late_patch.newer_version_stake_shares.clone(),
                     },
                 });
             }
@@ -336,6 +497,26 @@ mod tests {
             epoch_stats,
             ..Default::default()
         }
+    }
+
+    /// Pads every lineage-epoch to [`MIN_LINEAGE_VALIDATORS`] with members that hold no stake.
+    fn judged(
+        members: impl IntoIterator<Item = dto::ValidatorRecord>,
+    ) -> Vec<dto::ValidatorRecord> {
+        let mut cluster: Vec<dto::ValidatorRecord> = members.into_iter().collect();
+        let lineage_epochs: std::collections::HashSet<(u64, String)> = cluster
+            .iter()
+            .flat_map(|record| &record.epoch_stats)
+            .filter_map(|stats| Some((stats.epoch, stats.client_lineage.clone()?)))
+            .collect();
+
+        for (epoch, lineage) in lineage_epochs {
+            cluster.extend(
+                (0..MIN_LINEAGE_VALIDATORS)
+                    .map(|_| validator(vec![client(epoch, Some("0.0.0"), Some(&lineage), 0)])),
+            );
+        }
+        cluster
     }
 
     fn production(
@@ -518,6 +699,81 @@ mod tests {
         }
     }
 
+    fn late_patch(epoch: u64, newer_stake_share: f64) -> EpochClientVersion {
+        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        EpochClientVersion {
+            epoch,
+            epoch_start_at,
+            epoch_end_at: epoch_start_at + chrono::Duration::days(2),
+            version: "4.2.0".to_string(),
+            client_lineage: "agave".to_string(),
+            newer_stake_share,
+            newer_version_stake_shares: Vec::new(),
+        }
+    }
+
+    /// One epoch of one validator, as the version comparison reads it.
+    fn client(
+        epoch: u64,
+        version: Option<&str>,
+        lineage: Option<&str>,
+        stake: u64,
+    ) -> dto::ValidatorEpochStats {
+        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        dto::ValidatorEpochStats {
+            epoch,
+            epoch_start_at: Some(epoch_start_at),
+            epoch_end_at: Some(epoch_start_at + chrono::Duration::days(2)),
+            version: version.map(str::to_string),
+            client_lineage: lineage.map(str::to_string),
+            activated_stake: Decimal::from(stake),
+            ..Default::default()
+        }
+    }
+
+    fn agave(epoch: u64, version: &str, stake: u64) -> dto::ValidatorEpochStats {
+        client(epoch, Some(version), Some("agave"), stake)
+    }
+
+    /// Share of a lineage's stake above the given version. `None` where the version was not
+    /// comparable that epoch and so never entered the spread.
+    fn newer_share(
+        shares: &HashMap<(u64, String), Vec<(ValidatorVersion, f64)>>,
+        lineage: &str,
+        version: &str,
+    ) -> Option<f64> {
+        let spread = shares.get(&(EPOCH, lineage.to_string()))?;
+        let version: ValidatorVersion = version.parse().unwrap();
+        spread.iter().find(|(seen, _)| *seen == version)?;
+        Some(
+            spread
+                .iter()
+                .take_while(|(above, _)| *above > version)
+                .map(|(_, share)| share)
+                .sum(),
+        )
+    }
+
+    /// Epochs the validator is served as late_patch for, given the whole cluster's epoch stats.
+    fn late_versions_served(
+        subject: Vec<dto::ValidatorEpochStats>,
+        others: Vec<Vec<dto::ValidatorEpochStats>>,
+        epochs: std::ops::RangeInclusive<u64>,
+    ) -> Vec<u64> {
+        let subject = validator(subject);
+        let cluster =
+            judged(std::iter::once(subject.clone()).chain(others.into_iter().map(validator)));
+        let shares = newer_stake_shares(&cluster);
+
+        running_late_client_version_incidents(
+            epochs_running_late_client_version(&subject, &shares),
+            epochs,
+        )
+        .iter()
+        .map(|epoch| epoch.epoch)
+        .collect()
+    }
+
     fn served_types(incidents: &[dto::IncidentRecord]) -> Vec<&'static str> {
         incidents
             .iter()
@@ -525,6 +781,7 @@ mod tests {
                 dto::IncidentDetail::Downtime { .. } => "Downtime",
                 dto::IncidentDetail::BlockProduction { .. } => "BlockProduction",
                 dto::IncidentDetail::CommissionSpike { .. } => "CommissionSpike",
+                dto::IncidentDetail::RunningLateClientVersion { .. } => "RunningLateClientVersion",
             })
             .collect()
     }
@@ -538,6 +795,7 @@ mod tests {
                 block_production, ..
             } => Some(block_production),
             dto::IncidentDetail::CommissionSpike { .. } => None,
+            dto::IncidentDetail::RunningLateClientVersion { .. } => None,
         }
     }
 
@@ -632,12 +890,17 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            running_late_client_versions: vec![late_patch(EPOCH, 0.9)],
         };
 
         for (incident_type, served) in [
             (IncidentType::Downtime, "Downtime"),
             (IncidentType::BlockProduction, "BlockProduction"),
             (IncidentType::CommissionSpike, "CommissionSpike"),
+            (
+                IncidentType::RunningLateClientVersion,
+                "RunningLateClientVersion",
+            ),
         ] {
             let filters = IncidentFilters {
                 types: Some(vec![incident_type]),
@@ -723,6 +986,7 @@ mod tests {
             downtimes: vec![],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -737,6 +1001,7 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -752,6 +1017,7 @@ mod tests {
             downtimes: vec![downtime(EPOCH, 600)],
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
+            running_late_client_versions: vec![late_patch(EPOCH, 0.9)],
         };
         let filters = IncidentFilters {
             types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
@@ -788,16 +1054,315 @@ mod tests {
     #[test]
     fn parse_list_takes_every_name_the_response_emits() {
         assert_eq!(
-            IncidentType::parse_list("Downtime, BlockProduction,CommissionSpike"),
+            IncidentType::parse_list(
+                "Downtime, BlockProduction,CommissionSpike,RunningLateClientVersion"
+            ),
             Ok(vec![
                 IncidentType::Downtime,
                 IncidentType::BlockProduction,
                 IncidentType::CommissionSpike,
+                IncidentType::RunningLateClientVersion,
             ])
         );
         assert_eq!(
             IncidentType::parse_list("Downtime,Commission"),
             Err("Commission".to_string())
+        );
+    }
+
+    #[test]
+    fn the_newest_version_has_nothing_above_it_and_the_oldest_has_everything() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![agave(EPOCH, "4.1.0", 300)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(newer_share(&shares, "agave", "4.2.0"), Some(0.0));
+        assert_eq!(newer_share(&shares, "agave", "4.1.0"), Some(0.25));
+    }
+
+    #[test]
+    fn the_share_is_stake_weighted_not_one_vote_each() {
+        // Four validators newer, but they carry a twentieth of the stake between them.
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.1.0", 1000)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+            validator(vec![agave(EPOCH, "4.2.0", 10)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        let behind = newer_share(&shares, "agave", "4.1.0").unwrap();
+        assert!(behind < 0.05, "{behind}");
+    }
+
+    #[test]
+    fn a_lineage_is_never_judged_against_another() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![client(EPOCH, Some("26.8.2"), Some("firedancer"), 900)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        // Firedancer's 26.8.2 orders above agave's 4.2.0 numerically, and must not count here.
+        assert_eq!(newer_share(&shares, "agave", "4.2.0"), Some(0.0));
+        assert_eq!(newer_share(&shares, "firedancer", "26.8.2"), Some(0.0));
+    }
+
+    #[test]
+    fn versions_order_by_number_rather_than_text() {
+        // A text compare puts 0.812 above 0.1106 and would read this validator as current.
+        let cluster = judged([
+            validator(vec![client(
+                EPOCH,
+                Some("0.812.30108"),
+                Some("frankendancer"),
+                1,
+            )]),
+            validator(vec![client(
+                EPOCH,
+                Some("0.1106.40201"),
+                Some("frankendancer"),
+                9,
+            )]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(
+            newer_share(&shares, "frankendancer", "0.812.30108"),
+            Some(0.9)
+        );
+    }
+
+    #[test]
+    fn a_version_nothing_can_parse_weighs_on_neither_side() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.1.0", 100)]),
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![agave(EPOCH, "not-a-version", 800)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        // 100 of the 200 stake that could be compared, not 100 of 1000.
+        assert_eq!(newer_share(&shares, "agave", "4.1.0"), Some(0.5));
+    }
+
+    #[test]
+    fn a_client_the_registry_does_not_know_is_left_out() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+            validator(vec![client(EPOCH, Some("4.1.0"), None, 900)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(newer_share(&shares, "agave", "4.1.0"), None);
+    }
+
+    #[test]
+    fn a_lineage_too_small_to_judge_is_left_out() {
+        // Two members, unpadded.
+        let cluster = [
+            validator(vec![client(EPOCH, Some("0.5.0"), Some("sig"), 100)]),
+            validator(vec![client(EPOCH, Some("0.6.0"), Some("sig"), 900)]),
+        ];
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(newer_share(&shares, "sig", "0.5.0"), None);
+    }
+
+    /// A cluster that left 4.1.0 behind: 90% of agave stake sits on 4.2.0 every epoch.
+    fn moved_on(epochs: std::ops::RangeInclusive<u64>) -> Vec<Vec<dto::ValidatorEpochStats>> {
+        vec![epochs.map(|epoch| agave(epoch, "4.2.0", 900)).collect()]
+    }
+
+    #[test]
+    fn one_epoch_behind_alone_is_forgiven() {
+        let served =
+            late_versions_served(vec![agave(100, "4.1.0", 100)], moved_on(99..=101), 99..=101);
+
+        assert!(served.is_empty());
+    }
+
+    #[test]
+    fn a_second_epoch_behind_opens_the_incident() {
+        let served = late_versions_served(
+            vec![agave(100, "4.1.0", 100), agave(101, "4.1.0", 100)],
+            moved_on(99..=101),
+            99..=101,
+        );
+
+        assert_eq!(served, vec![101]);
+    }
+
+    #[test]
+    fn every_epoch_after_the_grace_is_its_own_record() {
+        let subject = (100..=104)
+            .map(|epoch| agave(epoch, "4.1.0", 100))
+            .collect();
+        let served = late_versions_served(subject, moved_on(100..=104), 100..=104);
+
+        assert_eq!(served, vec![101, 102, 103, 104]);
+    }
+
+    #[test]
+    fn upgrading_ends_the_run() {
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(101, "4.1.0", 100),
+            agave(102, "4.2.0", 100),
+            agave(103, "4.2.0", 100),
+        ];
+        let served = late_versions_served(subject, moved_on(100..=103), 100..=103);
+
+        assert_eq!(served, vec![101]);
+    }
+
+    #[test]
+    fn an_epoch_the_validator_reported_nothing_for_breaks_the_run() {
+        // Nothing at 101, so 102 has no predecessor over the bar to clear it.
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(102, "4.1.0", 100),
+            agave(103, "4.1.0", 100),
+        ];
+        let served = late_versions_served(subject, moved_on(100..=103), 100..=103);
+
+        assert_eq!(served, vec![103]);
+    }
+
+    #[test]
+    fn a_validator_holding_a_fifth_of_its_lineage_can_never_fall_behind() {
+        let subject = (100..=104)
+            .map(|epoch| agave(epoch, "4.1.0", 250))
+            .collect();
+        let others = vec![(100..=104)
+            .map(|epoch| agave(epoch, "4.2.0", 750))
+            .collect()];
+
+        assert!(late_versions_served(subject, others, 100..=104).is_empty());
+    }
+
+    #[test]
+    fn the_bar_is_read_at_eighty_percent() {
+        let subject = vec![agave(100, "4.1.0", 200), agave(101, "4.1.0", 200)];
+        let at_the_bar = vec![vec![agave(100, "4.2.0", 800), agave(101, "4.2.0", 800)]];
+        let under_it = vec![vec![agave(100, "4.2.0", 799), agave(101, "4.2.0", 799)]];
+
+        assert_eq!(
+            late_versions_served(subject.clone(), at_the_bar, 100..=101),
+            vec![101]
+        );
+        assert!(late_versions_served(subject, under_it, 100..=101).is_empty());
+    }
+
+    #[test]
+    fn each_epoch_is_judged_in_the_lineage_it_ran() {
+        // Behind on agave, then current on firedancer: the switch clears it.
+        let subject = vec![
+            agave(100, "4.1.0", 100),
+            agave(101, "4.1.0", 100),
+            client(102, Some("26.8.2"), Some("firedancer"), 100),
+        ];
+        let others = vec![
+            (100..=102)
+                .map(|epoch| agave(epoch, "4.2.0", 900))
+                .collect(),
+            vec![client(102, Some("26.8.2"), Some("firedancer"), 900)],
+        ];
+
+        assert_eq!(late_versions_served(subject, others, 100..=102), vec![101]);
+    }
+
+    #[test]
+    fn the_window_trims_the_records_but_not_the_predecessor_that_clears_them() {
+        let subject = (100..=102)
+            .map(|epoch| agave(epoch, "4.1.0", 100))
+            .collect();
+
+        // 101 is the window's first epoch, and 100 outside it still grants its grace.
+        assert_eq!(
+            late_versions_served(subject, moved_on(100..=102), 101..=102),
+            vec![101, 102]
+        );
+    }
+
+    #[test]
+    fn the_epoch_in_flight_is_not_judged() {
+        let mut running = agave(101, "4.1.0", 100);
+        running.epoch_end_at = None;
+        let served = late_versions_served(
+            vec![agave(100, "4.1.0", 100), running],
+            moved_on(100..=101),
+            100..=101,
+        );
+
+        assert!(served.is_empty());
+    }
+
+    #[test]
+    fn a_late_version_before_the_window_is_dropped() {
+        let records = ValidatorIncidentRecords {
+            running_late_client_versions: vec![late_patch(99, 0.9), late_patch(100, 0.9)],
+            ..Default::default()
+        };
+        let filters = IncidentFilters {
+            from_epoch: 100,
+            ..Default::default()
+        };
+
+        let incidents = records.into_response_incidents(&filters);
+        assert_eq!(
+            incidents
+                .iter()
+                .map(|incident| incident.epoch)
+                .collect::<Vec<_>>(),
+            vec![100]
+        );
+    }
+
+    #[test]
+    fn the_newer_versions_are_listed_newest_first_and_sum_to_the_share() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.1.0", 100)]),
+            validator(vec![agave(EPOCH, "4.1.2", 300)]),
+            validator(vec![agave(EPOCH, "4.2.0", 100)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+        let subject = validator(vec![agave(EPOCH, "4.1.0", 100)]);
+        let late_patch = epochs_running_late_client_version(&subject, &shares);
+
+        let listed = &late_patch[0].newer_version_stake_shares;
+        assert_eq!(
+            listed
+                .iter()
+                .map(|above| above.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["4.2.0", "4.1.2"]
+        );
+        let summed: f64 = listed.iter().map(|above| above.share).sum();
+        assert!((summed - late_patch[0].newer_stake_share).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_validators_own_version_is_not_listed_as_newer() {
+        let cluster = judged([
+            validator(vec![agave(EPOCH, "4.1.0", 100)]),
+            validator(vec![agave(EPOCH, "4.1.0", 100)]),
+            validator(vec![agave(EPOCH, "4.2.0", 800)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+        let subject = validator(vec![agave(EPOCH, "4.1.0", 100)]);
+        let late_patch = epochs_running_late_client_version(&subject, &shares);
+
+        assert_eq!(
+            late_patch[0]
+                .newer_version_stake_shares
+                .iter()
+                .map(|above| above.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["4.2.0"]
         );
     }
 

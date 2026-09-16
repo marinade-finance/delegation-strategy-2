@@ -309,9 +309,8 @@ async fn load_commission_raises(
 }
 
 /// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, the block production of every closed epoch, and every inflation commission
-/// raise over the bar. None of it is judged or merged here;
-/// `ValidatorIncidentRecords::into_response_incidents` does both under a caller's floors.
+/// interval as recorded, the block production of every closed epoch, every inflation commission
+/// raise over the bar, and every epoch spent behind the validator's own client lineage.
 pub async fn load_validator_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -359,6 +358,7 @@ pub async fn load_validator_incidents(
     // Read off the same epoch stats the incidents are handed back for, so the cluster figure and
     // the validator it judges come from one snapshot.
     let cluster_skip_rates = crate::incidents::cluster_skip_rates(records.values());
+    let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
 
     for (vote_account, record) in records {
         // Same window the query above read.
@@ -378,6 +378,14 @@ pub async fn load_validator_incidents(
                 .records(vote_account)
                 .block_production
                 .push(production);
+        }
+
+        let late_patch = crate::incidents::running_late_client_version_incidents(
+            crate::incidents::epochs_running_late_client_version(record, &newer_stake_shares),
+            from_epoch..=last_epoch,
+        );
+        if !late_patch.is_empty() {
+            incidents.records(vote_account).running_late_client_versions = late_patch;
         }
     }
 
