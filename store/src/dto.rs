@@ -477,6 +477,17 @@ pub enum IncidentDetail {
         epoch_end_at: DateTime<Utc>,
         block_production: BlockProductionDetail,
     },
+    /// An epoch the validator raised its inflation commission in, to
+    /// [`crate::incidents::COMMISSION_SPIKE_THRESHOLD_PERCENTAGE`] or above.
+    /// Excludes MEV and block-revenue commissions.
+    CommissionSpike {
+        commission_before: u8,
+        /// 90 or above.
+        commission_after: u8,
+        /// When the raised rate was first sampled.
+        changed_at: DateTime<Utc>,
+        epoch_slot: u64,
+    },
 }
 
 /// What a validator produced of its leader slots in one epoch, and the bar it was held to.
@@ -498,11 +509,12 @@ pub struct BlockProductionDetail {
 
 impl IncidentDetail {
     /// When the incident started, for ordering: a downtime interval when it went down, a block
-    /// production epoch when the epoch began.
+    /// production epoch when the epoch began, a commission spike when the raise was sampled.
     pub fn started_at(&self) -> DateTime<Utc> {
         match self {
             Self::Downtime { start_at, .. } => *start_at,
             Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
+            Self::CommissionSpike { changed_at, .. } => *changed_at,
         }
     }
 }
@@ -1031,6 +1043,31 @@ mod tests {
         let records: GroupIncidents =
             serde_json::from_value(serde_json::to_value(vec![incident()]).unwrap()).unwrap();
         assert_eq!(records, GroupIncidents::Records(vec![incident()]));
+    }
+
+    #[test]
+    fn a_commission_spike_serializes_flat_under_its_own_type() {
+        let record = IncidentRecord {
+            epoch: 900,
+            detail: IncidentDetail::CommissionSpike {
+                commission_before: 5,
+                commission_after: 100,
+                changed_at: "2026-01-01T06:00:00Z".parse().unwrap(),
+                epoch_slot: 1000,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "epoch": 900,
+                "incident_type": "CommissionSpike",
+                "commission_before": 5,
+                "commission_after": 100,
+                "changed_at": "2026-01-01T06:00:00Z",
+                "epoch_slot": 1000,
+            })
+        );
     }
 
     // The count is the sort key both shapes are ordered on, so the two have to report it alike.

@@ -6,7 +6,10 @@ use crate::dto::{
     ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
     VersionRecord,
 };
-use crate::incidents::{DowntimeInterval, EpochBlockProduction, ValidatorIncidents};
+use crate::incidents::{
+    CommissionRaise, DowntimeInterval, EpochBlockProduction, ValidatorIncidents,
+    COMMISSION_SPIKE_THRESHOLD_PERCENTAGE,
+};
 use crate::validators_jito::get_last_jito_info;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
@@ -229,10 +232,86 @@ async fn get_apy_calculators(
 /// with no distribution account written, short enough that a long-departed validator reads as absent.
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
+/// Every raise over the bar per vote account. Reads one epoch further back than the window: a raise
+/// in its first epoch needs the rate it moved from, and `commissions` carries a row per vote account
+/// per epoch even where nothing changed. A validator that never raised is left out, so the caller
+/// does not mint a cache entry for every vote account the table ever saw.
+async fn load_commission_raises(
+    psql_client: &Client,
+    from_epoch: u64,
+    last_epoch: u64,
+) -> anyhow::Result<HashMap<String, Vec<CommissionRaise>>> {
+    let rows = psql_client
+        .query(
+            "
+            SELECT
+                vote_account,
+                epoch,
+                epoch_slot,
+                commission,
+                created_at
+            FROM commissions
+            WHERE epoch >= $1::NUMERIC
+              AND epoch <= $2::NUMERIC
+            ORDER BY vote_account, epoch ASC, epoch_slot ASC, created_at ASC",
+            &[
+                &Decimal::from(from_epoch.saturating_sub(1)),
+                &Decimal::from(last_epoch),
+            ],
+        )
+        .await?;
+
+    // Count commission raise incidents from SQL response
+    let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
+    let mut previous: Option<(String, u8)> = None;
+    // Vote account, epoch and index of the raise whose peak later rows of the same epoch still lift.
+    let mut peak: Option<(String, u64, usize)> = None;
+    for row in rows {
+        let vote_account: String = row.get("vote_account");
+        let commission: u8 = row.get::<_, i32>("commission").try_into()?;
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+
+        // The epoch under the window is read for its rate alone: a raise there sits before it.
+        let crossed = previous.as_ref().is_some_and(|(before_account, before)| {
+            *before_account == vote_account
+                && *before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+                && commission >= COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+                && epoch >= from_epoch
+        });
+
+        if crossed {
+            let commission_before = previous.as_ref().map_or(0, |(_, before)| *before);
+            let raised = raises.entry(vote_account.clone()).or_default();
+            raised.push(CommissionRaise {
+                epoch,
+                epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
+                changed_at: row.get("created_at"),
+                commission_before,
+                commission_after: commission,
+            });
+            peak = Some((vote_account.clone(), epoch, raised.len() - 1));
+        } else if commission < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE {
+            peak = None;
+        } else if let Some((peak_account, peak_epoch, index)) = &peak {
+            if *peak_account == vote_account && *peak_epoch == epoch {
+                if let Some(raise) = raises.get_mut(peak_account).and_then(|r| r.get_mut(*index)) {
+                    raise.commission_after = raise.commission_after.max(commission);
+                }
+            } else {
+                peak = None;
+            }
+        }
+
+        previous = Some((vote_account, commission));
+    }
+
+    Ok(raises)
+}
+
 /// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, and the block production of every closed epoch. Neither is judged or
-/// merged here; `ValidatorIncidentRecords::into_response_incidents` does both under a caller's
-/// floors.
+/// interval as recorded, the block production of every closed epoch, and every inflation commission
+/// raise over the bar. None of it is judged or merged here;
+/// `ValidatorIncidentRecords::into_response_incidents` does both under a caller's floors.
 pub async fn load_validator_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -269,6 +348,12 @@ pub async fn load_validator_incidents(
                 end_at: row.get("end_at"),
                 downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
             });
+    }
+
+    for (vote_account, raises) in
+        load_commission_raises(psql_client, from_epoch, last_epoch).await?
+    {
+        incidents.records(&vote_account).commission_raises = raises;
     }
 
     // Read off the same epoch stats the incidents are handed back for, so the cluster figure and
