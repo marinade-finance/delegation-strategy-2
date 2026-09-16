@@ -1,6 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
-use solana_client::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::epoch_info::EpochInfo;
 use std::{thread, time::Duration};
 

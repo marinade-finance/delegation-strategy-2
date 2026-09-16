@@ -10,20 +10,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{
-    client_error::ClientError,
-    rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, RpcFilterType},
-    rpc_request::RpcRequest,
-    rpc_response::RpcVoteAccountStatus,
-};
 use solana_commitment_config::CommitmentConfig;
 use solana_config_program_client::{get_config_data, ConfigKeys};
 use solana_program::{
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::client_error::Error as ClientError;
+use solana_rpc_client_api::config::{
+    RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
+};
+use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+use solana_rpc_client_api::request::RpcRequest;
+use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},

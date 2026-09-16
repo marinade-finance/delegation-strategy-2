@@ -11,7 +11,7 @@ store = { path = "../store" }
 log = { workspace = true }
 env_logger = { workspace = true }
 rust_decimal = { workspace = true }
-solana-client = { workspace = true }
+solana-rpc-client = { workspace = true }
 clap = { workspace = true }
 tokio-postgres = { workspace = true }
 openssl = { workspace = true }
