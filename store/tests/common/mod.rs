@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
 use store::dto::Validator;
+use testcontainers::core::wait::HttpWaitStrategy;
+use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 /// A snapshot entry with nothing set but its identity: every fold-level test
 /// sets the handful of fields it is about.
@@ -53,15 +57,16 @@ pub fn validator(vote_account: &str, epoch: u64) -> Validator {
     }
 }
 
-/// The tests own their store: fake-gcs-server plus marinade-directory, both on
-/// the host network, torn down when the handle drops.
-pub const GCS_IMAGE: &str = "fsouza/fake-gcs-server:1.56.1";
+/// The tests own their store: one marinade-directory container on its
+/// in-memory backend, torn down when the handle drops. No bucket emulator: the
+/// mem backend answers the same six-call contract a GCS/S3 bucket does, which
+/// is all the client under test ever speaks to.
 pub const DIRECTORY_IMAGE: &str = "marinade-directory:test";
 const JWT_SECRET: &str = "delegation-strategy-test-secret-at-least-32b";
-const BUCKET: &str = "delegation-strategy";
+const DIRECTORY_PORT: u16 = 3000;
 
 pub struct DirectoryStore {
-    containers: Vec<String>,
+    _container: ContainerAsync<GenericImage>,
     pub url: String,
     pub token: String,
 }
@@ -73,18 +78,6 @@ impl DirectoryStore {
     }
 }
 
-impl Drop for DirectoryStore {
-    fn drop(&mut self) {
-        for container in &self.containers {
-            let _ = std::process::Command::new("docker")
-                .args(["rm", "-f", container])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-    }
-}
-
 /// `None` — with the reason on stderr — where docker cannot run, which is the
 /// contract the SQL harness had.
 pub async fn directory_store(test: &str) -> Option<DirectoryStore> {
@@ -93,50 +86,31 @@ pub async fn directory_store(test: &str) -> Option<DirectoryStore> {
         return None;
     }
 
-    let suffix = format!("{test}-{}", std::process::id());
-    let gcs_port = free_port();
-    let directory_port = free_port();
-    let gcs = format!("ds-test-gcs-{suffix}");
-    let directory = format!("ds-test-directory-{suffix}");
-    let store = DirectoryStore {
-        containers: vec![gcs.clone(), directory.clone()],
-        url: format!("http://localhost:{directory_port}"),
+    let container = GenericImage::new("marinade-directory", "test")
+        .with_exposed_port(DIRECTORY_PORT.tcp())
+        .with_wait_for(WaitFor::http(
+            HttpWaitStrategy::new("/ready")
+                .with_port(DIRECTORY_PORT.tcp())
+                .with_expected_status_code(200u16),
+        ))
+        .with_env_var("MEM_BUCKET", test)
+        .with_env_var("JWT_SECRET", JWT_SECRET)
+        .with_env_var("PORT", DIRECTORY_PORT.to_string())
+        .with_env_var("METRICS_PORT", "0")
+        .start()
+        .await
+        .expect("start marinade-directory");
+
+    let port = container
+        .get_host_port_ipv4(DIRECTORY_PORT.tcp())
+        .await
+        .expect("mapped port");
+
+    Some(DirectoryStore {
+        url: format!("http://localhost:{port}"),
         token: mint_token(),
-    };
-
-    run_container(
-        &gcs,
-        &[],
-        GCS_IMAGE,
-        &[
-            "-backend",
-            "memory",
-            "-scheme",
-            "http",
-            "-port",
-            &gcs_port.to_string(),
-            "-public-host",
-            &format!("localhost:{gcs_port}"),
-        ],
-    );
-    wait_for(&format!("http://localhost:{gcs_port}/storage/v1/b")).await;
-    create_bucket(gcs_port).await;
-
-    run_container(
-        &directory,
-        &[
-            &format!("STORAGE_EMULATOR_HOST=localhost:{gcs_port}"),
-            &format!("GCS_BUCKET={BUCKET}"),
-            &format!("JWT_SECRET={JWT_SECRET}"),
-            &format!("PORT={directory_port}"),
-            "METRICS_PORT=0",
-        ],
-        DIRECTORY_IMAGE,
-        &[],
-    );
-    wait_for(&format!("{}/ready", store.url)).await;
-
-    Some(store)
+        _container: container,
+    })
 }
 
 fn docker_available() -> bool {
@@ -147,62 +121,6 @@ fn docker_available() -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("free port")
-        .local_addr()
-        .expect("free port address")
-        .port()
-}
-
-fn run_container(name: &str, env: &[&str], image: &str, args: &[&str]) {
-    let mut command = std::process::Command::new("docker");
-    command.args(["run", "-d", "--rm", "--name", name, "--network", "host"]);
-    for entry in env {
-        command.args(["-e", entry]);
-    }
-    command.arg(image);
-    command.args(args);
-    let output = command.output().expect("docker run");
-    assert!(
-        output.status.success(),
-        "docker run {image} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-async fn wait_for(url: &str) {
-    let client = reqwest::Client::new();
-    for _ in 0..150 {
-        if let Ok(response) = client.get(url).send().await {
-            if response.status().is_success() {
-                return;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    panic!("{url} never became ready");
-}
-
-async fn create_bucket(gcs_port: u16) {
-    let response = reqwest::Client::new()
-        .post(format!(
-            "http://localhost:{gcs_port}/storage/v1/b?project=delegation-strategy"
-        ))
-        .header("Content-Type", "application/json")
-        .body(format!(
-            "{{\"name\":\"{BUCKET}\",\"versioning\":{{\"enabled\":true}}}}"
-        ))
-        .send()
-        .await
-        .expect("create bucket");
-    assert!(
-        response.status().is_success(),
-        "create bucket answered {}",
-        response.status()
-    );
 }
 
 fn mint_token() -> String {

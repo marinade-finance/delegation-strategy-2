@@ -25,3 +25,4 @@ utoipa = { workspace = true }
 
 [dev-dependencies]
 jsonwebtoken = "9.3"
+testcontainers = { version = "0.28.0", features = ["http_wait_plain"] }
