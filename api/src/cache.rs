@@ -410,7 +410,6 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // Load newest releases per lineage.
     let releases = {
         let psql_client = &context.read().await.psql_client;
         let mut latest = ClientReleases::default();

@@ -426,12 +426,14 @@ mod tests {
 
     #[test]
     fn the_unclassified_client_is_a_row_like_any_other() {
-        let with_unknown = tree(vec![
-            node(UNKNOWN_GROUP, 900, vec![group("Sonic", 900)]),
-            node("Agave", 100, vec![group("Agave", 100)]),
-        ]);
+        let with_unknown = || {
+            tree(vec![
+                node(UNKNOWN_GROUP, 900, vec![group("Sonic", 900)]),
+                node("Agave", 100, vec![group("Agave", 100)]),
+            ])
+        };
         let page = page_tree(
-            with_unknown,
+            with_unknown(),
             &GetGroupsConfig {
                 order_field: OrderField::Name,
                 order_direction: OrderDirection::ASC,
@@ -447,6 +449,20 @@ mod tests {
             page.nodes[1].children.len(),
             1,
             "its block engines are still served"
+        );
+
+        // The only client here whose name no block engine of its own repeats.
+        let searched = page_tree(
+            with_unknown(),
+            &GetGroupsConfig {
+                query: Some(UNKNOWN_GROUP.to_string()),
+                ..config()
+            },
+        );
+        assert_eq!(
+            parent_keys(&searched),
+            named(&[UNKNOWN_GROUP]),
+            "a search reads the client's own name, not only its block engines'"
         );
     }
 

@@ -751,7 +751,7 @@ pub struct GroupLocation {
     pub validator_count: u64,
     pub total_stake: Decimal,
 }
-/// A published client release, as `/releases` serves it.
+/// The newest release of a client lineage. 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
 pub struct ClientRelease {
     pub version: String,

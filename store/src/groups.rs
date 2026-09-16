@@ -50,7 +50,7 @@ fn normalized(value: Option<String>) -> Option<String> {
     Some(value.to_string())
 }
 
-pub fn is_unknown_placeholder(value: &str) -> bool {
+fn is_unknown_placeholder(value: &str) -> bool {
     let lowercase = value.to_lowercase();
     if lowercase == "unknown" {
         return true;
@@ -583,7 +583,6 @@ impl<'a> Population<'a> {
 /// not show up as a loss.
 pub fn aggregate_operators(validators: &[&ValidatorRecord]) -> ValidatorGroups {
     match Population::over(validators.to_vec(), validators.to_vec()) {
-        // Operator rows carry no information panel, so there is nothing to overlay onto them.
         Some(population) => aggregate_kind(&population, GroupKind::Operator),
         None => Default::default(),
     }
