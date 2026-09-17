@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::solana_service::bps_to_percent;
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
-use log::info;
+use log::{info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
@@ -58,6 +58,49 @@ async fn load_sampled_commission_bps(
         sampled.insert(row.get("vote_account"), u16::try_from(bps)?);
     }
     Ok(sampled)
+}
+
+// close_epoch only walks the snapshot, so a row the snapshot never listed needs its own write
+async fn store_commission_outside_the_snapshot(
+    psql_client: &Client,
+    epoch: &Decimal,
+    vote_accounts: &[&str],
+    rates: &[i32],
+    updated_at: &DateTime<Utc>,
+) -> anyhow::Result<()> {
+    psql_client
+        .execute(
+            "UPDATE validators
+             SET commission_effective = u.commission_effective,
+                 commission_effective_source = $3,
+                 updated_at = $5
+             FROM UNNEST($1::TEXT[], $2::INTEGER[]) AS u(vote_account, commission_effective)
+             WHERE validators.vote_account = u.vote_account AND validators.epoch = $4",
+            &[
+                &vote_accounts,
+                &rates,
+                &COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+                epoch,
+                updated_at,
+            ],
+        )
+        .await?;
+    Ok(())
+}
+
+// The in-memory tally sees only snapshot validators, so re-count in the DB.
+async fn warn_on_unresolved_commission(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
+    let row = psql_client
+        .query_one(
+            "SELECT COUNT(*) FROM validators WHERE epoch = $1 AND commission_effective IS NULL",
+            &[&Decimal::from(epoch)],
+        )
+        .await?;
+    let unresolved: i64 = row.get(0);
+    if unresolved > 0 {
+        warn!("Epoch {epoch} closed with {unresolved} validator rows still without commission_effective");
+    }
+    Ok(())
 }
 
 pub async fn create_epoch_record(
@@ -322,8 +365,39 @@ pub async fn close_epoch(
         );
     }
 
+    let (outside_vote_accounts, outside_rates): (Vec<&str>, Vec<i32>) = sampled_commission_bps
+        .iter()
+        .filter(|(vote_account, _)| !snapshot.validators.contains_key(*vote_account))
+        .map(|(vote_account, bps)| (vote_account.as_str(), i32::from(bps_to_percent(*bps))))
+        .unzip();
+    // A closed epoch is never re-listed, so the floor below must land even when this write fails.
+    let outside_the_snapshot_write = if outside_vote_accounts.is_empty() {
+        Ok(())
+    } else {
+        let written = store_commission_outside_the_snapshot(
+            psql_client,
+            &snapshot_epoch,
+            &outside_vote_accounts,
+            &outside_rates,
+            &snapshot_created_at,
+        )
+        .await;
+        if written.is_ok() {
+            info!(
+                "Effective commission from sampled vote state for {} validators the snapshot did not list",
+                outside_vote_accounts.len()
+            );
+        }
+        written
+    };
+
     update_uptimes(psql_client, snapshot.epoch).await?;
     update_observed_commission(psql_client, snapshot.epoch).await?;
+    if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
+        warn!("Could not count validator rows without commission_effective: {err}");
+    }
+
+    outside_the_snapshot_write?;
 
     Ok(())
 }
