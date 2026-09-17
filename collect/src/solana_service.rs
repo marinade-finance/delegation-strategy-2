@@ -983,7 +983,7 @@ fn get_withdrawer_and_vote_keys(stake_account: &StakeStateV2) -> Option<(String,
     })
 }
 
-pub fn fetch_stake_account_totals(
+fn fetch_stake_account_totals(
     rpc_client: &RpcClient,
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
@@ -1605,5 +1605,139 @@ mod vote_state_tests {
                 (withdrawer, "voteB".to_string()),
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod stake_account_tests {
+    use super::*;
+
+    const WITHDRAWER: [u8; 32] = [2; 32];
+    const EPOCH: Epoch = 900;
+    const VOTE: [u8; 32] = [7; 32];
+    const OTHER_WITHDRAWER: [u8; 32] = [8; 32];
+
+    fn stake_account(
+        withdrawer: [u8; 32],
+        stake: u64,
+        activation_epoch: Epoch,
+        deactivation_epoch: Epoch,
+    ) -> (Pubkey, Account) {
+        #[allow(deprecated)]
+        let state = StakeStateV2::Stake(
+            stake::state::Meta {
+                rent_exempt_reserve: 0,
+                authorized: stake::state::Authorized {
+                    staker: Pubkey::new_from_array(withdrawer),
+                    withdrawer: Pubkey::new_from_array(withdrawer),
+                },
+                lockup: Default::default(),
+            },
+            stake::state::Stake {
+                delegation: stake::state::Delegation {
+                    voter_pubkey: Pubkey::new_from_array(VOTE),
+                    stake,
+                    activation_epoch,
+                    deactivation_epoch,
+                    warmup_cooldown_rate: 0.25,
+                },
+                credits_observed: 0,
+            },
+            stake::stake_flags::StakeFlags::empty(),
+        );
+        let mut account = Account {
+            data: bincode::serialize(&state).unwrap(),
+            owner: stake::program::ID,
+            ..Default::default()
+        };
+        account.data.resize(200, 0);
+        (Pubkey::new_unique(), account)
+    }
+
+    fn self_stake_authorities() -> HashSet<(String, String)> {
+        HashSet::from_iter([(
+            Pubkey::new_from_array(WITHDRAWER).to_string(),
+            Pubkey::new_from_array(VOTE).to_string(),
+        )])
+    }
+
+    // An empty history sends every settled account down the "dropped out of history" path, which
+    // reports the delegation as fully effective. No path below reads an entry.
+    fn process(accounts: Vec<(Pubkey, Account)>) -> (HashMap<String, StakeAccountTotals>, u64) {
+        let mut totals = HashMap::default();
+        let assigned = process_stake_accounts(
+            accounts,
+            &mut totals,
+            &self_stake_authorities(),
+            EPOCH,
+            &StakeHistory::default(),
+        );
+        (totals, assigned)
+    }
+
+    fn vote_totals(totals: &HashMap<String, StakeAccountTotals>) -> StakeAccountTotals {
+        *totals
+            .get(&Pubkey::new_from_array(VOTE).to_string())
+            .expect("no entry for the vote account")
+    }
+
+    #[test]
+    fn a_third_party_account_activating_lands_in_the_totals_without_self_stake() {
+        let (totals, assigned) =
+            process(vec![stake_account(OTHER_WITHDRAWER, 500, EPOCH, u64::MAX)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.activating, 500);
+        assert_eq!(entry.deactivating, 0);
+        assert_eq!(entry.self_stake, 0);
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn a_settled_third_party_account_adds_no_entry_at_all() {
+        let (totals, assigned) = process(vec![stake_account(OTHER_WITHDRAWER, 500, 0, u64::MAX)]);
+
+        assert!(totals.is_empty());
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn a_self_stake_account_deactivating_counts_on_both_sides() {
+        let (totals, assigned) = process(vec![stake_account(WITHDRAWER, 500, 0, EPOCH)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.self_stake, 500);
+        assert_eq!(entry.deactivating, 500);
+        assert_eq!(entry.activating, 0);
+        assert_eq!(assigned, 1);
+    }
+
+    #[test]
+    fn a_self_stake_account_still_activating_counts_as_pending_only() {
+        let (totals, assigned) = process(vec![stake_account(WITHDRAWER, 500, EPOCH, u64::MAX)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.activating, 500);
+        assert_eq!(
+            entry.self_stake, 0,
+            "zero effective stake keeps it out of the self stake sum"
+        );
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn the_totals_of_one_vote_account_add_up_over_several_accounts() {
+        let (totals, assigned) = process(vec![
+            stake_account(WITHDRAWER, 500, 0, u64::MAX),
+            stake_account(OTHER_WITHDRAWER, 300, EPOCH, u64::MAX),
+            stake_account(OTHER_WITHDRAWER, 200, 0, EPOCH),
+            stake_account(OTHER_WITHDRAWER, 900, 0, u64::MAX),
+        ]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.self_stake, 500);
+        assert_eq!(entry.activating, 300);
+        assert_eq!(entry.deactivating, 200);
+        assert_eq!(assigned, 1);
     }
 }

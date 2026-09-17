@@ -106,8 +106,8 @@ pub async fn store_validators(
             inflation_rewards_commission_bps_is_v4 = COALESCE(u.inflation_rewards_commission_bps_is_v4, validators.inflation_rewards_commission_bps_is_v4),
             block_revenue_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_commission_bps ELSE validators.block_revenue_commission_bps END,
             pending_delegator_rewards = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.pending_delegator_rewards ELSE validators.pending_delegator_rewards END,
-            activating_stake = u.activating_stake,
-            deactivating_stake = u.deactivating_stake
+            activating_stake = COALESCE(u.activating_stake, validators.activating_stake),
+            deactivating_stake = COALESCE(u.deactivating_stake, validators.deactivating_stake)
             "
             .to_string(),
             "u(
