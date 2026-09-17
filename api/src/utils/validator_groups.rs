@@ -35,6 +35,7 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::Stake => |group: &ValidatorGroupRecord| SortKey::Number(group.total_stake),
         OrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d.into(),
         OrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d.into(),
+        OrderField::ActivatingStake => |group: &ValidatorGroupRecord| group.activating_stake.into(),
         OrderField::NetApy => {
             |group: &ValidatorGroupRecord| group.net_apy.and_then(Decimal::from_f64_retain).into()
         }
@@ -600,6 +601,10 @@ mod tests {
                 expected_take_rate: Some(0.9),
                 ..group("expectedTakeRate", 100)
             },
+            ValidatorGroupRecord {
+                activating_stake: Some(Decimal::from(900)),
+                ..group("activatingStake", 100)
+            },
         ];
 
         for (order_field, leader) in [
@@ -617,6 +622,7 @@ mod tests {
             (OrderField::Commission, "commission"),
             (OrderField::Uptime, "uptime"),
             (OrderField::ExpectedTakeRate, "expectedTakeRate"),
+            (OrderField::ActivatingStake, "activatingStake"),
         ] {
             let page = page_groups(
                 providers(rows.clone()),

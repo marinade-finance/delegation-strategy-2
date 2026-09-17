@@ -11,6 +11,7 @@ pub enum OrderField {
     Stake,
     StakeDelta7d,
     StakeDelta30d,
+    ActivatingStake,
     Credits,
     MarinadeScore,
     Apy,

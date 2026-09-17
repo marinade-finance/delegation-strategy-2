@@ -775,6 +775,7 @@ pub struct ValidatorGroupRecord {
     pub stake_share: f64,
     pub stake_delta_7d: Option<Decimal>,
     pub stake_delta_30d: Option<Decimal>,
+    pub activating_stake: Option<Decimal>,
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,

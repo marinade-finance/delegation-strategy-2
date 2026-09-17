@@ -425,6 +425,7 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
         }
         OrderField::StakeDelta7d => |a: &ValidatorRecord| a.stake_delta_7d.into(),
         OrderField::StakeDelta30d => |a: &ValidatorRecord| a.stake_delta_30d.into(),
+        OrderField::ActivatingStake => |a: &ValidatorRecord| a.activating_stake.into(),
         // The name the list shows: what it reports for itself, or its vote account when it reports none.
         OrderField::Name => |a: &ValidatorRecord| {
             SortKey::Text(
@@ -1922,6 +1923,32 @@ mod tests {
                 |r, v| r.expected_take_rate = v,
             ),
         ]
+    }
+
+    #[test]
+    fn activating_stake_orders_and_sinks_a_validator_without_one() {
+        let validators = sort_validators(
+            vec![
+                ValidatorRecord {
+                    activating_stake: None,
+                    deactivating_stake: Some(Decimal::from(900)),
+                    ..validator("unknown", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(300)),
+                    ..validator("small", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(700)),
+                    deactivating_stake: Some(Decimal::from(5000)),
+                    ..validator("big", 100, vec![])
+                },
+            ],
+            OrderField::ActivatingStake,
+            &OrderDirection::DESC,
+        );
+        let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
+        assert_eq!(order, vec!["big", "small", "unknown"]);
     }
 
     #[test]
