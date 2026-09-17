@@ -395,3 +395,45 @@ async fn a_sealed_epoch_is_read_from_its_seal_while_live_still_holds_it() {
         "the leftover live interval is ignored once the epoch has a sealed document"
     );
 }
+
+/// A crash between the seal and the trim leaves the accumulators still holding
+/// the epoch. The rerun that follows must not seal again: it would read
+/// accumulators the failed run had already partly trimmed and write a sealed
+/// document with those intervals missing, erasing the downtime it exists to
+/// record.
+#[tokio::test]
+async fn a_rerun_of_a_sealed_epoch_trims_without_resealing() {
+    let Some(store) = common::directory_store("close-epoch-rerun").await else {
+        return;
+    };
+    let directory = store.client();
+
+    seed_validators(&directory).await;
+    seed_streams(&directory).await;
+    run_close_epoch(&directory).await;
+
+    let sealed: SealedUptimesDoc = directory
+        .get(&epoch_doc_path(UPTIMES_DIR, EPOCH))
+        .await
+        .expect("get uptimes")
+        .expect("sealed uptimes")
+        .body;
+    let intervals = sealed[VOTE_ACCOUNT].len();
+    assert!(intervals > 0, "the first close sealed the epoch's intervals");
+
+    // The accumulators are trimmed by now, so a second close reads exactly what
+    // a run that died mid-trim would have left behind.
+    run_close_epoch(&directory).await;
+
+    let resealed: SealedUptimesDoc = directory
+        .get(&epoch_doc_path(UPTIMES_DIR, EPOCH))
+        .await
+        .expect("get uptimes")
+        .expect("sealed uptimes")
+        .body;
+    assert_eq!(
+        resealed[VOTE_ACCOUNT].len(),
+        intervals,
+        "a rerun left the sealed intervals alone"
+    );
+}

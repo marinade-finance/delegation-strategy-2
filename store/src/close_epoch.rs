@@ -37,6 +37,22 @@ pub async fn close_epoch(
 
     info!("Loaded the snapshot");
 
+    // A sealed epoch is never sealed twice. The trim runs after the seal, so a
+    // run that died between the two left the accumulators still holding the
+    // epoch, and the trim is the only outstanding work. Resealing instead would
+    // read accumulators the failed run had already partly trimmed and write an
+    // epoch with the intervals removed - erasing the very downtime the sealed
+    // document exists to record, on every hourly run until the epoch rolls
+    // over. Until now the only thing refusing that was the trim order.
+    if directory
+        .get::<EpochDoc>(&epoch_doc_path(EPOCHS_DIR, epoch))
+        .await?
+        .is_some()
+    {
+        info!("Epoch {epoch} is already sealed; trimming the accumulators");
+        return trim_accumulators(directory, epoch).await;
+    }
+
     let uptimes = read_live::<UptimesDoc>(directory, LIVE_UPTIMES).await?;
     let commissions = read_live::<CommissionsDoc>(directory, LIVE_COMMISSIONS).await?;
     let versions = read_live::<VersionsDoc>(directory, LIVE_VERSIONS).await?;
@@ -105,8 +121,20 @@ pub async fn close_epoch(
     put_whole(directory, &path, &epoch_record).await?;
     info!("Closed epoch {epoch}");
 
-    // Cleanup. A sealed epoch is served from its sealed document, so anything left here
-    // is ignored until the next close-epoch retains only what follows it.
+    trim_accumulators(directory, epoch).await
+}
+
+/// Drops everything up to and including `epoch` from the four accumulators: a
+/// sealed epoch is served from its sealed document, so what is left here is
+/// what follows it.
+///
+/// Each document is read immediately before its own write. The seal above
+/// spends a dozen round trips, and collector-performance rewrites all four
+/// every minute, so an ETag read before it has a real chance of being stale by
+/// the time it is used - and a 412 here lands after the epoch document exists,
+/// where nothing offers the epoch again.
+async fn trim_accumulators(directory: &Directory, epoch: u64) -> anyhow::Result<()> {
+    let uptimes = read_live::<UptimesDoc>(directory, LIVE_UPTIMES).await?;
     directory
         .put(
             LIVE_UPTIMES,
@@ -114,6 +142,7 @@ pub async fn close_epoch(
             Precondition::IfMatch(uptimes.etag),
         )
         .await?;
+    let commissions = read_live::<CommissionsDoc>(directory, LIVE_COMMISSIONS).await?;
     directory
         .put(
             LIVE_COMMISSIONS,
@@ -121,6 +150,7 @@ pub async fn close_epoch(
             Precondition::IfMatch(commissions.etag),
         )
         .await?;
+    let versions = read_live::<VersionsDoc>(directory, LIVE_VERSIONS).await?;
     directory
         .put(
             LIVE_VERSIONS,
@@ -128,6 +158,7 @@ pub async fn close_epoch(
             Precondition::IfMatch(versions.etag),
         )
         .await?;
+    let cluster_info = read_live::<ClusterInfoDoc>(directory, LIVE_CLUSTER_INFO).await?;
     directory
         .put(
             LIVE_CLUSTER_INFO,
