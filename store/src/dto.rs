@@ -809,7 +809,8 @@ pub struct ValidatorProviderGroupRecord {
     pub asns: Vec<i32>,
     /// Stake-sorted
     pub locations: Vec<GroupLocation>,
-    /// Stake share per client lineage, biggest first.
+    /// Stake share per client lineage, biggest first. A member whose client the registry does
+    /// not know goes under `Unknown`, so the shares sum to 1.
     pub client_mix: Vec<GroupShare>,
     pub superminority_count: u64,
 }
@@ -835,7 +836,8 @@ pub struct ValidatorClientGroupRecord {
     pub group: ValidatorGroupRecord,
     pub city_count: u64,
     pub country_count: u64,
-    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed. A
+    /// member that reports no version goes under `Unknown`, so the shares sum to 1.
     pub version_spread: Vec<GroupShare>,
     /// Block engines paired with this client, from the group's own children.
     pub block_engines: Vec<String>,

@@ -171,13 +171,16 @@ impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
                 .add(stake);
         }
 
-        if let Some(version) = normalized(validator.version.clone()) {
-            self.versions.entry(version).or_default().add(stake);
-        }
+        // Every member lands in a bucket, so the shares of a group sum to 1. The unknown ones fold
+        // into the same `Unknown` key that `/clients` gives them.
+        let version =
+            normalized(validator.version.clone()).unwrap_or_else(|| UNKNOWN_GROUP.to_string());
+        self.versions.entry(version).or_default().add(stake);
 
-        if let Some(lineage) = normalized(validator.client_lineage.clone()).map(as_client_name) {
-            self.lineages.entry(lineage).or_default().add(stake);
-        }
+        let lineage = normalized(validator.client_lineage.clone())
+            .map(as_client_name)
+            .unwrap_or_else(|| UNKNOWN_GROUP.to_string());
+        self.lineages.entry(lineage).or_default().add(stake);
 
         if stats.superminority {
             self.superminority_count += 1;
@@ -1157,8 +1160,9 @@ mod tests {
         );
     }
 
+    /// Mainnet carries such a node whenever a client ships before `client-ids.csv` names it.
     #[test]
-    fn a_member_with_no_client_leaves_the_mix_short_of_one() {
+    fn a_member_with_no_client_joins_the_mix_as_unknown() {
         let validators = validators(vec![
             Member::new("known", last_two_epochs(700, AGAVE, Some("Hetzner"))),
             Member::new("silent", last_two_epochs(300, None, Some("Hetzner"))),
@@ -1167,8 +1171,38 @@ mod tests {
         let providers = aggregate_provider_rows(&validators);
         let provider = group(&providers, "Hetzner");
 
-        assert_eq!(provider.client_mix.len(), 1);
-        assert_eq!(provider.client_mix[0].stake_share, 0.7);
+        assert_eq!(
+            provider
+                .client_mix
+                .iter()
+                .map(|share| (share.key.as_str(), share.validator_count, share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("Agave", 1, 0.7), (UNKNOWN_GROUP, 1, 0.3)],
+            "the same key the client rows give that member"
+        );
+    }
+
+    #[test]
+    fn a_member_that_reports_no_version_joins_the_spread_as_unknown() {
+        let validators = validators(vec![
+            Member {
+                version: Some("2.3.9"),
+                ..Member::new("newest", last_two_epochs(700, AGAVE, None))
+            },
+            Member::new("silent", last_two_epochs(300, AGAVE, None)),
+        ]);
+
+        let clients = aggregate_client_rows(&validators, &Default::default());
+        let client = group(&clients, "Agave");
+
+        assert_eq!(
+            client
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.validator_count, share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("2.3.9", 1, 0.7), (UNKNOWN_GROUP, 1, 0.3)]
+        );
     }
 
     #[test]
