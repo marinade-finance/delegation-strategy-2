@@ -1,0 +1,2 @@
+ALTER TABLE validators ADD COLUMN activating_stake NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE validators ADD COLUMN deactivating_stake NUMERIC NOT NULL DEFAULT 0;

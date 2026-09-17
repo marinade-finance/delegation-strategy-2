@@ -161,6 +161,8 @@ pub struct Validator {
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
     pub self_stake: Decimal,
+    pub activating_stake: Decimal,
+    pub deactivating_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
     pub credits: Decimal,
@@ -235,6 +237,8 @@ impl Validator {
             marinade_native_stake: v.marinade_native_stake.into(),
             institutional_stake: v.institutional_stake.into(),
             self_stake: v.self_stake.into(),
+            activating_stake: v.activating_stake.into(),
+            deactivating_stake: v.deactivating_stake.into(),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
             credits: v.performance.credits.into(),
@@ -407,6 +411,10 @@ pub struct ValidatorRecord {
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
     pub self_stake: Decimal,
+    /// Stake delegated to this validator and warming up, in lamports. It joins `activated_stake` at the next epoch boundary. Counted over every stake account, so it includes stake nobody in this data set owns. The hourly collector and a 10-minute API cache make it up to 70 minutes old, never live.
+    pub activating_stake: Decimal,
+    /// Stake delegated to this validator and cooling down, in lamports. It leaves `activated_stake` at the next epoch boundary. It carries the same source and the same age as `activating_stake`. Kept apart from `activating_stake` on purpose: a net number ranks validators differently, and each side answers a different question.
+    pub deactivating_stake: Decimal,
     pub superminority: bool,
     pub credits: u64,
     pub score: Option<f64>,

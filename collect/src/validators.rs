@@ -132,6 +132,11 @@ pub struct ValidatorSnapshot {
     pub marinade_stake: u64,
     pub marinade_native_stake: u64,
     pub institutional_stake: u64,
+    // Absent in a snapshot written before pending stake was collected; store reads a default of 0.
+    #[serde(default)]
+    pub activating_stake: u64,
+    #[serde(default)]
+    pub deactivating_stake: u64,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
@@ -207,7 +212,10 @@ pub fn collect_validators_info(
             .unwrap_or(false);
     // One vote-program scan feeds both the withdraw authorities and the vote state below.
     let vote_account_states = get_vote_account_states(&client)?;
-    let self_stake = get_self_stake(
+    let StakeAccountTotals {
+        self_stake,
+        pending_stake,
+    } = get_stake_account_totals(
         &client,
         epoch,
         &stake_history,
@@ -220,6 +228,11 @@ pub fn collect_validators_info(
     let node_info = get_cluster_nodes_info(&client)?;
 
     info!("Self stake: {}", self_stake.values().sum::<u64>());
+    info!(
+        "Pending stake: {} activating, {} deactivating",
+        pending_stake.values().map(|p| p.activating).sum::<u64>(),
+        pending_stake.values().map(|p| p.deactivating).sum::<u64>()
+    );
     info!(
         "Foundation stake: {}",
         foundation_stake.values().sum::<u64>()
@@ -269,6 +282,7 @@ pub fn collect_validators_info(
         let node = node_info.get(&identity);
         // An account the scan could not parse leaves the v4 fields null, never a made-up default.
         let vote_state = vote_account_states.get(&vote_pubkey);
+        let pending = pending_stake.get(&vote_pubkey).copied().unwrap_or_default();
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -296,6 +310,8 @@ pub fn collect_validators_info(
             self_stake: *self_stake.get(&vote_pubkey).unwrap_or(&0),
             marinade_native_stake: *marinade_native_stake.get(&vote_pubkey).unwrap_or(&0),
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
+            activating_stake: pending.activating,
+            deactivating_stake: pending.deactivating,
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),

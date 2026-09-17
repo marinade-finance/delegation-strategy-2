@@ -823,7 +823,19 @@ pub fn get_commission_from_inflation_rewards(
     Ok(result)
 }
 
-pub fn get_self_stake(
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PendingStake {
+    pub activating: u64,
+    pub deactivating: u64,
+}
+
+pub struct StakeAccountTotals {
+    pub self_stake: HashMap<String, u64>,
+    // Over every stake account, where self_stake only counts the ones a known withdraw authority owns.
+    pub pending_stake: HashMap<String, PendingStake>,
+}
+
+pub fn get_stake_account_totals(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
@@ -831,8 +843,11 @@ pub fn get_self_stake(
     allow_zero_funded_bonds: bool,
     rpc_attempts: usize,
     vote_account_states: &HashMap<String, VoteStateFields>,
-) -> anyhow::Result<HashMap<String, u64>> {
-    let mut self_stake = fetch_self_stake(
+) -> anyhow::Result<StakeAccountTotals> {
+    let StakeAccountTotals {
+        mut self_stake,
+        pending_stake,
+    } = fetch_stake_account_totals(
         rpc_client,
         withdraw_authorities(vote_account_states),
         epoch,
@@ -873,7 +888,10 @@ pub fn get_self_stake(
             .ok_or_else(|| anyhow::anyhow!("Failed to convert Bond Decimal value to u64"))?;
         *self_stake.entry(bond.vote_account).or_insert(0) += funded_amount_u64;
     }
-    Ok(self_stake)
+    Ok(StakeAccountTotals {
+        self_stake,
+        pending_stake,
+    })
 }
 
 fn fetch_stake_accounts_on_page(
@@ -919,9 +937,9 @@ fn fetch_stake_accounts_on_page(
     Ok(self_stakes)
 }
 
-fn process_accounts_for_self_stake(
+fn process_stake_accounts(
     accounts: Vec<(Pubkey, Account)>,
-    self_stake: &mut HashMap<String, u64>,
+    totals: &mut StakeAccountTotals,
     withdraw_authorities: &HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
@@ -932,18 +950,23 @@ fn process_accounts_for_self_stake(
             if let Some((withdrawer_key, vote_key)) = get_withdrawer_and_vote_keys(&stake_account) {
                 let StakeHistoryEntry {
                     effective,
-                    activating: _,
-                    deactivating: _,
+                    activating,
+                    deactivating,
                 } = stake_account
                     .stake()
                     .unwrap()
                     .delegation
                     .stake_activating_and_deactivating(epoch, stake_history, None);
+                if activating != 0 || deactivating != 0 {
+                    let pending = totals.pending_stake.entry(vote_key.clone()).or_default();
+                    pending.activating += activating;
+                    pending.deactivating += deactivating;
+                }
                 if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
                     && effective != 0
                 {
                     self_stake_assigned += 1;
-                    update_self_stake(self_stake, &vote_key, effective);
+                    update_self_stake(&mut totals.self_stake, &vote_key, effective);
                 }
             }
         }
@@ -968,20 +991,23 @@ fn update_self_stake(self_stake: &mut HashMap<String, u64>, vote_key: &str, lamp
     *stake_entry += lamports;
 }
 
-pub fn fetch_self_stake(
+pub fn fetch_stake_account_totals(
     rpc_client: &RpcClient,
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
     rpc_attemtps: usize,
-) -> anyhow::Result<HashMap<String, u64>> {
-    let mut self_stake: HashMap<String, u64> = HashMap::default();
+) -> anyhow::Result<StakeAccountTotals> {
+    let mut totals = StakeAccountTotals {
+        self_stake: HashMap::default(),
+        pending_stake: HashMap::default(),
+    };
     for page in 0..=u8::MAX {
         match fetch_stake_accounts_on_page(rpc_client, page, rpc_attemtps) {
             Ok(accounts) => {
-                let processed = process_accounts_for_self_stake(
+                let processed = process_stake_accounts(
                     accounts,
-                    &mut self_stake,
+                    &mut totals,
                     &withdraw_authorities,
                     epoch,
                     stake_history,
@@ -996,7 +1022,7 @@ pub fn fetch_self_stake(
         sleep(Duration::from_millis(RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS));
     }
 
-    Ok(self_stake)
+    Ok(totals)
 }
 
 #[cfg(test)]

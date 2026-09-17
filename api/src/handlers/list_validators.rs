@@ -797,6 +797,8 @@ mod tests {
             marinade_native_stake: Decimal::ZERO,
             institutional_stake: Decimal::ZERO,
             self_stake: Decimal::ZERO,
+            activating_stake: Decimal::ZERO,
+            deactivating_stake: Decimal::ZERO,
             superminority: false,
             credits: 1,
             score: None,

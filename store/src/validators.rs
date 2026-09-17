@@ -105,7 +105,9 @@ pub async fn store_validators(
             inflation_rewards_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_commission_bps ELSE validators.inflation_rewards_commission_bps END,
             inflation_rewards_commission_bps_is_v4 = COALESCE(u.inflation_rewards_commission_bps_is_v4, validators.inflation_rewards_commission_bps_is_v4),
             block_revenue_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_commission_bps ELSE validators.block_revenue_commission_bps END,
-            pending_delegator_rewards = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.pending_delegator_rewards ELSE validators.pending_delegator_rewards END
+            pending_delegator_rewards = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.pending_delegator_rewards ELSE validators.pending_delegator_rewards END,
+            activating_stake = u.activating_stake,
+            deactivating_stake = u.deactivating_stake
             "
             .to_string(),
             "u(
@@ -153,7 +155,9 @@ pub async fn store_validators(
                 inflation_rewards_commission_bps,
                 inflation_rewards_commission_bps_is_v4,
                 block_revenue_commission_bps,
-                pending_delegator_rewards
+                pending_delegator_rewards,
+                activating_stake,
+                deactivating_stake
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -208,6 +212,8 @@ pub async fn store_validators(
                     &v.inflation_rewards_commission_bps_is_v4,
                     &v.block_revenue_commission_bps,
                     &v.pending_delegator_rewards,
+                    &v.activating_stake,
+                    &v.deactivating_stake,
                 ];
                 query.add(
                     &mut params,
@@ -245,6 +251,8 @@ pub async fn store_validators(
                         (42, "BOOL".into()), // inflation_rewards_commission_bps_is_v4
                         (43, "INTEGER".into()), // block_revenue_commission_bps
                         (44, "NUMERIC".into()), // pending_delegator_rewards
+                        (45, "NUMERIC".into()), // activating_stake
+                        (46, "NUMERIC".into()), // deactivating_stake
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -319,7 +327,9 @@ pub async fn store_validators(
         inflation_rewards_commission_bps,
         inflation_rewards_commission_bps_is_v4,
         block_revenue_commission_bps,
-        pending_delegator_rewards
+        pending_delegator_rewards,
+        activating_stake,
+        deactivating_stake
         "
             .to_string(),
         );
@@ -379,6 +389,8 @@ pub async fn store_validators(
                 &v.inflation_rewards_commission_bps_is_v4,
                 &v.block_revenue_commission_bps,
                 &v.pending_delegator_rewards,
+                &v.activating_stake,
+                &v.deactivating_stake,
             ];
             query.add(&mut params);
             if !v.dc_resolved {
