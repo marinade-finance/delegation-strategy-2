@@ -260,7 +260,7 @@ pub struct ValidatorEpochStats {
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
-    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the rate sampled from vote state at epoch close, which is what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
+    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the last rate sampled from vote state during the epoch — the close sample for a validator still voting, the sample from when it left the vote set otherwise — which is what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
     pub commission_effective_source: Option<String>,
     /// Inflation commission in basis points as the vote state carried it. Authoritative where the whole-percent fields are a `div_ceil` projection of it. Set on every vote state version: agave synthesizes `commission * 100` on a pre-v4 account, so this is the rate it applies either way — read `inflation_rewards_commission_bps_is_v4` to tell a rate the validator set in basis points from that projection.
     pub inflation_rewards_commission_bps: Option<i32>,

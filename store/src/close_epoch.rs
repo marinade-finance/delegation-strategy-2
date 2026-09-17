@@ -371,33 +371,31 @@ pub async fn close_epoch(
         .map(|(vote_account, bps)| (vote_account.as_str(), i32::from(bps_to_percent(*bps))))
         .unzip();
     // A closed epoch is never re-listed, so the floor below must land even when this write fails.
-    let outside_the_snapshot_write = if outside_vote_accounts.is_empty() {
-        Ok(())
-    } else {
-        let written = store_commission_outside_the_snapshot(
+    if !outside_vote_accounts.is_empty() {
+        match store_commission_outside_the_snapshot(
             psql_client,
             &snapshot_epoch,
             &outside_vote_accounts,
             &outside_rates,
             &snapshot_created_at,
         )
-        .await;
-        if written.is_ok() {
-            info!(
+        .await
+        {
+            Ok(()) => info!(
                 "Effective commission from sampled vote state for {} validators the snapshot did not list",
                 outside_vote_accounts.len()
-            );
+            ),
+            Err(err) => warn!(
+                "Could not store effective commission for validators outside the snapshot: {err}"
+            ),
         }
-        written
-    };
+    }
 
     update_uptimes(psql_client, snapshot.epoch).await?;
     update_observed_commission(psql_client, snapshot.epoch).await?;
     if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
         warn!("Could not count validator rows without commission_effective: {err}");
     }
-
-    outside_the_snapshot_write?;
 
     Ok(())
 }
