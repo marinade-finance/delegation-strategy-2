@@ -212,10 +212,7 @@ pub fn collect_validators_info(
             .unwrap_or(false);
     // One vote-program scan feeds both the withdraw authorities and the vote state below.
     let vote_account_states = get_vote_account_states(&client)?;
-    let StakeAccountTotals {
-        self_stake,
-        pending_stake,
-    } = get_stake_account_totals(
+    let stake_account_totals = get_stake_account_totals(
         &client,
         epoch,
         &stake_history,
@@ -227,11 +224,23 @@ pub fn collect_validators_info(
     let validators_info = get_validators_info(&client)?;
     let node_info = get_cluster_nodes_info(&client)?;
 
-    info!("Self stake: {}", self_stake.values().sum::<u64>());
+    info!(
+        "Self stake: {}",
+        stake_account_totals
+            .values()
+            .map(|t| t.self_stake)
+            .sum::<u64>()
+    );
     info!(
         "Pending stake: {} activating, {} deactivating",
-        pending_stake.values().map(|p| p.activating).sum::<u64>(),
-        pending_stake.values().map(|p| p.deactivating).sum::<u64>()
+        stake_account_totals
+            .values()
+            .map(|t| t.activating)
+            .sum::<u64>(),
+        stake_account_totals
+            .values()
+            .map(|t| t.deactivating)
+            .sum::<u64>()
     );
     info!(
         "Foundation stake: {}",
@@ -282,7 +291,10 @@ pub fn collect_validators_info(
         let node = node_info.get(&identity);
         // An account the scan could not parse leaves the v4 fields null, never a made-up default.
         let vote_state = vote_account_states.get(&vote_pubkey);
-        let pending = pending_stake.get(&vote_pubkey).copied().unwrap_or_default();
+        let stake_totals = stake_account_totals
+            .get(&vote_pubkey)
+            .copied()
+            .unwrap_or_default();
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -307,11 +319,11 @@ pub fn collect_validators_info(
             activated_stake: vote_account.activated_stake,
             marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
             foundation_stake: *foundation_stake.get(&vote_pubkey).unwrap_or(&0),
-            self_stake: *self_stake.get(&vote_pubkey).unwrap_or(&0),
+            self_stake: stake_totals.self_stake,
             marinade_native_stake: *marinade_native_stake.get(&vote_pubkey).unwrap_or(&0),
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
-            activating_stake: pending.activating,
-            deactivating_stake: pending.deactivating,
+            activating_stake: stake_totals.activating,
+            deactivating_stake: stake_totals.deactivating,
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),

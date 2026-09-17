@@ -823,16 +823,14 @@ pub fn get_commission_from_inflation_rewards(
     Ok(result)
 }
 
+// Every field totals one vote account, the delegation target of the stake accounts it counts.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct PendingStake {
+pub struct StakeAccountTotals {
+    // Only a stake account whose withdraw authority is that vote account's own authorized withdrawer, plus the validator's bond.
+    pub self_stake: u64,
+    // Every stake account, whoever owns it, which makes these two comparable with activated_stake where self_stake is not.
     pub activating: u64,
     pub deactivating: u64,
-}
-
-pub struct StakeAccountTotals {
-    pub self_stake: HashMap<String, u64>,
-    // Over every stake account, where self_stake only counts the ones a known withdraw authority owns.
-    pub pending_stake: HashMap<String, PendingStake>,
 }
 
 pub fn get_stake_account_totals(
@@ -843,11 +841,8 @@ pub fn get_stake_account_totals(
     allow_zero_funded_bonds: bool,
     rpc_attempts: usize,
     vote_account_states: &HashMap<String, VoteStateFields>,
-) -> anyhow::Result<StakeAccountTotals> {
-    let StakeAccountTotals {
-        mut self_stake,
-        pending_stake,
-    } = fetch_stake_account_totals(
+) -> anyhow::Result<HashMap<String, StakeAccountTotals>> {
+    let mut totals = fetch_stake_account_totals(
         rpc_client,
         withdraw_authorities(vote_account_states),
         epoch,
@@ -855,7 +850,11 @@ pub fn get_stake_account_totals(
         rpc_attempts,
     )?;
 
-    assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
+    // A map of pending-only entries would pass an is_empty check while every self stake reads 0.
+    assert!(
+        totals.values().any(|t| t.self_stake != 0),
+        "Failed to fetch self stake data"
+    );
 
     let bonds = fetch_bonds(bonds_url)?;
     if bonds.is_empty() {
@@ -886,12 +885,9 @@ pub fn get_stake_account_totals(
             .funded_amount
             .to_u64()
             .ok_or_else(|| anyhow::anyhow!("Failed to convert Bond Decimal value to u64"))?;
-        *self_stake.entry(bond.vote_account).or_insert(0) += funded_amount_u64;
+        totals.entry(bond.vote_account).or_default().self_stake += funded_amount_u64;
     }
-    Ok(StakeAccountTotals {
-        self_stake,
-        pending_stake,
-    })
+    Ok(totals)
 }
 
 fn fetch_stake_accounts_on_page(
@@ -939,7 +935,7 @@ fn fetch_stake_accounts_on_page(
 
 fn process_stake_accounts(
     accounts: Vec<(Pubkey, Account)>,
-    totals: &mut StakeAccountTotals,
+    totals: &mut HashMap<String, StakeAccountTotals>,
     withdraw_authorities: &HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
@@ -957,16 +953,18 @@ fn process_stake_accounts(
                     .unwrap()
                     .delegation
                     .stake_activating_and_deactivating(epoch, stake_history, None);
-                if activating != 0 || deactivating != 0 {
-                    let pending = totals.pending_stake.entry(vote_key.clone()).or_default();
-                    pending.activating += activating;
-                    pending.deactivating += deactivating;
+                let is_self_stake = withdraw_authorities
+                    .contains(&(withdrawer_key, vote_key.clone()))
+                    && effective != 0;
+                if !is_self_stake && activating == 0 && deactivating == 0 {
+                    continue;
                 }
-                if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
-                    && effective != 0
-                {
+                let totals = totals.entry(vote_key).or_default();
+                totals.activating += activating;
+                totals.deactivating += deactivating;
+                if is_self_stake {
                     self_stake_assigned += 1;
-                    update_self_stake(&mut totals.self_stake, &vote_key, effective);
+                    totals.self_stake += effective;
                 }
             }
         }
@@ -986,22 +984,14 @@ fn get_withdrawer_and_vote_keys(stake_account: &StakeStateV2) -> Option<(String,
     })
 }
 
-fn update_self_stake(self_stake: &mut HashMap<String, u64>, vote_key: &str, lamports: u64) {
-    let stake_entry = self_stake.entry(vote_key.to_string()).or_insert(0);
-    *stake_entry += lamports;
-}
-
 pub fn fetch_stake_account_totals(
     rpc_client: &RpcClient,
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
     rpc_attemtps: usize,
-) -> anyhow::Result<StakeAccountTotals> {
-    let mut totals = StakeAccountTotals {
-        self_stake: HashMap::default(),
-        pending_stake: HashMap::default(),
-    };
+) -> anyhow::Result<HashMap<String, StakeAccountTotals>> {
+    let mut totals: HashMap<String, StakeAccountTotals> = HashMap::default();
     for page in 0..=u8::MAX {
         match fetch_stake_accounts_on_page(rpc_client, page, rpc_attemtps) {
             Ok(accounts) => {
