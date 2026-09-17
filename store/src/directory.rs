@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use log::debug;
 use reqwest::header::{CONTENT_LOCATION, CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH, LINK};
 use reqwest::{RequestBuilder, Response, StatusCode};
@@ -31,9 +30,6 @@ pub enum Precondition {
 pub struct Entry {
     pub path: String,
     pub name: String,
-    pub version: String,
-    pub etag: String,
-    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]

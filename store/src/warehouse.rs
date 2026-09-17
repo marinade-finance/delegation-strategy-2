@@ -248,7 +248,19 @@ impl Warehouse {
     ) -> anyhow::Result<()> {
         for epoch in window.clone() {
             let path = scoring_breakdowns_path(epoch);
-            match self.fetch::<ScoringBreakdownsDoc>(directory, &path).await? {
+            // The only document here written by another service. A field
+            // ds-scoring adds or retypes would otherwise fail this warm and
+            // with it every other one, leaving validators, rewards and uptimes
+            // indefinitely stale behind two green probes. Its own routes go
+            // stale instead.
+            let fetched = match self.fetch::<ScoringBreakdownsDoc>(directory, &path).await {
+                Ok(fetched) => fetched,
+                Err(err) => {
+                    log::error!("Scoring breakdowns at {path} were not readable: {err:#}");
+                    continue;
+                }
+            };
+            match fetched {
                 Some(Some(doc)) => {
                     self.scoring.insert(epoch, doc);
                 }
