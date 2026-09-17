@@ -823,12 +823,11 @@ pub fn get_commission_from_inflation_rewards(
     Ok(result)
 }
 
-// Every field totals one vote account, the delegation target of the stake accounts it counts.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StakeAccountTotals {
-    // Only a stake account whose withdraw authority is that vote account's own authorized withdrawer, plus the validator's bond.
+    // Only accounts whose withdrawer is the vote account's own, plus its bond.
     pub self_stake: u64,
-    // Every stake account, whoever owns it, which makes these two comparable with activated_stake where self_stake is not.
+    // Every stake account, whoever owns it.
     pub activating: u64,
     pub deactivating: u64,
 }
@@ -850,7 +849,7 @@ pub fn get_stake_account_totals(
         rpc_attempts,
     )?;
 
-    // A map of pending-only entries would pass an is_empty check while every self stake reads 0.
+    // A pending-only entry fills the map without any self stake.
     assert!(
         totals.values().any(|t| t.self_stake != 0),
         "Failed to fetch self stake data"

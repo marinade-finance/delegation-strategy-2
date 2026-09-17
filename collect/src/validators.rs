@@ -132,11 +132,11 @@ pub struct ValidatorSnapshot {
     pub marinade_stake: u64,
     pub marinade_native_stake: u64,
     pub institutional_stake: u64,
-    // Absent in a snapshot written before pending stake was collected; store reads a default of 0.
+    // Absent in a snapshot an older binary wrote.
     #[serde(default)]
-    pub activating_stake: u64,
+    pub activating_stake: Option<u64>,
     #[serde(default)]
-    pub deactivating_stake: u64,
+    pub deactivating_stake: Option<u64>,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
@@ -322,8 +322,8 @@ pub fn collect_validators_info(
             self_stake: stake_totals.self_stake,
             marinade_native_stake: *marinade_native_stake.get(&vote_pubkey).unwrap_or(&0),
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
-            activating_stake: stake_totals.activating,
-            deactivating_stake: stake_totals.deactivating,
+            activating_stake: Some(stake_totals.activating),
+            deactivating_stake: Some(stake_totals.deactivating),
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),
