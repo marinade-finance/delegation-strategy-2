@@ -163,6 +163,7 @@ async fn a_snapshot_written_before_these_fields_still_stores() {
         "inflation_rewards_commission_bps_is_v4",
         "block_revenue_commission_bps",
         "pending_delegator_rewards",
+        "direct_stake",
     ] {
         assert!(
             validator

@@ -86,6 +86,7 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             institutional_stake: 0,
             activating_stake: None,
             deactivating_stake: None,
+            direct_stake: 0,
             superminority: false,
             stake_to_become_superminority: 0,
             performance: ValidatorPerformance {
