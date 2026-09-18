@@ -317,6 +317,7 @@ struct Accumulator<B> {
     uptime_pct: StakeWeighted,
     expected_take_rate: StakeWeighted,
     delegation_relationship_count: Option<u64>,
+    activating_stake: Option<Decimal>,
     incidents: GroupIncidents,
     breakdowns: B,
 }
@@ -336,6 +337,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             uptime_pct: Default::default(),
             expected_take_rate: Default::default(),
             delegation_relationship_count: None,
+            activating_stake: None,
             incidents: if kind.carries_incidents_as_records() {
                 GroupIncidents::empty_records()
             } else {
@@ -399,6 +401,11 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             self.delegation_relationship_count =
                 Some(self.delegation_relationship_count.unwrap_or_default() + unique_delegators);
         }
+
+        if let Some(activating_stake) = validator.activating_stake {
+            self.activating_stake =
+                Some(self.activating_stake.unwrap_or_default() + activating_stake);
+        }
     }
 
     fn finish_base(self, ctx: &FinishContext) -> ValidatorGroupRecord {
@@ -433,6 +440,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             uptime_pct: self.uptime_pct.mean(),
             expected_take_rate: self.expected_take_rate.mean(),
             delegation_relationship_count: self.delegation_relationship_count,
+            activating_stake: self.activating_stake,
             incidents: {
                 let mut incidents = self.incidents;
                 incidents.sort();
@@ -503,6 +511,7 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         uptime_pct: finite(validator.avg_uptime_pct),
         expected_take_rate: finite(validator.expected_take_rate),
         delegation_relationship_count: validator.unique_delegators,
+        activating_stake: validator.activating_stake,
         // `top_level_ranks` reads nothing off this row but the sort key and the name.
         incidents: GroupIncidents::Count(validator.incidents.len() as u64),
     }
@@ -882,6 +891,7 @@ mod tests {
         uptime_pct: Option<f64>,
         expected_take_rate: Option<f64>,
         unique_delegators: Option<u64>,
+        activating_stake: Option<i64>,
         client_id_raw: Option<&'static str>,
         dc_city: Option<&'static str>,
         dc_country: Option<&'static str>,
@@ -907,6 +917,7 @@ mod tests {
                 uptime_pct: None,
                 expected_take_rate: None,
                 unique_delegators: None,
+                activating_stake: None,
                 client_id_raw: None,
                 dc_city: None,
                 dc_country: None,
@@ -1000,6 +1011,7 @@ mod tests {
                         avg_uptime_pct: member.uptime_pct,
                         expected_take_rate: member.expected_take_rate,
                         unique_delegators: member.unique_delegators,
+                        activating_stake: member.activating_stake.map(Decimal::from),
                         incidents,
                         ..Default::default()
                     },
@@ -1507,6 +1519,43 @@ mod tests {
         let agave = group(&groups, "Agave");
         assert_eq!(agave.stake_delta_7d, Some(Decimal::from(100)));
         assert_eq!(agave.stake_delta_30d, Some(Decimal::from(200)));
+    }
+
+    #[test]
+    fn a_group_sums_the_activating_stake_of_the_members_that_report_one() {
+        let member = |vote_account, activating_stake| Member {
+            activating_stake,
+            ..Member::new(
+                vote_account,
+                vec![
+                    (CURRENT_EPOCH, 100, AGAVE, None),
+                    (PREVIOUS_EPOCH, 100, AGAVE, None),
+                ],
+            )
+        };
+
+        let groups = aggregate_groups(
+            &validators(vec![
+                member("reports", Some(300)),
+                member("reportsToo", Some(400)),
+                member("silent", None),
+            ]),
+            GroupKind::ClientLabel,
+        );
+        assert_eq!(
+            group(&groups, "Agave").activating_stake,
+            Some(Decimal::from(700))
+        );
+
+        let groups = aggregate_groups(
+            &validators(vec![member("silent", None)]),
+            GroupKind::ClientLabel,
+        );
+        assert_eq!(
+            group(&groups, "Agave").activating_stake,
+            None,
+            "no member reports one, so the group reports none rather than zero"
+        );
     }
 
     #[test]
