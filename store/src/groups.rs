@@ -100,13 +100,20 @@ fn current_group_key(
     kind: GroupKind,
 ) -> Option<String> {
     match kind {
+        GroupKind::ClientLabel | GroupKind::ClientLineage => current_client_key(validator, kind),
+        GroupKind::Operator | GroupKind::ProviderAso => group_key(validator, stats, kind),
+    }
+}
+
+/// The client key the record carries. `None` for a kind that is not a client level.
+fn current_client_key(validator: &ValidatorRecord, kind: GroupKind) -> Option<String> {
+    match kind {
         GroupKind::ClientLabel => normalized(Some(validator.client_label.clone()))
             .or_else(|| normalized(validator.client_id_raw.clone())),
         GroupKind::ClientLineage => {
             normalized(validator.client_lineage.clone()).map(as_client_name)
         }
-        // Neither is projected onto the record, so both read the epoch as stored.
-        GroupKind::Operator | GroupKind::ProviderAso => group_key(validator, stats, kind),
+        GroupKind::Operator | GroupKind::ProviderAso => None,
     }
 }
 
@@ -115,6 +122,32 @@ type FoldedKey = Option<String>;
 
 fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
+}
+
+/// `Unknown` and `Unknown(8)` fold to `None`, the key of the validators with no value.
+fn requested_key(key: &str) -> FoldedKey {
+    folded(&normalized(Some(key.to_string())))
+}
+
+/// Whether `validator` belongs to the `/providers` row named `key` in `epoch`. Case-insensitive.
+pub fn belongs_to_provider(validator: &ValidatorRecord, epoch: u64, key: &str) -> bool {
+    let provider = validator
+        .epoch_stats
+        .iter()
+        .find(|stats| stats.epoch == epoch)
+        .and_then(|stats| group_key(validator, stats, GroupKind::ProviderAso));
+
+    folded(&provider) == requested_key(key)
+}
+
+/// Whether `validator` belongs to the `/clients` row named `key`, or to one of the block engine
+/// rows under it. Case-insensitive.
+pub fn belongs_to_client(validator: &ValidatorRecord, key: &str) -> bool {
+    let key = requested_key(key);
+
+    [GroupKind::ClientLineage, GroupKind::ClientLabel]
+        .into_iter()
+        .any(|kind| folded(&current_client_key(validator, kind)) == key)
 }
 
 /// Members carrying the value, and the stake behind them.
