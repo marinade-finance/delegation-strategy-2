@@ -174,12 +174,26 @@ async fn the_outside_write_leaves_a_reward_row_and_an_older_epoch_alone() {
 
     seed_validators(&mut client, EPOCH - 1, schema).await;
     seed_validators(&mut client, EPOCH, schema).await;
+    client
+        .execute(
+            "UPDATE validators
+             SET commission_effective = 10, commission_effective_source = 'reward_row'
+             WHERE vote_account = $1 AND epoch = $2",
+            &[&OUTSIDE, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
     run_close_epoch(&mut client, schema, Some(5)).await;
 
     assert_eq!(
         read_effective(&client, LISTED, EPOCH).await,
         (Some(5), Some("reward_row".to_string())),
         "a reward row still wins over the sampled vote state"
+    );
+    assert_eq!(
+        read_effective(&client, OUTSIDE, EPOCH).await,
+        (Some(10), Some("reward_row".to_string())),
+        "the outside write fills an unresolved rate and never restamps a resolved one"
     );
     assert_eq!(
         read_effective(&client, OUTSIDE, EPOCH - 1).await,

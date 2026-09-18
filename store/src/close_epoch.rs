@@ -60,7 +60,7 @@ async fn load_sampled_commission_bps(
     Ok(sampled)
 }
 
-// close_epoch only walks the snapshot, so a row the snapshot never listed needs its own write
+// A row the snapshot never listed needs its own write, and only where nothing resolved the rate yet
 async fn store_commission_outside_the_snapshot(
     psql_client: &Client,
     epoch: &Decimal,
@@ -75,7 +75,8 @@ async fn store_commission_outside_the_snapshot(
                  commission_effective_source = $3,
                  updated_at = $5
              FROM UNNEST($1::TEXT[], $2::INTEGER[]) AS u(vote_account, commission_effective)
-             WHERE validators.vote_account = u.vote_account AND validators.epoch = $4",
+             WHERE validators.vote_account = u.vote_account AND validators.epoch = $4
+               AND validators.commission_effective IS NULL",
             &[
                 &vote_accounts,
                 &rates,
