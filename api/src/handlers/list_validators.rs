@@ -542,7 +542,7 @@ pub fn filter_validators(
 
     // Both take a row name as `/providers` and `/clients` spell it.
     if let Some(provider) = &config.query_provider {
-        validators.retain(|_, v| belongs_to_provider(v, last_epoch, provider));
+        validators.retain(|_, v| belongs_to_provider(v, provider));
     }
 
     if let Some(client) = &config.query_client {
@@ -983,11 +983,10 @@ mod tests {
     }
 
     fn hosted_by(vote_account: &str, aso: &str) -> ValidatorRecord {
-        let mut validator = validator(vote_account, 100, vec![]);
-        for stats in validator.epoch_stats.iter_mut() {
-            stats.dc_aso = Some(aso.to_string());
+        ValidatorRecord {
+            dc_aso: Some(aso.to_string()),
+            ..validator(vote_account, 100, vec![])
         }
-        validator
     }
 
     fn running_client(vote_account: &str, lineage: &str, label: &str) -> ValidatorRecord {

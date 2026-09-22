@@ -124,15 +124,9 @@ fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
 }
 
-/// Whether `validator` belongs to the `/providers` row named `key` in `epoch`. Case-insensitive.
-pub fn belongs_to_provider(validator: &ValidatorRecord, epoch: u64, key: &str) -> bool {
-    let provider = validator
-        .epoch_stats
-        .iter()
-        .find(|stats| stats.epoch == epoch)
-        .and_then(|stats| group_key(validator, stats, GroupKind::ProviderAso));
-
-    folded(&provider) == folded(&normalized(Some(key.to_string())))
+/// Whether `validator` belongs to the `/providers` row named `key`. Case-insensitive.
+pub fn belongs_to_provider(validator: &ValidatorRecord, key: &str) -> bool {
+    folded(&normalized(validator.dc_aso.clone())) == folded(&normalized(Some(key.to_string())))
 }
 
 /// Whether `validator` belongs to the `/clients` row named `key`, or to one of the block engine
