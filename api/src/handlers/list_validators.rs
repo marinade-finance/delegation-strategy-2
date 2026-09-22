@@ -87,9 +87,9 @@ pub struct QueryParams {
     query_verified: Option<bool>,
     query_protected: Option<bool>,
     query_flagged: Option<bool>,
-    /// Keeps the validators the `/providers` row of this name holds, e.g. `Hetzner`. Case-insensitive, and `Unknown` selects the validators no hosting organisation is known for. Combines with `query_client`.
+    /// Query by a provider name, as returned by `/providers`
     query_provider: Option<String>,
-    /// Keeps the validators the `/clients` row of this name holds, e.g. `Agave`, or a block engine row under it, e.g. `Agave + Jito`. Case-insensitive, and `Unknown` selects the validators whose client the registry does not know. Combines with `query_provider`.
+    /// Query by a client name, as returned by `/clients`
     query_client: Option<String>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
