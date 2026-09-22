@@ -1,8 +1,8 @@
 use crate::dto::{
-    client_engine, client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents,
-    GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats,
-    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups,
-    ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
+    client_engine, client_label, client_lineage, effective_client_id, ClientRelease,
+    GroupIncidents, GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord,
+    ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
