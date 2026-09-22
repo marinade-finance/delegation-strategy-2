@@ -13,7 +13,10 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use store::{
     dto::{ValidatorGroupRecord, ValidatorGroups, ValidatorRecord, ValidatorsAggregated},
-    groups::{aggregate_operators, belongs_to_client, belongs_to_provider, singleton_group},
+    groups::{
+        aggregate_operators, belongs_to_block_engine, belongs_to_client, belongs_to_provider,
+        singleton_group,
+    },
     incidents::{
         IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_INCIDENT_TYPES,
         DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS, MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
@@ -91,6 +94,8 @@ pub struct QueryParams {
     query_provider: Option<String>,
     /// Exact, case-insensitive match on a `key` from `/clients`. `Unknown` selects the validators with no recorded client.
     query_client: Option<String>,
+    /// Exact, case-insensitive match on a `key` from a `/clients` child row, one client paired with one block engine, such as `Agave + Jito`.
+    query_block_engine: Option<String>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
     search_properties: Option<bool>,
@@ -125,6 +130,7 @@ pub struct GetValidatorsConfig {
     pub query_flagged: Option<bool>,
     pub query_provider: Option<String>,
     pub query_client: Option<String>,
+    pub query_block_engine: Option<String>,
     pub search_properties: Option<bool>,
     pub query_from_date: Option<DateTime<Utc>>,
     pub epochs: usize,
@@ -540,13 +546,17 @@ pub fn filter_validators(
         validators.retain(|_, v| v.warnings.is_empty() != query_flagged);
     }
 
-    // Both take a row name as `/providers` and `/clients` spell it.
+    // All three take a row name as `/providers` and `/clients` spell it.
     if let Some(provider) = &config.query_provider {
         validators.retain(|_, v| belongs_to_provider(v, provider));
     }
 
     if let Some(client) = &config.query_client {
         validators.retain(|_, v| belongs_to_client(v, client));
+    }
+
+    if let Some(block_engine) = &config.query_block_engine {
+        validators.retain(|_, v| belongs_to_block_engine(v, block_engine));
     }
 
     validators.into_values().collect()
@@ -641,6 +651,9 @@ pub async fn handler(
         query_client: query_params
             .query_client
             .filter(|client| !client.trim().is_empty()),
+        query_block_engine: query_params
+            .query_block_engine
+            .filter(|block_engine| !block_engine.trim().is_empty()),
         search_properties: query_params.search_properties,
         query_from_date: query_params.query_from_date,
         epochs: query_params.epochs.unwrap_or(DEFAULT_EPOCHS),
@@ -868,6 +881,7 @@ mod tests {
             query_flagged: None,
             query_provider: None,
             query_client: None,
+            query_block_engine: None,
             search_properties: None,
             query_from_date: None,
             epochs: 15,
@@ -1048,18 +1062,34 @@ mod tests {
     }
 
     #[test]
-    fn query_client_keeps_the_validators_of_one_block_engine() {
+    fn query_block_engine_keeps_the_validators_of_one_block_engine() {
         let validators = map(vec![
             running_client("jito", "agave", "Agave + Jito"),
             running_client("plain", "agave", "Agave"),
         ]);
         let config = GetValidatorsConfig {
-            query_client: Some("agave + jito".to_string()),
+            query_block_engine: Some("agave + jito".to_string()),
             ..config()
         };
         assert_eq!(
             vote_accounts(filter_validators(validators, &no_incidents(), &config)),
             vec!["jito".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_block_engine_addresses_the_child_row_named_after_the_client_alone() {
+        let validators = map(vec![
+            running_client("jito", "agave", "Agave + Jito"),
+            running_client("plain", "agave", "Agave"),
+        ]);
+        let config = GetValidatorsConfig {
+            query_block_engine: Some("Agave".to_string()),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
+            vec!["plain".to_string()]
         );
     }
 

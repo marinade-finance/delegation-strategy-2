@@ -129,14 +129,17 @@ pub fn belongs_to_provider(validator: &ValidatorRecord, key: &str) -> bool {
     folded(&normalized(validator.dc_aso.clone())) == folded(&normalized(Some(key.to_string())))
 }
 
-/// Whether `validator` belongs to the `/clients` row named `key`, or to one of the block engine
-/// rows under it. Case-insensitive.
+/// Whether `validator` belongs to the `/clients` row named `key`. Case-insensitive.
 pub fn belongs_to_client(validator: &ValidatorRecord, key: &str) -> bool {
-    let key = folded(&normalized(Some(key.to_string())));
+    folded(&current_client_key(validator, GroupKind::ClientLineage))
+        == folded(&normalized(Some(key.to_string())))
+}
 
-    [GroupKind::ClientLineage, GroupKind::ClientLabel]
-        .into_iter()
-        .any(|kind| folded(&current_client_key(validator, kind)) == key)
+/// Whether `validator` belongs to the `/clients` child row named `key`, one client paired with one
+/// block engine. Case-insensitive.
+pub fn belongs_to_block_engine(validator: &ValidatorRecord, key: &str) -> bool {
+    folded(&current_client_key(validator, GroupKind::ClientLabel))
+        == folded(&normalized(Some(key.to_string())))
 }
 
 /// Members carrying the value, and the stake behind them.
