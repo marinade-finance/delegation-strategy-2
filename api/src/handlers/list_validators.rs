@@ -1094,6 +1094,25 @@ mod tests {
     }
 
     #[test]
+    fn query_block_engine_falls_back_to_the_raw_client_id_of_an_unregistered_client() {
+        let validators = map(vec![
+            running_client("jito", "agave", "Agave + Jito"),
+            ValidatorRecord {
+                client_id_raw: Some("Sonic".to_string()),
+                ..validator("sonic", 100, vec![])
+            },
+        ]);
+        let config = GetValidatorsConfig {
+            query_block_engine: Some("sonic".to_string()),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
+            vec!["sonic".to_string()]
+        );
+    }
+
+    #[test]
     fn query_client_unknown_keeps_the_validators_of_an_unregistered_client() {
         let validators = map(vec![
             running_client("agave", "agave", "Agave"),
