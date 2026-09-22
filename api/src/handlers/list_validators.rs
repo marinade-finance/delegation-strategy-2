@@ -87,9 +87,9 @@ pub struct QueryParams {
     query_verified: Option<bool>,
     query_protected: Option<bool>,
     query_flagged: Option<bool>,
-    /// Query by a provider name, as returned by `/providers`
+    /// Exact, case-insensitive match on a `key` from `/providers`. `Unknown` selects the validators with no recorded provider.
     query_provider: Option<String>,
-    /// Query by a client name, as returned by `/clients`
+    /// Exact, case-insensitive match on a `key` from `/clients`. `Unknown` selects the validators with no recorded client.
     query_client: Option<String>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
