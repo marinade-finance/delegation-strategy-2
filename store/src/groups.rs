@@ -124,7 +124,8 @@ fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
 }
 
-/// Whether `validator` belongs to the `/providers` row named `key`. Case-insensitive.
+/// Whether `validator` belongs to the `/providers` row named `key`, by the `dc_aso` of its newest
+/// epoch. Case-insensitive.
 pub fn belongs_to_provider(validator: &ValidatorRecord, key: &str) -> bool {
     folded(&normalized(validator.dc_aso.clone())) == folded(&normalized(Some(key.to_string())))
 }
