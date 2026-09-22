@@ -28,6 +28,16 @@ pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 // Validator raised commission to this or more in an epoch -> incident
 pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
+/// 30-day sandwich rate, in percent, an epoch has to reach to count as an incident. Across epochs
+/// 887-1030 the population p95 sits between 1.0 and 2.6; at this bar an epoch names 0 to 4
+/// validators, and 3 distinct validators over the whole range.
+pub const SANDWICH_RATE_THRESHOLD_PERCENTAGE: f64 = 5.0;
+
+/// Blocks the 30-day window needs before its rate is judged. Under this the denominator is small
+/// enough that a handful of blocks moves the rate by whole points; it drops the bottom ~12% of
+/// validators by block count.
+pub const MIN_SANDWICH_BLOCKS: u64 = 1000;
+
 pub const MIN_NEWER_VERSION_STAKE_SHARE: f64 = 0.80;
 
 /// Validators a lineage-epoch needs before anyone in it is judged late.
@@ -41,6 +51,7 @@ pub enum IncidentType {
     BlockProduction,
     CommissionSpike,
     RunningLateClientVersion,
+    Sandwich,
 }
 
 impl IncidentType {
@@ -53,6 +64,7 @@ impl IncidentType {
                 "BlockProduction" => Ok(Self::BlockProduction),
                 "CommissionSpike" => Ok(Self::CommissionSpike),
                 "RunningLateClientVersion" => Ok(Self::RunningLateClientVersion),
+                "Sandwich" => Ok(Self::Sandwich),
                 other => Err(other.to_string()),
             })
             .collect()
@@ -145,6 +157,36 @@ pub struct CommissionRaise {
     pub changed_at: DateTime<Utc>,
     pub commission_before: u8,
     pub commission_after: u8,
+}
+
+/// One epoch's sandwich figures as solana-sandwich-report published them. The counts cover the
+/// 30-day window the rate is measured over, not the epoch.
+#[derive(Debug, Clone)]
+pub struct EpochSandwiches {
+    pub epoch: u64,
+    pub epoch_start_at: DateTime<Utc>,
+    pub epoch_end_at: DateTime<Utc>,
+    pub blocks_produced: u64,
+    pub blocks_with_sandwiches: u64,
+    /// Percent, one decimal.
+    pub sandwich_rate_30d: f64,
+    /// Absent before epoch 820: upstream published only the 30d rate then.
+    pub sandwich_rate_60d: Option<f64>,
+}
+
+impl EpochSandwiches {
+    /// The bar the epoch had to clear. The caller's floor can only tighten it.
+    pub fn threshold(&self, filters: &IncidentFilters) -> f64 {
+        filters
+            .min_sandwich_rate
+            .unwrap_or(0.0)
+            .max(SANDWICH_RATE_THRESHOLD_PERCENTAGE)
+    }
+
+    pub fn counts_as_incident(&self, filters: &IncidentFilters) -> bool {
+        self.blocks_produced >= MIN_SANDWICH_BLOCKS
+            && self.sandwich_rate_30d >= self.threshold(filters)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +328,8 @@ pub struct IncidentFilters {
     pub min_downtime_seconds: u64,
     pub min_missed_slots: Option<u64>,
     pub min_leader_slots: Option<u64>,
+    /// 30-day sandwich rate in percent. Only tightens [`SANDWICH_RATE_THRESHOLD_PERCENTAGE`].
+    pub min_sandwich_rate: Option<f64>,
     /// `None` serves every kind.
     pub types: Option<Vec<IncidentType>>,
 }
@@ -297,6 +341,7 @@ impl Default for IncidentFilters {
             min_downtime_seconds: DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS,
             min_missed_slots: None,
             min_leader_slots: None,
+            min_sandwich_rate: None,
             types: None,
         }
     }
@@ -317,6 +362,7 @@ pub struct ValidatorIncidentRecords {
     pub block_production: Vec<EpochBlockProduction>,
     pub commission_raises: Vec<CommissionRaise>,
     pub running_late_client_versions: Vec<EpochClientVersion>,
+    pub sandwiches: Vec<EpochSandwiches>,
 }
 
 impl ValidatorIncidentRecords {
@@ -380,6 +426,28 @@ impl ValidatorIncidentRecords {
                         commission_after: raise.commission_after,
                         changed_at: raise.changed_at,
                         epoch_slot: raise.epoch_slot,
+                    },
+                });
+            }
+        }
+
+        if filters.wants(IncidentType::Sandwich) {
+            for sandwiches in self
+                .sandwiches
+                .iter()
+                .filter(|sandwiches| sandwiches.epoch >= filters.from_epoch)
+                .filter(|sandwiches| sandwiches.counts_as_incident(filters))
+            {
+                incidents.push(dto::IncidentRecord {
+                    epoch: sandwiches.epoch,
+                    detail: dto::IncidentDetail::Sandwich {
+                        epoch_start_at: sandwiches.epoch_start_at,
+                        epoch_end_at: sandwiches.epoch_end_at,
+                        blocks_produced: sandwiches.blocks_produced,
+                        blocks_with_sandwiches: sandwiches.blocks_with_sandwiches,
+                        sandwich_rate_30d: sandwiches.sandwich_rate_30d,
+                        sandwich_rate_60d: sandwiches.sandwich_rate_60d,
+                        threshold: sandwiches.threshold(filters),
                     },
                 });
             }
@@ -712,6 +780,20 @@ mod tests {
         }
     }
 
+    /// An epoch over the sandwich bar, with blocks enough to be judged.
+    fn sandwiched(epoch: u64, sandwich_rate_30d: f64) -> EpochSandwiches {
+        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        EpochSandwiches {
+            epoch,
+            epoch_start_at,
+            epoch_end_at: epoch_start_at + chrono::Duration::days(2),
+            blocks_produced: 5000,
+            blocks_with_sandwiches: (5000.0 * sandwich_rate_30d / 100.0) as u64,
+            sandwich_rate_30d,
+            sandwich_rate_60d: Some(sandwich_rate_30d),
+        }
+    }
+
     /// One epoch of one validator, as the version comparison reads it.
     fn client(
         epoch: u64,
@@ -782,6 +864,7 @@ mod tests {
                 dto::IncidentDetail::BlockProduction { .. } => "BlockProduction",
                 dto::IncidentDetail::CommissionSpike { .. } => "CommissionSpike",
                 dto::IncidentDetail::RunningLateClientVersion { .. } => "RunningLateClientVersion",
+                dto::IncidentDetail::Sandwich { .. } => "Sandwich",
             })
             .collect()
     }
@@ -796,6 +879,7 @@ mod tests {
             } => Some(block_production),
             dto::IncidentDetail::CommissionSpike { .. } => None,
             dto::IncidentDetail::RunningLateClientVersion { .. } => None,
+            dto::IncidentDetail::Sandwich { .. } => None,
         }
     }
 
@@ -891,6 +975,7 @@ mod tests {
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
             running_late_client_versions: vec![late_patch(EPOCH, 0.9)],
+            sandwiches: vec![sandwiched(EPOCH, 42.6)],
         };
 
         for (incident_type, served) in [
@@ -901,6 +986,7 @@ mod tests {
                 IncidentType::RunningLateClientVersion,
                 "RunningLateClientVersion",
             ),
+            (IncidentType::Sandwich, "Sandwich"),
         ] {
             let filters = IncidentFilters {
                 types: Some(vec![incident_type]),
@@ -911,6 +997,97 @@ mod tests {
                 vec![served],
                 "{incident_type:?}"
             );
+        }
+    }
+
+    #[test]
+    fn an_epoch_under_the_sandwich_bar_is_no_incident() {
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![sandwiched(EPOCH, SANDWICH_RATE_THRESHOLD_PERCENTAGE - 0.1)],
+            ..Default::default()
+        };
+
+        assert!(records
+            .into_response_incidents(&Default::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn an_epoch_on_the_sandwich_bar_is_an_incident() {
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![sandwiched(EPOCH, SANDWICH_RATE_THRESHOLD_PERCENTAGE)],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            served_types(&records.into_response_incidents(&Default::default())),
+            vec!["Sandwich"]
+        );
+    }
+
+    // A window this thin moves whole points on a handful of blocks.
+    #[test]
+    fn a_window_under_the_block_floor_is_never_judged() {
+        let mut thin = sandwiched(EPOCH, 90.0);
+        thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![thin],
+            ..Default::default()
+        };
+
+        assert!(records
+            .into_response_incidents(&Default::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn the_callers_sandwich_floor_only_tightens_the_bar() {
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![sandwiched(EPOCH, 6.0)],
+            ..Default::default()
+        };
+
+        let tighter = IncidentFilters {
+            min_sandwich_rate: Some(7.0),
+            ..Default::default()
+        };
+        assert!(records.into_response_incidents(&tighter).is_empty());
+
+        // Under the constant, so it cannot loosen anything.
+        let looser = IncidentFilters {
+            min_sandwich_rate: Some(0.1),
+            ..Default::default()
+        };
+        assert_eq!(
+            served_types(&records.into_response_incidents(&looser)),
+            vec!["Sandwich"]
+        );
+    }
+
+    #[test]
+    fn the_response_carries_the_bar_the_epoch_was_held_to() {
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![sandwiched(EPOCH, 42.6)],
+            ..Default::default()
+        };
+        let filters = IncidentFilters {
+            min_sandwich_rate: Some(10.0),
+            ..Default::default()
+        };
+
+        let incidents = records.into_response_incidents(&filters);
+        match &incidents[0].detail {
+            dto::IncidentDetail::Sandwich {
+                sandwich_rate_30d,
+                blocks_with_sandwiches,
+                threshold,
+                ..
+            } => {
+                assert_eq!(*sandwich_rate_30d, 42.6);
+                assert_eq!(*blocks_with_sandwiches, 2130);
+                assert_eq!(*threshold, 10.0);
+            }
+            other => panic!("{other:?}"),
         }
     }
 
@@ -1018,6 +1195,7 @@ mod tests {
             block_production: vec![breached(EPOCH)],
             commission_raises: vec![raise(EPOCH)],
             running_late_client_versions: vec![late_patch(EPOCH, 0.9)],
+            sandwiches: vec![sandwiched(EPOCH, 42.6)],
         };
         let filters = IncidentFilters {
             types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),

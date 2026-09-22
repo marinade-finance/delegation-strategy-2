@@ -494,6 +494,23 @@ pub enum IncidentDetail {
         changed_at: DateTime<Utc>,
         epoch_slot: u64,
     },
+    /// An epoch whose 30-day sandwich rate reached
+    /// [`crate::incidents::SANDWICH_RATE_THRESHOLD_PERCENTAGE`], over a window that produced at
+    /// least [`crate::incidents::MIN_SANDWICH_BLOCKS`] blocks. Sourced from
+    /// solana-sandwich-report, which carries sandwiched.me's own numbers.
+    Sandwich {
+        epoch_start_at: DateTime<Utc>,
+        epoch_end_at: DateTime<Utc>,
+        /// Blocks over the 30-day window the rate is measured on, not over the epoch.
+        blocks_produced: u64,
+        blocks_with_sandwiches: u64,
+        /// Percent, one decimal.
+        sandwich_rate_30d: f64,
+        /// Null before epoch 820: upstream published only the 30d rate then.
+        sandwich_rate_60d: Option<f64>,
+        /// The bar `sandwich_rate_30d` had to clear, in percent.
+        threshold: f64,
+    },
     /// Measured against adoption in the same lineage, not the floors `/releases` publishes.
     RunningLateClientVersion {
         epoch_start_at: DateTime<Utc>,
@@ -534,13 +551,15 @@ pub struct BlockProductionDetail {
 
 impl IncidentDetail {
     /// When the incident started, for ordering: a downtime interval when it went down, a block
-    /// production epoch when the epoch began, a commission spike when the raise was sampled.
+    /// production or sandwich epoch when the epoch began, a commission spike when the raise was
+    /// sampled.
     pub fn started_at(&self) -> DateTime<Utc> {
         match self {
             Self::Downtime { start_at, .. } => *start_at,
             Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
             Self::CommissionSpike { changed_at, .. } => *changed_at,
             Self::RunningLateClientVersion { epoch_start_at, .. } => *epoch_start_at,
+            Self::Sandwich { epoch_start_at, .. } => *epoch_start_at,
         }
     }
 }
@@ -1192,6 +1211,37 @@ mod tests {
                 "commission_after": 100,
                 "changed_at": "2026-01-01T06:00:00Z",
                 "epoch_slot": 1000,
+            })
+        );
+    }
+
+    #[test]
+    fn a_sandwich_epoch_serializes_flat_under_its_own_type() {
+        let record = IncidentRecord {
+            epoch: 887,
+            detail: IncidentDetail::Sandwich {
+                epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+                epoch_end_at: "2026-01-03T00:00:00Z".parse().unwrap(),
+                blocks_produced: 8888,
+                blocks_with_sandwiches: 3944,
+                sandwich_rate_30d: 44.4,
+                sandwich_rate_60d: Some(31.1),
+                threshold: 5.0,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "epoch": 887,
+                "incident_type": "Sandwich",
+                "epoch_start_at": "2026-01-01T00:00:00Z",
+                "epoch_end_at": "2026-01-03T00:00:00Z",
+                "blocks_produced": 8888,
+                "blocks_with_sandwiches": 3944,
+                "sandwich_rate_30d": 44.4,
+                "sandwich_rate_60d": 31.1,
+                "threshold": 5.0,
             })
         );
     }

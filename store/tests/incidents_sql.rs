@@ -119,6 +119,195 @@ fn downtime_epochs(incidents: &ValidatorIncidents, vote_account: &str) -> Vec<u6
         .collect()
 }
 
+/// The `epochs` row the sandwich loader joins for the epoch boundaries.
+async fn closed_epoch(client: &Client, epoch: u64, start_at: &str, end_at: &str) {
+    client
+        .execute(
+            "INSERT INTO epochs (epoch, start_at, end_at, transaction_count, supply, inflation, inflation_taper, slots_per_year)
+             VALUES ($1::TEXT::NUMERIC, $2::TEXT::TIMESTAMPTZ, $3::TEXT::TIMESTAMPTZ, 0, 0, 0, 0.15, 0)",
+            &[&epoch.to_string(), &start_at, &end_at],
+        )
+        .await
+        .unwrap();
+}
+
+async fn sandwiches(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+    blocks_produced: u64,
+    blocks_with_sandwiches: u64,
+    sandwich_rate_30d: f64,
+    sandwich_rate_60d: Option<f64>,
+) {
+    client
+        .execute(
+            "INSERT INTO validators_sandwiches (
+                epoch, vote_account, blocks_produced, blocks_with_sandwiches,
+                sandwich_rate_30d, sandwich_rate_60d, created_at, updated_at
+             ) VALUES ($1::TEXT::NUMERIC, $2, $3::TEXT::NUMERIC, $4::TEXT::NUMERIC, $5, $6, NOW(), NOW())",
+            &[
+                &epoch.to_string(),
+                &vote_account,
+                &blocks_produced.to_string(),
+                &blocks_with_sandwiches.to_string(),
+                &sandwich_rate_30d,
+                &sandwich_rate_60d,
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+/// Epoch and 30d rate, for each sandwich epoch loaded.
+fn sandwich_epochs(incidents: &ValidatorIncidents, vote_account: &str) -> Vec<(u64, f64)> {
+    incidents
+        .get(vote_account)
+        .expect("the validator has incident material")
+        .sandwiches
+        .iter()
+        .map(|epoch| (epoch.epoch, epoch.sandwich_rate_30d))
+        .collect()
+}
+
+#[tokio::test]
+async fn sandwich_rows_are_loaded_with_the_epoch_boundaries() {
+    let schema = "ds_test_incidents_sandwich_rows";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(&client, 887, "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z").await;
+    sandwiches(&client, "voteA", 887, 8888, 3944, 44.4, Some(31.1)).await;
+
+    let incidents = load_validator_incidents(&client, 887, 887, &no_records())
+        .await
+        .unwrap();
+
+    let loaded = &incidents
+        .get("voteA")
+        .expect("the validator has incident material")
+        .sandwiches[0];
+    assert_eq!(loaded.epoch, 887);
+    assert_eq!(loaded.blocks_produced, 8888);
+    assert_eq!(loaded.blocks_with_sandwiches, 3944);
+    assert_eq!(loaded.sandwich_rate_30d, 44.4);
+    assert_eq!(loaded.sandwich_rate_60d, Some(31.1));
+    assert_eq!(
+        loaded.epoch_start_at,
+        "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+    assert_eq!(
+        loaded.epoch_end_at,
+        "2026-01-03T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
+}
+
+// Epochs before 820 published no 60d rate at all.
+#[tokio::test]
+async fn a_missing_60d_rate_loads_as_none() {
+    let schema = "ds_test_incidents_sandwich_60d";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(&client, 791, "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z").await;
+    sandwiches(&client, "voteA", 791, 2356, 1511, 64.1, None).await;
+
+    let incidents = load_validator_incidents(&client, 791, 791, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        incidents
+            .get("voteA")
+            .expect("the validator has incident material")
+            .sandwiches[0]
+            .sandwich_rate_60d,
+        None
+    );
+}
+
+// The running epoch has no `epochs` row, so it carries no boundaries to report.
+#[tokio::test]
+async fn a_sandwich_epoch_with_no_epochs_row_is_left_out() {
+    let schema = "ds_test_incidents_sandwich_open";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(
+        &client,
+        1029,
+        "2026-01-01T00:00:00Z",
+        "2026-01-03T00:00:00Z",
+    )
+    .await;
+    sandwiches(&client, "voteA", 1029, 5000, 300, 6.0, Some(5.5)).await;
+    sandwiches(&client, "voteA", 1030, 5000, 350, 7.0, Some(6.5)).await;
+
+    let incidents = load_validator_incidents(&client, 1029, 1030, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(sandwich_epochs(&incidents, "voteA"), vec![(1029, 6.0)]);
+}
+
+#[tokio::test]
+async fn the_sandwich_window_is_closed_on_both_ends() {
+    let schema = "ds_test_incidents_sandwich_window";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for epoch in [999, 1000, 1001, 1002] {
+        closed_epoch(
+            &client,
+            epoch,
+            "2026-01-01T00:00:00Z",
+            "2026-01-03T00:00:00Z",
+        )
+        .await;
+        sandwiches(&client, "voteA", epoch, 5000, 300, 6.0, Some(5.5)).await;
+    }
+
+    let incidents = load_validator_incidents(&client, 1000, 1001, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sandwich_epochs(&incidents, "voteA")
+            .into_iter()
+            .map(|(epoch, _)| epoch)
+            .collect::<Vec<_>>(),
+        vec![1000, 1001]
+    );
+}
+
+#[tokio::test]
+async fn sandwich_rows_are_keyed_by_vote_account() {
+    let schema = "ds_test_incidents_sandwich_keys";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(&client, 900, "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z").await;
+    sandwiches(&client, "voteA", 900, 5000, 300, 6.0, Some(5.5)).await;
+    sandwiches(&client, "voteB", 900, 5000, 50, 1.0, Some(0.9)).await;
+
+    let incidents = load_validator_incidents(&client, 900, 900, &no_records())
+        .await
+        .unwrap();
+
+    assert_eq!(sandwich_epochs(&incidents, "voteA"), vec![(900, 6.0)]);
+    assert_eq!(sandwich_epochs(&incidents, "voteB"), vec![(900, 1.0)]);
+}
+
 // `uptimes` is written every minute and `validators` hourly, so epoch 102 is a live case: a DOWN row
 // above the head for the hour the validator write takes to catch up.
 #[tokio::test]
