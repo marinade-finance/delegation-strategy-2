@@ -124,11 +124,6 @@ fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
 }
 
-/// `Unknown` and `Unknown(8)` fold to `None`, the key of the validators with no value.
-fn requested_key(key: &str) -> FoldedKey {
-    folded(&normalized(Some(key.to_string())))
-}
-
 /// Whether `validator` belongs to the `/providers` row named `key` in `epoch`. Case-insensitive.
 pub fn belongs_to_provider(validator: &ValidatorRecord, epoch: u64, key: &str) -> bool {
     let provider = validator
@@ -137,13 +132,13 @@ pub fn belongs_to_provider(validator: &ValidatorRecord, epoch: u64, key: &str) -
         .find(|stats| stats.epoch == epoch)
         .and_then(|stats| group_key(validator, stats, GroupKind::ProviderAso));
 
-    folded(&provider) == requested_key(key)
+    folded(&provider) == folded(&normalized(Some(key.to_string())))
 }
 
 /// Whether `validator` belongs to the `/clients` row named `key`, or to one of the block engine
 /// rows under it. Case-insensitive.
 pub fn belongs_to_client(validator: &ValidatorRecord, key: &str) -> bool {
-    let key = requested_key(key);
+    let key = folded(&normalized(Some(key.to_string())));
 
     [GroupKind::ClientLineage, GroupKind::ClientLabel]
         .into_iter()
