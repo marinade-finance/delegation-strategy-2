@@ -138,7 +138,7 @@ pub struct ValidatorSnapshot {
     #[serde(default)]
     pub deactivating_stake: Option<u64>,
     #[serde(default)]
-    pub direct_stake: u64,
+    pub direct_stake: Option<u64>,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
@@ -332,7 +332,7 @@ pub fn collect_validators_info(
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
             activating_stake: Some(stake_totals.activating),
             deactivating_stake: Some(stake_totals.deactivating),
-            direct_stake: *direct_stake.get(&vote_pubkey).unwrap_or(&0),
+            direct_stake: Some(*direct_stake.get(&vote_pubkey).unwrap_or(&0)),
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),

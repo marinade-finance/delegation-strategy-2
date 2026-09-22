@@ -1,1 +1,1 @@
-ALTER TABLE validators ADD COLUMN direct_stake NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE validators ADD COLUMN direct_stake NUMERIC;
