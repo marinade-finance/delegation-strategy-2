@@ -94,7 +94,7 @@ pub struct QueryParams {
     query_provider: Option<String>,
     /// Exact, case-insensitive match on a `key` from `/clients`. `Unknown` selects the validators with no recorded client.
     query_client: Option<String>,
-    /// Exact, case-insensitive match on a `key` from a `/clients` child row, one client paired with one block engine, such as `Agave + Jito`.
+    /// A vendor slug from `block_engine_vendors`, such as `bam`. `none` takes the validators running no block engine. Case-insensitive. Pair it with `query_client` to address one `/clients` child row.
     query_block_engine: Option<String>,
     /// When true, `query` also matches datacenter location fields (country, city) in addition to
     /// validator name, vote account and identity.
@@ -700,7 +700,10 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{
+        client_label, client_lineage, client_vendor, IncidentDetail, ValidatorEpochStats,
+        ValidatorWarning, UNKNOWN_CLIENT_NAME,
+    };
     use store::incidents::{
         CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochClientVersion,
     };
@@ -1003,10 +1006,15 @@ mod tests {
         }
     }
 
-    fn running_client(vote_account: &str, lineage: &str, label: &str) -> ValidatorRecord {
+    /// `client_id` as the registry numbers it: 1 is `Agave + Jito`, 3 is `Agave`, 6 is
+    /// `Agave + JitoBAM`, 12 is `Frankendancer + JitoBAM`.
+    fn running_client(vote_account: &str, client_id: u16) -> ValidatorRecord {
+        let client_id = Some(client_id);
         ValidatorRecord {
-            client_lineage: Some(lineage.to_string()),
-            client_label: label.to_string(),
+            client_id,
+            client_label: client_label(client_id),
+            client_lineage: client_lineage(client_id),
+            client_vendor: client_vendor(client_id),
             ..validator(vote_account, 100, vec![])
         }
     }
@@ -1047,9 +1055,9 @@ mod tests {
     #[test]
     fn query_client_keeps_the_validators_of_that_client() {
         let validators = map(vec![
-            running_client("jito", "agave", "Agave + Jito"),
-            running_client("plain", "agave", "Agave"),
-            running_client("firedancer", "firedancer", "Frankendancer"),
+            running_client("jito", 1),
+            running_client("plain", 3),
+            running_client("frankendancer", 2),
         ]);
         let config = GetValidatorsConfig {
             query_client: Some("Agave".to_string()),
@@ -1061,30 +1069,94 @@ mod tests {
         );
     }
 
+    fn two_clients_running_one_block_engine() -> Vec<ValidatorRecord> {
+        vec![
+            running_client("agaveBam", 6),
+            running_client("frankendancerBam", 12),
+            running_client("jito", 1),
+            running_client("plain", 3),
+        ]
+    }
+
     #[test]
-    fn query_block_engine_keeps_the_validators_of_one_block_engine() {
-        let validators = map(vec![
-            running_client("jito", "agave", "Agave + Jito"),
-            running_client("plain", "agave", "Agave"),
-        ]);
+    fn query_block_engine_by_the_vendor_slug_takes_every_client_running_it() {
         let config = GetValidatorsConfig {
-            query_block_engine: Some("agave + jito".to_string()),
+            query_block_engine: Some("bam".to_string()),
             ..config()
         };
         assert_eq!(
-            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
-            vec!["jito".to_string()]
+            vote_accounts(filter_validators(
+                map(two_clients_running_one_block_engine()),
+                &no_incidents(),
+                &config
+            )),
+            vec!["agaveBam".to_string(), "frankendancerBam".to_string()]
         );
     }
 
     #[test]
-    fn query_block_engine_addresses_the_child_row_named_after_the_client_alone() {
+    fn query_block_engine_narrows_to_one_client_together_with_query_client() {
+        let config = GetValidatorsConfig {
+            query_client: Some("Frankendancer".to_string()),
+            query_block_engine: Some("bam".to_string()),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(
+                map(two_clients_running_one_block_engine()),
+                &no_incidents(),
+                &config
+            )),
+            vec!["frankendancerBam".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_block_engine_takes_a_vendor_slug_only() {
+        for key in ["JitoBAM", "Agave + JitoBAM"] {
+            let config = GetValidatorsConfig {
+                query_block_engine: Some(key.to_string()),
+                ..config()
+            };
+            assert!(
+                filter_validators(
+                    map(two_clients_running_one_block_engine()),
+                    &no_incidents(),
+                    &config
+                )
+                .is_empty(),
+                "{key} is a display name, not a slug"
+            );
+        }
+    }
+
+    #[test]
+    fn query_block_engine_none_keeps_the_clients_running_no_block_engine() {
         let validators = map(vec![
-            running_client("jito", "agave", "Agave + Jito"),
-            running_client("plain", "agave", "Agave"),
+            running_client("plain", 3),
+            running_client("jito", 1),
+            validator("unregistered", 100, vec![]),
         ]);
         let config = GetValidatorsConfig {
-            query_block_engine: Some("Agave".to_string()),
+            query_block_engine: Some("none".to_string()),
+            ..config()
+        };
+        assert_eq!(
+            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
+            vec!["plain".to_string(), "unregistered".to_string()]
+        );
+    }
+
+    #[test]
+    fn query_block_engine_none_and_query_client_address_the_bare_child_row() {
+        let validators = map(vec![
+            running_client("plain", 3),
+            running_client("jito", 1),
+            running_client("frankendancer", 2),
+        ]);
+        let config = GetValidatorsConfig {
+            query_client: Some("Agave".to_string()),
+            query_block_engine: Some("none".to_string()),
             ..config()
         };
         assert_eq!(
@@ -1094,28 +1166,23 @@ mod tests {
     }
 
     #[test]
-    fn query_block_engine_falls_back_to_the_raw_client_id_of_an_unregistered_client() {
-        let validators = map(vec![
-            running_client("jito", "agave", "Agave + Jito"),
-            ValidatorRecord {
-                client_id_raw: Some("Sonic".to_string()),
-                ..validator("sonic", 100, vec![])
-            },
-        ]);
+    fn query_block_engine_does_not_take_the_vendor_of_a_client_running_no_engine() {
         let config = GetValidatorsConfig {
-            query_block_engine: Some("sonic".to_string()),
+            query_block_engine: Some("agave".to_string()),
             ..config()
         };
-        assert_eq!(
-            vote_accounts(filter_validators(validators, &no_incidents(), &config)),
-            vec!["sonic".to_string()]
-        );
+        assert!(filter_validators(
+            map(two_clients_running_one_block_engine()),
+            &no_incidents(),
+            &config
+        )
+        .is_empty());
     }
 
     #[test]
     fn query_client_unknown_keeps_the_validators_of_an_unregistered_client() {
         let validators = map(vec![
-            running_client("agave", "agave", "Agave"),
+            running_client("agave", 3),
             validator("unregistered", 100, vec![]),
         ]);
         let config = GetValidatorsConfig {
