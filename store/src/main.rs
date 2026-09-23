@@ -1,5 +1,4 @@
 use clap::Parser;
-use close_epoch::{close_epoch, CloseEpochParams};
 use cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use collect::validators_jito::JitoAccountType;
 use commissions::{store_commissions, StoreCommissionsParams};
@@ -9,6 +8,7 @@ use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use node_observations::{store_node_observations, StoreNodeObservationsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
@@ -55,7 +55,6 @@ enum StoreCommand {
     LsOpenEpochs(LsOpenEpochsParams),
 }
 
-pub mod close_epoch;
 pub mod cluster_info;
 pub mod commissions;
 pub mod dto;

@@ -1,3 +1,4 @@
+pub mod close_epoch;
 pub mod dto;
 pub mod groups;
 pub mod incidents;
