@@ -35,8 +35,7 @@ pub const SANDWICH_CLUSTER_MULTIPLIER: f64 = 3.0;
 pub const MAX_SANDWICH_THRESHOLD_PERCENTAGE: f64 = 10.0;
 
 /// Blocks the 30-day window needs before its rate is judged. Under this the denominator is small
-/// enough that a handful of blocks moves the rate by whole points; it drops the bottom ~12% of
-/// validators by block count.
+/// enough that a handful of blocks moves the rate by whole points.
 pub const MIN_SANDWICH_BLOCKS: u64 = 1000;
 
 pub const MIN_NEWER_VERSION_STAKE_SHARE: f64 = 0.80;
