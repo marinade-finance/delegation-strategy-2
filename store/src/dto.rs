@@ -161,6 +161,8 @@ pub struct Validator {
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
     pub direct_stake: Option<Decimal>,
+    pub direct_activating_stake: Option<Decimal>,
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
@@ -238,6 +240,8 @@ impl Validator {
             marinade_native_stake: v.marinade_native_stake.into(),
             institutional_stake: v.institutional_stake.into(),
             direct_stake: v.direct_stake.map(Decimal::from),
+            direct_activating_stake: v.direct_activating_stake.map(Decimal::from),
+            direct_deactivating_stake: v.direct_deactivating_stake.map(Decimal::from),
             self_stake: v.self_stake.into(),
             activating_stake: v.activating_stake.map(Decimal::from),
             deactivating_stake: v.deactivating_stake.map(Decimal::from),
@@ -318,6 +322,8 @@ pub struct ValidatorEpochStats {
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
     pub direct_stake: Option<Decimal>,
+    pub direct_activating_stake: Option<Decimal>,
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
@@ -414,6 +420,8 @@ pub struct ValidatorRecord {
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
     pub direct_stake: Option<Decimal>,
+    pub direct_activating_stake: Option<Decimal>,
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
@@ -601,6 +609,13 @@ pub struct VersionRecord {
     pub feature_set: Option<u32>,
     pub shred_version: Option<u16>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct EpochRecord {
+    pub epoch: u64,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

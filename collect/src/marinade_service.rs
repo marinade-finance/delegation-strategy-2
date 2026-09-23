@@ -48,19 +48,21 @@ pub fn get_institutional_stakes(
     Ok(institutional_stakes)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StakeAmounts {
+    pub effective: u64,
+    pub activating: u64,
+    pub deactivating: u64,
+}
+
 pub fn get_direct_stakes(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
-) -> anyhow::Result<HashMap<String, u64>> {
+) -> anyhow::Result<HashMap<String, StakeAmounts>> {
     let direct_stake_authority = pubkey!("psrStL2hNx4c7hLUUks8SmDngeYriB8pF7uyHFhM8ir");
-    get_stakes_grouped_by_validator(
-        rpc_client,
-        &direct_stake_authority,
-        None,
-        epoch,
-        stake_history,
-    )
+    let stakes = get_stake_accounts(rpc_client, &direct_stake_authority, None)?;
+    Ok(group_by_validator(stakes.values(), epoch, stake_history))
 }
 
 pub fn get_foundation_stakes(
@@ -115,33 +117,46 @@ fn get_stakes_grouped_by_validator(
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let stakes = get_stake_accounts(rpc_client, delegation_authority, withdrawer_authority)?;
+    Ok(effective_only(group_by_validator(
+        stakes.values(),
+        epoch,
+        stake_history,
+    )))
+}
 
-    let stakes: Vec<_> = stakes
-        .values()
-        .filter_map(|stake_account| {
-            stake_account.stake().and_then(|stake| {
-                let StakeHistoryEntry { effective, .. } = stake
-                    .delegation
-                    .stake_activating_and_deactivating(epoch, stake_history, None);
-                if effective == 0 {
-                    None
-                } else {
-                    Some((stake.delegation.voter_pubkey.to_string(), effective))
-                }
-            })
-        })
-        .collect();
+fn effective_only(amounts: HashMap<String, StakeAmounts>) -> HashMap<String, u64> {
+    amounts
+        .into_iter()
+        .filter(|(_, amounts)| amounts.effective > 0)
+        .map(|(vote_account, amounts)| (vote_account, amounts.effective))
+        .collect()
+}
 
-    let mut total_stakes: HashMap<String, u64> = HashMap::new();
-    for (pubkey, stake) in stakes {
-        if let Some(sum) = total_stakes.get_mut(&pubkey) {
-            *sum += stake;
-        } else {
-            total_stakes.insert(pubkey, stake);
+fn group_by_validator<'a>(
+    stake_accounts: impl Iterator<Item = &'a stake::state::StakeStateV2>,
+    epoch: Epoch,
+    stake_history: &StakeHistory,
+) -> HashMap<String, StakeAmounts> {
+    let mut totals: HashMap<String, StakeAmounts> = HashMap::new();
+    for stake in stake_accounts.filter_map(|stake_account| stake_account.stake()) {
+        let StakeHistoryEntry {
+            effective,
+            activating,
+            deactivating,
+        } = stake
+            .delegation
+            .stake_activating_and_deactivating(epoch, stake_history, None);
+        if effective == 0 && activating == 0 && deactivating == 0 {
+            continue;
         }
+        let total = totals
+            .entry(stake.delegation.voter_pubkey.to_string())
+            .or_default();
+        total.effective += effective;
+        total.activating += activating;
+        total.deactivating += deactivating;
     }
-
-    Ok(total_stakes)
+    totals
 }
 
 fn get_stake_accounts(
@@ -198,5 +213,122 @@ pub fn fetch_bonds(bonds_url: &str) -> anyhow::Result<Vec<ValidatorBond>> {
             "Failed to fetch bonds. Status: {}",
             response.status()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stake::state::StakeStateV2;
+
+    const EPOCH: Epoch = 900;
+    const VOTE: [u8; 32] = [7; 32];
+
+    #[allow(deprecated)]
+    fn stake_account(
+        stake: u64,
+        activation_epoch: Epoch,
+        deactivation_epoch: Epoch,
+    ) -> StakeStateV2 {
+        StakeStateV2::Stake(
+            Default::default(),
+            stake::state::Stake {
+                delegation: stake::state::Delegation {
+                    voter_pubkey: Pubkey::new_from_array(VOTE),
+                    stake,
+                    activation_epoch,
+                    deactivation_epoch,
+                    warmup_cooldown_rate: 0.25,
+                },
+                credits_observed: 0,
+            },
+            stake::stake_flags::StakeFlags::empty(),
+        )
+    }
+
+    // An empty history makes a settled account fully effective and a pending one fully pending.
+    fn grouped(accounts: &[StakeStateV2]) -> HashMap<String, StakeAmounts> {
+        group_by_validator(accounts.iter(), EPOCH, &StakeHistory::default())
+    }
+
+    fn vote() -> String {
+        Pubkey::new_from_array(VOTE).to_string()
+    }
+
+    #[test]
+    fn an_account_still_activating_is_kept_with_no_effective_stake() {
+        let amounts = grouped(&[stake_account(500, EPOCH, u64::MAX)]);
+
+        assert_eq!(
+            amounts,
+            HashMap::from([(
+                vote(),
+                StakeAmounts {
+                    effective: 0,
+                    activating: 500,
+                    deactivating: 0
+                }
+            )])
+        );
+    }
+
+    #[test]
+    fn a_deactivating_account_counts_as_effective_and_deactivating() {
+        let amounts = grouped(&[stake_account(500, 0, EPOCH)]);
+
+        assert_eq!(
+            amounts,
+            HashMap::from([(
+                vote(),
+                StakeAmounts {
+                    effective: 500,
+                    activating: 0,
+                    deactivating: 500
+                }
+            )])
+        );
+    }
+
+    #[test]
+    fn accounts_on_one_validator_sum_per_amount() {
+        let amounts = grouped(&[
+            stake_account(500, 0, u64::MAX),
+            stake_account(200, EPOCH, u64::MAX),
+            stake_account(300, 0, EPOCH),
+        ]);
+
+        assert_eq!(
+            amounts,
+            HashMap::from([(
+                vote(),
+                StakeAmounts {
+                    effective: 800,
+                    activating: 200,
+                    deactivating: 300
+                }
+            )])
+        );
+    }
+
+    #[test]
+    fn a_fully_deactivated_account_adds_no_entry() {
+        assert!(grouped(&[stake_account(500, 0, EPOCH - 1)]).is_empty());
+    }
+
+    #[test]
+    fn the_effective_view_drops_a_validator_with_only_activating_stake() {
+        let effective = effective_only(grouped(&[stake_account(500, EPOCH, u64::MAX)]));
+
+        assert!(effective.is_empty());
+    }
+
+    #[test]
+    fn the_effective_view_keeps_the_effective_sum_only() {
+        let effective = effective_only(grouped(&[
+            stake_account(500, 0, u64::MAX),
+            stake_account(200, EPOCH, u64::MAX),
+        ]));
+
+        assert_eq!(effective, HashMap::from([(vote(), 500)]));
     }
 }

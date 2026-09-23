@@ -3,12 +3,12 @@
 
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
-    releases, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
-    rewards, take_rates, unstake_hints, uptimes, validator_score_breakdown,
-    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
-    versions, workflow_metrics_upload,
+    admin_score_upload, cluster_stats, commissions, config, docs, epochs, events,
+    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
+    list_validators, readiness, releases, reports_commission_changes, reports_scoring,
+    reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints, uptimes,
+    validator_score_breakdown, validator_score_breakdowns, validator_scores,
+    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -199,6 +199,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(cluster_stats::handler);
 
+    let route_epochs = warp::path!("epochs")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<epochs::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(epochs::handler);
+
     let route_uptimes = warp::path!("validators" / String / "uptimes")
         .and(warp::path::end())
         .and(warp::get())
@@ -327,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_liveness)
         .or(route_readiness)
         .or(route_cluster_stats)
+        .or(route_epochs)
         .or(route_validators)
         .or(route_clients)
         .or(route_providers)

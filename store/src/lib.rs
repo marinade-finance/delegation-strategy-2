@@ -1,4 +1,5 @@
 pub mod dto;
+pub mod epochs;
 pub mod groups;
 pub mod incidents;
 pub mod ip_info;

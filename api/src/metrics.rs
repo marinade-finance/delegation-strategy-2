@@ -31,6 +31,11 @@ lazy_static! {
         "How many times /releases endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_EPOCHS: IntCounter = register_int_counter!(
+        "ds_request_count_epochs",
+        "How many times /epochs endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_PROVIDERS: IntCounter = register_int_counter!(
         "ds_request_count_providers",
         "How many times /providers endpoint was requested"

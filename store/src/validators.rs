@@ -108,7 +108,9 @@ pub async fn store_validators(
             pending_delegator_rewards = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.pending_delegator_rewards ELSE validators.pending_delegator_rewards END,
             activating_stake = COALESCE(u.activating_stake, validators.activating_stake),
             deactivating_stake = COALESCE(u.deactivating_stake, validators.deactivating_stake),
-            direct_stake = COALESCE(u.direct_stake, validators.direct_stake)
+            direct_stake = COALESCE(u.direct_stake, validators.direct_stake),
+            direct_activating_stake = COALESCE(u.direct_activating_stake, validators.direct_activating_stake),
+            direct_deactivating_stake = COALESCE(u.direct_deactivating_stake, validators.direct_deactivating_stake)
             "
             .to_string(),
             "u(
@@ -159,7 +161,9 @@ pub async fn store_validators(
                 pending_delegator_rewards,
                 activating_stake,
                 deactivating_stake,
-                direct_stake
+                direct_stake,
+                direct_activating_stake,
+                direct_deactivating_stake
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -217,6 +221,8 @@ pub async fn store_validators(
                     &v.activating_stake,
                     &v.deactivating_stake,
                     &v.direct_stake,
+                    &v.direct_activating_stake,
+                    &v.direct_deactivating_stake,
                 ];
                 query.add(
                     &mut params,
@@ -257,6 +263,8 @@ pub async fn store_validators(
                         (45, "NUMERIC".into()), // activating_stake
                         (46, "NUMERIC".into()), // deactivating_stake
                         (47, "NUMERIC".into()), // direct_stake
+                        (48, "NUMERIC".into()), // direct_activating_stake
+                        (49, "NUMERIC".into()), // direct_deactivating_stake
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -334,7 +342,9 @@ pub async fn store_validators(
         pending_delegator_rewards,
         activating_stake,
         deactivating_stake,
-        direct_stake
+        direct_stake,
+        direct_activating_stake,
+        direct_deactivating_stake
         "
             .to_string(),
         );
@@ -397,6 +407,8 @@ pub async fn store_validators(
                 &v.activating_stake,
                 &v.deactivating_stake,
                 &v.direct_stake,
+                &v.direct_activating_stake,
+                &v.direct_deactivating_stake,
             ];
             query.add(&mut params);
             if !v.dc_resolved {

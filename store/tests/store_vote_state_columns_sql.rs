@@ -164,6 +164,8 @@ async fn a_snapshot_written_before_these_fields_still_stores() {
         "block_revenue_commission_bps",
         "pending_delegator_rewards",
         "direct_stake",
+        "direct_activating_stake",
+        "direct_deactivating_stake",
     ] {
         assert!(
             validator
