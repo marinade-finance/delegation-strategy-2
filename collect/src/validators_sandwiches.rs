@@ -67,21 +67,22 @@ pub struct ValidatorSandwich {
     pub sandwich_rate_60d: Option<f64>,
 }
 
-/// One row of an epoch CSV. Every sandwich column is optional because the shape changed around
-/// epoch 820, and epoch 886 onwards carries columns this does not read.
+/// One row of an epoch CSV. The aliases are the older column names that some sandwiched.me sheets
+/// use, for example epochs 807-839.
 #[derive(Debug, Deserialize)]
 struct SandwichCsvRow {
     vote_account: String,
-    #[serde(default, rename = "30d_blocks_produced")]
+    #[serde(default, rename = "30d_blocks_produced", alias = "blocks_produced")]
     blocks_produced: Option<u64>,
-    #[serde(default, rename = "30d_blocks_with_sandwiches")]
+    #[serde(
+        default,
+        rename = "30d_blocks_with_sandwiches",
+        alias = "blocks_with_sandwiches"
+    )]
     blocks_with_sandwiches: Option<u64>,
-    #[serde(default, rename = "30d_sandwich_rate")]
+    #[serde(default, rename = "30d_sandwich_rate", alias = "sandwich_rate")]
     sandwich_rate_30d: Option<f64>,
-    /// What epochs before ~820 name `30d_sandwich_rate`.
-    #[serde(default)]
-    sandwich_rate: Option<f64>,
-    #[serde(default, rename = "60d_sandwich_rate")]
+    #[serde(default, rename = "60d_sandwich_rate", alias = "sandwich_rate_60d")]
     sandwich_rate_60d: Option<f64>,
 }
 
@@ -99,16 +100,20 @@ pub fn parse_epoch_csv(epoch: Epoch, text: &str) -> anyhow::Result<Vec<Validator
 
     rows.into_iter()
         .map(|row| {
+            let missing = |column: &str| format!("{label}: {} has no {column}", row.vote_account);
             let rate_30d = row
                 .sandwich_rate_30d
-                .or(row.sandwich_rate)
-                .with_context(|| {
-                    format!("{label}: {} has no 30d sandwich rate", row.vote_account)
-                })?;
+                .with_context(|| missing("30d sandwich rate"))?;
+            let blocks_produced = row
+                .blocks_produced
+                .with_context(|| missing("30d blocks produced"))?;
+            let blocks_with_sandwiches = row
+                .blocks_with_sandwiches
+                .with_context(|| missing("30d blocks with sandwiches"))?;
             Ok(ValidatorSandwich {
                 epoch,
-                blocks_produced: row.blocks_produced.unwrap_or(0),
-                blocks_with_sandwiches: row.blocks_with_sandwiches.unwrap_or(0),
+                blocks_produced,
+                blocks_with_sandwiches,
                 sandwich_rate_30d: rate_30d,
                 sandwich_rate_60d: row.sandwich_rate_60d,
                 vote_account: row.vote_account,
@@ -218,14 +223,16 @@ mod tests {
 
     #[test]
     fn the_three_line_preamble_is_dropped_before_the_header() {
-        let csv = format!("{PREAMBLE}vote_account,30d_sandwich_rate\nvote1,4.5\n");
+        let csv = format!(
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\nvote1,2000,90,4.5\n"
+        );
         assert_eq!(
             parse_epoch_csv(1030, &csv).unwrap(),
             vec![ValidatorSandwich {
                 epoch: 1030,
                 vote_account: "vote1".into(),
-                blocks_produced: 0,
-                blocks_with_sandwiches: 0,
+                blocks_produced: 2000,
+                blocks_with_sandwiches: 90,
                 sandwich_rate_30d: 4.5,
                 sandwich_rate_60d: None,
             }]
@@ -260,6 +267,32 @@ mod tests {
         let rows = parse_epoch_csv(791, &csv).unwrap();
         assert_eq!(rows[0].sandwich_rate_30d, 64.1);
         assert_eq!(rows[0].sandwich_rate_60d, None);
+    }
+
+    // The header of epochs 812, 814, 816, 819, 826, 827 and 839.
+    #[test]
+    fn the_unprefixed_column_names_are_read() {
+        let csv = format!(
+            "{PREAMBLE}vote_account,blocks_produced,blocks_with_sandwiches,sandwich_rate,sandwich_rate_60d\nvote1,4672,2990,64,52\n"
+        );
+        assert_eq!(
+            parse_epoch_csv(812, &csv).unwrap(),
+            vec![ValidatorSandwich {
+                epoch: 812,
+                vote_account: "vote1".into(),
+                blocks_produced: 4672,
+                blocks_with_sandwiches: 2990,
+                sandwich_rate_30d: 64.0,
+                sandwich_rate_60d: Some(52.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_block_count_is_an_error() {
+        let csv = format!("{PREAMBLE}vote_account,30d_sandwich_rate\nvote1,4.5\n");
+        let error = parse_epoch_csv(1030, &csv).unwrap_err().to_string();
+        assert!(error.contains("no 30d blocks produced"), "{error}");
     }
 
     #[test]
