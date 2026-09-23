@@ -1,6 +1,6 @@
 use crate::dto::{
-    client_engine, client_label, client_lineage, effective_client_id, ClientRelease,
-    GroupIncidents, GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord,
+    client_engine, client_is_classified, client_label, client_lineage, effective_client_id,
+    ClientRelease, GroupIncidents, GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord,
     ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
     ValidatorGroups, ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
@@ -140,8 +140,13 @@ pub fn belongs_to_client(validator: &ValidatorRecord, key: &str) -> bool {
 pub const NO_BLOCK_ENGINE: &str = "none";
 
 /// Whether `validator` runs the block engine whose vendor slug is `key`. `NO_BLOCK_ENGINE` selects
-/// the validators running none. Case-insensitive.
+/// the validators running none. Case-insensitive. A client the registry cannot place answers to
+/// neither: its block engine is unknown, not absent.
 pub fn belongs_to_block_engine(validator: &ValidatorRecord, key: &str) -> bool {
+    if !client_is_classified(validator.client_id) {
+        return false;
+    }
+
     let key = key.trim().to_lowercase();
     if client_engine(validator.client_id).is_none() {
         return key == NO_BLOCK_ENGINE;

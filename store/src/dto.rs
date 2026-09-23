@@ -53,6 +53,11 @@ pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
     classified(client_id).and_then(|client| client.lineage().map(str::to_string))
 }
 
+/// Whether the registry places the client, so its vendor, lineage and block engine are known.
+pub fn client_is_classified(client_id: Option<u16>) -> bool {
+    classified(client_id).is_some()
+}
+
 /// The block engine the client runs. `None` for a client running on its own, and for an id the
 /// registry does not know.
 pub fn client_engine(client_id: Option<u16>) -> Option<String> {

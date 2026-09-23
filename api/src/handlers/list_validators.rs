@@ -1143,7 +1143,8 @@ mod tests {
         };
         assert_eq!(
             vote_accounts(filter_validators(validators, &no_incidents(), &config)),
-            vec!["plain".to_string(), "unregistered".to_string()]
+            vec!["plain".to_string()],
+            "an unregistered client runs an unknown block engine, not none"
         );
     }
 
