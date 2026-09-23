@@ -7,9 +7,7 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
 use std::time::Duration;
 
-/// The service that owns this dataset: it holds the sandwiched.me sheet exports for epochs
-/// 791-886, sandwiched.me's own 887-1030 export, and a per-epoch snapshot of the mev-hub
-/// validators API after that. All three land in one CSV shape, so this reads only the one route.
+/// The service that owns this dataset: it in turn uses sandwiched.me sheet exports.
 pub const DEFAULT_API_URL: &str = "https://solana-sandwich-report.marinade.finance";
 
 const HTTP_TIMEOUT_S: u64 = 60;
@@ -67,8 +65,8 @@ pub struct ValidatorSandwich {
     pub sandwich_rate_60d: Option<f64>,
 }
 
-/// One row of an epoch CSV. The aliases are the older column names that some sandwiched.me sheets
-/// use, for example epochs 807-839.
+/// One row of an epoch CSV.
+/// The aliases are the older column names that some sandwiched.me sheets use.
 #[derive(Debug, Deserialize)]
 struct SandwichCsvRow {
     vote_account: String,
