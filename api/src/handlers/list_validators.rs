@@ -17,7 +17,6 @@ use store::{
     incidents::{
         IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_INCIDENT_TYPES,
         DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS, MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
-        SANDWICH_RATE_THRESHOLD_PERCENTAGE,
     },
     utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
 };
@@ -83,7 +82,7 @@ pub struct QueryParams {
     min_incident_missed_slots: Option<u64>,
     /// Minimum leader slots an epoch needs before its block production is judged. Defaults to 64, minimum 64.
     min_incident_leader_slots: Option<u64>,
-    /// Minimum 30-day sandwich rate, in percent, for an epoch to read as a sandwich incident. Defaults to 5, minimum 5. Only applies to the sandwich incident type.
+    /// Minimum 30-day sandwich rate in percent. Only raises the bar.
     min_incident_sandwich_rate: Option<f64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
@@ -578,16 +577,6 @@ pub async fn handler(
             return Ok(response_error(
                 StatusCode::BAD_REQUEST,
                 format!("min_incident_leader_slots must be at least {MIN_LEADER_SLOTS}"),
-            ));
-        }
-    }
-    if let Some(sandwich_rate) = query_params.min_incident_sandwich_rate {
-        if sandwich_rate < SANDWICH_RATE_THRESHOLD_PERCENTAGE {
-            return Ok(response_error(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "min_incident_sandwich_rate must be at least {SANDWICH_RATE_THRESHOLD_PERCENTAGE}"
-                ),
             ));
         }
     }

@@ -308,9 +308,6 @@ async fn load_commission_raises(
     Ok(raises)
 }
 
-/// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, the block production of every closed epoch, every inflation commission
-/// raise over the bar, and every epoch spent behind the validator's own client lineage.
 /// Keyed by vote account. An epoch with no `epochs` row is the one still running: it has no start
 /// or end to report, so it stays out.
 async fn load_validator_sandwiches(
@@ -339,13 +336,11 @@ async fn load_validator_sandwiches(
         )
         .await?;
 
-    let mut sandwiches: HashMap<String, Vec<EpochSandwiches>> = Default::default();
+    let mut loaded: Vec<(String, EpochSandwiches)> = Vec::with_capacity(rows.len());
     for row in rows {
-        let vote_account: String = row.get("vote_account");
-        sandwiches
-            .entry(vote_account)
-            .or_default()
-            .push(EpochSandwiches {
+        loaded.push((
+            row.get("vote_account"),
+            EpochSandwiches {
                 epoch: row.get::<_, Decimal>("epoch").try_into()?,
                 epoch_start_at: row.get("start_at"),
                 epoch_end_at: row.get("end_at"),
@@ -355,7 +350,16 @@ async fn load_validator_sandwiches(
                     .try_into()?,
                 sandwich_rate_30d: row.get("sandwich_rate_30d"),
                 sandwich_rate_60d: row.get("sandwich_rate_60d"),
-            });
+                cluster_median_rate: 0.0,
+            },
+        ));
+    }
+
+    let medians = crate::incidents::cluster_sandwich_medians(loaded.iter().map(|(_, epoch)| epoch));
+    let mut sandwiches: HashMap<String, Vec<EpochSandwiches>> = Default::default();
+    for (vote_account, mut epoch) in loaded {
+        epoch.cluster_median_rate = medians.get(&epoch.epoch).copied().unwrap_or(0.0);
+        sandwiches.entry(vote_account).or_default().push(epoch);
     }
 
     Ok(sandwiches)

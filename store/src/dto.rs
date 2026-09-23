@@ -494,10 +494,7 @@ pub enum IncidentDetail {
         changed_at: DateTime<Utc>,
         epoch_slot: u64,
     },
-    /// An epoch whose 30-day sandwich rate reached
-    /// [`crate::incidents::SANDWICH_RATE_THRESHOLD_PERCENTAGE`], over a window that produced at
-    /// least [`crate::incidents::MIN_SANDWICH_BLOCKS`] blocks. Sourced from
-    /// solana-sandwich-report, which carries sandwiched.me's own numbers.
+    /// A 30-day sandwich rate far above the cluster median.
     Sandwich {
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
@@ -508,6 +505,8 @@ pub enum IncidentDetail {
         sandwich_rate_30d: f64,
         /// Null before epoch 820: upstream published only the 30d rate then.
         sandwich_rate_60d: Option<f64>,
+        /// Percent.
+        cluster_median_rate: f64,
         /// The bar `sandwich_rate_30d` had to clear, in percent.
         threshold: f64,
     },
@@ -1226,7 +1225,8 @@ mod tests {
                 blocks_with_sandwiches: 3944,
                 sandwich_rate_30d: 44.4,
                 sandwich_rate_60d: Some(31.1),
-                threshold: 5.0,
+                cluster_median_rate: 1.5,
+                threshold: 4.5,
             },
         };
 
@@ -1241,7 +1241,8 @@ mod tests {
                 "blocks_with_sandwiches": 3944,
                 "sandwich_rate_30d": 44.4,
                 "sandwich_rate_60d": 31.1,
-                "threshold": 5.0,
+                "cluster_median_rate": 1.5,
+                "threshold": 4.5,
             })
         );
     }

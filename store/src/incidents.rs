@@ -28,10 +28,11 @@ pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 // Validator raised commission to this or more in an epoch -> incident
 pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
-/// 30-day sandwich rate, in percent, an epoch has to reach to count as an incident. Across epochs
-/// 887-1030 the population p95 sits between 1.0 and 2.6; at this bar an epoch names 0 to 4
-/// validators, and 3 distinct validators over the whole range.
-pub const SANDWICH_RATE_THRESHOLD_PERCENTAGE: f64 = 5.0;
+// The incident threshold is this multiple of the cluster median sandwich rate.
+pub const SANDWICH_CLUSTER_MULTIPLIER: f64 = 3.0;
+
+// Upper limit of the threshold. At a 5% median, 3 x 5% = 15%, so the threshold is 10%.
+pub const MAX_SANDWICH_THRESHOLD_PERCENTAGE: f64 = 10.0;
 
 /// Blocks the 30-day window needs before its rate is judged. Under this the denominator is small
 /// enough that a handful of blocks moves the rate by whole points; it drops the bottom ~12% of
@@ -172,19 +173,21 @@ pub struct EpochSandwiches {
     pub sandwich_rate_30d: f64,
     /// Absent before epoch 820: upstream published only the 30d rate then.
     pub sandwich_rate_60d: Option<f64>,
+    /// Percent.
+    pub cluster_median_rate: f64,
 }
 
 impl EpochSandwiches {
     /// The bar the epoch had to clear. The caller's floor can only tighten it.
     pub fn threshold(&self, filters: &IncidentFilters) -> f64 {
-        filters
-            .min_sandwich_rate
-            .unwrap_or(0.0)
-            .max(SANDWICH_RATE_THRESHOLD_PERCENTAGE)
+        (SANDWICH_CLUSTER_MULTIPLIER * self.cluster_median_rate)
+            .min(MAX_SANDWICH_THRESHOLD_PERCENTAGE)
+            .max(filters.min_sandwich_rate.unwrap_or(0.0))
     }
 
     pub fn counts_as_incident(&self, filters: &IncidentFilters) -> bool {
         self.blocks_produced >= MIN_SANDWICH_BLOCKS
+            && self.sandwich_rate_30d > 0.0
             && self.sandwich_rate_30d >= self.threshold(filters)
     }
 }
@@ -328,7 +331,7 @@ pub struct IncidentFilters {
     pub min_downtime_seconds: u64,
     pub min_missed_slots: Option<u64>,
     pub min_leader_slots: Option<u64>,
-    /// 30-day sandwich rate in percent. Only tightens [`SANDWICH_RATE_THRESHOLD_PERCENTAGE`].
+    /// Percent. Only raises the bar.
     pub min_sandwich_rate: Option<f64>,
     /// `None` serves every kind.
     pub types: Option<Vec<IncidentType>>,
@@ -447,6 +450,7 @@ impl ValidatorIncidentRecords {
                         blocks_with_sandwiches: sandwiches.blocks_with_sandwiches,
                         sandwich_rate_30d: sandwiches.sandwich_rate_30d,
                         sandwich_rate_60d: sandwiches.sandwich_rate_60d,
+                        cluster_median_rate: sandwiches.cluster_median_rate,
                         threshold: sandwiches.threshold(filters),
                     },
                 });
@@ -538,6 +542,36 @@ pub fn cluster_skip_rates<'a>(
                 epoch,
                 (leader_slots - blocks_produced) as f64 / leader_slots as f64,
             )
+        })
+        .collect()
+}
+
+/// Median 30-day sandwich rate per epoch, across the validators with at least
+/// `MIN_SANDWICH_BLOCKS` blocks.
+pub fn cluster_sandwich_medians<'a>(
+    sandwiches: impl IntoIterator<Item = &'a EpochSandwiches>,
+) -> HashMap<u64, f64> {
+    let mut rates: HashMap<u64, Vec<f64>> = Default::default();
+    for sandwich in sandwiches {
+        if sandwich.blocks_produced >= MIN_SANDWICH_BLOCKS {
+            rates
+                .entry(sandwich.epoch)
+                .or_default()
+                .push(sandwich.sandwich_rate_30d);
+        }
+    }
+
+    rates
+        .into_iter()
+        .map(|(epoch, mut rates)| {
+            rates.sort_by(f64::total_cmp);
+            let middle = rates.len() / 2;
+            let median = if rates.len() % 2 == 0 {
+                (rates[middle - 1] + rates[middle]) / 2.0
+            } else {
+                rates[middle]
+            };
+            (epoch, median)
         })
         .collect()
 }
@@ -780,7 +814,7 @@ mod tests {
         }
     }
 
-    /// An epoch over the sandwich bar, with blocks enough to be judged.
+    /// An epoch with blocks enough to be judged, against a cluster median of 1.5 %.
     fn sandwiched(epoch: u64, sandwich_rate_30d: f64) -> EpochSandwiches {
         let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
         EpochSandwiches {
@@ -791,7 +825,12 @@ mod tests {
             blocks_with_sandwiches: (5000.0 * sandwich_rate_30d / 100.0) as u64,
             sandwich_rate_30d,
             sandwich_rate_60d: Some(sandwich_rate_30d),
+            cluster_median_rate: 1.5,
         }
+    }
+
+    fn sandwich_rows(epoch: u64, rates: &[f64]) -> Vec<EpochSandwiches> {
+        rates.iter().map(|rate| sandwiched(epoch, *rate)).collect()
     }
 
     /// One epoch of one validator, as the version comparison reads it.
@@ -1000,29 +1039,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_epoch_under_the_sandwich_bar_is_no_incident() {
+    fn sandwich_types(cluster_median_rate: f64, sandwich_rate_30d: f64) -> Vec<&'static str> {
+        let mut epoch = sandwiched(EPOCH, sandwich_rate_30d);
+        epoch.cluster_median_rate = cluster_median_rate;
         let records = ValidatorIncidentRecords {
-            sandwiches: vec![sandwiched(EPOCH, SANDWICH_RATE_THRESHOLD_PERCENTAGE - 0.1)],
+            sandwiches: vec![epoch],
             ..Default::default()
         };
-
-        assert!(records
-            .into_response_incidents(&Default::default())
-            .is_empty());
+        served_types(&records.into_response_incidents(&Default::default()))
     }
 
     #[test]
-    fn an_epoch_on_the_sandwich_bar_is_an_incident() {
-        let records = ValidatorIncidentRecords {
-            sandwiches: vec![sandwiched(EPOCH, SANDWICH_RATE_THRESHOLD_PERCENTAGE)],
-            ..Default::default()
-        };
+    fn the_sandwich_bar_is_a_multiple_of_the_cluster_median() {
+        assert!(sandwich_types(1.5, 4.4).is_empty());
+        assert_eq!(sandwich_types(1.5, 4.5), vec!["Sandwich"]);
+    }
 
-        assert_eq!(
-            served_types(&records.into_response_incidents(&Default::default())),
-            vec!["Sandwich"]
-        );
+    #[test]
+    fn a_low_cluster_median_gives_a_low_bar() {
+        assert!(sandwich_types(0.3, 0.8).is_empty());
+        assert_eq!(sandwich_types(0.3, 0.9), vec!["Sandwich"]);
+    }
+
+    #[test]
+    fn a_zero_rate_is_never_an_incident() {
+        assert!(sandwich_types(0.0, 0.0).is_empty());
+        assert_eq!(sandwich_types(0.0, 0.1), vec!["Sandwich"]);
+    }
+
+    #[test]
+    fn a_high_cluster_median_is_capped() {
+        assert!(sandwich_types(5.0, 9.9).is_empty());
+        assert_eq!(sandwich_types(5.0, 10.0), vec!["Sandwich"]);
     }
 
     // A window this thin moves whole points on a handful of blocks.
@@ -1053,7 +1101,7 @@ mod tests {
         };
         assert!(records.into_response_incidents(&tighter).is_empty());
 
-        // Under the constant, so it cannot loosen anything.
+        // Under the cluster bar of 4.5, so it cannot loosen anything.
         let looser = IncidentFilters {
             min_sandwich_rate: Some(0.1),
             ..Default::default()
@@ -1071,7 +1119,7 @@ mod tests {
             ..Default::default()
         };
         let filters = IncidentFilters {
-            min_sandwich_rate: Some(10.0),
+            min_sandwich_rate: Some(12.0),
             ..Default::default()
         };
 
@@ -1080,15 +1128,52 @@ mod tests {
             dto::IncidentDetail::Sandwich {
                 sandwich_rate_30d,
                 blocks_with_sandwiches,
+                cluster_median_rate,
                 threshold,
                 ..
             } => {
                 assert_eq!(*sandwich_rate_30d, 42.6);
                 assert_eq!(*blocks_with_sandwiches, 2130);
-                assert_eq!(*threshold, 10.0);
+                assert_eq!(*cluster_median_rate, 1.5);
+                assert_eq!(*threshold, 12.0);
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_sandwich_median_skips_thin_windows() {
+        let mut rows = sandwich_rows(EPOCH, &[1.0, 2.0, 3.0]);
+        let mut thin = sandwiched(EPOCH, 90.0);
+        thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
+        rows.push(thin);
+
+        assert_eq!(cluster_sandwich_medians(&rows).get(&EPOCH), Some(&2.0));
+    }
+
+    #[test]
+    fn an_even_count_takes_the_mean_of_the_middle_rates() {
+        let rows = sandwich_rows(EPOCH, &[4.0, 1.0, 2.0, 3.0]);
+
+        assert_eq!(cluster_sandwich_medians(&rows).get(&EPOCH), Some(&2.5));
+    }
+
+    #[test]
+    fn each_epoch_gets_its_own_sandwich_median() {
+        let mut rows = sandwich_rows(EPOCH, &[1.0, 1.0, 1.0]);
+        rows.extend(sandwich_rows(EPOCH + 1, &[5.0]));
+
+        let medians = cluster_sandwich_medians(&rows);
+        assert_eq!(medians.get(&EPOCH), Some(&1.0));
+        assert_eq!(medians.get(&(EPOCH + 1)), Some(&5.0));
+    }
+
+    #[test]
+    fn an_epoch_with_only_thin_windows_has_no_median() {
+        let mut thin = sandwiched(EPOCH, 90.0);
+        thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
+
+        assert!(cluster_sandwich_medians(&[thin]).is_empty());
     }
 
     #[test]

@@ -308,6 +308,33 @@ async fn sandwich_rows_are_keyed_by_vote_account() {
     assert_eq!(sandwich_epochs(&incidents, "voteB"), vec![(900, 1.0)]);
 }
 
+#[tokio::test]
+async fn every_row_of_an_epoch_gets_the_cluster_median() {
+    let schema = "ds_test_incidents_sandwich_median";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(&client, 900, "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z").await;
+    sandwiches(&client, "voteA", 900, 5000, 300, 6.0, Some(5.5)).await;
+    sandwiches(&client, "voteB", 900, 5000, 50, 1.0, Some(0.9)).await;
+    sandwiches(&client, "voteC", 900, 5000, 100, 2.0, Some(1.9)).await;
+    sandwiches(&client, "voteD", 900, 999, 900, 90.0, Some(90.0)).await;
+
+    let incidents = load_validator_incidents(&client, 900, 900, &no_records())
+        .await
+        .unwrap();
+
+    for vote_account in ["voteA", "voteB", "voteC", "voteD"] {
+        let loaded = &incidents
+            .get(vote_account)
+            .expect("the validator has incident material")
+            .sandwiches[0];
+        assert_eq!(loaded.cluster_median_rate, 2.0, "{vote_account}");
+    }
+}
+
 // `uptimes` is written every minute and `validators` hourly, so epoch 102 is a live case: a DOWN row
 // above the head for the hour the validator write takes to catch up.
 #[tokio::test]
