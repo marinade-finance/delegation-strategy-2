@@ -671,7 +671,7 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
     use store::incidents::{
         CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochClientVersion,
     };
@@ -1149,7 +1149,7 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![100]
         );
@@ -1315,10 +1315,10 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| match incident.detail {
-                    IncidentDetail::Downtime {
+                .map(|incident| match incident {
+                    IncidentRecord::Downtime {
                         downtime_seconds, ..
-                    } => downtime_seconds,
+                    } => *downtime_seconds,
                     _ => panic!("a downtime fixture is a downtime incident"),
                 })
                 .collect::<Vec<_>>(),

@@ -38,6 +38,9 @@ pub const MAX_SANDWICH_THRESHOLD_PERCENTAGE: f64 = 10.0;
 /// enough that a handful of blocks moves the rate by whole points.
 pub const MIN_SANDWICH_BLOCKS: u64 = 1000;
 
+// Incident epochs at most this many epochs apart join one incident.
+pub const MAX_SANDWICH_INCIDENT_GAP_EPOCHS: u64 = 2;
+
 pub const MIN_NEWER_VERSION_STAKE_SHARE: f64 = 0.80;
 
 /// Validators a lineage-epoch needs before anyone in it is judged late.
@@ -370,6 +373,58 @@ pub struct ValidatorIncidentRecords {
 impl ValidatorIncidentRecords {
     /// An epoch's block production is reported once: on that epoch's downtime records if any are
     /// served, otherwise as a record of its own. A commission spike is never folded into either.
+    /// One incident for each run of incident epochs. The numbers come from the epoch with the
+    /// highest 30-day rate in the run.
+    fn sandwich_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
+        let mut epochs: Vec<&EpochSandwiches> = self
+            .sandwiches
+            .iter()
+            .filter(|sandwiches| sandwiches.epoch >= filters.from_epoch)
+            .filter(|sandwiches| sandwiches.counts_as_incident(filters))
+            .collect();
+        epochs.sort_by_key(|sandwiches| sandwiches.epoch);
+
+        let mut runs: Vec<Vec<&EpochSandwiches>> = Vec::new();
+        for sandwiches in epochs {
+            match runs.last_mut() {
+                Some(run)
+                    if sandwiches.epoch - run[run.len() - 1].epoch
+                        <= MAX_SANDWICH_INCIDENT_GAP_EPOCHS =>
+                {
+                    run.push(sandwiches)
+                }
+                _ => runs.push(vec![sandwiches]),
+            }
+        }
+
+        runs.into_iter()
+            .map(|run| {
+                let first = run[0];
+                let last = run[run.len() - 1];
+                let peak = run.iter().copied().fold(first, |peak, sandwiches| {
+                    if sandwiches.sandwich_rate_30d > peak.sandwich_rate_30d {
+                        sandwiches
+                    } else {
+                        peak
+                    }
+                });
+                dto::IncidentRecord::Sandwich {
+                    first_epoch: first.epoch,
+                    epoch_start_at: first.epoch_start_at,
+                    epoch_end_at: last.epoch_end_at,
+                    last_epoch: last.epoch,
+                    peak_epoch: peak.epoch,
+                    blocks_produced: peak.blocks_produced,
+                    blocks_with_sandwiches: peak.blocks_with_sandwiches,
+                    sandwich_rate_30d: peak.sandwich_rate_30d,
+                    sandwich_rate_60d: peak.sandwich_rate_60d,
+                    cluster_median_rate: peak.cluster_median_rate,
+                    threshold: peak.threshold(filters),
+                }
+            })
+            .collect()
+    }
+
     pub fn into_response_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
         let mut incidents: Vec<dto::IncidentRecord> = Vec::new();
         // Epochs whose block production a downtime record already carries.
@@ -381,16 +436,14 @@ impl ValidatorIncidentRecords {
                     && downtime.downtime_seconds >= filters.min_downtime_seconds
             }) {
                 carried.push(downtime.epoch);
-                incidents.push(dto::IncidentRecord {
+                incidents.push(dto::IncidentRecord::Downtime {
                     epoch: downtime.epoch,
-                    detail: dto::IncidentDetail::Downtime {
-                        start_at: downtime.start_at,
-                        end_at: downtime.end_at,
-                        downtime_seconds: downtime.downtime_seconds,
-                        block_production: self
-                            .epoch_block_production(downtime.epoch)
-                            .map(|production| production.detail(filters)),
-                    },
+                    start_at: downtime.start_at,
+                    end_at: downtime.end_at,
+                    downtime_seconds: downtime.downtime_seconds,
+                    block_production: self
+                        .epoch_block_production(downtime.epoch)
+                        .map(|production| production.detail(filters)),
                 });
             }
         }
@@ -403,13 +456,11 @@ impl ValidatorIncidentRecords {
                 .filter(|production| !carried.contains(&production.epoch))
             {
                 if production.counts_as_incident(filters) {
-                    incidents.push(dto::IncidentRecord {
+                    incidents.push(dto::IncidentRecord::BlockProduction {
                         epoch: production.epoch,
-                        detail: dto::IncidentDetail::BlockProduction {
-                            epoch_start_at: production.epoch_start_at,
-                            epoch_end_at: production.epoch_end_at,
-                            block_production: production.detail(filters),
-                        },
+                        epoch_start_at: production.epoch_start_at,
+                        epoch_end_at: production.epoch_end_at,
+                        block_production: production.detail(filters),
                     });
                 }
             }
@@ -421,39 +472,18 @@ impl ValidatorIncidentRecords {
                 .iter()
                 .filter(|raise| raise.epoch >= filters.from_epoch)
             {
-                incidents.push(dto::IncidentRecord {
+                incidents.push(dto::IncidentRecord::CommissionSpike {
                     epoch: raise.epoch,
-                    detail: dto::IncidentDetail::CommissionSpike {
-                        commission_before: raise.commission_before,
-                        commission_after: raise.commission_after,
-                        changed_at: raise.changed_at,
-                        epoch_slot: raise.epoch_slot,
-                    },
+                    commission_before: raise.commission_before,
+                    commission_after: raise.commission_after,
+                    changed_at: raise.changed_at,
+                    epoch_slot: raise.epoch_slot,
                 });
             }
         }
 
         if filters.wants(IncidentType::Sandwich) {
-            for sandwiches in self
-                .sandwiches
-                .iter()
-                .filter(|sandwiches| sandwiches.epoch >= filters.from_epoch)
-                .filter(|sandwiches| sandwiches.counts_as_incident(filters))
-            {
-                incidents.push(dto::IncidentRecord {
-                    epoch: sandwiches.epoch,
-                    detail: dto::IncidentDetail::Sandwich {
-                        epoch_start_at: sandwiches.epoch_start_at,
-                        epoch_end_at: sandwiches.epoch_end_at,
-                        blocks_produced: sandwiches.blocks_produced,
-                        blocks_with_sandwiches: sandwiches.blocks_with_sandwiches,
-                        sandwich_rate_30d: sandwiches.sandwich_rate_30d,
-                        sandwich_rate_60d: sandwiches.sandwich_rate_60d,
-                        cluster_median_rate: sandwiches.cluster_median_rate,
-                        threshold: sandwiches.threshold(filters),
-                    },
-                });
-            }
+            incidents.extend(self.sandwich_incidents(filters));
         }
 
         if filters.wants(IncidentType::RunningLateClientVersion) {
@@ -462,21 +492,19 @@ impl ValidatorIncidentRecords {
                 .iter()
                 .filter(|late_patch| late_patch.epoch >= filters.from_epoch)
             {
-                incidents.push(dto::IncidentRecord {
+                incidents.push(dto::IncidentRecord::RunningLateClientVersion {
                     epoch: late_patch.epoch,
-                    detail: dto::IncidentDetail::RunningLateClientVersion {
-                        epoch_start_at: late_patch.epoch_start_at,
-                        epoch_end_at: late_patch.epoch_end_at,
-                        version: late_patch.version.clone(),
-                        client_lineage: late_patch.client_lineage.clone(),
-                        newer_stake_share: late_patch.newer_stake_share,
-                        newer_version_stake_shares: late_patch.newer_version_stake_shares.clone(),
-                    },
+                    epoch_start_at: late_patch.epoch_start_at,
+                    epoch_end_at: late_patch.epoch_end_at,
+                    version: late_patch.version.clone(),
+                    client_lineage: late_patch.client_lineage.clone(),
+                    newer_stake_share: late_patch.newer_stake_share,
+                    newer_version_stake_shares: late_patch.newer_version_stake_shares.clone(),
                 });
             }
         }
 
-        incidents.sort_by_key(|incident| (incident.epoch, incident.detail.started_at()));
+        incidents.sort_by_key(|incident| (incident.epoch(), incident.started_at()));
         incidents
     }
 
@@ -815,7 +843,8 @@ mod tests {
 
     /// An epoch with blocks enough to be judged, against a cluster median of 1.5 %.
     fn sandwiched(epoch: u64, sandwich_rate_30d: f64) -> EpochSandwiches {
-        let epoch_start_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let epoch_start_at = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+            + chrono::Duration::days(2 * epoch as i64);
         EpochSandwiches {
             epoch,
             epoch_start_at,
@@ -897,27 +926,27 @@ mod tests {
     fn served_types(incidents: &[dto::IncidentRecord]) -> Vec<&'static str> {
         incidents
             .iter()
-            .map(|incident| match incident.detail {
-                dto::IncidentDetail::Downtime { .. } => "Downtime",
-                dto::IncidentDetail::BlockProduction { .. } => "BlockProduction",
-                dto::IncidentDetail::CommissionSpike { .. } => "CommissionSpike",
-                dto::IncidentDetail::RunningLateClientVersion { .. } => "RunningLateClientVersion",
-                dto::IncidentDetail::Sandwich { .. } => "Sandwich",
+            .map(|incident| match incident {
+                dto::IncidentRecord::Downtime { .. } => "Downtime",
+                dto::IncidentRecord::BlockProduction { .. } => "BlockProduction",
+                dto::IncidentRecord::CommissionSpike { .. } => "CommissionSpike",
+                dto::IncidentRecord::RunningLateClientVersion { .. } => "RunningLateClientVersion",
+                dto::IncidentRecord::Sandwich { .. } => "Sandwich",
             })
             .collect()
     }
 
     fn carried_numbers(incident: &dto::IncidentRecord) -> Option<&dto::BlockProductionDetail> {
-        match &incident.detail {
-            dto::IncidentDetail::Downtime {
+        match &incident {
+            dto::IncidentRecord::Downtime {
                 block_production, ..
             } => block_production.as_ref(),
-            dto::IncidentDetail::BlockProduction {
+            dto::IncidentRecord::BlockProduction {
                 block_production, ..
             } => Some(block_production),
-            dto::IncidentDetail::CommissionSpike { .. } => None,
-            dto::IncidentDetail::RunningLateClientVersion { .. } => None,
-            dto::IncidentDetail::Sandwich { .. } => None,
+            dto::IncidentRecord::CommissionSpike { .. } => None,
+            dto::IncidentRecord::RunningLateClientVersion { .. } => None,
+            dto::IncidentRecord::Sandwich { .. } => None,
         }
     }
 
@@ -936,7 +965,7 @@ mod tests {
         let incidents = records.into_response_incidents(&Default::default());
 
         assert_eq!(served_types(&incidents), vec!["BlockProduction"]);
-        assert_eq!(incidents[0].epoch, EPOCH);
+        assert_eq!(incidents[0].epoch(), EPOCH);
     }
 
     #[test]
@@ -1123,8 +1152,8 @@ mod tests {
         };
 
         let incidents = records.into_response_incidents(&filters);
-        match &incidents[0].detail {
-            dto::IncidentDetail::Sandwich {
+        match &incidents[0] {
+            dto::IncidentRecord::Sandwich {
                 sandwich_rate_30d,
                 blocks_with_sandwiches,
                 cluster_median_rate,
@@ -1136,6 +1165,117 @@ mod tests {
                 assert_eq!(*cluster_median_rate, 1.5);
                 assert_eq!(*threshold, 12.0);
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Epoch, last epoch and peak epoch of each sandwich incident served.
+    fn sandwich_runs(
+        sandwiches: Vec<EpochSandwiches>,
+        filters: &IncidentFilters,
+    ) -> Vec<(u64, u64, u64)> {
+        let records = ValidatorIncidentRecords {
+            sandwiches,
+            ..Default::default()
+        };
+        records
+            .into_response_incidents(filters)
+            .iter()
+            .map(|incident| match &incident {
+                dto::IncidentRecord::Sandwich {
+                    last_epoch,
+                    peak_epoch,
+                    ..
+                } => (incident.epoch(), *last_epoch, *peak_epoch),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn consecutive_sandwich_epochs_are_one_incident() {
+        let epochs = vec![
+            sandwiched(EPOCH, 20.0),
+            sandwiched(EPOCH + 1, 40.0),
+            sandwiched(EPOCH + 2, 30.0),
+        ];
+
+        assert_eq!(
+            sandwich_runs(epochs, &Default::default()),
+            vec![(EPOCH, EPOCH + 2, EPOCH + 1)]
+        );
+    }
+
+    #[test]
+    fn a_short_gap_stays_inside_the_incident() {
+        let epochs = vec![sandwiched(EPOCH, 20.0), sandwiched(EPOCH + 2, 20.0)];
+
+        assert_eq!(
+            sandwich_runs(epochs, &Default::default()),
+            vec![(EPOCH, EPOCH + 2, EPOCH)]
+        );
+    }
+
+    #[test]
+    fn a_longer_gap_starts_a_new_incident() {
+        let epochs = vec![sandwiched(EPOCH, 20.0), sandwiched(EPOCH + 3, 20.0)];
+
+        assert_eq!(
+            sandwich_runs(epochs, &Default::default()),
+            vec![(EPOCH, EPOCH, EPOCH), (EPOCH + 3, EPOCH + 3, EPOCH + 3)]
+        );
+    }
+
+    #[test]
+    fn an_epoch_under_the_bar_does_not_extend_the_incident() {
+        let epochs = vec![
+            sandwiched(EPOCH, 20.0),
+            sandwiched(EPOCH + 1, 1.0),
+            sandwiched(EPOCH + 2, 1.0),
+            sandwiched(EPOCH + 3, 1.0),
+            sandwiched(EPOCH + 4, 20.0),
+        ];
+
+        assert_eq!(
+            sandwich_runs(epochs, &Default::default()),
+            vec![(EPOCH, EPOCH, EPOCH), (EPOCH + 4, EPOCH + 4, EPOCH + 4)]
+        );
+    }
+
+    #[test]
+    fn from_epoch_cuts_the_start_of_a_sandwich_run() {
+        let epochs = vec![
+            sandwiched(EPOCH, 40.0),
+            sandwiched(EPOCH + 1, 20.0),
+            sandwiched(EPOCH + 2, 20.0),
+        ];
+        let filters = IncidentFilters {
+            from_epoch: EPOCH + 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            sandwich_runs(epochs, &filters),
+            vec![(EPOCH + 1, EPOCH + 2, EPOCH + 1)]
+        );
+    }
+
+    #[test]
+    fn a_sandwich_run_spans_its_first_and_last_epoch() {
+        let first = sandwiched(EPOCH, 20.0);
+        let last = sandwiched(EPOCH + 1, 20.0);
+        let (start, end) = (first.epoch_start_at, last.epoch_end_at);
+        let records = ValidatorIncidentRecords {
+            sandwiches: vec![last, first],
+            ..Default::default()
+        };
+
+        match &records.into_response_incidents(&Default::default())[0] {
+            dto::IncidentRecord::Sandwich {
+                epoch_start_at,
+                epoch_end_at,
+                ..
+            } => assert_eq!((*epoch_start_at, *epoch_end_at), (start, end)),
             other => panic!("{other:?}"),
         }
     }
@@ -1190,7 +1330,7 @@ mod tests {
         assert_eq!(
             incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![100]
         );
@@ -1235,7 +1375,7 @@ mod tests {
         assert_eq!(
             incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![99, 100, 101]
         );
@@ -1307,7 +1447,7 @@ mod tests {
         assert_eq!(
             incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![100]
         );
@@ -1578,7 +1718,7 @@ mod tests {
         assert_eq!(
             incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![100]
         );

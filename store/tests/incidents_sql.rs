@@ -3,7 +3,7 @@ mod common;
 use chrono::{DateTime, Utc};
 use common::{migrated_client, skip_without_database};
 use std::collections::HashMap;
-use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorRecord};
+use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorRecord};
 use store::incidents::{IncidentFilters, ValidatorIncidents};
 use store::utils::load_validator_incidents;
 use tokio_postgres::Client;
@@ -543,15 +543,15 @@ async fn each_validator_is_keyed_by_its_own_vote_account() {
     // that stayed up reports it on a record of its own.
     let filters = IncidentFilters::default();
     assert!(matches!(
-        incidents.into_response_incidents("voteA", &filters)[0].detail,
-        IncidentDetail::Downtime {
+        incidents.into_response_incidents("voteA", &filters)[0],
+        IncidentRecord::Downtime {
             block_production: Some(_),
             ..
         }
     ));
     assert!(matches!(
-        incidents.into_response_incidents("voteB", &filters)[0].detail,
-        IncidentDetail::BlockProduction { .. }
+        incidents.into_response_incidents("voteB", &filters)[0],
+        IncidentRecord::BlockProduction { .. }
     ));
 }
 
@@ -716,7 +716,7 @@ async fn a_spike_is_served_beside_the_epoch_s_downtime() {
     assert_eq!(served.len(), 2);
     assert!(served
         .iter()
-        .any(|incident| matches!(incident.detail, IncidentDetail::CommissionSpike { .. })));
+        .any(|incident| matches!(incident, IncidentRecord::CommissionSpike { .. })));
 }
 
 #[tokio::test]

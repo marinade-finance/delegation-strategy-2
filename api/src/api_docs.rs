@@ -52,7 +52,6 @@ use utoipa::OpenApi;
         schemas(store::dto::UnstakeHint),
         schemas(store::dto::UptimeRecord),
         schemas(store::dto::IncidentRecord),
-        schemas(store::dto::IncidentDetail),
         schemas(store::dto::BlockProductionDetail),
         schemas(store::dto::VersionStakeShare),
         schemas(store::dto::GroupIncidentRecord),
