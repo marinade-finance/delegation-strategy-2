@@ -455,20 +455,13 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-/// One incident on a validator in one epoch. `incident_type` says which kind, and which of the
-/// remaining fields are present.
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct IncidentRecord {
-    pub epoch: u64,
-    #[serde(flatten)]
-    pub detail: IncidentDetail,
-}
-
+/// One incident on a validator. `incident_type` says which kind, and which fields are present.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "incident_type")]
-pub enum IncidentDetail {
+pub enum IncidentRecord {
     /// One DOWN interval from the uptimes table.
     Downtime {
+        epoch: u64,
         start_at: DateTime<Utc>,
         end_at: DateTime<Utc>,
         downtime_seconds: u64,
@@ -479,6 +472,7 @@ pub enum IncidentDetail {
     },
     /// A closed epoch the validator was up for but produced too few of its leader slots in.
     BlockProduction {
+        epoch: u64,
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
         block_production: BlockProductionDetail,
@@ -487,6 +481,7 @@ pub enum IncidentDetail {
     /// [`crate::incidents::COMMISSION_SPIKE_THRESHOLD_PERCENTAGE`] or above.
     /// Excludes MEV and block-revenue commissions.
     CommissionSpike {
+        epoch: u64,
         commission_before: u8,
         /// 90 or above.
         commission_after: u8,
@@ -494,8 +489,29 @@ pub enum IncidentDetail {
         changed_at: DateTime<Utc>,
         epoch_slot: u64,
     },
+    /// A run of epochs with a 30-day sandwich rate far above the cluster median. The numbers
+    /// below come from `peak_epoch`.
+    Sandwich {
+        first_epoch: u64,
+        last_epoch: u64,
+        epoch_start_at: DateTime<Utc>,
+        epoch_end_at: DateTime<Utc>,
+        peak_epoch: u64,
+        /// Blocks over the 30-day window the rate is measured on, not over the epoch.
+        blocks_produced: u64,
+        blocks_with_sandwiches: u64,
+        /// Percent, one decimal.
+        sandwich_rate_30d: f64,
+        /// Null before epoch 820: upstream published only the 30d rate then.
+        sandwich_rate_60d: Option<f64>,
+        /// Percent.
+        cluster_median_rate: f64,
+        /// The bar `sandwich_rate_30d` had to clear, in percent.
+        threshold: f64,
+    },
     /// Measured against adoption in the same lineage, not the floors `/releases` publishes.
     RunningLateClientVersion {
+        epoch: u64,
         epoch_start_at: DateTime<Utc>,
         epoch_end_at: DateTime<Utc>,
         version: String,
@@ -532,15 +548,28 @@ pub struct BlockProductionDetail {
     pub counts_as_incident: bool,
 }
 
-impl IncidentDetail {
+impl IncidentRecord {
+    /// The epoch the incident starts in.
+    pub fn epoch(&self) -> u64 {
+        match self {
+            Self::Downtime { epoch, .. }
+            | Self::BlockProduction { epoch, .. }
+            | Self::CommissionSpike { epoch, .. }
+            | Self::RunningLateClientVersion { epoch, .. } => *epoch,
+            Self::Sandwich { first_epoch, .. } => *first_epoch,
+        }
+    }
+
     /// When the incident started, for ordering: a downtime interval when it went down, a block
-    /// production epoch when the epoch began, a commission spike when the raise was sampled.
+    /// production or sandwich epoch when the epoch began, a commission spike when the raise was
+    /// sampled.
     pub fn started_at(&self) -> DateTime<Utc> {
         match self {
             Self::Downtime { start_at, .. } => *start_at,
             Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
             Self::CommissionSpike { changed_at, .. } => *changed_at,
             Self::RunningLateClientVersion { epoch_start_at, .. } => *epoch_start_at,
+            Self::Sandwich { epoch_start_at, .. } => *epoch_start_at,
         }
     }
 }
@@ -903,9 +932,9 @@ impl GroupIncidents {
     pub fn sort(&mut self) {
         if let Self::Records(records) = self {
             records.sort_by(|a, b| {
-                a.detail
+                a.incident
                     .started_at()
-                    .cmp(&b.detail.started_at())
+                    .cmp(&b.incident.started_at())
                     .then_with(|| a.validator.cmp(&b.validator))
             });
         }
@@ -923,17 +952,15 @@ impl Default for GroupIncidents {
 pub struct GroupIncidentRecord {
     /// Vote account of the member the incident is on.
     pub validator: String,
-    pub epoch: u64,
     #[serde(flatten)]
-    pub detail: IncidentDetail,
+    pub incident: IncidentRecord,
 }
 
 impl GroupIncidentRecord {
     pub fn new(validator: &str, incident: &IncidentRecord) -> Self {
         Self {
             validator: validator.to_string(),
-            epoch: incident.epoch,
-            detail: incident.detail.clone(),
+            incident: incident.clone(),
         }
     }
 }
@@ -1126,8 +1153,8 @@ mod tests {
     fn incident() -> GroupIncidentRecord {
         GroupIncidentRecord {
             validator: "vote".to_string(),
-            epoch: 100,
-            detail: IncidentDetail::Downtime {
+            incident: IncidentRecord::Downtime {
+                epoch: 100,
                 start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
                 end_at: "2026-01-01T00:05:00Z".parse().unwrap(),
                 downtime_seconds: 300,
@@ -1173,14 +1200,12 @@ mod tests {
 
     #[test]
     fn a_commission_spike_serializes_flat_under_its_own_type() {
-        let record = IncidentRecord {
+        let record = IncidentRecord::CommissionSpike {
             epoch: 900,
-            detail: IncidentDetail::CommissionSpike {
-                commission_before: 5,
-                commission_after: 100,
-                changed_at: "2026-01-01T06:00:00Z".parse().unwrap(),
-                epoch_slot: 1000,
-            },
+            commission_before: 5,
+            commission_after: 100,
+            changed_at: "2026-01-01T06:00:00Z".parse().unwrap(),
+            epoch_slot: 1000,
         };
 
         assert_eq!(
@@ -1197,20 +1222,53 @@ mod tests {
     }
 
     #[test]
+    fn a_sandwich_run_serializes_flat_under_its_own_type() {
+        let record = IncidentRecord::Sandwich {
+            first_epoch: 887,
+            epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            epoch_end_at: "2026-01-07T00:00:00Z".parse().unwrap(),
+            last_epoch: 889,
+            peak_epoch: 888,
+            blocks_produced: 8888,
+            blocks_with_sandwiches: 3944,
+            sandwich_rate_30d: 44.4,
+            sandwich_rate_60d: Some(31.1),
+            cluster_median_rate: 1.5,
+            threshold: 4.5,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "first_epoch": 887,
+                "incident_type": "Sandwich",
+                "epoch_start_at": "2026-01-01T00:00:00Z",
+                "epoch_end_at": "2026-01-07T00:00:00Z",
+                "last_epoch": 889,
+                "peak_epoch": 888,
+                "blocks_produced": 8888,
+                "blocks_with_sandwiches": 3944,
+                "sandwich_rate_30d": 44.4,
+                "sandwich_rate_60d": 31.1,
+                "cluster_median_rate": 1.5,
+                "threshold": 4.5,
+            })
+        );
+    }
+
+    #[test]
     fn a_late_client_version_serializes_flat_under_its_own_type() {
-        let record = IncidentRecord {
+        let record = IncidentRecord::RunningLateClientVersion {
             epoch: 1000,
-            detail: IncidentDetail::RunningLateClientVersion {
-                epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
-                epoch_end_at: "2026-01-03T00:00:00Z".parse().unwrap(),
-                version: "4.1.0".to_string(),
-                client_lineage: "agave".to_string(),
-                newer_stake_share: 0.9,
-                newer_version_stake_shares: vec![VersionStakeShare {
-                    version: "4.2.0".to_string(),
-                    share: 0.9,
-                }],
-            },
+            epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            epoch_end_at: "2026-01-03T00:00:00Z".parse().unwrap(),
+            version: "4.1.0".to_string(),
+            client_lineage: "agave".to_string(),
+            newer_stake_share: 0.9,
+            newer_version_stake_shares: vec![VersionStakeShare {
+                version: "4.2.0".to_string(),
+                share: 0.9,
+            }],
         };
 
         assert_eq!(

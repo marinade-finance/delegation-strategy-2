@@ -966,14 +966,12 @@ mod tests {
                 let incidents: Vec<_> = member
                     .incidents_days_ago
                     .iter()
-                    .map(|days_ago| crate::dto::IncidentRecord {
+                    .map(|days_ago| crate::dto::IncidentRecord::Downtime {
                         epoch: CURRENT_EPOCH,
-                        detail: crate::dto::IncidentDetail::Downtime {
-                            start_at: Utc::now() - Duration::days(*days_ago),
-                            end_at: Utc::now() - Duration::days(*days_ago),
-                            downtime_seconds: 600,
-                            block_production: None,
-                        },
+                        start_at: Utc::now() - Duration::days(*days_ago),
+                        end_at: Utc::now() - Duration::days(*days_ago),
+                        downtime_seconds: 600,
+                        block_production: None,
                     })
                     .collect();
 
@@ -2198,7 +2196,7 @@ mod tests {
         assert_eq!(incidents.len(), 4);
         assert!(incidents
             .windows(2)
-            .all(|pair| pair[0].detail.started_at() <= pair[1].detail.started_at()));
+            .all(|pair| pair[0].incident.started_at() <= pair[1].incident.started_at()));
         assert_eq!(
             incidents
                 .iter()

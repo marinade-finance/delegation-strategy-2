@@ -7,7 +7,7 @@ use crate::dto::{
     VersionRecord,
 };
 use crate::incidents::{
-    CommissionRaise, DowntimeInterval, EpochBlockProduction, ValidatorIncidents,
+    CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
     COMMISSION_SPIKE_THRESHOLD_PERCENTAGE,
 };
 use crate::validators_jito::get_last_jito_info;
@@ -308,9 +308,63 @@ async fn load_commission_raises(
     Ok(raises)
 }
 
-/// Loads the raw incident material per validator over the given closed epoch range: every `DOWN`
-/// interval as recorded, the block production of every closed epoch, every inflation commission
-/// raise over the bar, and every epoch spent behind the validator's own client lineage.
+/// Keyed by vote account. An epoch with no `epochs` row is the one still running: it has no start
+/// or end to report, so it stays out.
+async fn load_validator_sandwiches(
+    psql_client: &Client,
+    from_epoch: u64,
+    last_epoch: u64,
+) -> anyhow::Result<HashMap<String, Vec<EpochSandwiches>>> {
+    let rows = psql_client
+        .query(
+            "
+            SELECT
+                validators_sandwiches.vote_account,
+                validators_sandwiches.epoch,
+                blocks_produced,
+                blocks_with_sandwiches,
+                sandwich_rate_30d,
+                sandwich_rate_60d,
+                epochs.start_at,
+                epochs.end_at
+            FROM validators_sandwiches
+            INNER JOIN epochs ON epochs.epoch = validators_sandwiches.epoch
+            WHERE validators_sandwiches.epoch >= $1::NUMERIC
+              AND validators_sandwiches.epoch <= $2::NUMERIC
+            ORDER BY validators_sandwiches.epoch ASC",
+            &[&Decimal::from(from_epoch), &Decimal::from(last_epoch)],
+        )
+        .await?;
+
+    let mut loaded: Vec<(String, EpochSandwiches)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        loaded.push((
+            row.get("vote_account"),
+            EpochSandwiches {
+                epoch: row.get::<_, Decimal>("epoch").try_into()?,
+                epoch_start_at: row.get("start_at"),
+                epoch_end_at: row.get("end_at"),
+                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+                blocks_with_sandwiches: row
+                    .get::<_, Decimal>("blocks_with_sandwiches")
+                    .try_into()?,
+                sandwich_rate_30d: row.get("sandwich_rate_30d"),
+                sandwich_rate_60d: row.get("sandwich_rate_60d"),
+                cluster_median_rate: 0.0,
+            },
+        ));
+    }
+
+    let medians = crate::incidents::cluster_sandwich_medians(loaded.iter().map(|(_, epoch)| epoch));
+    let mut sandwiches: HashMap<String, Vec<EpochSandwiches>> = Default::default();
+    for (vote_account, mut epoch) in loaded {
+        epoch.cluster_median_rate = medians.get(&epoch.epoch).copied().unwrap_or(0.0);
+        sandwiches.entry(vote_account).or_default().push(epoch);
+    }
+
+    Ok(sandwiches)
+}
+
 pub async fn load_validator_incidents(
     psql_client: &Client,
     from_epoch: u64,
@@ -353,6 +407,12 @@ pub async fn load_validator_incidents(
         load_commission_raises(psql_client, from_epoch, last_epoch).await?
     {
         incidents.records(&vote_account).commission_raises = raises;
+    }
+
+    for (vote_account, epochs) in
+        load_validator_sandwiches(psql_client, from_epoch, last_epoch).await?
+    {
+        incidents.records(&vote_account).sandwiches = epochs;
     }
 
     // Read off the same epoch stats the incidents are handed back for, so the cluster figure and

@@ -74,7 +74,7 @@ pub struct QueryParams {
     query_sfdp: Option<bool>,
     /// `true` keeps the validators whose `incidents` array comes back empty, `false` the rest. Shaped by incident related query options.
     query_incident_free: Option<bool>,
-    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `RunningLateClientVersion` (defaults to just `Downtime`).
+    /// Comma-separated incident types to serve: `Downtime`, `BlockProduction`, `CommissionSpike`, `RunningLateClientVersion`, `Sandwich` (defaults to just `Downtime`).
     query_incident_types: Option<String>,
     /// Minimum downtime in seconds for a `DOWN` interval to read as an incident. Shorter intervals are restart noise, and reach neither the `incidents` array nor `order_field=incidents` nor `query_incident_free`. Only applies to the downtime incident type.
     min_incident_downtime_seconds: Option<u64>,
@@ -82,6 +82,8 @@ pub struct QueryParams {
     min_incident_missed_slots: Option<u64>,
     /// Minimum leader slots an epoch needs before its block production is judged. Defaults to 64, minimum 64.
     min_incident_leader_slots: Option<u64>,
+    /// Minimum 30-day sandwich rate in percent. Only raises the bar.
+    min_incident_sandwich_rate: Option<f64>,
     /// Epochs back the `incidents` array reaches, counting the newest reported epoch itself. Defaults to 90; above 90 — the whole window the cache holds — answers 400. Unrelated to `epochs`, which sizes `epoch_stats`.
     incident_window_epochs: Option<u64>,
     query_verified: Option<bool>,
@@ -115,6 +117,7 @@ pub struct GetValidatorsConfig {
     pub min_incident_downtime_seconds: Option<u64>,
     pub min_incident_missed_slots: Option<u64>,
     pub min_incident_leader_slots: Option<u64>,
+    pub min_incident_sandwich_rate: Option<f64>,
     pub incident_window_epochs: Option<u64>,
     pub query_verified: Option<bool>,
     pub query_protected: Option<bool>,
@@ -467,6 +470,7 @@ pub fn filter_validators(
         // `counts_as_incident` owns both defaults, so the caller's floors travel as they arrived.
         min_missed_slots: config.min_incident_missed_slots,
         min_leader_slots: config.min_incident_leader_slots,
+        min_sandwich_rate: config.min_incident_sandwich_rate,
         types: config.query_incident_types.clone(),
     };
     for (vote_account, validator) in validators.iter_mut() {
@@ -583,7 +587,7 @@ pub async fn handler(
                 return Ok(response_error(
                     StatusCode::BAD_REQUEST,
                     format!(
-                        "query_incident_types does not know {unknown:?}, expected Downtime, BlockProduction, CommissionSpike or RunningLateClientVersion"
+                        "query_incident_types does not know {unknown:?}, expected Downtime, BlockProduction, CommissionSpike, RunningLateClientVersion or Sandwich"
                     ),
                 ))
             }
@@ -616,6 +620,7 @@ pub async fn handler(
         min_incident_downtime_seconds: query_params.min_incident_downtime_seconds,
         min_incident_missed_slots: query_params.min_incident_missed_slots,
         min_incident_leader_slots: query_params.min_incident_leader_slots,
+        min_incident_sandwich_rate: query_params.min_incident_sandwich_rate,
         incident_window_epochs: query_params.incident_window_epochs,
         query_verified: query_params.query_verified,
         query_protected: query_params.query_protected,
@@ -666,7 +671,7 @@ pub async fn handler(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use store::dto::{IncidentDetail, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
+    use store::dto::{IncidentRecord, ValidatorEpochStats, ValidatorWarning, UNKNOWN_CLIENT_NAME};
     use store::incidents::{
         CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochClientVersion,
     };
@@ -841,6 +846,7 @@ mod tests {
             min_incident_downtime_seconds: None,
             min_incident_missed_slots: None,
             min_incident_leader_slots: None,
+            min_incident_sandwich_rate: None,
             incident_window_epochs: None,
             query_verified: None,
             query_protected: None,
@@ -1143,7 +1149,7 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| incident.epoch)
+                .map(|incident| incident.epoch())
                 .collect::<Vec<_>>(),
             vec![100]
         );
@@ -1309,10 +1315,10 @@ mod tests {
             filtered[0]
                 .incidents
                 .iter()
-                .map(|incident| match incident.detail {
-                    IncidentDetail::Downtime {
+                .map(|incident| match incident {
+                    IncidentRecord::Downtime {
                         downtime_seconds, ..
-                    } => downtime_seconds,
+                    } => *downtime_seconds,
                     _ => panic!("a downtime fixture is a downtime incident"),
                 })
                 .collect::<Vec<_>>(),
