@@ -22,7 +22,7 @@ pub struct CommissionChange {
 #[utoipa::path(
     get,
     tag = "Validators",
-    operation_id = "List commission changes",
+    operation_id = "List commission change reports",
     path = "/reports/commission-changes",
     responses(
         (status = 200, body = ResponseCommissionChanges)
