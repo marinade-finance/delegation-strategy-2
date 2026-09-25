@@ -42,8 +42,7 @@ pub fn client_name(client_id: Option<u16>) -> String {
 pub fn client_label(client_id: Option<u16>) -> String {
     classified(client_id)
         .and_then(|client| client.label())
-        .unwrap_or(UNKNOWN_CLIENT_NAME)
-        .to_string()
+        .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string())
 }
 
 pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
@@ -52,6 +51,17 @@ pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
 
 pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
     classified(client_id).and_then(|client| client.lineage().map(str::to_string))
+}
+
+/// Whether the registry places the client, so its vendor, lineage and block engine are known.
+pub fn client_is_classified(client_id: Option<u16>) -> bool {
+    classified(client_id).is_some()
+}
+
+/// The block engine the client runs. `None` for a client running on its own, and for an id the
+/// registry does not know.
+pub fn client_engine(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.engine().map(str::to_string))
 }
 
 pub struct ValidatorJitoMEVInfo {
@@ -846,6 +856,9 @@ pub struct ValidatorClientGroupRecord {
     pub version_spread: Vec<GroupShare>,
     /// Block engines paired with this client, from the group's own children.
     pub block_engines: Vec<String>,
+    /// The vendor slug of each entry in `block_engines`, in the same order. `query_block_engine`
+    /// takes a slug from here.
+    pub block_engine_vendors: Vec<String>,
     /// Null when the lineage has published no release we know of.
     pub latest_release: Option<ClientRelease>,
 }

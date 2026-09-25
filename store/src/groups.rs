@@ -1,8 +1,8 @@
 use crate::dto::{
-    client_label, client_lineage, effective_client_id, ClientRelease, GroupIncidents,
-    GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats,
-    ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups,
-    ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
+    client_engine, client_is_classified, client_label, client_lineage, effective_client_id,
+    ClientRelease, GroupIncidents, GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord,
+    ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -100,13 +100,20 @@ fn current_group_key(
     kind: GroupKind,
 ) -> Option<String> {
     match kind {
+        GroupKind::ClientLabel | GroupKind::ClientLineage => current_client_key(validator, kind),
+        GroupKind::Operator | GroupKind::ProviderAso => group_key(validator, stats, kind),
+    }
+}
+
+/// The client key the record carries. `None` for a kind that is not a client level.
+fn current_client_key(validator: &ValidatorRecord, kind: GroupKind) -> Option<String> {
+    match kind {
         GroupKind::ClientLabel => normalized(Some(validator.client_label.clone()))
             .or_else(|| normalized(validator.client_id_raw.clone())),
         GroupKind::ClientLineage => {
             normalized(validator.client_lineage.clone()).map(as_client_name)
         }
-        // Neither is projected onto the record, so both read the epoch as stored.
-        GroupKind::Operator | GroupKind::ProviderAso => group_key(validator, stats, kind),
+        GroupKind::Operator | GroupKind::ProviderAso => None,
     }
 }
 
@@ -115,6 +122,37 @@ type FoldedKey = Option<String>;
 
 fn folded(key: &Option<String>) -> FoldedKey {
     key.as_ref().map(|key| key.to_lowercase())
+}
+
+/// Whether `validator` belongs to the `/providers` row named `key`, by the `dc_aso` of its newest
+/// epoch. Case-insensitive.
+pub fn belongs_to_provider(validator: &ValidatorRecord, key: &str) -> bool {
+    folded(&normalized(validator.dc_aso.clone())) == folded(&normalized(Some(key.to_string())))
+}
+
+/// Whether `validator` belongs to the `/clients` row named `key`. Case-insensitive.
+pub fn belongs_to_client(validator: &ValidatorRecord, key: &str) -> bool {
+    folded(&current_client_key(validator, GroupKind::ClientLineage))
+        == folded(&normalized(Some(key.to_string())))
+}
+
+/// The `key` that selects the validators running no block engine.
+pub const NO_BLOCK_ENGINE: &str = "none";
+
+/// Whether `validator` runs the block engine whose vendor slug is `key`. `NO_BLOCK_ENGINE` selects
+/// the validators running none. Case-insensitive. A client the registry cannot place answers to
+/// neither: its block engine is unknown, not absent.
+pub fn belongs_to_block_engine(validator: &ValidatorRecord, key: &str) -> bool {
+    if !client_is_classified(validator.client_id) {
+        return false;
+    }
+
+    let key = key.trim().to_lowercase();
+    if client_engine(validator.client_id).is_none() {
+        return key == NO_BLOCK_ENGINE;
+    }
+
+    folded(&validator.client_vendor) == Some(key)
 }
 
 /// Members carrying the value, and the stake behind them.
@@ -278,6 +316,7 @@ impl ProviderAndClientBreakdowns {
             city_count: self.city_count(),
             version_spread: Self::shares(self.versions, group.total_stake),
             block_engines: Vec::new(),
+            block_engine_vendors: Vec::new(),
             latest_release,
             group,
         }
@@ -711,6 +750,7 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
         Accumulator::<()>::finish_base,
     );
     let engines_by_client = block_engines_by_client(&population.eligible, population.current_epoch);
+    let engines_by_label = engines_by_label(&population.eligible);
 
     let nodes = clients
         .rows
@@ -726,7 +766,9 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
                 .map(|(_, engine)| engine.clone())
                 .collect();
 
-            client.block_engines = paired_block_engines(&children);
+            let (engines, engine_vendors) = paired_block_engines(&children, &engines_by_label);
+            client.block_engines = engines;
+            client.block_engine_vendors = engine_vendors;
 
             ValidatorGroupNode {
                 children,
@@ -742,16 +784,43 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
     }
 }
 
-/// The engine half of each child's label, `Agave + Jito` -> `Jito`; a child labelled with the bare
-/// lineage is the client running on its own. Keeps the children's stake order.
-fn paired_block_engines(children: &[ValidatorGroupRecord]) -> Vec<String> {
-    let mut engines: Vec<String> = Vec::new();
+/// The block engine of each child that runs one, and its vendor slug at the same index. Keeps the
+/// children's stake order. A child running no engine is left out of both.
+fn paired_block_engines(
+    children: &[ValidatorGroupRecord],
+    engines_by_label: &HashMap<FoldedKey, (String, String)>,
+) -> (Vec<String>, Vec<String>) {
+    let mut names: Vec<String> = Vec::new();
+    let mut vendors: Vec<String> = Vec::new();
     for child in children {
-        if let Some((_, engine)) = child.key.split_once(" + ") {
-            if !engines.iter().any(|seen| seen == engine) {
-                engines.push(engine.to_string());
-            }
+        let Some((engine, vendor)) = engines_by_label.get(&folded(&Some(child.key.clone()))) else {
+            continue;
+        };
+        if !names.iter().any(|seen| seen == engine) {
+            names.push(engine.clone());
+            vendors.push(vendor.clone());
         }
+    }
+    (names, vendors)
+}
+
+/// The block engine and the vendor slug behind each client label, `agave + jitobam` -> `JitoBAM`
+/// and `bam`. A label running no engine is absent.
+fn engines_by_label(validators: &[&ValidatorRecord]) -> HashMap<FoldedKey, (String, String)> {
+    let mut engines: HashMap<FoldedKey, (String, String)> = Default::default();
+    for validator in validators {
+        let (Some(engine), Some(vendor)) = (
+            client_engine(validator.client_id),
+            normalized(validator.client_vendor.clone()),
+        ) else {
+            continue;
+        };
+        engines
+            .entry(folded(&current_client_key(
+                validator,
+                GroupKind::ClientLabel,
+            )))
+            .or_insert((engine, vendor));
     }
     engines
 }
@@ -1862,7 +1931,13 @@ mod tests {
             vec!["Jito".to_string(), "JitoBAM".to_string()],
             "the bare `Agave` child is the client running on its own, not an engine"
         );
+        assert_eq!(
+            agave.group.block_engine_vendors,
+            vec!["jito".to_string(), "bam".to_string()],
+            "one vendor slug for each engine, at the same index"
+        );
         assert!(tree.nodes[1].group.block_engines.is_empty());
+        assert!(tree.nodes[1].group.block_engine_vendors.is_empty());
     }
 
     #[test]
