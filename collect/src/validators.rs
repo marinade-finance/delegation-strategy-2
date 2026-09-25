@@ -7,7 +7,7 @@ use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
 use clap::Parser;
-use log::info;
+use log::{info, warn};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
@@ -137,6 +137,12 @@ pub struct ValidatorSnapshot {
     pub activating_stake: Option<u64>,
     #[serde(default)]
     pub deactivating_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_activating_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_deactivating_stake: Option<u64>,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
@@ -204,6 +210,7 @@ pub fn collect_validators_info(
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let institutional_stake = get_institutional_stakes(&client, epoch, &stake_history)?;
+    let direct_stake = get_direct_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
     let allow_zero_funded_bonds = validator_params.allow_zero_funded_bonds
         || std::env::var("ALLOW_ZERO_FUNDED_BONDS")
@@ -246,6 +253,16 @@ pub fn collect_validators_info(
         "Foundation stake: {}",
         foundation_stake.values().sum::<u64>()
     );
+    info!(
+        "Direct stake: {} effective, {} activating, {} deactivating over {} validators",
+        direct_stake.values().map(|s| s.effective).sum::<u64>(),
+        direct_stake.values().map(|s| s.activating).sum::<u64>(),
+        direct_stake.values().map(|s| s.deactivating).sum::<u64>(),
+        direct_stake.len()
+    );
+    if direct_stake.is_empty() {
+        warn!("Direct stake scan found nothing, every validator stores 0 direct stake");
+    }
 
     let data_centers = match validator_params.whois {
         Some(whois) => {
@@ -295,6 +312,7 @@ pub fn collect_validators_info(
             .get(&vote_pubkey)
             .copied()
             .unwrap_or_default();
+        let direct = direct_stake.get(&vote_pubkey).copied().unwrap_or_default();
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -324,6 +342,9 @@ pub fn collect_validators_info(
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
             activating_stake: Some(stake_totals.activating),
             deactivating_stake: Some(stake_totals.deactivating),
+            direct_stake: Some(direct.effective),
+            direct_activating_stake: Some(direct.activating),
+            direct_deactivating_stake: Some(direct.deactivating),
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),
