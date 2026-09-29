@@ -60,6 +60,22 @@ pub fn write_yaml(name: &str, contents: &str) -> String {
     path.to_str().unwrap().to_string()
 }
 
+pub fn validator_performance() -> ValidatorPerformance {
+    ValidatorPerformance {
+        commission: 7,
+        version: Some("2.0.0".into()),
+        client_id: None,
+        client_id_raw: None,
+        feature_set: None,
+        shred_version: None,
+        credits: 10,
+        leader_slots: 100,
+        blocks_produced: 100,
+        skip_rate: 0f64,
+        delinquent: false,
+    }
+}
+
 // One validator carrying only what the columns under test are read against; every caller overrides the field its own assertions turn on.
 pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Snapshot {
     Snapshot {
@@ -88,19 +104,7 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             deactivating_stake: None,
             superminority: false,
             stake_to_become_superminority: 0,
-            performance: ValidatorPerformance {
-                commission: 7,
-                version: Some("2.0.0".into()),
-                client_id: None,
-                client_id_raw: None,
-                feature_set: None,
-                shred_version: None,
-                credits: 10,
-                leader_slots: 100,
-                blocks_produced: 100,
-                skip_rate: 0f64,
-                delinquent: false,
-            },
+            performance: validator_performance(),
             inflation_rewards_collector: None,
             block_revenue_collector: None,
             inflation_rewards_commission_bps: None,

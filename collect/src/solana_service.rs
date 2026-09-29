@@ -126,6 +126,31 @@ fn canonical_client_name(name: &str) -> String {
         .collect()
 }
 
+/// How one registry id groups. `label()` renders the lineage and the engine for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClientGrouping {
+    /// Who ships the binary.
+    vendor: &'static str,
+    /// Which codebase it forks.
+    lineage: &'static str,
+    /// The block engine the binary runs. `None` for a client running on its own.
+    engine: Option<&'static str>,
+}
+
+impl ClientGrouping {
+    const fn new(
+        vendor: &'static str,
+        lineage: &'static str,
+        engine: Option<&'static str>,
+    ) -> Self {
+        Self {
+            vendor,
+            lineage,
+            engine,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientId {
     Registered(u16),
@@ -176,42 +201,55 @@ impl ClientId {
     }
 
     pub fn vendor(&self) -> Option<&'static str> {
-        self.groupings().map(|(vendor, _, _)| vendor)
+        self.groupings().map(|grouping| grouping.vendor)
     }
 
     pub fn lineage(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, lineage, _)| lineage)
+        self.groupings().map(|grouping| grouping.lineage)
     }
 
-    pub fn label(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, _, label)| label)
+    pub fn engine(&self) -> Option<&'static str> {
+        self.groupings().and_then(|grouping| grouping.engine)
     }
 
-    // Vendor is who ships the binary, lineage is which codebase it forks, label renders the pair for
-    // display; the registry assigns a separate id per lineage variant of a vendor, so all three are a
-    // function of the id alone.
-    fn groupings(&self) -> Option<(&'static str, &'static str, &'static str)> {
+    /// The lineage as display text, and the block engine after it: `Agave + Jito`.
+    pub fn label(&self) -> Option<String> {
+        let grouping = self.groupings()?;
+        let mut label = grouping.lineage.to_string();
+        label[..1].make_ascii_uppercase();
+        if let Some(engine) = grouping.engine {
+            label.push_str(" + ");
+            label.push_str(engine);
+        }
+
+        Some(label)
+    }
+
+    // Vendor is who ships the binary, lineage is which codebase it forks, engine is the block engine
+    // the binary runs; the registry assigns a separate id per lineage variant of a vendor, so all
+    // three are a function of the id alone.
+    fn groupings(&self) -> Option<ClientGrouping> {
         let ClientId::Registered(id) = self else {
             return None;
         };
-        // Ids 2 and 5 carry no "+ Jito": the bundle tile is a config flag in the same binary, so gossip
+        // Ids 2 and 5 run no engine: the bundle tile is a config flag in the same binary, so gossip
         // cannot tell a bundle-running node from a plain one, and neither claim is observable.
         Some(match id {
-            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it labels bare like id 3.
-            0 => ("solana-labs", "agave", "Agave"),
-            1 => ("jito", "agave", "Agave + Jito"),
-            2 => ("frankendancer", "frankendancer", "Frankendancer"),
-            3 => ("agave", "agave", "Agave"),
-            4 => ("paladin", "agave", "Agave + Paladin"),
-            5 => ("firedancer", "firedancer", "Firedancer"),
-            6 => ("bam", "agave", "Agave + JitoBAM"),
-            7 => ("sig", "sig", "Sig"),
-            8 => ("rakurai", "agave", "Agave + Rakurai"),
-            9 => ("harmonic", "firedancer", "Firedancer + Harmonic"),
-            10 => ("harmonic", "agave", "Agave + Harmonic"),
-            11 => ("harmonic", "frankendancer", "Frankendancer + Harmonic"),
-            12 => ("bam", "frankendancer", "Frankendancer + JitoBAM"),
-            13 => ("raiku", "agave", "Agave + Raiku"),
+            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it runs no engine like id 3.
+            0 => ClientGrouping::new("solana-labs", "agave", None),
+            1 => ClientGrouping::new("jito", "agave", Some("Jito")),
+            2 => ClientGrouping::new("frankendancer", "frankendancer", None),
+            3 => ClientGrouping::new("agave", "agave", None),
+            4 => ClientGrouping::new("paladin", "agave", Some("Paladin")),
+            5 => ClientGrouping::new("firedancer", "firedancer", None),
+            6 => ClientGrouping::new("bam", "agave", Some("JitoBAM")),
+            7 => ClientGrouping::new("sig", "sig", None),
+            8 => ClientGrouping::new("rakurai", "agave", Some("Rakurai")),
+            9 => ClientGrouping::new("harmonic", "firedancer", Some("Harmonic")),
+            10 => ClientGrouping::new("harmonic", "agave", Some("Harmonic")),
+            11 => ClientGrouping::new("harmonic", "frankendancer", Some("Harmonic")),
+            12 => ClientGrouping::new("bam", "frankendancer", Some("JitoBAM")),
+            13 => ClientGrouping::new("raiku", "agave", Some("Raiku")),
             _ => return None,
         })
     }
@@ -1214,21 +1252,22 @@ mod tests {
 
     #[test]
     fn client_label_pairs_lineage_with_the_vendor_modification() {
-        let label = |raw| resolve_client_id(Some(raw)).label();
-        assert_eq!(label("Agave"), Some("Agave"));
-        assert_eq!(label("Solana Labs"), Some("Agave"));
-        assert_eq!(label("JitoLabs"), Some("Agave + Jito"));
-        assert_eq!(label("AgaveBam"), Some("Agave + JitoBAM"));
-        assert_eq!(label("AgavePaladin"), Some("Agave + Paladin"));
-        assert_eq!(label("Unknown(8)"), Some("Agave + Rakurai"));
-        assert_eq!(label("Unknown(10)"), Some("Agave + Harmonic"));
-        assert_eq!(label("Raiku"), Some("Agave + Raiku"));
-        assert_eq!(label("Frankendancer"), Some("Frankendancer"));
-        assert_eq!(label("Unknown(11)"), Some("Frankendancer + Harmonic"));
-        assert_eq!(label("Unknown(12)"), Some("Frankendancer + JitoBAM"));
-        assert_eq!(label("Firedancer"), Some("Firedancer"));
-        assert_eq!(label("Unknown(9)"), Some("Firedancer + Harmonic"));
-        assert_eq!(label("Sig"), Some("Sig"));
+        let label = |raw: &str| resolve_client_id(Some(raw)).label();
+        let some = |label: &str| Some(label.to_string());
+        assert_eq!(label("Agave"), some("Agave"));
+        assert_eq!(label("Solana Labs"), some("Agave"));
+        assert_eq!(label("JitoLabs"), some("Agave + Jito"));
+        assert_eq!(label("AgaveBam"), some("Agave + JitoBAM"));
+        assert_eq!(label("AgavePaladin"), some("Agave + Paladin"));
+        assert_eq!(label("Unknown(8)"), some("Agave + Rakurai"));
+        assert_eq!(label("Unknown(10)"), some("Agave + Harmonic"));
+        assert_eq!(label("Raiku"), some("Agave + Raiku"));
+        assert_eq!(label("Frankendancer"), some("Frankendancer"));
+        assert_eq!(label("Unknown(11)"), some("Frankendancer + Harmonic"));
+        assert_eq!(label("Unknown(12)"), some("Frankendancer + JitoBAM"));
+        assert_eq!(label("Firedancer"), some("Firedancer"));
+        assert_eq!(label("Unknown(9)"), some("Firedancer + Harmonic"));
+        assert_eq!(label("Sig"), some("Sig"));
         assert_eq!(label("Unknown(86)"), None);
         assert_eq!(resolve_client_id(None).label(), None);
     }
@@ -1240,6 +1279,7 @@ mod tests {
         for id in client_registry().names.keys() {
             let client = ClientId::Registered(*id);
             let (lineage, label) = (client.lineage().unwrap(), client.label().unwrap());
+            let label = label.as_str();
             let mut expected = lineage.to_string();
             expected[..1].make_ascii_uppercase();
             assert!(
