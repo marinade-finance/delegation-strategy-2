@@ -811,6 +811,7 @@ mod tests {
             commission_advertised: None,
             commission_effective: None,
             commission_effective_source: None,
+            commission_effective_bps: None,
             inflation_rewards_commission_bps: None,
             inflation_rewards_commission_bps_is_v4: None,
             inflation_rewards_collector: None,

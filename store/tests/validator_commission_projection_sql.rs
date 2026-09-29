@@ -779,3 +779,94 @@ async fn collector_flags_and_shared_counts_project_per_epoch() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
+    let schema = "ds_test_commission_effective_bps";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW()), (1, $2, 0, NOW())",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    // voteDeparted has no open-epoch row, so its record is seeded straight from the closed epoch.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective, commission_effective_source, inflation_rewards_commission_bps
+            ) VALUES
+                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', 650),
+                ('idSampled', 'voteSampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL, NULL, 900),
+                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'reward_row', 650),
+                ('idReward', 'voteReward', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
+                ('idBackfill', 'voteBackfill', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, NULL, 650),
+                ('idBackfill', 'voteBackfill', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
+                ('idUnsampled', 'voteUnsampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', NULL),
+                ('idUnsampled', 'voteUnsampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL),
+                ('idDeparted', 'voteDeparted', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 9, 9, 9, 'vote_state', 820)",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    let validators = load(&client, 2).await;
+
+    let sampled = validators.get("voteSampled").unwrap();
+    assert_eq!(
+        (
+            sampled.commission_effective,
+            sampled.commission_effective_bps,
+            sampled.inflation_rewards_commission_bps
+        ),
+        (Some(7), Some(650), Some(900)),
+        "the paired bps comes from the closed epoch, the top-level bps stays on the open one"
+    );
+    assert_eq!(
+        validators
+            .get("voteReward")
+            .unwrap()
+            .commission_effective_bps,
+        None,
+        "a reward row applied a whole percent, so the sampled bps is not what it charged"
+    );
+    assert_eq!(
+        validators
+            .get("voteBackfill")
+            .unwrap()
+            .commission_effective_bps,
+        None,
+        "a backfilled rate has no source and so no bps behind it"
+    );
+    assert_eq!(
+        validators
+            .get("voteUnsampled")
+            .unwrap()
+            .commission_effective_bps,
+        None
+    );
+    assert_eq!(
+        validators
+            .get("voteDeparted")
+            .unwrap()
+            .commission_effective_bps,
+        Some(820),
+        "a record seeded from the closed epoch pairs the same way as one walked down to it"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
