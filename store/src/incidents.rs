@@ -373,58 +373,6 @@ pub struct ValidatorIncidentRecords {
 impl ValidatorIncidentRecords {
     /// An epoch's block production is reported once: on that epoch's downtime records if any are
     /// served, otherwise as a record of its own. A commission spike is never folded into either.
-    /// One incident for each run of incident epochs. The numbers come from the epoch with the
-    /// highest 30-day rate in the run.
-    fn sandwich_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
-        let mut epochs: Vec<&EpochSandwiches> = self
-            .sandwiches
-            .iter()
-            .filter(|sandwiches| sandwiches.epoch >= filters.from_epoch)
-            .filter(|sandwiches| sandwiches.counts_as_incident(filters))
-            .collect();
-        epochs.sort_by_key(|sandwiches| sandwiches.epoch);
-
-        let mut runs: Vec<Vec<&EpochSandwiches>> = Vec::new();
-        for sandwiches in epochs {
-            match runs.last_mut() {
-                Some(run)
-                    if sandwiches.epoch - run[run.len() - 1].epoch
-                        <= MAX_SANDWICH_INCIDENT_GAP_EPOCHS =>
-                {
-                    run.push(sandwiches)
-                }
-                _ => runs.push(vec![sandwiches]),
-            }
-        }
-
-        runs.into_iter()
-            .map(|run| {
-                let first = run[0];
-                let last = run[run.len() - 1];
-                let peak = run.iter().copied().fold(first, |peak, sandwiches| {
-                    if sandwiches.sandwich_rate_30d > peak.sandwich_rate_30d {
-                        sandwiches
-                    } else {
-                        peak
-                    }
-                });
-                dto::IncidentRecord::Sandwich {
-                    first_epoch: first.epoch,
-                    epoch_start_at: first.epoch_start_at,
-                    epoch_end_at: last.epoch_end_at,
-                    last_epoch: last.epoch,
-                    peak_epoch: peak.epoch,
-                    blocks_produced: peak.blocks_produced,
-                    blocks_with_sandwiches: peak.blocks_with_sandwiches,
-                    sandwich_rate_30d: peak.sandwich_rate_30d,
-                    sandwich_rate_60d: peak.sandwich_rate_60d,
-                    cluster_median_rate: peak.cluster_median_rate,
-                    threshold: peak.threshold(filters),
-                }
-            })
-            .collect()
-    }
-
     pub fn into_response_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
         let mut incidents: Vec<dto::IncidentRecord> = Vec::new();
         // Epochs whose block production a downtime record already carries.
@@ -506,6 +454,58 @@ impl ValidatorIncidentRecords {
 
         incidents.sort_by_key(|incident| (incident.epoch(), incident.started_at()));
         incidents
+    }
+
+    /// One incident for each run of incident epochs. The numbers come from the epoch with the
+    /// highest 30-day rate in the run.
+    fn sandwich_incidents(&self, filters: &IncidentFilters) -> Vec<dto::IncidentRecord> {
+        let mut epochs: Vec<&EpochSandwiches> = self
+            .sandwiches
+            .iter()
+            .filter(|sandwiches| sandwiches.epoch >= filters.from_epoch)
+            .filter(|sandwiches| sandwiches.counts_as_incident(filters))
+            .collect();
+        epochs.sort_by_key(|sandwiches| sandwiches.epoch);
+
+        let mut runs: Vec<Vec<&EpochSandwiches>> = Vec::new();
+        for sandwiches in epochs {
+            match runs.last_mut() {
+                Some(run)
+                    if sandwiches.epoch - run[run.len() - 1].epoch
+                        <= MAX_SANDWICH_INCIDENT_GAP_EPOCHS =>
+                {
+                    run.push(sandwiches)
+                }
+                _ => runs.push(vec![sandwiches]),
+            }
+        }
+
+        runs.into_iter()
+            .map(|run| {
+                let first = run[0];
+                let last = run[run.len() - 1];
+                let peak = run.iter().copied().fold(first, |peak, sandwiches| {
+                    if sandwiches.sandwich_rate_30d > peak.sandwich_rate_30d {
+                        sandwiches
+                    } else {
+                        peak
+                    }
+                });
+                dto::IncidentRecord::Sandwich {
+                    first_epoch: first.epoch,
+                    epoch_start_at: first.epoch_start_at,
+                    epoch_end_at: last.epoch_end_at,
+                    last_epoch: last.epoch,
+                    peak_epoch: peak.epoch,
+                    blocks_produced: peak.blocks_produced,
+                    blocks_with_sandwiches: peak.blocks_with_sandwiches,
+                    sandwich_rate_30d: peak.sandwich_rate_30d,
+                    sandwich_rate_60d: peak.sandwich_rate_60d,
+                    cluster_median_rate: peak.cluster_median_rate,
+                    threshold: peak.threshold(filters),
+                }
+            })
+            .collect()
     }
 
     fn epoch_block_production(&self, epoch: u64) -> Option<&EpochBlockProduction> {
@@ -1457,13 +1457,14 @@ mod tests {
     fn parse_list_takes_every_name_the_response_emits() {
         assert_eq!(
             IncidentType::parse_list(
-                "Downtime, BlockProduction,CommissionSpike,RunningLateClientVersion"
+                "Downtime, BlockProduction,CommissionSpike,RunningLateClientVersion,Sandwich"
             ),
             Ok(vec![
                 IncidentType::Downtime,
                 IncidentType::BlockProduction,
                 IncidentType::CommissionSpike,
                 IncidentType::RunningLateClientVersion,
+                IncidentType::Sandwich,
             ])
         );
         assert_eq!(

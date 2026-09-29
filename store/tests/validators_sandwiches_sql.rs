@@ -156,6 +156,30 @@ async fn a_second_run_updates_the_row_it_already_wrote() {
     assert_eq!(updated_at.to_rfc3339(), "2026-09-10T00:00:00+00:00");
 }
 
+#[tokio::test]
+async fn a_repeated_row_in_one_snapshot_keeps_the_last() {
+    let schema = "ds_test_store_sandwiches_dedup";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store(
+        &mut client,
+        schema,
+        "2026-09-09T00:00:00Z",
+        vec![
+            sandwich("voteA", 44.4, Some(31.1)),
+            sandwich("voteB", 1.0, None),
+            sandwich("voteA", 45.0, None),
+        ],
+    )
+    .await;
+
+    assert_eq!(read(&client, "voteA").await.0, 45.0);
+    assert_eq!(read(&client, "voteB").await.0, 1.0);
+}
+
 // One epoch of the dataset is ~700 rows, over the chunk size the upsert pages at.
 #[tokio::test]
 async fn a_snapshot_over_one_chunk_is_stored_whole() {

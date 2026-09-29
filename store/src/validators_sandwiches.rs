@@ -3,6 +3,7 @@ use collect::validators_sandwiches::ValidatorsSandwichesSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
+use std::collections::BTreeMap;
 use tokio_postgres::Client;
 
 pub const VALIDATORS_SANDWICHES_TABLE: &str = "validators_sandwiches";
@@ -38,9 +39,18 @@ pub async fn store_sandwiches(
         snapshot.sandwiches.len()
     );
 
+    // One upsert statement cannot touch the same (epoch, vote_account) twice. The last row wins.
+    let sandwiches: Vec<_> = snapshot
+        .sandwiches
+        .iter()
+        .map(|r| ((r.epoch, r.vote_account.as_str()), r))
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+
     let mut total_upserted = 0;
 
-    for chunk in snapshot.sandwiches.chunks(DEFAULT_CHUNK_SIZE) {
+    for chunk in sandwiches.chunks(DEFAULT_CHUNK_SIZE) {
         let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
         let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
         let blocks_produced: Vec<Decimal> = chunk
