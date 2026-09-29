@@ -192,6 +192,12 @@ pub struct Validator {
     pub inflation_rewards_commission_bps_is_v4: Option<bool>,
     pub block_revenue_commission_bps: Option<i32>,
     pub pending_delegator_rewards: Option<Decimal>,
+    pub inflation_rewards_collector_owner: Option<String>,
+    pub inflation_rewards_collector_lamports: Option<Decimal>,
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    pub block_revenue_collector_owner: Option<String>,
+    pub block_revenue_collector_lamports: Option<Decimal>,
+    pub block_revenue_collector_healthy: Option<bool>,
 }
 
 impl Validator {
@@ -236,6 +242,14 @@ impl Validator {
             inflation_rewards_commission_bps_is_v4: v.inflation_rewards_commission_bps_is_v4,
             block_revenue_commission_bps: v.block_revenue_commission_bps.map(i32::from),
             pending_delegator_rewards: v.pending_delegator_rewards.map(Decimal::from),
+            inflation_rewards_collector_owner: v.inflation_rewards_collector_owner.clone(),
+            inflation_rewards_collector_lamports: v
+                .inflation_rewards_collector_lamports
+                .map(Decimal::from),
+            inflation_rewards_collector_healthy: v.inflation_rewards_collector_healthy,
+            block_revenue_collector_owner: v.block_revenue_collector_owner.clone(),
+            block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
+            block_revenue_collector_healthy: v.block_revenue_collector_healthy,
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
