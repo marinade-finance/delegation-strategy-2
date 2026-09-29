@@ -870,3 +870,71 @@ async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn collector_health_projects_from_the_newest_sample() {
+    let schema = "ds_test_collector_health_projection";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW()), (1, $2, 0, NOW())",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    // voteDrained's collector was rent-exempt at close and has since been drained below it.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                inflation_rewards_collector_healthy, block_revenue_collector_healthy
+            ) VALUES
+                ('idDrained', 'voteDrained', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), true, true),
+                ('idDrained', 'voteDrained', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), false, true),
+                ('idHome', 'voteHome', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL)",
+            &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
+        )
+        .await
+        .unwrap();
+
+    let validators = load(&client, 2).await;
+
+    let drained = validators.get("voteDrained").unwrap();
+    assert_eq!(
+        (
+            drained.inflation_rewards_collector_healthy,
+            drained.block_revenue_collector_healthy
+        ),
+        (Some(false), Some(true)),
+        "the record carries the open epoch's check, the one that predicts the next payout"
+    );
+    let closed = drained
+        .epoch_stats
+        .iter()
+        .find(|stat| stat.epoch == EPOCH_CLOSED)
+        .unwrap();
+    assert_eq!(closed.inflation_rewards_collector_healthy, Some(true));
+
+    let home = validators.get("voteHome").unwrap();
+    assert_eq!(
+        (
+            home.inflation_rewards_collector_healthy,
+            home.block_revenue_collector_healthy
+        ),
+        (None, None),
+        "unchecked is not healthy"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}

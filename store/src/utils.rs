@@ -1162,6 +1162,8 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
+                inflation_rewards_collector_healthy,
+                block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
                 CASE WHEN inflation_rewards_collector IS NOT NULL
                      THEN inflation_rewards_collector <> validators.vote_account END AS inflation_rewards_collector_redirected,
@@ -1332,12 +1334,16 @@ pub async fn load_validators(
                         .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
                     inflation_rewards_collector_shared_count: row
                         .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                    inflation_rewards_collector_healthy: row
+                        .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
                     block_revenue_collector: row
                         .get::<_, Option<String>>("block_revenue_collector"),
                     block_revenue_collector_is_identity: row
                         .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
                     block_revenue_collector_shared_count: row
                         .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                    block_revenue_collector_healthy: row
+                        .get::<_, Option<bool>>("block_revenue_collector_healthy"),
                     block_revenue_commission_bps: row
                         .get::<_, Option<i32>>("block_revenue_commission_bps"),
                     pending_delegator_rewards: row
@@ -1486,11 +1492,15 @@ pub async fn load_validators(
                     .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
                 inflation_rewards_collector_shared_count: row
                     .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                inflation_rewards_collector_healthy: row
+                    .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
                 block_revenue_collector: row.get::<_, Option<String>>("block_revenue_collector"),
                 block_revenue_collector_is_identity: row
                     .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
                 block_revenue_collector_shared_count: row
                     .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                block_revenue_collector_healthy: row
+                    .get::<_, Option<bool>>("block_revenue_collector_healthy"),
                 block_revenue_commission_bps: row
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row

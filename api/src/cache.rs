@@ -458,6 +458,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.validator_groups = validator_groups;
         // Inside the commit: a failed warm must not leave the gauge describing unserved records.
         record_inflation_commission_sources(ctx.cache.validators.values());
+        record_unhealthy_collectors(ctx.cache.validators.values());
     }
 
     info!(
@@ -686,6 +687,32 @@ fn record_inflation_commission_sources<'a>(
     for (source, count) in counts {
         metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
             .with_label_values(&[source])
+            .set(count);
+    }
+}
+
+const COLLECTOR_KIND_INFLATION_REWARDS: &str = "inflation_rewards";
+const COLLECTOR_KIND_BLOCK_REVENUE: &str = "block_revenue";
+
+// A validator gone from the newest epoch keeps its last flag, which no later check can clear.
+fn record_unhealthy_collectors<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) {
+    let (mut inflation_rewards, mut block_revenue) = (0, 0);
+    for record in validators.filter(|record| record.has_last_epoch_stats) {
+        if record.inflation_rewards_collector_healthy == Some(false) {
+            inflation_rewards += 1;
+        }
+        if record.block_revenue_collector_healthy == Some(false) {
+            block_revenue += 1;
+        }
+    }
+    for (kind, count) in [
+        (COLLECTOR_KIND_INFLATION_REWARDS, inflation_rewards),
+        (COLLECTOR_KIND_BLOCK_REVENUE, block_revenue),
+    ] {
+        metrics::VALIDATOR_UNHEALTHY_COLLECTOR
+            .with_label_values(&[kind])
             .set(count);
     }
 }
@@ -1133,5 +1160,52 @@ mod commission_source_metric_tests {
                 "{source} has to be alertable before it ever has a validator in it"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unhealthy_collector_metric_tests {
+    use super::*;
+    use store::dto::ValidatorRecord;
+
+    fn record(inflation: Option<bool>, block: Option<bool>, current: bool) -> ValidatorRecord {
+        ValidatorRecord {
+            inflation_rewards_collector_healthy: inflation,
+            block_revenue_collector_healthy: block,
+            has_last_epoch_stats: current,
+            ..Default::default()
+        }
+    }
+
+    fn gauge(kind: &str) -> i64 {
+        metrics::VALIDATOR_UNHEALTHY_COLLECTOR
+            .get_metric_with_label_values(&[kind])
+            .unwrap()
+            .get()
+    }
+
+    #[test]
+    fn counts_only_current_validators_flagged_unhealthy_and_resets_each_refresh() {
+        let validators = [
+            record(Some(false), Some(false), true),
+            record(Some(false), Some(true), true),
+            record(None, None, true),
+            record(Some(false), Some(false), false),
+        ];
+        record_unhealthy_collectors(validators.iter());
+        assert_eq!(gauge(COLLECTOR_KIND_INFLATION_REWARDS), 2);
+        assert_eq!(
+            gauge(COLLECTOR_KIND_BLOCK_REVENUE),
+            1,
+            "an unchecked collector and a validator gone from the newest epoch do not count"
+        );
+
+        record_unhealthy_collectors(std::iter::empty());
+        assert_eq!(gauge(COLLECTOR_KIND_INFLATION_REWARDS), 0);
+        assert_eq!(
+            gauge(COLLECTOR_KIND_BLOCK_REVENUE),
+            0,
+            "a resolved fleet reads 0, so the alert clears"
+        );
     }
 }
