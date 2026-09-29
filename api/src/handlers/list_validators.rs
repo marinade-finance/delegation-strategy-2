@@ -706,7 +706,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use store::dto::{
-        client_label, client_lineage, client_vendor, IncidentDetail, ValidatorEpochStats,
+        client_label, client_lineage, client_vendor, IncidentRecord, ValidatorEpochStats,
         ValidatorWarning, UNKNOWN_CLIENT_NAME,
     };
     use store::incidents::{
