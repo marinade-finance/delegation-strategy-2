@@ -114,6 +114,12 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             inflation_rewards_commission_bps_is_v4: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            inflation_rewards_collector_owner: None,
+            inflation_rewards_collector_lamports: None,
+            inflation_rewards_collector_healthy: None,
+            block_revenue_collector_owner: None,
+            block_revenue_collector_lamports: None,
+            block_revenue_collector_healthy: None,
         }],
     }
 }

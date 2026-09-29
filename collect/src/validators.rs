@@ -11,6 +11,7 @@ use log::{info, warn};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
+use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -159,6 +160,19 @@ pub struct ValidatorSnapshot {
     pub block_revenue_commission_bps: Option<u16>,
     #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
+    // None where nothing was checked: a pre-v4 state, or a collector that is the vote account itself.
+    #[serde(default)]
+    pub inflation_rewards_collector_owner: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_collector_lamports: Option<u64>,
+    #[serde(default)]
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_collector_owner: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector_lamports: Option<u64>,
+    #[serde(default)]
+    pub block_revenue_collector_healthy: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,6 +233,7 @@ pub fn collect_validators_info(
             .unwrap_or(false);
     // One vote-program scan feeds both the withdraw authorities and the vote state below.
     let vote_account_states = get_vote_account_states(&client)?;
+    let collector_health = get_collector_health(&client, &vote_account_states)?;
     let stake_account_totals = get_stake_account_totals(
         &client,
         epoch,
@@ -313,6 +328,13 @@ pub fn collect_validators_info(
             .copied()
             .unwrap_or_default();
         let direct = direct_stake.get(&vote_pubkey).copied().unwrap_or_default();
+        let health_of = |collector: Option<Pubkey>| {
+            checked_collector(&vote_pubkey, collector).and_then(|c| collector_health.get(&c))
+        };
+        let inflation_health =
+            health_of(vote_state.and_then(|state| state.inflation_rewards_collector));
+        let block_revenue_health =
+            health_of(vote_state.and_then(|state| state.block_revenue_collector));
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -364,6 +386,16 @@ pub fn collect_validators_info(
             block_revenue_commission_bps: vote_state
                 .and_then(|state| state.block_revenue_commission_bps),
             pending_delegator_rewards: vote_state.and_then(|state| state.pending_delegator_rewards),
+            inflation_rewards_collector_owner: inflation_health
+                .and_then(|h| h.owner)
+                .map(|owner| owner.to_string()),
+            inflation_rewards_collector_lamports: inflation_health.map(|h| h.lamports),
+            inflation_rewards_collector_healthy: inflation_health.map(|h| h.healthy),
+            block_revenue_collector_owner: block_revenue_health
+                .and_then(|h| h.owner)
+                .map(|owner| owner.to_string()),
+            block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
+            block_revenue_collector_healthy: block_revenue_health.map(|h| h.healthy),
         });
     }
 

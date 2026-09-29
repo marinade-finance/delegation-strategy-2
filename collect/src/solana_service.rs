@@ -739,6 +739,93 @@ pub fn withdraw_authorities(
         .collect()
 }
 
+const MAX_GET_MULTIPLE_ACCOUNTS: usize = 100;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectorHealth {
+    // None where the account does not exist on chain.
+    pub owner: Option<Pubkey>,
+    pub lamports: u64,
+    pub healthy: bool,
+}
+
+// agave credits the vote account without the SIMD-0232 collector checks, so there is nothing to check.
+pub fn checked_collector(vote_account: &str, collector: Option<Pubkey>) -> Option<Pubkey> {
+    collector.filter(|collector| collector.to_string() != vote_account)
+}
+
+// Mirrors agave collector_type_checked before the deposit, so an edge case it would pay reads unhealthy.
+fn evaluate_collector(
+    collector: &Pubkey,
+    account: Option<&Account>,
+    rent_minimum: impl FnOnce(usize) -> anyhow::Result<u64>,
+) -> anyhow::Result<CollectorHealth> {
+    let Some(account) = account else {
+        return Ok(CollectorHealth {
+            owner: None,
+            lamports: 0,
+            healthy: false,
+        });
+    };
+    let healthy = *collector != solana_sdk::incinerator::id()
+        && solana_sdk::system_program::check_id(&account.owner)
+        && account.lamports >= rent_minimum(account.data.len())?;
+    Ok(CollectorHealth {
+        owner: Some(account.owner),
+        lamports: account.lamports,
+        healthy,
+    })
+}
+
+pub fn get_collector_health(
+    rpc_client: &RpcClient,
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> anyhow::Result<HashMap<Pubkey, CollectorHealth>> {
+    let checked = |kind: fn(&VoteStateFields) -> Option<Pubkey>| -> HashSet<Pubkey> {
+        vote_account_states
+            .iter()
+            .filter_map(|(vote_account, state)| checked_collector(vote_account, kind(state)))
+            .collect()
+    };
+    let inflation = checked(|state| state.inflation_rewards_collector);
+    let block_revenue = checked(|state| state.block_revenue_collector);
+    let collectors: Vec<Pubkey> = inflation.union(&block_revenue).copied().collect();
+    info!("Checking {} distinct collector accounts", collectors.len());
+
+    let mut rent_minimums: HashMap<usize, u64> = HashMap::new();
+    let mut health = HashMap::with_capacity(collectors.len());
+    for chunk in collectors.chunks(MAX_GET_MULTIPLE_ACCOUNTS) {
+        for (collector, account) in chunk.iter().zip(rpc_client.get_multiple_accounts(chunk)?) {
+            let collector_health = evaluate_collector(collector, account.as_ref(), |data_len| {
+                if let Some(minimum) = rent_minimums.get(&data_len) {
+                    return Ok(*minimum);
+                }
+                let minimum = rpc_client.get_minimum_balance_for_rent_exemption(data_len)?;
+                rent_minimums.insert(data_len, minimum);
+                Ok(minimum)
+            })?;
+            health.insert(*collector, collector_health);
+        }
+    }
+
+    for (kind, collectors) in [
+        ("inflation rewards", &inflation),
+        ("block revenue", &block_revenue),
+    ] {
+        let mut unhealthy = collectors
+            .iter()
+            .filter(|collector| health.get(collector).is_some_and(|h| !h.healthy));
+        if let Some(first) = unhealthy.next() {
+            warn!(
+                "{} {kind} collectors would burn their commission, first: {first}",
+                unhealthy.count() + 1
+            );
+        }
+    }
+
+    Ok(health)
+}
+
 // solana-client 2.2 RpcInflationReward predates commission_bps and would drop it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1779,5 +1866,101 @@ mod stake_account_tests {
         assert_eq!(entry.activating, 300);
         assert_eq!(entry.deactivating, 200);
         assert_eq!(assigned, 1);
+    }
+}
+
+#[cfg(test)]
+mod collector_health_tests {
+    use super::*;
+
+    const RENT_MINIMUM: u64 = 890_880;
+    const COLLECTOR: Pubkey = Pubkey::new_from_array([5; 32]);
+
+    fn account(owner: Pubkey, lamports: u64) -> Account {
+        Account {
+            lamports,
+            data: vec![],
+            owner,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    fn evaluate(collector: &Pubkey, account: Option<&Account>) -> CollectorHealth {
+        evaluate_collector(collector, account, |data_len| {
+            assert_eq!(data_len, 0, "rent is asked for the account's own size");
+            Ok(RENT_MINIMUM)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rent_exempt_system_account_is_healthy() {
+        let health = evaluate(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM)),
+        );
+        assert_eq!(
+            health,
+            CollectorHealth {
+                owner: Some(solana_sdk::system_program::id()),
+                lamports: RENT_MINIMUM,
+                healthy: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_system_account_below_rent_is_unhealthy() {
+        let health = evaluate(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM - 1)),
+        );
+        assert!(!health.healthy);
+        assert_eq!(health.lamports, RENT_MINIMUM - 1);
+    }
+
+    #[test]
+    fn an_account_not_owned_by_the_system_program_is_unhealthy() {
+        let owner = solana_stake_interface::program::id();
+        let health = evaluate(&COLLECTOR, Some(&account(owner, u64::MAX)));
+        assert!(
+            !health.healthy,
+            "agave rejects the owner before any rent check"
+        );
+        assert_eq!(health.owner, Some(owner));
+    }
+
+    #[test]
+    fn a_missing_account_is_unhealthy() {
+        assert_eq!(
+            evaluate(&COLLECTOR, None),
+            CollectorHealth {
+                owner: None,
+                lamports: 0,
+                healthy: false,
+            }
+        );
+    }
+
+    #[test]
+    fn the_incinerator_is_unhealthy_because_the_commission_burns() {
+        let health = evaluate(
+            &solana_sdk::incinerator::id(),
+            Some(&account(solana_sdk::system_program::id(), u64::MAX)),
+        );
+        assert!(!health.healthy);
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_is_not_checked() {
+        let vote_account = COLLECTOR.to_string();
+        assert_eq!(checked_collector(&vote_account, Some(COLLECTOR)), None);
+        assert_eq!(checked_collector(&vote_account, None), None);
+        let elsewhere = Pubkey::new_from_array([6; 32]);
+        assert_eq!(
+            checked_collector(&vote_account, Some(elsewhere)),
+            Some(elsewhere)
+        );
     }
 }
