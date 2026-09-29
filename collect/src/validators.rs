@@ -23,7 +23,7 @@ pub struct ValidatorsParams {
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
-    whois_bearer_token: Option<String>,
+    whois_bearer_token: Option<BearerToken>,
 
     #[arg(
         long = "bonds-url",

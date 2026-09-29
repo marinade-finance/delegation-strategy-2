@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use collect::whois_service::{IpInfo, WhoisClient};
+use collect::whois_service::{BearerToken, IpInfo, WhoisClient};
 use log::{info, warn};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ pub struct StoreIpInfoParams {
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
-    whois_bearer_token: Option<String>,
+    whois_bearer_token: Option<BearerToken>,
 
     #[arg(
         long = "refresh-limit",
