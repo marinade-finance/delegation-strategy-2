@@ -189,6 +189,22 @@ impl InflationApyCalculator {
         (apr, apy)
     }
 }
+impl TryFrom<&tokio_postgres::Row> for InflationApyCalculator {
+    type Error = anyhow::Error;
+
+    fn try_from(row: &tokio_postgres::Row) -> anyhow::Result<Self> {
+        Ok(Self {
+            supply: row.try_get::<_, Decimal>("supply")?.try_into()?,
+            duration: row.try_get::<_, i32>("duration")?.try_into()?,
+            inflation: row.try_get("inflation")?,
+            slots_per_year: row.try_get("slots_per_year")?,
+            // Text, because from the Alpenglow epochs on the sum is above the Decimal maximum of ~7.9e28.
+            total_weighted_credits: row
+                .try_get::<_, String>("total_weighted_credits")?
+                .parse()?,
+        })
+    }
+}
 async fn get_apy_calculators(
     psql_client: &Client,
 ) -> anyhow::Result<HashMap<u64, InflationApyCalculator>> {
@@ -200,7 +216,7 @@ async fn get_apy_calculators(
                     supply,
                     inflation,
                     slots_per_year,
-                    SUM(validators.credits * validators.activated_stake) total_weighted_credits
+                    ROUND(SUM(validators.credits * validators.activated_stake))::TEXT total_weighted_credits
                 FROM
                 epochs
                 INNER JOIN validators ON epochs.epoch = validators.epoch
@@ -211,18 +227,13 @@ async fn get_apy_calculators(
 
     let mut result: HashMap<_, _> = Default::default();
     for row in apy_info_rows {
-        result.insert(
-            row.get::<_, Decimal>("epoch").try_into()?,
-            InflationApyCalculator {
-                supply: row.get::<_, Decimal>("supply").try_into()?,
-                duration: row.get::<_, i32>("duration").try_into()?,
-                inflation: row.get("inflation"),
-                slots_per_year: row.get("slots_per_year"),
-                total_weighted_credits: row
-                    .get::<_, Decimal>("total_weighted_credits")
-                    .try_into()?,
-            },
-        );
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+        match InflationApyCalculator::try_from(&row) {
+            Ok(calculator) => {
+                result.insert(epoch, calculator);
+            }
+            Err(err) => log::warn!("Skipping APY calculator for epoch {epoch}: {err:#}"),
+        }
     }
 
     Ok(result)

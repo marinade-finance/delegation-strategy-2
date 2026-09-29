@@ -18,14 +18,29 @@ pub struct IpInfo {
     pub city: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct BearerToken(String);
+impl std::str::FromStr for BearerToken {
+    type Err = std::convert::Infallible;
+
+    fn from_str(token: &str) -> Result<Self, Self::Err> {
+        Ok(Self(token.to_string()))
+    }
+}
+impl std::fmt::Debug for BearerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BearerToken(<redacted>)")
+    }
+}
+
 pub struct WhoisClient {
     host: String,
-    bearer_token: Option<String>,
+    bearer_token: Option<BearerToken>,
     // Held, not built per call: the connection pool lives on the client, so a fresh one per address re-does the TLS handshake for every lookup of a cluster-sized sweep.
     client: reqwest::blocking::Client,
 }
 impl WhoisClient {
-    pub fn new(host: String, bearer_token: Option<String>) -> anyhow::Result<Self> {
+    pub fn new(host: String, bearer_token: Option<BearerToken>) -> anyhow::Result<Self> {
         Ok(Self {
             host,
             bearer_token,
@@ -42,7 +57,7 @@ impl WhoisClient {
                 "Authorization",
                 format!(
                     "Bearer {}",
-                    self.bearer_token.clone().unwrap_or("none".to_string())
+                    self.bearer_token.as_ref().map_or("none", |token| token.0.as_str())
                 ),
             )
             .send()?
