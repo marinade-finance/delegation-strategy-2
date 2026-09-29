@@ -86,7 +86,7 @@ struct SandwichCsvRow {
 
 const CSV_COLUMNS: [Column; 1] = [required("vote_account")];
 
-/// The CSVs carry the sandwiched.me sheets own 3-line preamble, and `csv::parse` reads a header off
+/// The CSVs carry the sandwiched.me sheets own 3-line preamble, and the csv parser reads a header off
 /// the first line it is given.
 fn csv_body(text: &str) -> &str {
     text.splitn(3, '\n').nth(2).unwrap_or("")
@@ -94,7 +94,8 @@ fn csv_body(text: &str) -> &str {
 
 pub fn parse_epoch_csv(epoch: Epoch, text: &str) -> anyhow::Result<Vec<ValidatorSandwich>> {
     let label = format!("epoch {epoch}");
-    let rows: Vec<SandwichCsvRow> = csv::parse(csv_body(text), &CSV_COLUMNS, &label)?;
+    let rows: Vec<SandwichCsvRow> =
+        csv::parse_without_comments(csv_body(text), &CSV_COLUMNS, &label)?;
 
     rows.into_iter()
         .map(|row| {
@@ -284,6 +285,15 @@ mod tests {
                 sandwich_rate_60d: Some(52.0),
             }]
         );
+    }
+
+    #[test]
+    fn a_validator_name_starting_with_a_hash_is_kept() {
+        let csv = format!(
+            "{PREAMBLE}validator_name,vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\n\
+             #Something,vote1,2000,90,4.5\n"
+        );
+        assert_eq!(parse_epoch_csv(1030, &csv).unwrap().len(), 1);
     }
 
     #[test]

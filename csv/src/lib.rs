@@ -2,7 +2,8 @@
 //! serde row deserialization, so no caller writes its own.
 //!
 //! Every table is read the same way: `#` starts a comment, values are trimmed, and a bad row is an
-//! error rather than a row that quietly disappears.
+//! error rather than a row that quietly disappears. `parse_without_comments` reads a `#` line as a
+//! row, for upstream files whose first column is free text.
 
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
@@ -31,8 +32,25 @@ pub const fn optional(name: &'static str) -> Column {
 
 /// `label` names the table in every error message.
 pub fn parse<T: DeserializeOwned>(text: &str, columns: &[Column], label: &str) -> Result<Vec<T>> {
+    read_csv(text, columns, label, Some(b'#'))
+}
+
+pub fn parse_without_comments<T: DeserializeOwned>(
+    text: &str,
+    columns: &[Column],
+    label: &str,
+) -> Result<Vec<T>> {
+    read_csv(text, columns, label, None)
+}
+
+fn read_csv<T: DeserializeOwned>(
+    text: &str,
+    columns: &[Column],
+    label: &str,
+    comment: Option<u8>,
+) -> Result<Vec<T>> {
     let mut reader = csv_reader::ReaderBuilder::new()
-        .comment(Some(b'#'))
+        .comment(comment)
         .trim(csv_reader::Trim::All)
         .from_reader(text.as_bytes());
 
@@ -161,6 +179,13 @@ mod tests {
     fn comments_and_blank_lines_are_skipped() {
         let text = "# what this file is\n# and where it came from\nname,epoch\n\nagave,979\n\n";
         assert_eq!(parse_rows(text).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn without_comments_a_hash_line_is_a_row() {
+        let rows: Vec<Row> =
+            parse_without_comments("name,epoch\n#agave,979\n", &COLUMNS, "test.csv").unwrap();
+        assert_eq!(rows[0].name, "#agave");
     }
 
     #[test]
