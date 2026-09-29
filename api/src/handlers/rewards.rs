@@ -8,7 +8,7 @@ use store::rewards::{
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
-const DEFAULT_EPOCHS: u64 = 20;
+const DEFAULT_EPOCHS: u32 = 20;
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
 pub struct ResponseRewards {
@@ -25,7 +25,7 @@ pub struct ResponseRewards {
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
-    epochs: Option<u64>,
+    epochs: Option<u32>,
 }
 
 #[utoipa::path(
@@ -42,7 +42,7 @@ pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
-    let epochs = query_params.epochs.unwrap_or(DEFAULT_EPOCHS);
+    let epochs: u64 = query_params.epochs.unwrap_or(DEFAULT_EPOCHS).into();
     info!("Fetching rewards for past {epochs:?}");
 
     let context_guard = context.read().await;
