@@ -717,8 +717,9 @@ fn parse_vote_account_states(
             "{without_commission} vote accounts hold a version this build reads no commission from"
         );
     }
+    // Logged at 0 too: that is the baseline MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT gets tuned on.
     info!(
-        "Parsed {} vote accounts, {v4} on vote state v4",
+        "Parsed {} vote accounts, {v4} on vote state v4, unparsed {unparsed}",
         states.len()
     );
 
@@ -1695,6 +1696,42 @@ mod vote_state_tests {
         let states = parse_vote_account_states(&accounts).unwrap();
         assert_eq!(states.len(), 6);
         assert!(!states.contains_key("voteBad"));
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_clean_parse_still_logs_an_unparsed_count_of_zero() {
+        let captured = CapturedLog::default();
+        env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .target(env_logger::Target::Pipe(Box::new(captured.clone())))
+            .try_init()
+            .expect("no other test in this crate installs a logger");
+
+        let good = v4_account(733, 1234, 0, 3762);
+        let accounts: Vec<(String, &[u8])> = (0..3)
+            .map(|i| (format!("voteClean{i}"), good.as_slice()))
+            .collect();
+        parse_vote_account_states(&accounts).unwrap();
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("Parsed 3 vote accounts, 3 on vote state v4, unparsed 0"),
+            "the zero is the baseline, so it must be logged: {log}"
+        );
     }
 
     #[test]
