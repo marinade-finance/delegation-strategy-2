@@ -13,6 +13,7 @@ use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
+use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
 use validators_jito::{store_jito, StoreJitoParams};
@@ -47,6 +48,7 @@ enum StoreCommand {
     Validators(StoreValidatorsParams),
     ValidatorsBlockRewards(StoreBlockRewardsParams),
     ValidatorsEvents(StoreEventsParams),
+    ValidatorsSandwiches(StoreSandwichesParams),
     TakeRates(StoreTakeRatesParams),
     Releases(StoreReleasesParams),
     JitoMev(StoreJitoParams),
@@ -128,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::ValidatorsEvents(store_params) => {
             store_events(store_params, &mut psql_client).await
+        }
+        StoreCommand::ValidatorsSandwiches(store_params) => {
+            store_sandwiches(store_params, &mut psql_client).await
         }
         StoreCommand::TakeRates(store_params) => {
             store_take_rates(store_params, &mut psql_client).await
