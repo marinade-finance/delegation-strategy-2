@@ -385,29 +385,6 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 }
 ```
 
-## Epochs
-Start and end of the newest closed epochs, newest first. The running epoch is not listed until it closes.
-- `epochs` - Default `15`.
-```bash
-curl -sfLS 'localhost:8000/epochs?epochs=2' | jq
-```
-```json
-{
-  "epochs": [
-    {
-      "epoch": 1039,
-      "start_at": "2026-09-20T19:12:05Z",
-      "end_at": "2026-09-22T21:40:31Z"
-    },
-    {
-      "epoch": 1038,
-      "start_at": "2026-09-18T16:58:47Z",
-      "end_at": "2026-09-20T19:12:05Z"
-    }
-  ]
-}
-```
-
 ## Metrics
 ```bash
 curl -sLfS 'http://localhost:9000/metrics'

@@ -611,13 +611,6 @@ pub struct VersionRecord {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
-pub struct EpochRecord {
-    pub epoch: u64,
-    pub start_at: DateTime<Utc>,
-    pub end_at: DateTime<Utc>,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ReleaseRecord {
     /// `agave`, `frankendancer`, `firedancer` or `sig`.
