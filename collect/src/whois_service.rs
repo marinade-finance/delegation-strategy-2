@@ -57,7 +57,9 @@ impl WhoisClient {
                 "Authorization",
                 format!(
                     "Bearer {}",
-                    self.bearer_token.as_ref().map_or("none", |token| token.0.as_str())
+                    self.bearer_token
+                        .as_ref()
+                        .map_or("none", |token| token.0.as_str())
                 ),
             )
             .send()?
