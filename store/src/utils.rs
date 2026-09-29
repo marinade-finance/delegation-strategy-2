@@ -654,7 +654,7 @@ pub async fn load_commissions(
             SELECT
                 vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
 				epochs.end_at AS epoch_end,
-				epoch_slot, created_at
+				epoch_slot, created_at, NULL::INTEGER AS commission_bps
             FROM commissions
             LEFT JOIN epochs ON commissions.epoch = epochs.epoch
             CROSS JOIN cluster
@@ -662,13 +662,14 @@ pub async fn load_commissions(
             UNION
             SELECT
                 vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, 432000, updated_at
+				epochs.end_at AS epoch_end, 432000, updated_at,
+                CASE WHEN commission_effective_source = $2 THEN inflation_rewards_commission_bps END
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[&Decimal::from(epochs)],
+            &[&Decimal::from(epochs), &COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE],
         )
         .await?;
 
@@ -688,6 +689,7 @@ pub async fn load_commissions(
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
             created_at: row.get("created_at"),
+            commission_bps: row.get("commission_bps"),
         })
     }
 
