@@ -1052,6 +1052,8 @@ pub struct ValidatorAggregatedFlat {
     pub version: String,
     pub client_vendor: String,
     pub client_lineage: String,
+    // Last so the CSV keeps its existing column positions for readers that index by position.
+    pub max_inflation_rewards_commission_bps: Option<i32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
