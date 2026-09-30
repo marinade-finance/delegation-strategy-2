@@ -28,11 +28,11 @@ pub const DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS: u64 = 180;
 // Validator raised commission to this or more in an epoch -> incident
 pub const COMMISSION_SPIKE_THRESHOLD_PERCENTAGE: u8 = 90;
 
-// The incident threshold is this multiple of the cluster median sandwich rate.
-pub const SANDWICH_CLUSTER_MULTIPLIER: f64 = 3.0;
+// An incident rate is at least this multiple of the cluster median sandwich rate.
+pub const SANDWICH_CLUSTER_MULTIPLIER: f64 = 2.0;
 
-// Upper limit of the threshold. At a 5% median, 3 x 5% = 15%, so the threshold is 10%.
-pub const MAX_SANDWICH_THRESHOLD_PERCENTAGE: f64 = 10.0;
+// An incident rate is also at least this many percentage points above the cluster median.
+pub const MIN_SANDWICH_EXCESS_PP: f64 = 1.0;
 
 /// Blocks the 30-day window needs before its rate is judged. Under this the denominator is small
 /// enough that a handful of blocks moves the rate by whole points.
@@ -183,13 +183,12 @@ impl EpochSandwiches {
     /// The bar the epoch had to clear. The caller's floor can only tighten it.
     pub fn threshold(&self, filters: &IncidentFilters) -> f64 {
         (SANDWICH_CLUSTER_MULTIPLIER * self.cluster_median_rate)
-            .min(MAX_SANDWICH_THRESHOLD_PERCENTAGE)
+            .max(self.cluster_median_rate + MIN_SANDWICH_EXCESS_PP)
             .max(filters.min_sandwich_rate.unwrap_or(0.0))
     }
 
     pub fn counts_as_incident(&self, filters: &IncidentFilters) -> bool {
         self.blocks_produced >= MIN_SANDWICH_BLOCKS
-            && self.sandwich_rate_30d > 0.0
             && self.sandwich_rate_30d >= self.threshold(filters)
     }
 }
@@ -1079,26 +1078,27 @@ mod tests {
 
     #[test]
     fn the_sandwich_bar_is_a_multiple_of_the_cluster_median() {
-        assert!(sandwich_types(1.5, 4.4).is_empty());
-        assert_eq!(sandwich_types(1.5, 4.5), vec!["Sandwich"]);
+        assert!(sandwich_types(1.5, 2.9).is_empty());
+        assert_eq!(sandwich_types(1.5, 3.0), vec!["Sandwich"]);
     }
 
     #[test]
-    fn a_low_cluster_median_gives_a_low_bar() {
-        assert!(sandwich_types(0.3, 0.8).is_empty());
-        assert_eq!(sandwich_types(0.3, 0.9), vec!["Sandwich"]);
+    fn a_low_cluster_median_needs_one_point_above_it() {
+        assert!(sandwich_types(0.5, 1.4).is_empty());
+        assert_eq!(sandwich_types(0.5, 1.5), vec!["Sandwich"]);
     }
 
     #[test]
-    fn a_zero_rate_is_never_an_incident() {
+    fn a_zero_cluster_median_still_needs_one_point() {
         assert!(sandwich_types(0.0, 0.0).is_empty());
-        assert_eq!(sandwich_types(0.0, 0.1), vec!["Sandwich"]);
+        assert!(sandwich_types(0.0, 0.9).is_empty());
+        assert_eq!(sandwich_types(0.0, 1.0), vec!["Sandwich"]);
     }
 
     #[test]
-    fn a_high_cluster_median_is_capped() {
-        assert!(sandwich_types(5.0, 9.9).is_empty());
-        assert_eq!(sandwich_types(5.0, 10.0), vec!["Sandwich"]);
+    fn a_high_cluster_median_is_not_capped() {
+        assert!(sandwich_types(6.0, 11.9).is_empty());
+        assert_eq!(sandwich_types(6.0, 12.0), vec!["Sandwich"]);
     }
 
     // A window this thin moves whole points on a handful of blocks.
@@ -1129,7 +1129,7 @@ mod tests {
         };
         assert!(records.into_response_incidents(&tighter).is_empty());
 
-        // Under the cluster bar of 4.5, so it cannot loosen anything.
+        // Under the cluster bar of 3.0, so it cannot loosen anything.
         let looser = IncidentFilters {
             min_sandwich_rate: Some(0.1),
             ..Default::default()
