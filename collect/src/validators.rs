@@ -11,7 +11,6 @@ use log::{info, warn};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
-use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -160,7 +159,7 @@ pub struct ValidatorSnapshot {
     pub block_revenue_commission_bps: Option<u16>,
     #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
-    // None where nothing was checked: a pre-v4 state, or a collector that is the vote account itself.
+    // None where unchecked (pre-v4, or collector is the vote account); healthy also on a missing account.
     #[serde(default)]
     pub inflation_rewards_collector_owner: Option<String>,
     #[serde(default)]
@@ -328,13 +327,8 @@ pub fn collect_validators_info(
             .copied()
             .unwrap_or_default();
         let direct = direct_stake.get(&vote_pubkey).copied().unwrap_or_default();
-        let health_of = |collector: Option<Pubkey>| {
-            checked_collector(&vote_pubkey, collector).and_then(|c| collector_health.get(&c))
-        };
-        let inflation_health =
-            health_of(vote_state.and_then(|state| state.inflation_rewards_collector));
-        let block_revenue_health =
-            health_of(vote_state.and_then(|state| state.block_revenue_collector));
+        let (inflation_health, block_revenue_health) =
+            collector_health_of(&vote_pubkey, vote_state, &collector_health);
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -390,12 +384,12 @@ pub fn collect_validators_info(
                 .and_then(|h| h.owner)
                 .map(|owner| owner.to_string()),
             inflation_rewards_collector_lamports: inflation_health.map(|h| h.lamports),
-            inflation_rewards_collector_healthy: inflation_health.map(|h| h.healthy),
+            inflation_rewards_collector_healthy: inflation_health.and_then(|h| h.healthy),
             block_revenue_collector_owner: block_revenue_health
                 .and_then(|h| h.owner)
                 .map(|owner| owner.to_string()),
             block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
-            block_revenue_collector_healthy: block_revenue_health.map(|h| h.healthy),
+            block_revenue_collector_healthy: block_revenue_health.and_then(|h| h.healthy),
         });
     }
 

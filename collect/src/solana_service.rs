@@ -22,7 +22,7 @@ use solana_rpc_client_api::config::{
     RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
 };
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
-use solana_rpc_client_api::request::RpcRequest;
+use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
 use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
@@ -740,14 +740,13 @@ pub fn withdraw_authorities(
         .collect()
 }
 
-const MAX_GET_MULTIPLE_ACCOUNTS: usize = 100;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollectorHealth {
     // None where the account does not exist on chain.
     pub owner: Option<Pubkey>,
     pub lamports: u64,
-    pub healthy: bool,
+    // None where the account is missing: agave pays it when the deposit alone covers rent.
+    pub healthy: Option<bool>,
 }
 
 // agave credits the vote account without the SIMD-0232 collector checks, so there is nothing to check.
@@ -755,7 +754,22 @@ pub fn checked_collector(vote_account: &str, collector: Option<Pubkey>) -> Optio
     collector.filter(|collector| collector.to_string() != vote_account)
 }
 
-// Mirrors agave collector_type_checked before the deposit, so an edge case it would pay reads unhealthy.
+// Returns the inflation rewards collector health first, then the block revenue one.
+pub fn collector_health_of<'a>(
+    vote_account: &str,
+    state: Option<&VoteStateFields>,
+    health: &'a HashMap<Pubkey, CollectorHealth>,
+) -> (Option<&'a CollectorHealth>, Option<&'a CollectorHealth>) {
+    let health_of = |collector: Option<Pubkey>| {
+        checked_collector(vote_account, collector).and_then(|c| health.get(&c))
+    };
+    (
+        health_of(state.and_then(|state| state.inflation_rewards_collector)),
+        health_of(state.and_then(|state| state.block_revenue_collector)),
+    )
+}
+
+// Mirrors agave collector_type_checked before the deposit, so a funded account below rent reads unhealthy.
 fn evaluate_collector(
     collector: &Pubkey,
     account: Option<&Account>,
@@ -765,7 +779,7 @@ fn evaluate_collector(
         return Ok(CollectorHealth {
             owner: None,
             lamports: 0,
-            healthy: false,
+            healthy: None,
         });
     };
     let healthy = *collector != solana_sdk::incinerator::id()
@@ -774,7 +788,7 @@ fn evaluate_collector(
     Ok(CollectorHealth {
         owner: Some(account.owner),
         lamports: account.lamports,
-        healthy,
+        healthy: Some(healthy),
     })
 }
 
@@ -795,7 +809,7 @@ pub fn get_collector_health(
 
     let mut rent_minimums: HashMap<usize, u64> = HashMap::new();
     let mut health = HashMap::with_capacity(collectors.len());
-    for chunk in collectors.chunks(MAX_GET_MULTIPLE_ACCOUNTS) {
+    for chunk in collectors.chunks(MAX_MULTIPLE_ACCOUNTS) {
         for (collector, account) in chunk.iter().zip(rpc_client.get_multiple_accounts(chunk)?) {
             let collector_health = evaluate_collector(collector, account.as_ref(), |data_len| {
                 if let Some(minimum) = rent_minimums.get(&data_len) {
@@ -813,9 +827,11 @@ pub fn get_collector_health(
         ("inflation rewards", &inflation),
         ("block revenue", &block_revenue),
     ] {
-        let mut unhealthy = collectors
-            .iter()
-            .filter(|collector| health.get(collector).is_some_and(|h| !h.healthy));
+        let mut unhealthy = collectors.iter().filter(|collector| {
+            health
+                .get(collector)
+                .is_some_and(|h| h.healthy == Some(false))
+        });
         if let Some(first) = unhealthy.next() {
             warn!(
                 "{} {kind} collectors would burn their commission, first: {first}",
@@ -1942,7 +1958,7 @@ mod collector_health_tests {
             CollectorHealth {
                 owner: Some(solana_sdk::system_program::id()),
                 lamports: RENT_MINIMUM,
-                healthy: true,
+                healthy: Some(true),
             }
         );
     }
@@ -1953,7 +1969,7 @@ mod collector_health_tests {
             &COLLECTOR,
             Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM - 1)),
         );
-        assert!(!health.healthy);
+        assert_eq!(health.healthy, Some(false));
         assert_eq!(health.lamports, RENT_MINIMUM - 1);
     }
 
@@ -1961,22 +1977,24 @@ mod collector_health_tests {
     fn an_account_not_owned_by_the_system_program_is_unhealthy() {
         let owner = solana_stake_interface::program::id();
         let health = evaluate(&COLLECTOR, Some(&account(owner, u64::MAX)));
-        assert!(
-            !health.healthy,
+        assert_eq!(
+            health.healthy,
+            Some(false),
             "agave rejects the owner before any rent check"
         );
         assert_eq!(health.owner, Some(owner));
     }
 
     #[test]
-    fn a_missing_account_is_unhealthy() {
+    fn a_missing_account_is_unknown_because_the_deposit_can_fund_it() {
         assert_eq!(
             evaluate(&COLLECTOR, None),
             CollectorHealth {
                 owner: None,
                 lamports: 0,
-                healthy: false,
-            }
+                healthy: None,
+            },
+            "agave deposit_fees defaults a missing account and checks rent after adding the payout"
         );
     }
 
@@ -1986,7 +2004,7 @@ mod collector_health_tests {
             &solana_sdk::incinerator::id(),
             Some(&account(solana_sdk::system_program::id(), u64::MAX)),
         );
-        assert!(!health.healthy);
+        assert_eq!(health.healthy, Some(false));
     }
 
     #[test]
@@ -1998,6 +2016,81 @@ mod collector_health_tests {
         assert_eq!(
             checked_collector(&vote_account, Some(elsewhere)),
             Some(elsewhere)
+        );
+    }
+
+    fn state(inflation: Option<Pubkey>, block_revenue: Option<Pubkey>) -> VoteStateFields {
+        VoteStateFields {
+            authorized_withdrawer: Pubkey::new_from_array([9; 32]),
+            inflation_rewards_commission_bps: Some(500),
+            inflation_rewards_commission_bps_is_v4: Some(true),
+            inflation_rewards_collector: inflation,
+            block_revenue_collector: block_revenue,
+            block_revenue_commission_bps: Some(10_000),
+            pending_delegator_rewards: Some(0),
+        }
+    }
+
+    fn health(healthy: bool) -> CollectorHealth {
+        CollectorHealth {
+            owner: Some(solana_sdk::system_program::id()),
+            lamports: RENT_MINIMUM,
+            healthy: Some(healthy),
+        }
+    }
+
+    #[test]
+    fn each_kind_reads_the_health_of_its_own_collector() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let inflation = Pubkey::new_from_array([1; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map = HashMap::from([(inflation, health(true)), (block_revenue, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(inflation), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(true)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn one_collector_shared_by_both_kinds_reads_one_entry() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let shared = Pubkey::new_from_array([3; 32]);
+        let health_map = HashMap::from([(shared, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(shared), Some(shared))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(false)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_or_a_missing_state_reads_no_health() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map =
+            HashMap::from([(vote_account, health(false)), (block_revenue, health(true))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(vote_account), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(
+            inflation_health, None,
+            "agave pays the vote account unchecked, so its entry must not be read"
+        );
+        assert_eq!(block_revenue_health, Some(&health(true)));
+
+        assert_eq!(
+            collector_health_of(&vote_account.to_string(), None, &health_map),
+            (None, None)
         );
     }
 }
