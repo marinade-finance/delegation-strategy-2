@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use clap::Parser;
+use collect::solana_service::CreditsRegime;
 use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::ValidatorPerformance;
 use store::validators::{store_validators, StoreValidatorsParams};
@@ -68,7 +69,12 @@ pub fn validator_performance() -> ValidatorPerformance {
         client_id_raw: None,
         feature_set: None,
         shred_version: None,
-        credits: 10,
+        credits: Some(10),
+        credits_regime: Some(CreditsRegime::Tower),
+        alpenglow_credits: None,
+        epoch_credits_raw: vec![],
+        last_vote: Some(1),
+        credits_total: Some(10),
         leader_slots: 100,
         blocks_produced: 100,
         skip_rate: 0f64,

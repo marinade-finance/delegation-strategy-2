@@ -385,7 +385,7 @@ type FieldExtractor = fn(&ValidatorRecord) -> SortKey;
 fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
         OrderField::Stake => |a: &ValidatorRecord| SortKey::Number(a.activated_stake),
-        OrderField::Credits => |a: &ValidatorRecord| SortKey::Number(Decimal::from(a.credits)),
+        OrderField::Credits => |a: &ValidatorRecord| a.credits.map(Decimal::from).into(),
         OrderField::MarinadeScore => |a: &ValidatorRecord| {
             a.score
                 .and_then(to_fixed_for_sort)
@@ -762,7 +762,7 @@ mod tests {
             self_stake: Decimal::ZERO,
             superminority: false,
             stake_to_become_superminority: Decimal::ZERO,
-            credits: 1,
+            credits: Some(1),
             leader_slots: 0,
             blocks_produced: 0,
             skip_rate: 0.0,
@@ -849,7 +849,7 @@ mod tests {
             activating_stake: None,
             deactivating_stake: None,
             superminority: false,
-            credits: 1,
+            credits: Some(1),
             score: None,
             warnings,
             epoch_stats: vec![epoch_stat(99, stake), epoch_stat(100, stake)],

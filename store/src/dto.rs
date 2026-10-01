@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
-use collect::solana_service::{resolve_client_id, ClientId};
+use collect::solana_service::{resolve_client_id, ClientId, CreditsRegime};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
+use collect::validators_performance::ValidatorPerformance;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -134,6 +135,30 @@ impl ValidatorBlockReward {
     }
 }
 
+pub struct CreditsColumns {
+    pub credits: Option<Decimal>,
+    pub credits_regime: Option<&'static str>,
+    pub alpenglow_credits: Option<Decimal>,
+    pub epoch_credits_raw: Option<String>,
+}
+
+impl CreditsColumns {
+    pub fn from_performance(p: &ValidatorPerformance) -> Self {
+        // Snapshots written before credits_regime existed hold tower credits.
+        let credits_regime = p
+            .credits_regime
+            .or(p.credits.map(|_| CreditsRegime::Tower))
+            .map(|r| r.as_str());
+        Self {
+            credits: p.credits.map(Decimal::from),
+            credits_regime,
+            alpenglow_credits: p.alpenglow_credits.map(Decimal::from),
+            epoch_credits_raw: (!p.epoch_credits_raw.is_empty())
+                .then(|| serde_json::to_string(&p.epoch_credits_raw).unwrap()),
+        }
+    }
+}
+
 pub struct Validator {
     pub identity: String,
     pub vote_account: String,
@@ -178,7 +203,7 @@ pub struct Validator {
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
-    pub credits: Decimal,
+    pub credits: CreditsColumns,
     pub leader_slots: Decimal,
     pub blocks_produced: Decimal,
     pub skip_rate: f64,
@@ -257,7 +282,7 @@ impl Validator {
             deactivating_stake: v.deactivating_stake.map(Decimal::from),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
-            credits: v.performance.credits.into(),
+            credits: CreditsColumns::from_performance(&v.performance),
             leader_slots: v.performance.leader_slots.into(),
             blocks_produced: v.performance.blocks_produced.into(),
             skip_rate: v.performance.skip_rate,
@@ -337,7 +362,7 @@ pub struct ValidatorEpochStats {
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
-    pub credits: u64,
+    pub credits: Option<u64>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
     pub skip_rate: f64,
@@ -436,7 +461,7 @@ pub struct ValidatorRecord {
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
-    pub credits: u64,
+    pub credits: Option<u64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
     pub epoch_stats: Vec<ValidatorEpochStats>,
@@ -694,7 +719,7 @@ pub struct PerformanceRecord {
     pub blocks_produced: u64,
     pub leader_slots: u64,
     pub skip_rate: f64,
-    pub credits: u64,
+    pub credits: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

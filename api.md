@@ -105,6 +105,8 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
 }
 ```
 
+`credits` and `epoch_stats[].credits` hold tower vote credits only. They are `null` for an Alpenglow epoch, and also when the collector found no credits for the epoch. In the Alpenglow migration epoch, they hold the tower part of the epoch. `apr` and `apy` are `null` when `credits` is `null`. See `testnet.md`.
+
 ## Uptimes
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/uptimes | jq

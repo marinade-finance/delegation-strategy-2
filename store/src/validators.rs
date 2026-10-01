@@ -86,7 +86,11 @@ pub async fn store_validators(
             self_stake = u.self_stake,
             superminority = u.superminority,
             stake_to_become_superminority = u.stake_to_become_superminority,
-            credits = u.credits,
+            -- NULL credits_regime: the epoch is not in the epochCredits window, so keep what is stored
+            credits = CASE WHEN u.credits_regime IS NULL THEN validators.credits ELSE u.credits END,
+            credits_regime = COALESCE(u.credits_regime, validators.credits_regime),
+            alpenglow_credits = CASE WHEN u.credits_regime IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
+            epoch_credits_raw = CASE WHEN u.credits_regime IS NULL THEN validators.epoch_credits_raw ELSE u.epoch_credits_raw END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -163,7 +167,10 @@ pub async fn store_validators(
                 deactivating_stake,
                 direct_stake,
                 direct_activating_stake,
-                direct_deactivating_stake
+                direct_deactivating_stake,
+                credits_regime,
+                alpenglow_credits,
+                epoch_credits_raw
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -198,7 +205,7 @@ pub async fn store_validators(
                     &v.self_stake,
                     &v.superminority,
                     &v.stake_to_become_superminority,
-                    &v.credits,
+                    &v.credits.credits,
                     &v.leader_slots,
                     &v.blocks_produced,
                     &v.skip_rate,
@@ -223,6 +230,9 @@ pub async fn store_validators(
                     &v.direct_stake,
                     &v.direct_activating_stake,
                     &v.direct_deactivating_stake,
+                    &v.credits.credits_regime,
+                    &v.credits.alpenglow_credits,
+                    &v.credits.epoch_credits_raw,
                 ];
                 query.add(
                     &mut params,
@@ -265,6 +275,9 @@ pub async fn store_validators(
                         (47, "NUMERIC".into()), // direct_stake
                         (48, "NUMERIC".into()), // direct_activating_stake
                         (49, "NUMERIC".into()), // direct_deactivating_stake
+                        (50, "TEXT".into()), // credits_regime
+                        (51, "NUMERIC".into()), // alpenglow_credits
+                        (52, "TEXT".into()), // epoch_credits_raw
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -344,7 +357,10 @@ pub async fn store_validators(
         deactivating_stake,
         direct_stake,
         direct_activating_stake,
-        direct_deactivating_stake
+        direct_deactivating_stake,
+        credits_regime,
+        alpenglow_credits,
+        epoch_credits_raw
         "
             .to_string(),
         );
@@ -382,7 +398,7 @@ pub async fn store_validators(
                 &v.self_stake,
                 &v.superminority,
                 &v.stake_to_become_superminority,
-                &v.credits,
+                &v.credits.credits,
                 &v.leader_slots,
                 &v.blocks_produced,
                 &v.skip_rate,
@@ -409,6 +425,9 @@ pub async fn store_validators(
                 &v.direct_stake,
                 &v.direct_activating_stake,
                 &v.direct_deactivating_stake,
+                &v.credits.credits_regime,
+                &v.credits.alpenglow_credits,
+                &v.credits.epoch_credits_raw,
             ];
             query.add(&mut params);
             if !v.dc_resolved {

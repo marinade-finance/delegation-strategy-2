@@ -220,7 +220,8 @@ async fn get_apy_calculators(
                 FROM
                 epochs
                 INNER JOIN validators ON epochs.epoch = validators.epoch
-                GROUP BY epochs.epoch",
+                GROUP BY epochs.epoch
+                HAVING SUM(validators.credits * validators.activated_stake) IS NOT NULL",
             &[],
         )
         .await?;
@@ -1231,9 +1232,12 @@ pub async fn load_validators(
             let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
             let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
 
-            let (apr, apy) = if let Some(c) = apy_calculators.get(&epoch) {
+            let (apr, apy) = if let (Some(c), Some(credits)) = (
+                apy_calculators.get(&epoch),
+                row.get::<_, Option<Decimal>>("credits"),
+            ) {
                 let (apr, apy) = c.estimate_yields(
-                    row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    credits.try_into().unwrap(),
                     row.get::<_, Option<i32>>("commission_effective")
                         .map(|n| n.try_into().unwrap())
                         .unwrap_or(100),
@@ -1358,7 +1362,9 @@ pub async fn load_validators(
                     direct_deactivating_stake: row
                         .get::<_, Option<Decimal>>("direct_deactivating_stake"),
                     superminority: row.get("superminority"),
-                    credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
+                    credits: row
+                        .get::<_, Option<Decimal>>("credits")
+                        .map(|credits| credits.try_into().unwrap()),
                     score: None,
 
                     epoch_stats: Vec::with_capacity(display_epochs as usize),
@@ -1514,7 +1520,9 @@ pub async fn load_validators(
                 superminority: row.get("superminority"),
                 stake_to_become_superminority: row
                     .get::<_, Decimal>("stake_to_become_superminority"),
-                credits: row.get::<_, Decimal>("credits").try_into().unwrap(),
+                credits: row
+                    .get::<_, Option<Decimal>>("credits")
+                    .map(|credits| credits.try_into().unwrap()),
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
                 skip_rate: row.get("skip_rate"),
@@ -2217,7 +2225,7 @@ pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bo
             .iter()
             .find(|&epoch_stat| epoch_stat.epoch == epoch)
             .is_some_and(|epoch_stat| {
-                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
+                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits.unwrap_or(0) > 0
             })
     })
 }

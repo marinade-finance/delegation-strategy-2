@@ -1,4 +1,6 @@
-use crate::dto::{COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE};
+use crate::dto::{
+    CreditsColumns, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+};
 use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -232,7 +234,7 @@ struct ValidatorUpdateRecord {
     epoch: Decimal,
     commission_effective: Option<i32>,
     commission_effective_source: Option<&'static str>,
-    credits: Decimal,
+    credits: CreditsColumns,
     leader_slots: Decimal,
     blocks_produced: Decimal,
     skip_rate: f64,
@@ -280,7 +282,7 @@ pub async fn close_epoch(
                 epoch: snapshot_epoch,
                 commission_effective,
                 commission_effective_source,
-                credits: v.credits.into(),
+                credits: CreditsColumns::from_performance(v),
                 leader_slots: v.leader_slots.into(),
                 blocks_produced: v.blocks_produced.into(),
                 skip_rate: v.skip_rate,
@@ -311,7 +313,11 @@ pub async fn close_epoch(
             "
             commission_effective = u.commission_effective,
             commission_effective_source = u.commission_effective_source,
-            credits = u.credits,
+            -- NULL credits_regime: the epoch is not in the epochCredits window, so keep what is stored
+            credits = CASE WHEN u.credits_regime IS NULL THEN validators.credits ELSE u.credits END,
+            credits_regime = COALESCE(u.credits_regime, validators.credits_regime),
+            alpenglow_credits = CASE WHEN u.credits_regime IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
+            epoch_credits_raw = CASE WHEN u.credits_regime IS NULL THEN validators.epoch_credits_raw ELSE u.epoch_credits_raw END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -327,7 +333,10 @@ pub async fn close_epoch(
                 leader_slots,
                 blocks_produced,
                 skip_rate,
-                updated_at
+                updated_at,
+                credits_regime,
+                alpenglow_credits,
+                epoch_credits_raw
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -338,11 +347,14 @@ pub async fn close_epoch(
                 &v.epoch,
                 &v.commission_effective,
                 &v.commission_effective_source,
-                &v.credits,
+                &v.credits.credits,
                 &v.leader_slots,
                 &v.blocks_produced,
                 &v.skip_rate,
                 &v.updated_at,
+                &v.credits.credits_regime,
+                &v.credits.alpenglow_credits,
+                &v.credits.epoch_credits_raw,
             ];
             query.add(
                 &mut params,
@@ -355,6 +367,9 @@ pub async fn close_epoch(
                     (6, "NUMERIC".into()),                  // blocks_produced
                     (7, "DOUBLE PRECISION".into()),         // skip_rate
                     (8, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                    (9, "TEXT".into()),                     // credits_regime
+                    (10, "NUMERIC".into()),                 // alpenglow_credits
+                    (11, "TEXT".into()),                    // epoch_credits_raw
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());

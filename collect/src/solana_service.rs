@@ -62,26 +62,116 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
     )?)
 }
 
-pub fn get_credits(vote_accounts: &RpcVoteAccountStatus, epoch: Epoch) -> HashMap<String, u64> {
-    info!("Getting credits");
-    let mut credits = HashMap::new();
+pub type EpochCreditsEntry = (Epoch, u64, u64);
 
-    for vote_account in vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-    {
-        for (record_epoch, end_credits, start_credits) in vote_account.epoch_credits.iter() {
-            if *record_epoch == epoch {
-                credits.insert(
-                    vote_account.vote_pubkey.clone(),
-                    end_credits - start_credits,
-                );
-            }
+// The runtime writes one (u64::MAX, u64::MAX, u64::MAX) entry at the Alpenglow migration boundary.
+// Entries before it count tower vote credits, entries after it count lamports.
+const EPOCH_CREDITS_MIGRATION_MARKER: Epoch = Epoch::MAX;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CreditsRegime {
+    Tower,
+    Migration,
+    Alpenglow,
+}
+
+impl CreditsRegime {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CreditsRegime::Tower => "tower",
+            CreditsRegime::Migration => "migration",
+            CreditsRegime::Alpenglow => "alpenglow",
         }
     }
+}
 
-    credits
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochCredits {
+    pub regime: CreditsRegime,
+    pub tower_credits: Option<u64>,
+    pub alpenglow_credits: Option<u64>,
+}
+
+fn epoch_credits_delta(entries: &[EpochCreditsEntry], epoch: Epoch) -> Option<Option<u64>> {
+    entries
+        .iter()
+        .find(|(record_epoch, _, _)| *record_epoch == epoch)
+        .map(|(_, end_credits, start_credits)| end_credits.checked_sub(*start_credits))
+}
+
+pub fn split_epoch_credits(
+    history: &[EpochCreditsEntry],
+    epoch: Epoch,
+    migration_epoch: Option<Epoch>,
+) -> Option<EpochCredits> {
+    let marker = history
+        .iter()
+        .position(|(record_epoch, _, _)| *record_epoch == EPOCH_CREDITS_MIGRATION_MARKER);
+    let account_migration_epoch = marker
+        .and_then(|m| history.get(m + 1))
+        .map(|(record_epoch, _, _)| *record_epoch)
+        .or(migration_epoch);
+    let regime = match account_migration_epoch {
+        Some(m) if epoch == m => CreditsRegime::Migration,
+        Some(m) if epoch > m => CreditsRegime::Alpenglow,
+        _ => CreditsRegime::Tower,
+    };
+
+    // Split the epoch delta at the marker: the entry before it goes to `tower`, the entry after it to `alpenglow`.
+    // With no marker, give the one delta to the column of the regime. Return None if the epoch has no entry.
+    let (tower, alpenglow) = match marker {
+        Some(m) => (
+            epoch_credits_delta(&history[..m], epoch),
+            epoch_credits_delta(&history[m + 1..], epoch),
+        ),
+        None => {
+            let delta = epoch_credits_delta(history, epoch);
+            match regime {
+                CreditsRegime::Tower => (delta, None),
+                CreditsRegime::Migration | CreditsRegime::Alpenglow => (None, delta),
+            }
+        }
+    };
+    if tower.is_none() && alpenglow.is_none() {
+        return None;
+    }
+
+    Some(EpochCredits {
+        regime,
+        tower_credits: tower.flatten(),
+        alpenglow_credits: alpenglow.flatten(),
+    })
+}
+
+pub fn latest_credits_total(history: &[EpochCreditsEntry]) -> Option<u64> {
+    history
+        .iter()
+        .rev()
+        .find(|(record_epoch, _, _)| *record_epoch != EPOCH_CREDITS_MIGRATION_MARKER)
+        .map(|(_, end_credits, _)| *end_credits)
+}
+
+// SIMD-0326. The migration can start later than the activation epoch, and testnet matches at 1042.
+const ALPENGLOW_FEATURE_GATE: Pubkey =
+    Pubkey::from_str_const("A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS");
+
+pub fn get_alpenglow_activation_epoch(client: &RpcClient) -> anyhow::Result<Option<Epoch>> {
+    let Some(account) = client
+        .get_account_with_commitment(&ALPENGLOW_FEATURE_GATE, client.commitment())?
+        .value
+    else {
+        return Ok(None);
+    };
+    let feature = solana_feature_gate_interface::from_account(&account).ok_or_else(|| {
+        anyhow::anyhow!("Account {ALPENGLOW_FEATURE_GATE} is not a feature account")
+    })?;
+    let Some(activated_at) = feature.activated_at else {
+        return Ok(None);
+    };
+    let activation_epoch = client.get_epoch_schedule()?.get_epoch(activated_at);
+    info!("Alpenglow feature gate activated in epoch {activation_epoch}");
+    Ok(Some(activation_epoch))
 }
 
 const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");
@@ -1779,5 +1869,113 @@ mod stake_account_tests {
         assert_eq!(entry.activating, 300);
         assert_eq!(entry.deactivating, 200);
         assert_eq!(assigned, 1);
+    }
+}
+
+#[cfg(test)]
+mod epoch_credits_tests {
+    use super::*;
+
+    const M: u64 = u64::MAX;
+
+    // testnet KmCRTozzcAXvFEH2xakNMV7GeWyftyVFKS32XGV4spW, on-chain vote state at epoch 1047
+    fn testnet_history() -> Vec<EpochCreditsEntry> {
+        vec![
+            (1040, 803969051, 797204500),
+            (1041, 810676609, 803969051),
+            (1042, 810741247, 810676609),
+            (M, M, M),
+            (1042, 291696003588, 810741247),
+            (1043, 590625720152, 291696003588),
+            (1044, 899173572261, 590625720152),
+        ]
+    }
+
+    #[test]
+    fn tower_epoch_before_marker() {
+        assert_eq!(
+            split_epoch_credits(&testnet_history(), 1041, None),
+            Some(EpochCredits {
+                regime: CreditsRegime::Tower,
+                tower_credits: Some(6707558),
+                alpenglow_credits: None,
+            })
+        );
+    }
+
+    #[test]
+    fn migration_epoch_keeps_both_halves() {
+        assert_eq!(
+            split_epoch_credits(&testnet_history(), 1042, None),
+            Some(EpochCredits {
+                regime: CreditsRegime::Migration,
+                tower_credits: Some(64638),
+                alpenglow_credits: Some(290885262341),
+            })
+        );
+    }
+
+    #[test]
+    fn alpenglow_epoch_after_marker() {
+        assert_eq!(
+            split_epoch_credits(&testnet_history(), 1043, None),
+            Some(EpochCredits {
+                regime: CreditsRegime::Alpenglow,
+                tower_credits: None,
+                alpenglow_credits: Some(298929716564),
+            })
+        );
+    }
+
+    #[test]
+    fn migration_epoch_with_tower_half_out_of_window() {
+        let window = testnet_history()[3..].to_vec();
+        assert_eq!(
+            split_epoch_credits(&window, 1042, None),
+            Some(EpochCredits {
+                regime: CreditsRegime::Migration,
+                tower_credits: None,
+                alpenglow_credits: Some(290885262341),
+            })
+        );
+    }
+
+    #[test]
+    fn epoch_out_of_window() {
+        assert_eq!(split_epoch_credits(&testnet_history(), 1039, None), None);
+    }
+
+    #[test]
+    fn no_marker_without_migration_epoch_is_tower() {
+        let history = vec![(1045, 1217502525481, 899173572261)];
+        assert_eq!(
+            split_epoch_credits(&history, 1045, None).map(|c| c.regime),
+            Some(CreditsRegime::Tower)
+        );
+    }
+
+    #[test]
+    fn no_marker_uses_migration_epoch() {
+        let history = vec![
+            (1045, 1217502525481, 899173572261),
+            (1046, 1531136696154, 1217502525481),
+        ];
+        assert_eq!(
+            split_epoch_credits(&history, 1045, Some(1042)),
+            Some(EpochCredits {
+                regime: CreditsRegime::Alpenglow,
+                tower_credits: None,
+                alpenglow_credits: Some(318328953220),
+            })
+        );
+    }
+
+    #[test]
+    fn credits_total_skips_marker() {
+        assert_eq!(
+            latest_credits_total(&testnet_history()[..4]),
+            Some(810741247)
+        );
+        assert_eq!(latest_credits_total(&testnet_history()), Some(899173572261));
     }
 }

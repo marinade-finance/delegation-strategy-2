@@ -2,6 +2,7 @@ mod common;
 
 use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
+use collect::solana_service::CreditsRegime;
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use common::{
     migrated_client, skip_without_database, store_snapshot, validator_snapshot, write_yaml,
@@ -52,7 +53,12 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
         client_id_raw: client.client_id_raw.clone(),
         feature_set: Some(123),
         shred_version: Some(456),
-        credits: 10,
+        credits: Some(10),
+        credits_regime: Some(CreditsRegime::Tower),
+        alpenglow_credits: None,
+        epoch_credits_raw: vec![],
+        last_vote: Some(1),
+        credits_total: Some(10),
         leader_slots: 100,
         blocks_produced: 100,
         skip_rate: 0f64,

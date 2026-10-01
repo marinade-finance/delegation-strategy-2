@@ -193,7 +193,10 @@ pub async fn get_events_with_context(
                     blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
                     leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
                     skip_rate: row.get("skip_rate"),
-                    credits: row.get::<_, Decimal>("credits").try_into()?,
+                    credits: row
+                        .get::<_, Option<Decimal>>("credits")
+                        .map(u64::try_from)
+                        .transpose()?,
                 }),
                 uptime_pct: row.get("uptime_pct"),
                 downtime: row
