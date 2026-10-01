@@ -22,7 +22,7 @@ const VOTE_ACCOUNT: &str = "KmCRTozzcAXvFEH2xakNMV7GeWyftyVFKS32XGV4spW";
 fn alpenglow_performance() -> ValidatorPerformance {
     ValidatorPerformance {
         credits: None,
-        alpenglow_credits: Some(298929716564),
+        vote_reward_lamports: Some(298929716564),
         last_vote: Some(0),
         credits_total: Some(590625720152),
         ..validator_performance()
@@ -93,32 +93,32 @@ async fn run_close_epoch(client: &mut Client, schema: &str, performance: Validat
 async fn read_credits(client: &Client) -> (Option<Decimal>, Option<Decimal>) {
     let row = client
         .query_one(
-            "SELECT credits, alpenglow_credits
+            "SELECT credits, vote_reward_lamports
              FROM validators WHERE vote_account = $1 AND epoch = $2",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
         .await
         .unwrap();
-    (row.get("credits"), row.get("alpenglow_credits"))
+    (row.get("credits"), row.get("vote_reward_lamports"))
 }
 
 #[tokio::test]
 async fn an_alpenglow_epoch_stores_null_credits() {
-    let schema = "ds_test_alpenglow_credits_alpenglow";
+    let schema = "ds_test_vote_reward_lamports_alpenglow";
     if skip_without_database(schema) {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
 
     seed(&mut client, schema, alpenglow_performance()).await;
-    let (credits, alpenglow_credits) = read_credits(&client).await;
+    let (credits, vote_reward_lamports) = read_credits(&client).await;
     assert_eq!(credits, None);
-    assert_eq!(alpenglow_credits, Some(Decimal::from(298929716564u64)));
+    assert_eq!(vote_reward_lamports, Some(Decimal::from(298929716564u64)));
 
     run_close_epoch(&mut client, schema, alpenglow_performance()).await;
-    let (credits, alpenglow_credits) = read_credits(&client).await;
+    let (credits, vote_reward_lamports) = read_credits(&client).await;
     assert_eq!(credits, None);
-    assert_eq!(alpenglow_credits, Some(Decimal::from(298929716564u64)));
+    assert_eq!(vote_reward_lamports, Some(Decimal::from(298929716564u64)));
 
     let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
     let record = load_validators(
@@ -139,7 +139,7 @@ async fn an_alpenglow_epoch_stores_null_credits() {
 
 #[tokio::test]
 async fn an_epoch_missing_from_the_window_keeps_the_stored_credits() {
-    let schema = "ds_test_alpenglow_credits_missing";
+    let schema = "ds_test_vote_reward_lamports_missing";
     if skip_without_database(schema) {
         return;
     }
@@ -148,9 +148,9 @@ async fn an_epoch_missing_from_the_window_keeps_the_stored_credits() {
     seed(&mut client, schema, validator_performance()).await;
     run_close_epoch(&mut client, schema, missing_performance()).await;
 
-    let (credits, alpenglow_credits) = read_credits(&client).await;
+    let (credits, vote_reward_lamports) = read_credits(&client).await;
     assert_eq!(credits, Some(Decimal::from(10)));
-    assert_eq!(alpenglow_credits, None);
+    assert_eq!(vote_reward_lamports, None);
 }
 
 async fn run_uptime(client: &mut Client, schema: &str, created_at: &str, credits_total: u64) {
@@ -186,7 +186,7 @@ async fn read_statuses(client: &Client) -> Vec<(String, Option<Decimal>)> {
 
 #[tokio::test]
 async fn without_votes_flat_credits_turn_a_validator_down() {
-    let schema = "ds_test_alpenglow_credits_uptime";
+    let schema = "ds_test_vote_reward_lamports_uptime";
     if skip_without_database(schema) {
         return;
     }

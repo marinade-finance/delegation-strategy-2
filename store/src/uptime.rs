@@ -210,7 +210,7 @@ mod tests {
             feature_set: None,
             shred_version: None,
             credits: None,
-            alpenglow_credits: None,
+            vote_reward_lamports: None,
             last_vote,
             credits_total,
             leader_slots: 0,

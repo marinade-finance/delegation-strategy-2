@@ -53,7 +53,7 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
         feature_set: Some(123),
         shred_version: Some(456),
         credits: Some(10),
-        alpenglow_credits: None,
+        vote_reward_lamports: None,
         last_vote: Some(1),
         credits_total: Some(10),
         leader_slots: 100,

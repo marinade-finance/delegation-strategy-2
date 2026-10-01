@@ -137,14 +137,14 @@ impl ValidatorBlockReward {
 
 pub struct CreditsColumns {
     pub credits: Option<Decimal>,
-    pub alpenglow_credits: Option<Decimal>,
+    pub vote_reward_lamports: Option<Decimal>,
 }
 
 impl CreditsColumns {
     pub fn from_performance(p: &ValidatorPerformance) -> Self {
         Self {
             credits: p.credits.map(Decimal::from),
-            alpenglow_credits: p.alpenglow_credits.map(Decimal::from),
+            vote_reward_lamports: p.vote_reward_lamports.map(Decimal::from),
         }
     }
 }

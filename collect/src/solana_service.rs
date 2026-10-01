@@ -79,7 +79,7 @@ pub enum CreditsRegime {
 pub struct EpochCredits {
     pub regime: CreditsRegime,
     pub tower_credits: Option<u64>,
-    pub alpenglow_credits: Option<u64>,
+    pub vote_reward_lamports: Option<u64>,
 }
 
 fn epoch_credits_delta(entries: &[EpochCreditsEntry], epoch: Epoch) -> Option<Option<u64>> {
@@ -129,7 +129,7 @@ pub fn split_epoch_credits(
     Some(EpochCredits {
         regime,
         tower_credits: tower.flatten(),
-        alpenglow_credits: alpenglow.flatten(),
+        vote_reward_lamports: alpenglow.flatten(),
     })
 }
 
@@ -1887,7 +1887,7 @@ mod epoch_credits_tests {
             Some(EpochCredits {
                 regime: CreditsRegime::Tower,
                 tower_credits: Some(6707558),
-                alpenglow_credits: None,
+                vote_reward_lamports: None,
             })
         );
     }
@@ -1899,7 +1899,7 @@ mod epoch_credits_tests {
             Some(EpochCredits {
                 regime: CreditsRegime::Migration,
                 tower_credits: Some(64638),
-                alpenglow_credits: Some(290885262341),
+                vote_reward_lamports: Some(290885262341),
             })
         );
     }
@@ -1911,7 +1911,7 @@ mod epoch_credits_tests {
             Some(EpochCredits {
                 regime: CreditsRegime::Alpenglow,
                 tower_credits: None,
-                alpenglow_credits: Some(298929716564),
+                vote_reward_lamports: Some(298929716564),
             })
         );
     }
@@ -1924,7 +1924,7 @@ mod epoch_credits_tests {
             Some(EpochCredits {
                 regime: CreditsRegime::Migration,
                 tower_credits: None,
-                alpenglow_credits: Some(290885262341),
+                vote_reward_lamports: Some(290885262341),
             })
         );
     }
@@ -1954,7 +1954,7 @@ mod epoch_credits_tests {
             Some(EpochCredits {
                 regime: CreditsRegime::Alpenglow,
                 tower_credits: None,
-                alpenglow_credits: Some(318328953220),
+                vote_reward_lamports: Some(318328953220),
             })
         );
     }

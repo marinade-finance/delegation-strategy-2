@@ -314,8 +314,8 @@ pub async fn close_epoch(
             commission_effective = u.commission_effective,
             commission_effective_source = u.commission_effective_source,
             -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
-            credits = CASE WHEN u.credits IS NULL AND u.alpenglow_credits IS NULL THEN validators.credits ELSE u.credits END,
-            alpenglow_credits = CASE WHEN u.credits IS NULL AND u.alpenglow_credits IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
+            credits = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.credits ELSE u.credits END,
+            vote_reward_lamports = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -332,7 +332,7 @@ pub async fn close_epoch(
                 blocks_produced,
                 skip_rate,
                 updated_at,
-                alpenglow_credits
+                vote_reward_lamports
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -348,7 +348,7 @@ pub async fn close_epoch(
                 &v.blocks_produced,
                 &v.skip_rate,
                 &v.updated_at,
-                &v.credits.alpenglow_credits,
+                &v.credits.vote_reward_lamports,
             ];
             query.add(
                 &mut params,
@@ -361,7 +361,7 @@ pub async fn close_epoch(
                     (6, "NUMERIC".into()),                  // blocks_produced
                     (7, "DOUBLE PRECISION".into()),         // skip_rate
                     (8, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                    (9, "NUMERIC".into()),                  // alpenglow_credits
+                    (9, "NUMERIC".into()),                  // vote_reward_lamports
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());

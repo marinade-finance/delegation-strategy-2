@@ -69,7 +69,7 @@ pub fn validator_performance() -> ValidatorPerformance {
         feature_set: None,
         shred_version: None,
         credits: Some(10),
-        alpenglow_credits: None,
+        vote_reward_lamports: None,
         last_vote: Some(1),
         credits_total: Some(10),
         leader_slots: 100,
