@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use collect::solana_service::{resolve_client_id, ClientId, CreditsRegime};
+use collect::solana_service::{resolve_client_id, ClientId};
 use collect::validators::{ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
@@ -137,20 +137,13 @@ impl ValidatorBlockReward {
 
 pub struct CreditsColumns {
     pub credits: Option<Decimal>,
-    pub credits_regime: Option<&'static str>,
     pub alpenglow_credits: Option<Decimal>,
 }
 
 impl CreditsColumns {
     pub fn from_performance(p: &ValidatorPerformance) -> Self {
-        // Snapshots written before credits_regime existed hold tower credits.
-        let credits_regime = p
-            .credits_regime
-            .or(p.credits.map(|_| CreditsRegime::Tower))
-            .map(|r| r.as_str());
         Self {
             credits: p.credits.map(Decimal::from),
-            credits_regime,
             alpenglow_credits: p.alpenglow_credits.map(Decimal::from),
         }
     }

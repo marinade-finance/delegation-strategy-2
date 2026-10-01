@@ -2,7 +2,6 @@ mod common;
 
 use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
-use collect::solana_service::CreditsRegime;
 use collect::validators_performance::{
     ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
 };
@@ -23,7 +22,6 @@ const VOTE_ACCOUNT: &str = "KmCRTozzcAXvFEH2xakNMV7GeWyftyVFKS32XGV4spW";
 fn alpenglow_performance() -> ValidatorPerformance {
     ValidatorPerformance {
         credits: None,
-        credits_regime: Some(CreditsRegime::Alpenglow),
         alpenglow_credits: Some(298929716564),
         last_vote: Some(0),
         credits_total: Some(590625720152),
@@ -34,7 +32,6 @@ fn alpenglow_performance() -> ValidatorPerformance {
 fn missing_performance() -> ValidatorPerformance {
     ValidatorPerformance {
         credits: None,
-        credits_regime: None,
         credits_total: None,
         ..validator_performance()
     }
@@ -93,40 +90,35 @@ async fn run_close_epoch(client: &mut Client, schema: &str, performance: Validat
     std::fs::remove_file(path).unwrap();
 }
 
-async fn read_credits(client: &Client) -> (Option<Decimal>, Option<String>, Option<Decimal>) {
+async fn read_credits(client: &Client) -> (Option<Decimal>, Option<Decimal>) {
     let row = client
         .query_one(
-            "SELECT credits, credits_regime, alpenglow_credits
+            "SELECT credits, alpenglow_credits
              FROM validators WHERE vote_account = $1 AND epoch = $2",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
         .await
         .unwrap();
-    (
-        row.get("credits"),
-        row.get("credits_regime"),
-        row.get("alpenglow_credits"),
-    )
+    (row.get("credits"), row.get("alpenglow_credits"))
 }
 
 #[tokio::test]
 async fn an_alpenglow_epoch_stores_null_credits() {
-    let schema = "ds_test_credits_regime_alpenglow";
+    let schema = "ds_test_alpenglow_credits_alpenglow";
     if skip_without_database(schema) {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
 
     seed(&mut client, schema, alpenglow_performance()).await;
-    let (credits, regime, alpenglow_credits) = read_credits(&client).await;
+    let (credits, alpenglow_credits) = read_credits(&client).await;
     assert_eq!(credits, None);
-    assert_eq!(regime.as_deref(), Some("alpenglow"));
     assert_eq!(alpenglow_credits, Some(Decimal::from(298929716564u64)));
 
     run_close_epoch(&mut client, schema, alpenglow_performance()).await;
-    let (credits, regime, _) = read_credits(&client).await;
+    let (credits, alpenglow_credits) = read_credits(&client).await;
     assert_eq!(credits, None);
-    assert_eq!(regime.as_deref(), Some("alpenglow"));
+    assert_eq!(alpenglow_credits, Some(Decimal::from(298929716564u64)));
 
     let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
     let record = load_validators(
@@ -147,7 +139,7 @@ async fn an_alpenglow_epoch_stores_null_credits() {
 
 #[tokio::test]
 async fn an_epoch_missing_from_the_window_keeps_the_stored_credits() {
-    let schema = "ds_test_credits_regime_missing";
+    let schema = "ds_test_alpenglow_credits_missing";
     if skip_without_database(schema) {
         return;
     }
@@ -156,9 +148,8 @@ async fn an_epoch_missing_from_the_window_keeps_the_stored_credits() {
     seed(&mut client, schema, validator_performance()).await;
     run_close_epoch(&mut client, schema, missing_performance()).await;
 
-    let (credits, regime, alpenglow_credits) = read_credits(&client).await;
+    let (credits, alpenglow_credits) = read_credits(&client).await;
     assert_eq!(credits, Some(Decimal::from(10)));
-    assert_eq!(regime.as_deref(), Some("tower"));
     assert_eq!(alpenglow_credits, None);
 }
 
@@ -195,7 +186,7 @@ async fn read_statuses(client: &Client) -> Vec<(String, Option<Decimal>)> {
 
 #[tokio::test]
 async fn without_votes_flat_credits_turn_a_validator_down() {
-    let schema = "ds_test_credits_regime_uptime";
+    let schema = "ds_test_alpenglow_credits_uptime";
     if skip_without_database(schema) {
         return;
     }

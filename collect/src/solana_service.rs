@@ -68,22 +68,11 @@ pub type EpochCreditsEntry = (Epoch, u64, u64);
 // Entries before it count tower vote credits, entries after it count reward lamports.
 const EPOCH_CREDITS_MIGRATION_MARKER: Epoch = Epoch::MAX;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreditsRegime {
     Tower,
     Migration,
     Alpenglow,
-}
-
-impl CreditsRegime {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CreditsRegime::Tower => "tower",
-            CreditsRegime::Migration => "migration",
-            CreditsRegime::Alpenglow => "alpenglow",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

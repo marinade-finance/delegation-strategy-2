@@ -88,8 +88,6 @@ pub struct ValidatorPerformance {
     // Tower vote credits only.
     #[serde(default)]
     pub credits: Option<u64>,
-    #[serde(default)]
-    pub credits_regime: Option<CreditsRegime>,
     // Lamports, not vote credits.
     #[serde(default)]
     pub alpenglow_credits: Option<u64>,
@@ -265,7 +263,6 @@ pub fn validators_performance(
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),
                 credits: credits.as_ref().and_then(|c| c.tower_credits),
-                credits_regime: credits.as_ref().map(|c| c.regime),
                 alpenglow_credits: credits.as_ref().and_then(|c| c.alpenglow_credits),
                 last_vote: Some(vote_account.last_vote),
                 credits_total: latest_credits_total(&vote_account.epoch_credits),
@@ -477,7 +474,7 @@ rewards: null
     }
 
     #[test]
-    fn a_snapshot_without_credits_regime_still_deserializes() {
+    fn a_snapshot_without_alpenglow_credits_still_deserializes() {
         let yaml = "
 commission: 5
 version: 2.0.0
@@ -489,7 +486,7 @@ delinquent: false
 ";
         let performance: ValidatorPerformance = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(performance.credits, Some(6707558));
-        assert_eq!(performance.credits_regime, None);
+        assert_eq!(performance.alpenglow_credits, None);
         assert_eq!(performance.last_vote, None);
     }
 

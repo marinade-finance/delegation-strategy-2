@@ -313,10 +313,9 @@ pub async fn close_epoch(
             "
             commission_effective = u.commission_effective,
             commission_effective_source = u.commission_effective_source,
-            -- NULL credits_regime: the epoch is not in the epochCredits window, so keep what is stored
-            credits = CASE WHEN u.credits_regime IS NULL THEN validators.credits ELSE u.credits END,
-            credits_regime = COALESCE(u.credits_regime, validators.credits_regime),
-            alpenglow_credits = CASE WHEN u.credits_regime IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
+            -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
+            credits = CASE WHEN u.credits IS NULL AND u.alpenglow_credits IS NULL THEN validators.credits ELSE u.credits END,
+            alpenglow_credits = CASE WHEN u.credits IS NULL AND u.alpenglow_credits IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -333,7 +332,6 @@ pub async fn close_epoch(
                 blocks_produced,
                 skip_rate,
                 updated_at,
-                credits_regime,
                 alpenglow_credits
             )"
             .to_string(),
@@ -350,7 +348,6 @@ pub async fn close_epoch(
                 &v.blocks_produced,
                 &v.skip_rate,
                 &v.updated_at,
-                &v.credits.credits_regime,
                 &v.credits.alpenglow_credits,
             ];
             query.add(
@@ -364,8 +361,7 @@ pub async fn close_epoch(
                     (6, "NUMERIC".into()),                  // blocks_produced
                     (7, "DOUBLE PRECISION".into()),         // skip_rate
                     (8, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                    (9, "TEXT".into()),                     // credits_regime
-                    (10, "NUMERIC".into()),                 // alpenglow_credits
+                    (9, "NUMERIC".into()),                  // alpenglow_credits
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());
