@@ -64,8 +64,8 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
 
 pub type EpochCreditsEntry = (Epoch, u64, u64);
 
-// The runtime writes one (u64::MAX, u64::MAX, u64::MAX) entry at the Alpenglow migration boundary.
-// Entries before it count tower vote credits, entries after it count lamports.
+// The agave Alpenglow vote reward code writes this marker in the migration epoch.
+// Entries before it count tower vote credits, entries after it count reward lamports.
 const EPOCH_CREDITS_MIGRATION_MARKER: Epoch = Epoch::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
