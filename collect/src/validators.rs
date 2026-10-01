@@ -159,7 +159,6 @@ pub struct ValidatorSnapshot {
     pub block_revenue_commission_bps: Option<u16>,
     #[serde(default)]
     pub pending_delegator_rewards: Option<u64>,
-    // None where unchecked (pre-v4, or collector is the vote account); healthy also on a missing account.
     #[serde(default)]
     pub inflation_rewards_collector_owner: Option<String>,
     #[serde(default)]

@@ -3,7 +3,7 @@ use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators::Snapshot;
-use log::info;
+use log::{info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +28,20 @@ pub async fn store_validators(
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
+    let snapshot_epoch: Decimal = snapshot.epoch.into();
+
+    // close_epoch runs once per epoch, so a snapshot landing after it would leave mid-epoch values.
+    if psql_client
+        .query_opt("SELECT 1 FROM epochs WHERE epoch = $1", &[&snapshot_epoch])
+        .await?
+        .is_some()
+    {
+        warn!(
+            "Epoch {} is already closed, skipping the snapshot taken at {}",
+            snapshot.epoch, snapshot.created_at
+        );
+        return Ok(());
+    }
 
     let validators: HashMap<_, _> = snapshot
         .validators
@@ -39,7 +53,6 @@ pub async fn store_validators(
             )
         })
         .collect();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
     let mut updated_vote_accounts: HashSet<_> = Default::default();
     let mut unresolved_vote_accounts: Vec<String> = Default::default();
 

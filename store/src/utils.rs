@@ -2318,7 +2318,7 @@ pub async fn load_validators_aggregated_flat(
                     coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
                     coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
                     max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
-                    max(inflation_rewards_commission_bps) AS max_inflation_rewards_commission_bps,
+                    case when bool_and(inflation_rewards_commission_bps is not null) then max(inflation_rewards_commission_bps) end AS max_inflation_rewards_commission_bps,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,

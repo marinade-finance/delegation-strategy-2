@@ -306,7 +306,7 @@ pub struct ValidatorEpochStats {
     pub inflation_rewards_collector_redirected: Option<bool>,
     /// How many vote accounts in this epoch name the same `inflation_rewards_collector`, this one included. More than one means the runtime merges their commissions into a single reward row and the per-validator split is not recoverable from the ledger. **Not a relationship between those validators**: SIMD-0232 asks a collector for no signature of its own, so anyone can point a throwaway vote account at somebody else's collector. Never key an identity or an operator grouping on a collector.
     pub inflation_rewards_collector_shared_count: Option<i64>,
-    /// Whether `inflation_rewards_collector` passes agave's payout check: owned by the system program and rent-exempt. False means the runtime burns the inflation commission instead of paying it. A prediction read from the live account before the payout, so a top-up in between can still clear it. Null where nothing was checked: a pre-v4 state, or a collector that is the vote account itself. Also null where the account does not exist on chain: agave then creates it from the payout, which is paid whenever it alone covers rent.
+    /// Whether `inflation_rewards_collector` passes agave's payout check: a system-owned account other than the incinerator. False means the inflation commission is burned instead of paid. Read before the payout, so it is a prediction. Null on a pre-v4 state, on a collector that is the vote account, and on a missing account, which agave creates only when the payout alone covers rent.
     pub inflation_rewards_collector_healthy: Option<bool>,
     /// SIMD-0232 account this validator's block revenue is paid into. Null on a pre-v4 vote state, where agave credits the leader identity instead. Read from the vote state that built the leader schedule, so a sample taken now predicts the *next* epoch's block revenue, not this one's.
     pub block_revenue_collector: Option<String>,
@@ -314,7 +314,7 @@ pub struct ValidatorEpochStats {
     pub block_revenue_collector_is_identity: Option<bool>,
     /// How many vote accounts in this epoch name the same `block_revenue_collector`, this one included. Carries the same no-consent caveat as `inflation_rewards_collector_shared_count`, but not its attribution loss: block revenue is deposited per block rather than merged into one epoch reward row.
     pub block_revenue_collector_shared_count: Option<i64>,
-    /// The same payout check as `inflation_rewards_collector_healthy`, for `block_revenue_collector`. False means the runtime burns the block revenue it would deposit there. Also a prediction made before the deposit, and null on the same cases.
+    /// The same check as `inflation_rewards_collector_healthy`, for `block_revenue_collector`. False means the block revenue deposited there is burned.
     pub block_revenue_collector_healthy: Option<bool>,
     /// Block-revenue commission in basis points. Inert until SIMD-0123 activates, and 10000 by default on a vote state migrated to v4, which reads as "the validator keeps all of it" rather than as an inflation rate. Null on a pre-v4 vote state.
     pub block_revenue_commission_bps: Option<i32>,
@@ -1076,7 +1076,6 @@ pub struct ValidatorAggregatedFlat {
     pub version: String,
     pub client_vendor: String,
     pub client_lineage: String,
-    // Last so the CSV keeps its existing column positions for readers that index by position.
     pub max_inflation_rewards_commission_bps: Option<i32>,
 }
 

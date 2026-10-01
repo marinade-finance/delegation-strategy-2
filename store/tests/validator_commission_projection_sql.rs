@@ -888,7 +888,6 @@ async fn collector_health_projects_from_the_newest_sample() {
         .await
         .unwrap();
 
-    // voteDrained's collector was rent-exempt at close and has since been drained below it.
     client
         .execute(
             "INSERT INTO validators (

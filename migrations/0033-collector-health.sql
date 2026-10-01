@@ -1,4 +1,3 @@
--- NULL = unchecked (pre-v4, or collector is the vote account); healthy also on a missing account.
 ALTER TABLE validators
   ADD COLUMN inflation_rewards_collector_owner TEXT DEFAULT NULL,
   ADD COLUMN inflation_rewards_collector_lamports NUMERIC DEFAULT NULL,

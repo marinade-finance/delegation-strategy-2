@@ -18,7 +18,8 @@ EPOCH=$(( $(solana -u "$RPC_URL" epoch) - 1 ))
 OUTPUT_DIR=/tmp/collect-output
 mkdir -p $OUTPUT_DIR
 
-cargo run --bin collect -- validators --epoch $EPOCH | \
+# vote state is always current, and store skips a snapshot of an already closed epoch
+cargo run --bin collect -- validators | \
   tee "$OUTPUT_DIR"/validators.yaml
 cargo run --bin collect -- validators-performance --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/snapshot-performance.yaml
