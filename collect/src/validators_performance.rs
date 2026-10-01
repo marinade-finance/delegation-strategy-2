@@ -94,8 +94,6 @@ pub struct ValidatorPerformance {
     #[serde(default)]
     pub alpenglow_credits: Option<u64>,
     #[serde(default)]
-    pub epoch_credits_raw: Vec<EpochCreditsEntry>,
-    #[serde(default)]
     pub last_vote: Option<u64>,
     #[serde(default)]
     pub credits_total: Option<u64>,
@@ -269,7 +267,6 @@ pub fn validators_performance(
                 credits: credits.as_ref().and_then(|c| c.tower_credits),
                 credits_regime: credits.as_ref().map(|c| c.regime),
                 alpenglow_credits: credits.as_ref().and_then(|c| c.alpenglow_credits),
-                epoch_credits_raw: vote_account.epoch_credits.clone(),
                 last_vote: Some(vote_account.last_vote),
                 credits_total: latest_credits_total(&vote_account.epoch_credits),
                 leader_slots,
@@ -493,39 +490,7 @@ delinquent: false
         let performance: ValidatorPerformance = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(performance.credits, Some(6707558));
         assert_eq!(performance.credits_regime, None);
-        assert!(performance.epoch_credits_raw.is_empty());
         assert_eq!(performance.last_vote, None);
-    }
-
-    #[test]
-    fn epoch_credits_raw_survives_the_round_trip() {
-        let yaml = "
-commission: 5
-version: null
-credits: null
-credits_regime: migration
-alpenglow_credits: 290885262341
-epoch_credits_raw:
-- [1042, 810741247, 810676609]
-- [18446744073709551615, 18446744073709551615, 18446744073709551615]
-- [1042, 291696003588, 810741247]
-last_vote: 0
-credits_total: 291696003588
-leader_slots: 4
-blocks_produced: 4
-skip_rate: 0.0
-delinquent: false
-";
-        let performance: ValidatorPerformance = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(performance.credits_regime, Some(CreditsRegime::Migration));
-        assert_eq!(
-            performance.epoch_credits_raw[1],
-            (u64::MAX, u64::MAX, u64::MAX)
-        );
-        let restored: ValidatorPerformance =
-            serde_yaml::from_str(&serde_yaml::to_string(&performance).unwrap()).unwrap();
-        assert_eq!(restored.epoch_credits_raw, performance.epoch_credits_raw);
-        assert_eq!(restored.alpenglow_credits, Some(290885262341));
     }
 
     #[test]

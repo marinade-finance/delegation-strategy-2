@@ -212,7 +212,6 @@ mod tests {
             credits: None,
             credits_regime: None,
             alpenglow_credits: None,
-            epoch_credits_raw: vec![],
             last_vote,
             credits_total,
             leader_slots: 0,

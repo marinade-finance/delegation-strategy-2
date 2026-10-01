@@ -139,7 +139,6 @@ pub struct CreditsColumns {
     pub credits: Option<Decimal>,
     pub credits_regime: Option<&'static str>,
     pub alpenglow_credits: Option<Decimal>,
-    pub epoch_credits_raw: Option<String>,
 }
 
 impl CreditsColumns {
@@ -153,8 +152,6 @@ impl CreditsColumns {
             credits: p.credits.map(Decimal::from),
             credits_regime,
             alpenglow_credits: p.alpenglow_credits.map(Decimal::from),
-            epoch_credits_raw: (!p.epoch_credits_raw.is_empty())
-                .then(|| serde_json::to_string(&p.epoch_credits_raw).unwrap()),
         }
     }
 }

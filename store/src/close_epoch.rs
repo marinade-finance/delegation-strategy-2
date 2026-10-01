@@ -317,7 +317,6 @@ pub async fn close_epoch(
             credits = CASE WHEN u.credits_regime IS NULL THEN validators.credits ELSE u.credits END,
             credits_regime = COALESCE(u.credits_regime, validators.credits_regime),
             alpenglow_credits = CASE WHEN u.credits_regime IS NULL THEN validators.alpenglow_credits ELSE u.alpenglow_credits END,
-            epoch_credits_raw = CASE WHEN u.credits_regime IS NULL THEN validators.epoch_credits_raw ELSE u.epoch_credits_raw END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -335,8 +334,7 @@ pub async fn close_epoch(
                 skip_rate,
                 updated_at,
                 credits_regime,
-                alpenglow_credits,
-                epoch_credits_raw
+                alpenglow_credits
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -354,7 +352,6 @@ pub async fn close_epoch(
                 &v.updated_at,
                 &v.credits.credits_regime,
                 &v.credits.alpenglow_credits,
-                &v.credits.epoch_credits_raw,
             ];
             query.add(
                 &mut params,
@@ -369,7 +366,6 @@ pub async fn close_epoch(
                     (8, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
                     (9, "TEXT".into()),                     // credits_regime
                     (10, "NUMERIC".into()),                 // alpenglow_credits
-                    (11, "TEXT".into()),                    // epoch_credits_raw
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());

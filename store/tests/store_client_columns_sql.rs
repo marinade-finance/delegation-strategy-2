@@ -56,7 +56,6 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
         credits: Some(10),
         credits_regime: Some(CreditsRegime::Tower),
         alpenglow_credits: None,
-        epoch_credits_raw: vec![],
         last_vote: Some(1),
         credits_total: Some(10),
         leader_slots: 100,
