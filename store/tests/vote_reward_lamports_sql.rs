@@ -12,6 +12,7 @@ use common::{
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use store::close_epoch::{close_epoch, CloseEpochParams};
+use store::dto::ValidatorRecord;
 use store::uptime::{store_uptime, StoreUptimeParams};
 use store::utils::{load_validators, ValidatorOverlays};
 use tokio_postgres::Client;
@@ -120,9 +121,27 @@ async fn an_alpenglow_epoch_stores_null_credits() {
     assert_eq!(credits, None);
     assert_eq!(vote_reward_lamports, Some(Decimal::from(298929716564u64)));
 
+    // EPOCH is the first epoch with vote_reward_lamports, so it is the migration epoch
+    let record = load_record(&client).await;
+    assert_eq!(record.credits, None);
+    assert_eq!(record.vote_reward_lamports, Some(298929716564));
+    assert_eq!(record.epoch_stats[0].credits, None);
+    assert!(record.epoch_stats[0].apy.is_some());
+
+    let mut snapshot = validator_snapshot(EPOCH - 1, "identityAlpenglow", VOTE_ACCOUNT);
+    snapshot.validators[0].performance = alpenglow_performance();
+    store_snapshot(&mut client, schema, &snapshot).await;
+
+    let record = load_record(&client).await;
+    assert_eq!(record.credits, Some(298929716564));
+    assert_eq!(record.vote_reward_lamports, Some(298929716564));
+    assert_eq!(record.epoch_stats[0].credits, Some(298929716564));
+}
+
+async fn load_record(client: &Client) -> ValidatorRecord {
     let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
-    let record = load_validators(
-        &client,
+    load_validators(
+        client,
         unreachable_scoring_url,
         1,
         1,
@@ -131,10 +150,7 @@ async fn an_alpenglow_epoch_stores_null_credits() {
     .await
     .unwrap()
     .remove(VOTE_ACCOUNT)
-    .expect("a row with NULL credits must load");
-    assert_eq!(record.credits, None);
-    assert_eq!(record.epoch_stats[0].credits, None);
-    assert_eq!(record.epoch_stats[0].apy, None);
+    .expect("a row with NULL credits must load")
 }
 
 #[tokio::test]
