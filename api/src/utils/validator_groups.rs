@@ -105,11 +105,11 @@ pub fn group_secondary_column(group: &ValidatorGroupRecord, order_field: OrderFi
 
 /// Orders two rows on their already-extracted columns, then on their name.
 pub fn compare_group_rows(
-    (a_column, a_secondary, a_name): (&SortKey, &SortKey, &str),
-    (b_column, b_secondary, b_name): (&SortKey, &SortKey, &str),
+    (a_primary, a_secondary, a_name): (&SortKey, &SortKey, &str),
+    (b_primary, b_secondary, b_name): (&SortKey, &SortKey, &str),
     order_direction: &OrderDirection,
 ) -> Ordering {
-    compare_keys(a_column, b_column, order_direction)
+    compare_keys(a_primary, b_primary, order_direction)
         .then_with(|| compare_keys(a_secondary, b_secondary, order_direction))
         .then_with(|| {
             a_name
@@ -136,10 +136,10 @@ pub fn sort_groups<T: GroupRow>(
         })
         .collect();
 
-    keyed.sort_by(|(a_column, a_secondary, a), (b_column, b_secondary, b)| {
+    keyed.sort_by(|(a_primary, a_secondary, a), (b_primary, b_secondary, b)| {
         compare_group_rows(
-            (a_column, a_secondary, &a.row().key),
-            (b_column, b_secondary, &b.row().key),
+            (a_primary, a_secondary, &a.row().key),
+            (b_primary, b_secondary, &b.row().key),
             order_direction,
         )
     });

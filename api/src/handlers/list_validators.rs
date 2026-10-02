@@ -285,10 +285,10 @@ fn top_level_ranks(
     }
 
     rows.sort_by(
-        |(a_row, a_column, a_secondary, a_name), (b_row, b_column, b_secondary, b_name)| {
+        |(a_row, a_primary, a_secondary, a_name), (b_row, b_primary, b_secondary, b_name)| {
             compare_group_rows(
-                (a_column, a_secondary, a_name),
-                (b_column, b_secondary, b_name),
+                (a_primary, a_secondary, a_name),
+                (b_primary, b_secondary, b_name),
                 order_direction,
             )
             // Names collide across the two kinds of row, and the list is paged, so the order has to be total.
@@ -390,11 +390,11 @@ fn sort_validators_ranked(
         })
         .collect();
     keyed.sort_by(
-        |(a_rank, a_key, a_secondary, a), (b_rank, b_key, b_secondary, b)| {
+        |(a_rank, a_primary, a_secondary, a), (b_rank, b_primary, b_secondary, b)| {
             // Ascending in both directions: the direction is already spent on the operator order.
             a_rank
                 .cmp(b_rank)
-                .then_with(|| compare_keys(a_key, b_key, order_direction))
+                .then_with(|| compare_keys(a_primary, b_primary, order_direction))
                 .then_with(|| compare_keys(a_secondary, b_secondary, order_direction))
                 // Without this tiebreak ties inherit HashMap iteration order, which changes on every
                 // cache refresh and makes offset pages overlap or skip rows.
