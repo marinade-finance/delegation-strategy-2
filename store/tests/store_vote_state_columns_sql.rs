@@ -15,6 +15,12 @@ struct Stored {
     inflation_rewards_commission_bps_is_v4: Option<bool>,
     block_revenue_commission_bps: Option<i32>,
     pending_delegator_rewards: Option<Decimal>,
+    inflation_rewards_collector_owner: Option<String>,
+    inflation_rewards_collector_lamports: Option<Decimal>,
+    inflation_rewards_collector_healthy: Option<bool>,
+    block_revenue_collector_owner: Option<String>,
+    block_revenue_collector_lamports: Option<Decimal>,
+    block_revenue_collector_healthy: Option<bool>,
 }
 
 async fn read_back(client: &Client) -> Stored {
@@ -26,7 +32,13 @@ async fn read_back(client: &Client) -> Stored {
                 inflation_rewards_commission_bps,
                 inflation_rewards_commission_bps_is_v4,
                 block_revenue_commission_bps,
-                pending_delegator_rewards
+                pending_delegator_rewards,
+                inflation_rewards_collector_owner,
+                inflation_rewards_collector_lamports,
+                inflation_rewards_collector_healthy,
+                block_revenue_collector_owner,
+                block_revenue_collector_lamports,
+                block_revenue_collector_healthy
              FROM validators WHERE vote_account = $1 AND epoch = $2",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
@@ -39,6 +51,12 @@ async fn read_back(client: &Client) -> Stored {
         inflation_rewards_commission_bps_is_v4: row.get("inflation_rewards_commission_bps_is_v4"),
         block_revenue_commission_bps: row.get("block_revenue_commission_bps"),
         pending_delegator_rewards: row.get("pending_delegator_rewards"),
+        inflation_rewards_collector_owner: row.get("inflation_rewards_collector_owner"),
+        inflation_rewards_collector_lamports: row.get("inflation_rewards_collector_lamports"),
+        inflation_rewards_collector_healthy: row.get("inflation_rewards_collector_healthy"),
+        block_revenue_collector_owner: row.get("block_revenue_collector_owner"),
+        block_revenue_collector_lamports: row.get("block_revenue_collector_lamports"),
+        block_revenue_collector_healthy: row.get("block_revenue_collector_healthy"),
     }
 }
 
@@ -60,6 +78,12 @@ async fn vote_state_columns_survive_both_write_paths_at_full_width() {
     validator.inflation_rewards_commission_bps_is_v4 = Some(true);
     validator.block_revenue_commission_bps = Some(10_000);
     validator.pending_delegator_rewards = Some(u64::MAX);
+    validator.inflation_rewards_collector_owner = Some("11111111111111111111111111111111".into());
+    validator.inflation_rewards_collector_lamports = Some(u64::MAX);
+    validator.inflation_rewards_collector_healthy = Some(true);
+    validator.block_revenue_collector_owner = None;
+    validator.block_revenue_collector_lamports = Some(0);
+    validator.block_revenue_collector_healthy = Some(false);
 
     store_snapshot(&mut client, "vote-state-insert", &snapshot).await;
     let inserted = read_back(&client).await;
@@ -79,11 +103,37 @@ async fn vote_state_columns_survive_both_write_paths_at_full_width() {
         Some(Decimal::from(u64::MAX)),
         "a u64 must not be narrowed to a signed column"
     );
+    assert_eq!(
+        (
+            inserted.inflation_rewards_collector_owner.as_deref(),
+            inserted.inflation_rewards_collector_lamports,
+            inserted.inflation_rewards_collector_healthy
+        ),
+        (
+            Some("11111111111111111111111111111111"),
+            Some(Decimal::from(u64::MAX)),
+            Some(true)
+        )
+    );
+    assert_eq!(
+        (
+            inserted.block_revenue_collector_owner.as_deref(),
+            inserted.block_revenue_collector_lamports,
+            inserted.block_revenue_collector_healthy
+        ),
+        (None, Some(Decimal::ZERO), Some(false)),
+        "a missing collector account stores no owner and zero lamports"
+    );
 
     // Second store of the same epoch takes the UPDATE branch; the validator redirected meanwhile.
     let validator = &mut snapshot.validators[0];
     validator.inflation_rewards_collector = Some("collectorRedirected".into());
     validator.inflation_rewards_commission_bps = Some(1_001);
+    validator.inflation_rewards_collector_lamports = Some(1);
+    validator.inflation_rewards_collector_healthy = Some(false);
+    validator.block_revenue_collector_owner = Some("11111111111111111111111111111111".into());
+    validator.block_revenue_collector_lamports = Some(u64::MAX);
+    validator.block_revenue_collector_healthy = Some(true);
     store_snapshot(&mut client, "vote-state-update", &snapshot).await;
     let updated = read_back(&client).await;
     assert_eq!(
@@ -96,6 +146,26 @@ async fn vote_state_columns_survive_both_write_paths_at_full_width() {
         updated.block_revenue_commission_bps,
         Some(10_000),
         "the untouched fields must survive the update"
+    );
+    assert_eq!(
+        (
+            updated.inflation_rewards_collector_lamports,
+            updated.inflation_rewards_collector_healthy
+        ),
+        (Some(Decimal::ONE), Some(false)),
+        "the redirected collector's health replaces the inserted one"
+    );
+    assert_eq!(
+        (
+            updated.block_revenue_collector_owner.as_deref(),
+            updated.block_revenue_collector_lamports,
+            updated.block_revenue_collector_healthy
+        ),
+        (
+            Some("11111111111111111111111111111111"),
+            Some(Decimal::from(u64::MAX)),
+            Some(true)
+        )
     );
 
     client
@@ -166,6 +236,12 @@ async fn a_snapshot_written_before_these_fields_still_stores() {
         "direct_stake",
         "direct_activating_stake",
         "direct_deactivating_stake",
+        "inflation_rewards_collector_owner",
+        "inflation_rewards_collector_lamports",
+        "inflation_rewards_collector_healthy",
+        "block_revenue_collector_owner",
+        "block_revenue_collector_lamports",
+        "block_revenue_collector_healthy",
     ] {
         assert!(
             validator
@@ -209,6 +285,8 @@ async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
     validator.inflation_rewards_commission_bps_is_v4 = Some(true);
     validator.block_revenue_commission_bps = Some(10_000);
     validator.pending_delegator_rewards = Some(987_654_321);
+    validator.inflation_rewards_collector_healthy = Some(false);
+    validator.inflation_rewards_collector_lamports = Some(5);
     store_snapshot(&mut client, "vote-state-parsed", &snapshot).await;
 
     let validator = &mut snapshot.validators[0];
@@ -218,6 +296,8 @@ async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
     validator.inflation_rewards_commission_bps_is_v4 = None;
     validator.block_revenue_commission_bps = None;
     validator.pending_delegator_rewards = None;
+    validator.inflation_rewards_collector_healthy = None;
+    validator.inflation_rewards_collector_lamports = None;
     store_snapshot(&mut client, "vote-state-unparsed", &snapshot).await;
 
     let stored = read_back(&client).await;
@@ -235,6 +315,14 @@ async fn an_unparsed_vote_state_keeps_the_epochs_last_good_sample() {
     assert_eq!(
         stored.pending_delegator_rewards,
         Some(Decimal::from(987_654_321u64))
+    );
+    assert_eq!(
+        (
+            stored.inflation_rewards_collector_lamports,
+            stored.inflation_rewards_collector_healthy
+        ),
+        (Some(Decimal::from(5)), Some(false)),
+        "an unparsed state must not clear the unhealthy flag the parsed one raised"
     );
 
     client

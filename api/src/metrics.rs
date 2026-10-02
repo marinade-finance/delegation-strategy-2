@@ -109,6 +109,12 @@ lazy_static! {
         &["source"]
     )
     .unwrap();
+    pub static ref VALIDATOR_UNHEALTHY_COLLECTOR: IntGaugeVec = register_int_gauge_vec!(
+        "ds_validator_unhealthy_collector",
+        "Validators whose SIMD-0232 collector would burn the commission at payout",
+        &["kind"]
+    )
+    .unwrap();
 }
 
 fn collect_metrics() -> String {
