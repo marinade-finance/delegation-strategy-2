@@ -196,7 +196,8 @@ pub async fn get_events_with_context(
                     credits: row
                         .get::<_, Option<Decimal>>("credits")
                         .map(u64::try_from)
-                        .transpose()?,
+                        .transpose()?
+                        .unwrap_or(0),
                 }),
                 uptime_pct: row.get("uptime_pct"),
                 downtime: row

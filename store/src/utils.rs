@@ -1141,13 +1141,8 @@ pub async fn load_validators(
         .query(
             "
             WITH
-                validators_aggregated AS (
-                    SELECT vote_account, MIN(epoch) first_epoch, MIN(epoch) FILTER (WHERE vote_reward_lamports IS NOT NULL) first_vote_reward_epoch
-                    FROM validators GROUP BY vote_account
-                ),
+                validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                -- The collector stores vote_reward_lamports from the migration epoch on
-                alpenglow AS (SELECT MIN(first_vote_reward_epoch) AS migration_epoch FROM validators_aggregated),
                 epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
             SELECT
                 validators.identity,
@@ -1226,11 +1221,9 @@ pub async fn load_validators(
                 uptime,
                 downtime,
 
-                validators_aggregated.first_epoch AS first_epoch,
-                alpenglow.migration_epoch AS alpenglow_migration_epoch
+                validators_aggregated.first_epoch AS first_epoch
             FROM validators
                 LEFT JOIN cluster ON 1 = 1
-                LEFT JOIN alpenglow ON 1 = 1
                 LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
                 LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
                 LEFT JOIN epochs ON epochs.epoch = validators.epoch
@@ -1268,9 +1261,6 @@ pub async fn load_validators(
             let vote_reward_lamports: Option<u64> = row
                 .get::<_, Option<Decimal>>("vote_reward_lamports")
                 .map(|lamports| lamports.try_into().unwrap());
-            let alpenglow_migration_epoch: Option<u64> = row
-                .get::<_, Option<Decimal>>("alpenglow_migration_epoch")
-                .map(|epoch| epoch.try_into().unwrap());
             let tower_credits: Option<u64> = row
                 .get::<_, Option<Decimal>>("credits")
                 .map(|credits| credits.try_into().unwrap());
@@ -1291,11 +1281,7 @@ pub async fn load_validators(
                 }
             });
             let (apr, apy) = (yields.map(|(apr, _)| apr), yields.map(|(_, apy)| apy));
-            let credits: Option<u64> = if alpenglow_migration_epoch.is_none_or(|m| epoch <= m) {
-                tower_credits
-            } else {
-                vote_reward_lamports
-            };
+            let credits: u64 = tower_credits.unwrap_or(0);
 
             let dc_full_city = row
                 .get::<_, Option<String>>("dc_full_city")
@@ -2273,7 +2259,7 @@ pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bo
             .iter()
             .find(|&epoch_stat| epoch_stat.epoch == epoch)
             .is_some_and(|epoch_stat| {
-                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits.unwrap_or(0) > 0
+                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
             })
     })
 }

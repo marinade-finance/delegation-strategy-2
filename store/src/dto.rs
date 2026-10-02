@@ -352,8 +352,8 @@ pub struct ValidatorEpochStats {
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
-    /// Tower vote credits, or `vote_reward_lamports` in an Alpenglow epoch after the migration epoch.
-    pub credits: Option<u64>,
+    /// Tower vote credits. 0 in an Alpenglow epoch after the migration epoch, and when the collector found no credits.
+    pub credits: u64,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
     pub leader_slots: u64,
@@ -454,8 +454,8 @@ pub struct ValidatorRecord {
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
-    /// Tower vote credits, or `vote_reward_lamports` in an Alpenglow epoch after the migration epoch.
-    pub credits: Option<u64>,
+    /// Tower vote credits. 0 in an Alpenglow epoch after the migration epoch, and when the collector found no credits.
+    pub credits: u64,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
     pub score: Option<f64>,
@@ -715,7 +715,7 @@ pub struct PerformanceRecord {
     pub blocks_produced: u64,
     pub leader_slots: u64,
     pub skip_rate: f64,
-    pub credits: Option<u64>,
+    pub credits: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

@@ -408,8 +408,7 @@ type FieldExtractor = fn(&ValidatorRecord) -> SortKey;
 
 fn get_secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        // Breaks ties on `credits`. In the migration epoch, `credits` is the tower part of the epoch
-        // and `vote_reward_lamports` is the Alpenglow part.
+        // Breaks ties on `credits`, which is 0 for every validator after the Alpenglow migration epoch.
         OrderField::Credits => {
             |a: &ValidatorRecord| a.vote_reward_lamports.map(Decimal::from).into()
         }
@@ -421,7 +420,7 @@ fn get_secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
 fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
         OrderField::Stake => |a: &ValidatorRecord| SortKey::Number(a.activated_stake),
-        OrderField::Credits => |a: &ValidatorRecord| a.credits.map(Decimal::from).into(),
+        OrderField::Credits => |a: &ValidatorRecord| SortKey::Number(Decimal::from(a.credits)),
         OrderField::MarinadeScore => |a: &ValidatorRecord| {
             a.score
                 .and_then(to_fixed_for_sort)
@@ -798,7 +797,7 @@ mod tests {
             self_stake: Decimal::ZERO,
             superminority: false,
             stake_to_become_superminority: Decimal::ZERO,
-            credits: Some(1),
+            credits: 1,
             vote_reward_lamports: None,
             leader_slots: 0,
             blocks_produced: 0,
@@ -886,7 +885,7 @@ mod tests {
             activating_stake: None,
             deactivating_stake: None,
             superminority: false,
-            credits: Some(1),
+            credits: 1,
             vote_reward_lamports: None,
             score: None,
             warnings,
@@ -2195,7 +2194,7 @@ mod tests {
     #[test]
     fn credits_order_breaks_ties_on_vote_reward_lamports() {
         let with_credits =
-            |vote_account: &str, credits: Option<u64>, lamports: Option<u64>| ValidatorRecord {
+            |vote_account: &str, credits: u64, lamports: Option<u64>| ValidatorRecord {
                 credits,
                 vote_reward_lamports: lamports,
                 ..validator(vote_account, 100, vec![])
@@ -2203,21 +2202,33 @@ mod tests {
         assert_eq!(
             order(sort_validators(
                 vec![
-                    with_credits("missing", None, None),
-                    with_credits("low", Some(10), Some(500)),
-                    with_credits("migration_low", Some(20), Some(100)),
-                    with_credits("migration_high", Some(20), Some(900)),
+                    with_credits("zero", 0, None),
+                    with_credits("low", 10, Some(500)),
+                    with_credits("migration_low", 20, Some(100)),
+                    with_credits("migration_high", 20, Some(900)),
                 ],
                 OrderField::Credits,
                 &OrderDirection::DESC
             )),
-            vec!["migration_high", "migration_low", "low", "missing"]
+            vec!["migration_high", "migration_low", "low", "zero"]
         );
         assert_eq!(
             order(sort_validators(
                 vec![
-                    with_credits("high", Some(900), Some(900)),
-                    with_credits("low", Some(100), Some(100)),
+                    with_credits("missing", 0, None),
+                    with_credits("alpenglow_low", 0, Some(100)),
+                    with_credits("alpenglow_high", 0, Some(900)),
+                ],
+                OrderField::Credits,
+                &OrderDirection::DESC
+            )),
+            vec!["alpenglow_high", "alpenglow_low", "missing"]
+        );
+        assert_eq!(
+            order(sort_validators(
+                vec![
+                    with_credits("high", 900, Some(900)),
+                    with_credits("low", 100, Some(100)),
                 ],
                 OrderField::Credits,
                 &OrderDirection::ASC
