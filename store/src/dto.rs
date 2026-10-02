@@ -352,7 +352,10 @@ pub struct ValidatorEpochStats {
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
+    /// Tower vote credits, or `vote_reward_lamports` in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
+    /// Null before Alpenglow.
+    pub vote_reward_lamports: Option<u64>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
     pub skip_rate: f64,
@@ -451,7 +454,10 @@ pub struct ValidatorRecord {
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
+    /// Tower vote credits, or `vote_reward_lamports` in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
+    /// Null before Alpenglow.
+    pub vote_reward_lamports: Option<u64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
     pub epoch_stats: Vec<ValidatorEpochStats>,

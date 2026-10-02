@@ -356,6 +356,7 @@ fn sort_validators_ranked(
     order_direction: &OrderDirection,
 ) -> Vec<ValidatorRecord> {
     let field_extractor = get_field_extractor(order_field);
+    let secondary_field_extractor = get_secondary_field_extractor(order_field);
     // Ungrouped, every validator keys the same, so the rank drops out of the comparison.
     let rank = |validator: &ValidatorRecord| {
         top_level_ranks
@@ -363,23 +364,43 @@ fn sort_validators_ranked(
             .unwrap_or(usize::MAX)
     };
     // Keyed up front: sort_by would otherwise re-extract on both sides of every one of n·log n comparisons.
-    let mut keyed: Vec<(usize, SortKey, ValidatorRecord)> = validators
+    let mut keyed: Vec<(usize, SortKey, SortKey, ValidatorRecord)> = validators
         .into_iter()
-        .map(|validator| (rank(&validator), field_extractor(&validator), validator))
+        .map(|validator| {
+            (
+                rank(&validator),
+                field_extractor(&validator),
+                secondary_field_extractor(&validator),
+                validator,
+            )
+        })
         .collect();
-    keyed.sort_by(|(a_rank, a_key, a), (b_rank, b_key, b)| {
-        // Ascending in both directions: the direction is already spent on the operator order.
-        a_rank
-            .cmp(b_rank)
-            .then_with(|| compare_keys(a_key, b_key, order_direction))
-            // Without this tiebreak ties inherit HashMap iteration order, which changes on every
-            // cache refresh and makes offset pages overlap or skip rows.
-            .then_with(|| a.vote_account.cmp(&b.vote_account))
-    });
+    keyed.sort_by(
+        |(a_rank, a_key, a_secondary, a), (b_rank, b_key, b_secondary, b)| {
+            // Ascending in both directions: the direction is already spent on the operator order.
+            a_rank
+                .cmp(b_rank)
+                .then_with(|| compare_keys(a_key, b_key, order_direction))
+                .then_with(|| compare_keys(a_secondary, b_secondary, order_direction))
+                // Without this tiebreak ties inherit HashMap iteration order, which changes on every
+                // cache refresh and makes offset pages overlap or skip rows.
+                .then_with(|| a.vote_account.cmp(&b.vote_account))
+        },
+    );
     keyed.into_iter().map(|(.., validator)| validator).collect()
 }
 
 type FieldExtractor = fn(&ValidatorRecord) -> SortKey;
+
+// In the Alpenglow migration epoch `credits` holds only the tower part of the epoch.
+fn get_secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
+    match order_field {
+        OrderField::Credits => {
+            |a: &ValidatorRecord| a.vote_reward_lamports.map(Decimal::from).into()
+        }
+        _ => |_: &ValidatorRecord| SortKey::Missing,
+    }
+}
 
 // Commission and Uptime keep worst-case sentinels: for those two unknown means risk, not no-data.
 fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
@@ -763,6 +784,7 @@ mod tests {
             superminority: false,
             stake_to_become_superminority: Decimal::ZERO,
             credits: Some(1),
+            vote_reward_lamports: None,
             leader_slots: 0,
             blocks_produced: 0,
             skip_rate: 0.0,
@@ -850,6 +872,7 @@ mod tests {
             deactivating_stake: None,
             superminority: false,
             credits: Some(1),
+            vote_reward_lamports: None,
             score: None,
             warnings,
             epoch_stats: vec![epoch_stat(99, stake), epoch_stat(100, stake)],
@@ -2151,6 +2174,40 @@ mod tests {
             )),
             vec!["many", "few", "unmeasured"],
             "a validator with no count is not one with none"
+        );
+    }
+
+    #[test]
+    fn credits_order_breaks_ties_on_vote_reward_lamports() {
+        let with_credits =
+            |vote_account: &str, credits: Option<u64>, lamports: Option<u64>| ValidatorRecord {
+                credits,
+                vote_reward_lamports: lamports,
+                ..validator(vote_account, 100, vec![])
+            };
+        assert_eq!(
+            order(sort_validators(
+                vec![
+                    with_credits("missing", None, None),
+                    with_credits("low", Some(10), Some(500)),
+                    with_credits("migration_low", Some(20), Some(100)),
+                    with_credits("migration_high", Some(20), Some(900)),
+                ],
+                OrderField::Credits,
+                &OrderDirection::DESC
+            )),
+            vec!["migration_high", "migration_low", "low", "missing"]
+        );
+        assert_eq!(
+            order(sort_validators(
+                vec![
+                    with_credits("high", Some(900), Some(900)),
+                    with_credits("low", Some(100), Some(100)),
+                ],
+                OrderField::Credits,
+                &OrderDirection::ASC
+            )),
+            vec!["low", "high"]
         );
     }
 

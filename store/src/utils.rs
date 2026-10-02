@@ -1188,6 +1188,9 @@ pub async fn load_validators(
                 superminority,
                 stake_to_become_superminority,
                 credits,
+                vote_reward_lamports,
+                -- False in an Alpenglow epoch after the migration epoch
+                COUNT(credits) OVER (PARTITION BY validators.epoch) > 0 AS epoch_has_tower_credits,
                 leader_slots,
                 blocks_produced,
                 skip_rate,
@@ -1245,6 +1248,16 @@ pub async fn load_validators(
                 (Some(apr), Some(apy))
             } else {
                 (None, None)
+            };
+
+            let vote_reward_lamports: Option<u64> = row
+                .get::<_, Option<Decimal>>("vote_reward_lamports")
+                .map(|lamports| lamports.try_into().unwrap());
+            let credits: Option<u64> = if row.get("epoch_has_tower_credits") {
+                row.get::<_, Option<Decimal>>("credits")
+                    .map(|credits| credits.try_into().unwrap())
+            } else {
+                vote_reward_lamports
             };
 
             let dc_full_city = row
@@ -1362,9 +1375,8 @@ pub async fn load_validators(
                     direct_deactivating_stake: row
                         .get::<_, Option<Decimal>>("direct_deactivating_stake"),
                     superminority: row.get("superminority"),
-                    credits: row
-                        .get::<_, Option<Decimal>>("credits")
-                        .map(|credits| credits.try_into().unwrap()),
+                    credits,
+                    vote_reward_lamports,
                     score: None,
 
                     epoch_stats: Vec::with_capacity(display_epochs as usize),
@@ -1520,9 +1532,8 @@ pub async fn load_validators(
                 superminority: row.get("superminority"),
                 stake_to_become_superminority: row
                     .get::<_, Decimal>("stake_to_become_superminority"),
-                credits: row
-                    .get::<_, Option<Decimal>>("credits")
-                    .map(|credits| credits.try_into().unwrap()),
+                credits,
+                vote_reward_lamports,
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
                 skip_rate: row.get("skip_rate"),
