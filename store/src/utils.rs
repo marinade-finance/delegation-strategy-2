@@ -2381,7 +2381,7 @@ pub async fn load_validators_aggregated_flat(
                 WHERE
                 validators.epoch BETWEEN $1 AND $2
                 GROUP BY validators.vote_account
-                HAVING COUNT(*) = $3 AND COUNT(*) FILTER (WHERE credits > 0) >= 7
+                HAVING COUNT(*) = $3 AND COUNT(*) FILTER (WHERE credits > 0 OR vote_reward_lamports > 0) >= 7
                 ORDER BY avg_adjusted_credits DESC;
             ",
                 &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
