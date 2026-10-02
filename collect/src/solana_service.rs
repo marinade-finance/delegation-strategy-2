@@ -108,7 +108,7 @@ pub fn split_epoch_credits(
     };
 
     // Split the epoch delta at the marker: the entry before it goes to `tower`, the entry after it to `alpenglow`.
-    // With no marker, give the one delta to the column of the regime. Return None if the epoch has no entry.
+    // With no marker, give the one delta to the column of the regime.
     let (tower, alpenglow) = match marker {
         Some(m) => (
             epoch_credits_delta(&history[..m], epoch),
@@ -121,6 +121,21 @@ pub fn split_epoch_credits(
                 CreditsRegime::Migration | CreditsRegime::Alpenglow => (None, delta),
             }
         }
+    };
+    let epoch_in_window = |entries: &[EpochCreditsEntry]| {
+        entries
+            .first()
+            .map_or(marker.is_none(), |(first_epoch, _, _)| {
+                *first_epoch <= epoch
+            })
+    };
+    let tower_entries = marker.map_or(history, |m| &history[..m]);
+    // No entry for the epoch: 0 tower credits before Alpenglow, None after it.
+    // Also None when the epoch is older than the entries `epochCredits` keeps.
+    let tower = match (regime, tower) {
+        (CreditsRegime::Alpenglow, _) => None,
+        (_, None) if epoch_in_window(tower_entries) => Some(Some(0)),
+        (_, tower) => tower,
     };
     if tower.is_none() && alpenglow.is_none() {
         return None;
@@ -1927,6 +1942,30 @@ mod epoch_credits_tests {
                 vote_reward_lamports: Some(290885262341),
             })
         );
+    }
+
+    #[test]
+    fn a_tower_epoch_without_votes_has_zero_credits() {
+        let history = vec![(1040, 803969051, 797204500), (1042, 810741247, 810676609)];
+        for epoch in [1041, 1043] {
+            assert_eq!(
+                split_epoch_credits(&history, epoch, None),
+                Some(EpochCredits {
+                    regime: CreditsRegime::Tower,
+                    tower_credits: Some(0),
+                    vote_reward_lamports: None,
+                })
+            );
+        }
+        assert_eq!(
+            split_epoch_credits(&[], 1041, None).map(|c| c.tower_credits),
+            Some(Some(0))
+        );
+    }
+
+    #[test]
+    fn an_alpenglow_epoch_without_votes_is_unknown() {
+        assert_eq!(split_epoch_credits(&testnet_history(), 1045, None), None);
     }
 
     #[test]

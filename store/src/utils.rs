@@ -2260,7 +2260,7 @@ pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bo
             .find(|&epoch_stat| epoch_stat.epoch == epoch)
             .is_some_and(|epoch_stat| {
                 // After Alpenglow, `credits is always 0 so we added `uptime_pct` here.
-                // It is `None` for the open epoch. 
+                // It is `None` for the open epoch.
                 epoch_stat.activated_stake > Decimal::from(0)
                     || epoch_stat.credits > 0
                     || epoch_stat
