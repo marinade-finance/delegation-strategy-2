@@ -851,6 +851,7 @@ pub struct ValidatorGroupRecord {
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
+    pub vote_reward_lamports: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
     pub commission: Option<f64>,

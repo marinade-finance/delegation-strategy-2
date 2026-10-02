@@ -6,7 +6,9 @@ use crate::utils::order::{
     compare_keys, OrderDirection, OrderField, SortKey, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
 };
 use crate::utils::response::{response_error, response_error_500};
-use crate::utils::validator_groups::{compare_group_rows, group_column, sort_groups};
+use crate::utils::validator_groups::{
+    compare_group_rows, group_column, group_secondary_column, sort_groups,
+};
 use chrono::{DateTime, Utc};
 use log::error;
 use rust_decimal::prelude::*;
@@ -251,7 +253,7 @@ fn top_level_ranks(
         .map(|operator| (operator.key.to_lowercase(), operator))
         .collect();
 
-    let mut rows: Vec<(TopLevelRow, SortKey, String)> = Vec::new();
+    let mut rows: Vec<(TopLevelRow, SortKey, SortKey, String)> = Vec::new();
     let mut placed: HashSet<TopLevelRow> = HashSet::new();
 
     for validator in validators {
@@ -264,23 +266,35 @@ fn top_level_ranks(
                 Some(aggregate) => rows.push((
                     row,
                     group_column(aggregate, order_field),
+                    group_secondary_column(aggregate, order_field),
                     aggregate.key.clone(),
                 )),
                 // No row for this operator, so no column value: the block sorts at the tail.
-                None => rows.push((row, SortKey::Missing, operator.clone())),
+                None => rows.push((row, SortKey::Missing, SortKey::Missing, operator.clone())),
             },
             None => {
                 let standalone = singleton_group(validator);
-                rows.push((row, group_column(&standalone, order_field), standalone.key));
+                rows.push((
+                    row,
+                    group_column(&standalone, order_field),
+                    group_secondary_column(&standalone, order_field),
+                    standalone.key,
+                ));
             }
         }
     }
 
-    rows.sort_by(|(a_row, a_column, a_name), (b_row, b_column, b_name)| {
-        compare_group_rows((a_column, a_name), (b_column, b_name), order_direction)
+    rows.sort_by(
+        |(a_row, a_column, a_secondary, a_name), (b_row, b_column, b_secondary, b_name)| {
+            compare_group_rows(
+                (a_column, a_secondary, a_name),
+                (b_column, b_secondary, b_name),
+                order_direction,
+            )
             // Names collide across the two kinds of row, and the list is paged, so the order has to be total.
             .then_with(|| a_row.cmp(b_row))
-    });
+        },
+    );
 
     rows.into_iter()
         .enumerate()

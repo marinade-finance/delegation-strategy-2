@@ -350,6 +350,7 @@ struct Accumulator<B> {
     net_apy: StakeWeighted,
     take_rate: StakeWeighted,
     credits: StakeWeighted,
+    vote_reward_lamports: StakeWeighted,
     marinade_score: StakeWeighted,
     apy: StakeWeighted,
     commission: StakeWeighted,
@@ -370,6 +371,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: Default::default(),
             take_rate: Default::default(),
             credits: Default::default(),
+            vote_reward_lamports: Default::default(),
             marinade_score: Default::default(),
             apy: Default::default(),
             commission: Default::default(),
@@ -420,6 +422,12 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
         self.take_rate.add(validator.avg_take_rate, weight);
         self.credits
             .add(validator.credits.map(|c| c as f64), weight);
+        self.vote_reward_lamports.add(
+            validator
+                .vote_reward_lamports
+                .map(|lamports| lamports as f64),
+            weight,
+        );
         self.marinade_score.add(validator.score, weight);
         self.apy.add(validator.avg_apy, weight);
         // Left out when unknown on both sides, where the per-validator column reads the worst case.
@@ -474,6 +482,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
+            vote_reward_lamports: self.vote_reward_lamports.mean(),
             marinade_score: self.marinade_score.mean(),
             apy: self.apy.mean(),
             commission: self.commission.mean(),
@@ -541,6 +550,9 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         net_apy: finite(validator.net_apy),
         take_rate: finite(validator.avg_take_rate),
         credits: validator.credits.map(|c| c as f64),
+        vote_reward_lamports: validator
+            .vote_reward_lamports
+            .map(|lamports| lamports as f64),
         marinade_score: finite(validator.score),
         apy: finite(validator.avg_apy),
         commission: worst_known_commission(
