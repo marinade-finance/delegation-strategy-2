@@ -798,6 +798,7 @@ async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
         .unwrap();
 
     // voteDeparted has no open-epoch row, so its record is seeded straight from the closed epoch.
+    // Each closed row's own late sample differs from the stored bps close_epoch resolved at E-2.
     client
         .execute(
             "INSERT INTO validators (
@@ -805,17 +806,18 @@ async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
                 leader_slots, blocks_produced, skip_rate, updated_at,
                 commission_advertised, commission_max_observed, commission_min_observed,
-                commission_effective, commission_effective_source, inflation_rewards_commission_bps
+                commission_effective, commission_effective_source, commission_effective_bps,
+                inflation_rewards_commission_bps
             ) VALUES
-                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', 650),
-                ('idSampled', 'voteSampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL, NULL, 900),
-                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'reward_row', 650),
-                ('idReward', 'voteReward', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
-                ('idBackfill', 'voteBackfill', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, NULL, 650),
-                ('idBackfill', 'voteBackfill', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
-                ('idUnsampled', 'voteUnsampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', NULL),
-                ('idUnsampled', 'voteUnsampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL),
-                ('idDeparted', 'voteDeparted', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 9, 9, 9, 'vote_state', 820)",
+                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', 650, 720),
+                ('idSampled', 'voteSampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL, NULL, NULL, 900),
+                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'reward_row', NULL, 650),
+                ('idReward', 'voteReward', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, 650),
+                ('idBackfill', 'voteBackfill', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, NULL, NULL, 650),
+                ('idBackfill', 'voteBackfill', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, 650),
+                ('idUnsampled', 'voteUnsampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', NULL, NULL),
+                ('idUnsampled', 'voteUnsampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('idDeparted', 'voteDeparted', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 9, 9, 9, 'vote_state', 820, 870)",
             &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
         )
         .await

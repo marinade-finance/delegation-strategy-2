@@ -4,7 +4,7 @@ use crate::dto::{
     DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
     ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
     ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+    VersionRecord,
 };
 use crate::incidents::{
     CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
@@ -663,13 +663,13 @@ pub async fn load_commissions(
             SELECT
                 vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
 				epochs.end_at AS epoch_end, 432000, updated_at,
-                CASE WHEN commission_effective_source = $2 THEN inflation_rewards_commission_bps END
+                commission_effective_bps
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[&Decimal::from(epochs), &COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE],
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
@@ -1010,14 +1010,6 @@ pub fn worst_known_commission(
     commission_max_observed.max(commission_advertised)
 }
 
-// A reward row carries only the whole percent, so the row's sampled bps is not what it applied.
-fn commission_effective_bps(row: &tokio_postgres::Row) -> Option<i32> {
-    match row.get::<_, Option<&str>>("commission_effective_source") {
-        Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE) => row.get("inflation_rewards_commission_bps"),
-        _ => None,
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
@@ -1156,6 +1148,7 @@ pub async fn load_validators(
                 commission_advertised,
                 commission_effective,
                 commission_effective_source,
+                commission_effective_bps,
                 inflation_rewards_commission_bps,
                 inflation_rewards_commission_bps_is_v4,
                 inflation_rewards_collector,
@@ -1323,7 +1316,7 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_effective_source: row
                         .get::<_, Option<String>>("commission_effective_source"),
-                    commission_effective_bps: commission_effective_bps(&row),
+                    commission_effective_bps: row.get::<_, Option<i32>>("commission_effective_bps"),
                     inflation_rewards_commission_bps: row
                         .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
                     inflation_rewards_commission_bps_is_v4: row
@@ -1440,7 +1433,8 @@ pub async fn load_validators(
                 record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
                 record.commission_effective_source =
                     row.get::<_, Option<String>>("commission_effective_source");
-                record.commission_effective_bps = commission_effective_bps(&row);
+                record.commission_effective_bps =
+                    row.get::<_, Option<i32>>("commission_effective_bps");
             }
 
             let rug_info = ruggers.get(&vote_account);
