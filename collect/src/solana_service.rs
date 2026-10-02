@@ -156,26 +156,54 @@ pub fn latest_credits_total(history: &[EpochCreditsEntry]) -> Option<u64> {
         .map(|(_, end_credits, _)| *end_credits)
 }
 
-// SIMD-0326. The migration can start later than the activation epoch, and testnet matches at 1042.
-const ALPENGLOW_FEATURE_GATE: Pubkey =
-    Pubkey::from_str_const("A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS");
+#[derive(Deserialize)]
+struct AgGenesisCert {
+    block: AgGenesisCertBlock,
+}
 
-pub fn get_alpenglow_activation_epoch(client: &RpcClient) -> anyhow::Result<Option<Epoch>> {
-    let Some(account) = client
-        .get_account_with_commitment(&ALPENGLOW_FEATURE_GATE, client.commitment())?
-        .value
-    else {
+#[derive(Deserialize)]
+struct AgGenesisCertBlock {
+    slot: Slot,
+}
+
+const JSON_RPC_METHOD_NOT_FOUND: i64 = -32601;
+
+// `getAgGenesisCert` is null until the first Alpenglow block. On testnet that block came 4999 slots
+// after the feature gate activated, both in epoch 1042.
+pub fn is_alpenglow_active(client: &RpcClient) -> anyhow::Result<Option<Epoch>> {
+    let cert: Option<AgGenesisCert> = match client.send(
+        RpcRequest::Custom {
+            method: "getAgGenesisCert",
+        },
+        Value::Null,
+    ) {
+        Ok(cert) => cert,
+        // The node runs Agave older than 4.3.
+        Err(err)
+            if matches!(
+                err.kind(),
+                solana_rpc_client_api::client_error::ErrorKind::RpcError(
+                    solana_rpc_client_api::request::RpcError::RpcResponseError {
+                        code: JSON_RPC_METHOD_NOT_FOUND,
+                        ..
+                    }
+                )
+            ) =>
+        {
+            warn!("RPC has no getAgGenesisCert, so the cluster counts as not migrated to Alpenglow");
+            None
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let Some(cert) = cert else {
         return Ok(None);
     };
-    let feature = solana_feature_gate_interface::from_account(&account).ok_or_else(|| {
-        anyhow::anyhow!("Account {ALPENGLOW_FEATURE_GATE} is not a feature account")
-    })?;
-    let Some(activated_at) = feature.activated_at else {
-        return Ok(None);
-    };
-    let activation_epoch = client.get_epoch_schedule()?.get_epoch(activated_at);
-    info!("Alpenglow feature gate activated in epoch {activation_epoch}");
-    Ok(Some(activation_epoch))
+    let genesis_epoch = client.get_epoch_schedule()?.get_epoch(cert.block.slot);
+    info!(
+        "Alpenglow genesis block at slot {}, epoch {genesis_epoch}",
+        cert.block.slot
+    );
+    Ok(Some(genesis_epoch))
 }
 
 const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");

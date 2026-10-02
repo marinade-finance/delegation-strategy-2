@@ -225,7 +225,7 @@ pub fn validators_performance(
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
         },
     )?;
-    let migration_epoch = get_alpenglow_activation_epoch(client)?;
+    let migration_epoch = is_alpenglow_active(client)?;
 
     for vote_account in vote_accounts
         .current
@@ -247,7 +247,7 @@ pub fn validators_performance(
                 tower_credits: Some(tower_credits),
                 ..
             }) if *tower_credits > MAX_TOWER_CREDITS_IN_EPOCH => warn!(
-                "Vote account {vote_pubkey} has {tower_credits} tower credits in epoch {epoch}, above the maximum {MAX_TOWER_CREDITS_IN_EPOCH}. Check the Alpenglow feature gate."
+                "Vote account {vote_pubkey} has {tower_credits} tower credits in epoch {epoch}, above the maximum {MAX_TOWER_CREDITS_IN_EPOCH}. Check getAgGenesisCert."
             ),
             Some(_) => {}
         }
