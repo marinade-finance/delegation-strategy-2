@@ -48,7 +48,7 @@ async fn a_snapshot_for_a_closed_epoch_is_skipped() {
     store_snapshot(&mut client, "closed-epoch-open", &snapshot).await;
     close(&client, EPOCH).await;
 
-    snapshot.validators[0].performance.credits = 99;
+    snapshot.validators[0].performance.credits = Some(99);
     snapshot.validators[0].inflation_rewards_commission_bps = Some(900);
     snapshot.validators.push(
         validator_snapshot(EPOCH, "idLate", "voteLate")

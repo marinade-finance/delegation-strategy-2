@@ -5,6 +5,7 @@ use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
+use collect::validators_performance::ValidatorPerformance;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -134,6 +135,20 @@ impl ValidatorBlockReward {
     }
 }
 
+pub struct CreditsColumns {
+    pub credits: Option<Decimal>,
+    pub vote_reward_lamports: Option<Decimal>,
+}
+
+impl CreditsColumns {
+    pub fn from_performance(p: &ValidatorPerformance) -> Self {
+        Self {
+            credits: p.credits.map(Decimal::from),
+            vote_reward_lamports: p.vote_reward_lamports.map(Decimal::from),
+        }
+    }
+}
+
 pub struct Validator {
     pub identity: String,
     pub vote_account: String,
@@ -178,7 +193,7 @@ pub struct Validator {
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
-    pub credits: Decimal,
+    pub credits: CreditsColumns,
     pub leader_slots: Decimal,
     pub blocks_produced: Decimal,
     pub skip_rate: f64,
@@ -271,7 +286,7 @@ impl Validator {
             deactivating_stake: v.deactivating_stake.map(Decimal::from),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
-            credits: v.performance.credits.into(),
+            credits: CreditsColumns::from_performance(&v.performance),
             leader_slots: v.performance.leader_slots.into(),
             blocks_produced: v.performance.blocks_produced.into(),
             skip_rate: v.performance.skip_rate,
@@ -355,7 +370,10 @@ pub struct ValidatorEpochStats {
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
+    /// Tower vote credits. 0 in an Alpenglow epoch after the migration epoch, and when the collector found no credits.
     pub credits: u64,
+    /// Null before Alpenglow.
+    pub vote_reward_lamports: Option<u64>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
     pub skip_rate: f64,
@@ -460,7 +478,10 @@ pub struct ValidatorRecord {
     pub activating_stake: Option<Decimal>,
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
+    /// Tower vote credits. 0 in an Alpenglow epoch after the migration epoch, and when the collector found no credits.
     pub credits: u64,
+    /// Null before Alpenglow.
+    pub vote_reward_lamports: Option<u64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
     pub epoch_stats: Vec<ValidatorEpochStats>,
@@ -856,6 +877,7 @@ pub struct ValidatorGroupRecord {
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
+    pub vote_reward_lamports: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
     pub commission: Option<f64>,

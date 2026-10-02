@@ -85,7 +85,15 @@ pub struct ValidatorPerformance {
     pub feature_set: Option<u32>,
     #[serde(default)]
     pub shred_version: Option<u16>,
-    pub credits: u64,
+    // Tower vote credits only.
+    #[serde(default)]
+    pub credits: Option<u64>,
+    #[serde(default)]
+    pub vote_reward_lamports: Option<u64>,
+    #[serde(default)]
+    pub last_vote: Option<u64>,
+    #[serde(default)]
+    pub credits_total: Option<u64>,
     pub leader_slots: usize,
     pub blocks_produced: usize,
     pub skip_rate: f64,
@@ -192,6 +200,9 @@ fn inflation_and_supply_at(
     (inflation, supply as u64)
 }
 
+// SIMD-0033 timely vote credits: at most 16 credits for each slot.
+const MAX_TOWER_CREDITS_IN_EPOCH: u64 = 16 * SLOTS_IN_EPOCH;
+
 pub fn validators_performance(
     client: &RpcClient,
     epoch: Epoch,
@@ -214,7 +225,7 @@ pub fn validators_performance(
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
         },
     )?;
-    let credits = get_credits(vote_accounts, epoch);
+    let migration_epoch = is_alpenglow_active(client)?;
 
     for vote_account in vote_accounts
         .current
@@ -229,6 +240,17 @@ pub fn validators_performance(
             .unwrap_or((0, 0));
 
         let node = node_info.get(&identity);
+        let credits = split_epoch_credits(&vote_account.epoch_credits, epoch, migration_epoch);
+        match &credits {
+            None => warn!("No credits of epoch {epoch} for vote account {vote_pubkey}"),
+            Some(EpochCredits {
+                tower_credits: Some(tower_credits),
+                ..
+            }) if *tower_credits > MAX_TOWER_CREDITS_IN_EPOCH => warn!(
+                "Vote account {vote_pubkey} has {tower_credits} tower credits in epoch {epoch}, above the maximum {MAX_TOWER_CREDITS_IN_EPOCH}. Check getAgGenesisCert."
+            ),
+            Some(_) => {}
+        }
 
         validators.insert(
             vote_pubkey.clone(),
@@ -239,7 +261,10 @@ pub fn validators_performance(
                 client_id_raw: node.and_then(|n| n.client_id_raw.clone()),
                 feature_set: node.and_then(|n| n.feature_set),
                 shred_version: node.and_then(|n| n.shred_version),
-                credits: credits.get(&vote_pubkey).cloned().unwrap_or(0),
+                credits: credits.as_ref().and_then(|c| c.tower_credits),
+                vote_reward_lamports: credits.as_ref().and_then(|c| c.vote_reward_lamports),
+                last_vote: Some(vote_account.last_vote),
+                credits_total: latest_credits_total(&vote_account.epoch_credits),
                 leader_slots,
                 blocks_produced,
                 skip_rate: if leader_slots == 0 {
@@ -445,6 +470,23 @@ rewards: null
         let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_str(yaml).unwrap();
         assert!(snapshot.nodes.is_empty());
         assert_eq!(snapshot.slots_per_year, baseline_slots_per_year());
+    }
+
+    #[test]
+    fn a_snapshot_without_vote_reward_lamports_still_deserializes() {
+        let yaml = "
+commission: 5
+version: 2.0.0
+credits: 6707558
+leader_slots: 4
+blocks_produced: 4
+skip_rate: 0.0
+delinquent: false
+";
+        let performance: ValidatorPerformance = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(performance.credits, Some(6707558));
+        assert_eq!(performance.vote_reward_lamports, None);
+        assert_eq!(performance.last_vote, None);
     }
 
     #[test]
