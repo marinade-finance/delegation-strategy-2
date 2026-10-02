@@ -1690,7 +1690,7 @@ mod tests {
 
     #[test]
     fn a_member_that_dropped_out_of_the_eligible_set_shows_as_a_loss() {
-        let validators = validators(vec![
+        let mut validators = validators(vec![
             Member::new(
                 "stayed",
                 epochs_spanning_both_windows(300, 300, 300, AGAVE, AGAVE),
@@ -1706,6 +1706,7 @@ mod tests {
                 ],
             ),
         ]);
+        set_closed_epoch_uptime(&mut validators, "left", 0.0);
 
         let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
         let agave = group(&groups, "Agave");
@@ -1763,10 +1764,11 @@ mod tests {
     fn a_validator_the_list_does_not_serve_counts_nowhere() {
         // Present in the last epoch but neither voting nor staked: `/validators` drops it.
         let idle = Member::new("idle", last_two_epochs(0, FRANKENDANCER, Some("Latitude")));
-        let validators = validators(vec![
+        let mut validators = validators(vec![
             Member::new("live", last_two_epochs(700, AGAVE, Some("Hetzner"))),
             idle,
         ]);
+        set_closed_epoch_uptime(&mut validators, "idle", 0.0);
 
         let all = aggregate_all(&validators, &Default::default());
         assert_eq!(
@@ -1792,6 +1794,36 @@ mod tests {
         for stats in validators.get_mut("voting").unwrap().epoch_stats.iter_mut() {
             stats.credits = 1;
         }
+
+        assert_eq!(
+            group(&aggregate_provider_rows(&validators), "Hetzner").validator_count,
+            2
+        );
+    }
+
+    // `close_epoch` sets `uptime_pct` on the closed epoch, the open one keeps NULL
+    fn set_closed_epoch_uptime(
+        validators: &mut HashMap<String, ValidatorRecord>,
+        name: &str,
+        uptime_pct: f64,
+    ) {
+        let stats = &mut validators.get_mut(name).unwrap().epoch_stats;
+        let closed = stats
+            .iter_mut()
+            .find(|s| s.epoch == PREVIOUS_EPOCH)
+            .unwrap();
+        closed.uptime_pct = Some(uptime_pct);
+    }
+
+    #[test]
+    fn a_validator_with_no_stake_but_uptime_still_counts() {
+        let mut validators = validators(vec![
+            Member::new("up", last_two_epochs(0, AGAVE, Some("Hetzner"))),
+            Member::new("down", last_two_epochs(0, AGAVE, Some("Hetzner"))),
+            Member::new("staked", last_two_epochs(700, AGAVE, Some("Hetzner"))),
+        ]);
+        set_closed_epoch_uptime(&mut validators, "up", 0.98);
+        set_closed_epoch_uptime(&mut validators, "down", 0.0);
 
         assert_eq!(
             group(&aggregate_provider_rows(&validators), "Hetzner").validator_count,
