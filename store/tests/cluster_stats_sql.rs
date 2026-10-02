@@ -500,6 +500,66 @@ async fn validators_flat_client_columns_keep_open_lower_bound_and_bounded_upper_
 }
 
 #[tokio::test]
+async fn validators_flat_reports_the_window_max_inflation_commission_bps() {
+    let schema = "ds_test_validators_flat_commission_bps";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for epoch in (LAST_EPOCH - EPOCHS)..=LAST_EPOCH {
+        insert_validator(&client, "voteSampled", epoch, 100, 10, None).await;
+        insert_validator(&client, "voteGap", epoch, 100, 10, None).await;
+        insert_validator(&client, "voteUnsampled", epoch, 100, 10, None).await;
+    }
+    client
+        .execute(
+            "UPDATE validators SET inflation_rewards_commission_bps = CASE
+                 WHEN epoch = $1 THEN 900 WHEN epoch = $2 THEN 650 ELSE 500 END
+             WHERE vote_account = 'voteSampled'
+                OR (vote_account = 'voteGap' AND epoch <> $3)",
+            &[
+                &Decimal::from(LAST_EPOCH - EPOCHS),
+                &Decimal::from(LAST_EPOCH - 1),
+                &Decimal::from(LAST_EPOCH),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    let bps = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|validator| validator.vote_account == vote_account)
+            .unwrap_or_else(|| panic!("{vote_account} must be in the window"))
+            .max_inflation_rewards_commission_bps
+    };
+    assert_eq!(
+        bps("voteSampled"),
+        Some(650),
+        "the max stops at the window, so the 900 just below it is left out"
+    );
+    assert_eq!(
+        bps("voteGap"),
+        None,
+        "an unsampled epoch may hold a higher rate, so a partial max would understate it"
+    );
+    assert_eq!(
+        bps("voteUnsampled"),
+        None,
+        "no sample in the window is unknown, not zero"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn validators_flat_survives_zero_epochs() {
     let schema = "ds_test_validators_flat_zero";
     if skip_without_database(schema) {

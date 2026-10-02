@@ -3,7 +3,7 @@ use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators::Snapshot;
-use log::info;
+use log::{info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +28,20 @@ pub async fn store_validators(
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
+    let snapshot_epoch: Decimal = snapshot.epoch.into();
+
+    // close_epoch runs once per epoch, so a snapshot landing after it would leave mid-epoch values.
+    if psql_client
+        .query_opt("SELECT 1 FROM epochs WHERE epoch = $1", &[&snapshot_epoch])
+        .await?
+        .is_some()
+    {
+        warn!(
+            "Epoch {} is already closed, skipping the snapshot taken at {}",
+            snapshot.epoch, snapshot.created_at
+        );
+        return Ok(());
+    }
 
     let validators: HashMap<_, _> = snapshot
         .validators
@@ -39,7 +53,6 @@ pub async fn store_validators(
             )
         })
         .collect();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
     let mut updated_vote_accounts: HashSet<_> = Default::default();
     let mut unresolved_vote_accounts: Vec<String> = Default::default();
 
@@ -110,7 +123,13 @@ pub async fn store_validators(
             deactivating_stake = COALESCE(u.deactivating_stake, validators.deactivating_stake),
             direct_stake = COALESCE(u.direct_stake, validators.direct_stake),
             direct_activating_stake = COALESCE(u.direct_activating_stake, validators.direct_activating_stake),
-            direct_deactivating_stake = COALESCE(u.direct_deactivating_stake, validators.direct_deactivating_stake)
+            direct_deactivating_stake = COALESCE(u.direct_deactivating_stake, validators.direct_deactivating_stake),
+            inflation_rewards_collector_owner = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_owner ELSE validators.inflation_rewards_collector_owner END,
+            inflation_rewards_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_lamports ELSE validators.inflation_rewards_collector_lamports END,
+            inflation_rewards_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_healthy ELSE validators.inflation_rewards_collector_healthy END,
+            block_revenue_collector_owner = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_owner ELSE validators.block_revenue_collector_owner END,
+            block_revenue_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_lamports ELSE validators.block_revenue_collector_lamports END,
+            block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END
             "
             .to_string(),
             "u(
@@ -163,7 +182,13 @@ pub async fn store_validators(
                 deactivating_stake,
                 direct_stake,
                 direct_activating_stake,
-                direct_deactivating_stake
+                direct_deactivating_stake,
+                inflation_rewards_collector_owner,
+                inflation_rewards_collector_lamports,
+                inflation_rewards_collector_healthy,
+                block_revenue_collector_owner,
+                block_revenue_collector_lamports,
+                block_revenue_collector_healthy
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -223,6 +248,12 @@ pub async fn store_validators(
                     &v.direct_stake,
                     &v.direct_activating_stake,
                     &v.direct_deactivating_stake,
+                    &v.inflation_rewards_collector_owner,
+                    &v.inflation_rewards_collector_lamports,
+                    &v.inflation_rewards_collector_healthy,
+                    &v.block_revenue_collector_owner,
+                    &v.block_revenue_collector_lamports,
+                    &v.block_revenue_collector_healthy,
                 ];
                 query.add(
                     &mut params,
@@ -265,6 +296,12 @@ pub async fn store_validators(
                         (47, "NUMERIC".into()), // direct_stake
                         (48, "NUMERIC".into()), // direct_activating_stake
                         (49, "NUMERIC".into()), // direct_deactivating_stake
+                        (50, "TEXT".into()), // inflation_rewards_collector_owner
+                        (51, "NUMERIC".into()), // inflation_rewards_collector_lamports
+                        (52, "BOOL".into()), // inflation_rewards_collector_healthy
+                        (53, "TEXT".into()), // block_revenue_collector_owner
+                        (54, "NUMERIC".into()), // block_revenue_collector_lamports
+                        (55, "BOOL".into()), // block_revenue_collector_healthy
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -344,7 +381,13 @@ pub async fn store_validators(
         deactivating_stake,
         direct_stake,
         direct_activating_stake,
-        direct_deactivating_stake
+        direct_deactivating_stake,
+        inflation_rewards_collector_owner,
+        inflation_rewards_collector_lamports,
+        inflation_rewards_collector_healthy,
+        block_revenue_collector_owner,
+        block_revenue_collector_lamports,
+        block_revenue_collector_healthy
         "
             .to_string(),
         );
@@ -409,6 +452,12 @@ pub async fn store_validators(
                 &v.direct_stake,
                 &v.direct_activating_stake,
                 &v.direct_deactivating_stake,
+                &v.inflation_rewards_collector_owner,
+                &v.inflation_rewards_collector_lamports,
+                &v.inflation_rewards_collector_healthy,
+                &v.block_revenue_collector_owner,
+                &v.block_revenue_collector_lamports,
+                &v.block_revenue_collector_healthy,
             ];
             query.add(&mut params);
             if !v.dc_resolved {

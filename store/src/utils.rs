@@ -4,7 +4,7 @@ use crate::dto::{
     DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
     ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
     ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord,
+    VersionRecord, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
 };
 use crate::incidents::{
     CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
@@ -654,7 +654,7 @@ pub async fn load_commissions(
             SELECT
                 vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
 				epochs.end_at AS epoch_end,
-				epoch_slot, created_at
+				epoch_slot, created_at, NULL::INTEGER AS commission_bps
             FROM commissions
             LEFT JOIN epochs ON commissions.epoch = epochs.epoch
             CROSS JOIN cluster
@@ -662,13 +662,14 @@ pub async fn load_commissions(
             UNION
             SELECT
                 vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, 432000, updated_at
+				epochs.end_at AS epoch_end, 432000, updated_at,
+                CASE WHEN commission_effective_source = $2 THEN inflation_rewards_commission_bps END
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[&Decimal::from(epochs)],
+            &[&Decimal::from(epochs), &COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE],
         )
         .await?;
 
@@ -688,6 +689,7 @@ pub async fn load_commissions(
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
             created_at: row.get("created_at"),
+            commission_bps: row.get("commission_bps"),
         })
     }
 
@@ -1008,6 +1010,14 @@ pub fn worst_known_commission(
     commission_max_observed.max(commission_advertised)
 }
 
+// A reward row carries only the whole percent, so the row's sampled bps is not what it applied.
+fn commission_effective_bps(row: &tokio_postgres::Row) -> Option<i32> {
+    match row.get::<_, Option<&str>>("commission_effective_source") {
+        Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE) => row.get("inflation_rewards_commission_bps"),
+        _ => None,
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
@@ -1152,6 +1162,8 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
+                inflation_rewards_collector_healthy,
+                block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
                 CASE WHEN inflation_rewards_collector IS NOT NULL
                      THEN inflation_rewards_collector <> validators.vote_account END AS inflation_rewards_collector_redirected,
@@ -1311,6 +1323,7 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_effective_source: row
                         .get::<_, Option<String>>("commission_effective_source"),
+                    commission_effective_bps: commission_effective_bps(&row),
                     inflation_rewards_commission_bps: row
                         .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
                     inflation_rewards_commission_bps_is_v4: row
@@ -1321,12 +1334,16 @@ pub async fn load_validators(
                         .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
                     inflation_rewards_collector_shared_count: row
                         .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                    inflation_rewards_collector_healthy: row
+                        .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
                     block_revenue_collector: row
                         .get::<_, Option<String>>("block_revenue_collector"),
                     block_revenue_collector_is_identity: row
                         .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
                     block_revenue_collector_shared_count: row
                         .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                    block_revenue_collector_healthy: row
+                        .get::<_, Option<bool>>("block_revenue_collector_healthy"),
                     block_revenue_commission_bps: row
                         .get::<_, Option<i32>>("block_revenue_commission_bps"),
                     pending_delegator_rewards: row
@@ -1423,6 +1440,7 @@ pub async fn load_validators(
                 record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
                 record.commission_effective_source =
                     row.get::<_, Option<String>>("commission_effective_source");
+                record.commission_effective_bps = commission_effective_bps(&row);
             }
 
             let rug_info = ruggers.get(&vote_account);
@@ -1474,11 +1492,15 @@ pub async fn load_validators(
                     .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
                 inflation_rewards_collector_shared_count: row
                     .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
+                inflation_rewards_collector_healthy: row
+                    .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
                 block_revenue_collector: row.get::<_, Option<String>>("block_revenue_collector"),
                 block_revenue_collector_is_identity: row
                     .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
                 block_revenue_collector_shared_count: row
                     .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
+                block_revenue_collector_healthy: row
+                    .get::<_, Option<bool>>("block_revenue_collector_healthy"),
                 block_revenue_commission_bps: row
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row
@@ -2296,6 +2318,7 @@ pub async fn load_validators_aggregated_flat(
                     coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
                     coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
                     max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
+                    case when bool_and(inflation_rewards_commission_bps is not null) then max(inflation_rewards_commission_bps) end AS max_inflation_rewards_commission_bps,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,
                     coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
@@ -2342,6 +2365,7 @@ pub async fn load_validators_aggregated_flat(
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
             client_lineage: client_lineage(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
+            max_inflation_rewards_commission_bps: row.get("max_inflation_rewards_commission_bps"),
         });
     }
 

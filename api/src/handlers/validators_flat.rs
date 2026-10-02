@@ -60,3 +60,44 @@ pub async fn handler(
     )
     .into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use store::dto::ValidatorAggregatedFlat;
+
+    #[test]
+    fn the_csv_header_only_gains_a_trailing_column() {
+        let mut csv_content = csv::Writer::from_writer(Vec::new());
+        csv_content
+            .serialize(ValidatorAggregatedFlat {
+                vote_account: "vote".into(),
+                minimum_stake: 0.0,
+                avg_stake: 0.0,
+                avg_dc_concentration: 0.0,
+                avg_skip_rate: 0.0,
+                avg_grace_skip_rate: 0.0,
+                max_commission: 0,
+                avg_adjusted_credits: 0.0,
+                dc_aso: "aso".into(),
+                marinade_stake: 0.0,
+                version: "0.0.0".into(),
+                client_vendor: "unknown".into(),
+                client_lineage: "unknown".into(),
+                max_inflation_rewards_commission_bps: None,
+            })
+            .unwrap();
+        let content = String::from_utf8(csv_content.into_inner().unwrap()).unwrap();
+        let (header, row) = content.split_once('\n').unwrap();
+
+        assert_eq!(
+            header,
+            "vote_account,minimum_stake,avg_stake,avg_dc_concentration,avg_skip_rate,\
+             avg_grace_skip_rate,max_commission,avg_adjusted_credits,dc_aso,marinade_stake,\
+             version,client_vendor,client_lineage,max_inflation_rewards_commission_bps"
+        );
+        assert!(
+            row.ends_with(",unknown,unknown,\n"),
+            "an unknown bps is an empty cell, not a zero: {row}"
+        );
+    }
+}

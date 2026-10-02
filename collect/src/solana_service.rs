@@ -22,7 +22,7 @@ use solana_rpc_client_api::config::{
     RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
 };
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
-use solana_rpc_client_api::request::RpcRequest;
+use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
 use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
@@ -717,8 +717,9 @@ fn parse_vote_account_states(
             "{without_commission} vote accounts hold a version this build reads no commission from"
         );
     }
+    // Logged at 0 too: that is the baseline MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT gets tuned on.
     info!(
-        "Parsed {} vote accounts, {v4} on vote state v4",
+        "Parsed {} vote accounts, {v4} on vote state v4, unparsed {unparsed}",
         states.len()
     );
 
@@ -737,6 +738,89 @@ pub fn withdraw_authorities(
             )
         })
         .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectorHealth {
+    pub owner: Option<Pubkey>,
+    pub lamports: u64,
+    // None where the account is missing: agave pays it only when the payout alone covers rent.
+    pub healthy: Option<bool>,
+}
+
+// agave credits the vote account without the SIMD-0232 collector checks, so there is nothing to check.
+pub fn checked_collector(vote_account: &str, collector: Option<Pubkey>) -> Option<Pubkey> {
+    collector.filter(|collector| collector.to_string() != vote_account)
+}
+
+pub fn collector_health_of<'a>(
+    vote_account: &str,
+    state: Option<&VoteStateFields>,
+    health: &'a HashMap<Pubkey, CollectorHealth>,
+) -> (Option<&'a CollectorHealth>, Option<&'a CollectorHealth>) {
+    let health_of = |collector: Option<Pubkey>| {
+        checked_collector(vote_account, collector).and_then(|c| health.get(&c))
+    };
+    (
+        health_of(state.and_then(|state| state.inflation_rewards_collector)),
+        health_of(state.and_then(|state| state.block_revenue_collector)),
+    )
+}
+
+// relax_post_exec_min_balance_check is active, so agave checks rent only on an account it creates.
+fn evaluate_collector(collector: &Pubkey, account: Option<&Account>) -> CollectorHealth {
+    let healthy = if *collector == solana_sdk::incinerator::id() {
+        Some(false)
+    } else {
+        account.map(|account| solana_sdk::system_program::check_id(&account.owner))
+    };
+    CollectorHealth {
+        owner: account.map(|account| account.owner),
+        lamports: account.map_or(0, |account| account.lamports),
+        healthy,
+    }
+}
+
+pub fn get_collector_health(
+    rpc_client: &RpcClient,
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> anyhow::Result<HashMap<Pubkey, CollectorHealth>> {
+    let checked = |kind: fn(&VoteStateFields) -> Option<Pubkey>| -> HashSet<Pubkey> {
+        vote_account_states
+            .iter()
+            .filter_map(|(vote_account, state)| checked_collector(vote_account, kind(state)))
+            .collect()
+    };
+    let inflation = checked(|state| state.inflation_rewards_collector);
+    let block_revenue = checked(|state| state.block_revenue_collector);
+    let collectors: Vec<Pubkey> = inflation.union(&block_revenue).copied().collect();
+    info!("Checking {} distinct collector accounts", collectors.len());
+
+    let mut health = HashMap::with_capacity(collectors.len());
+    for chunk in collectors.chunks(MAX_MULTIPLE_ACCOUNTS) {
+        for (collector, account) in chunk.iter().zip(rpc_client.get_multiple_accounts(chunk)?) {
+            health.insert(*collector, evaluate_collector(collector, account.as_ref()));
+        }
+    }
+
+    for (kind, collectors) in [
+        ("inflation rewards", &inflation),
+        ("block revenue", &block_revenue),
+    ] {
+        let mut unhealthy = collectors.iter().filter(|collector| {
+            health
+                .get(collector)
+                .is_some_and(|h| h.healthy == Some(false))
+        });
+        if let Some(first) = unhealthy.next() {
+            warn!(
+                "{} {kind} collectors would burn their commission, first: {first}",
+                unhealthy.count() + 1
+            );
+        }
+    }
+
+    Ok(health)
 }
 
 // solana-client 2.2 RpcInflationReward predates commission_bps and would drop it.
@@ -1610,6 +1694,42 @@ mod vote_state_tests {
         assert!(!states.contains_key("voteBad"));
     }
 
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_clean_parse_still_logs_an_unparsed_count_of_zero() {
+        let captured = CapturedLog::default();
+        env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .target(env_logger::Target::Pipe(Box::new(captured.clone())))
+            .try_init()
+            .expect("no other test in this crate installs a logger");
+
+        let good = v4_account(733, 1234, 0, 3762);
+        let accounts: Vec<(String, &[u8])> = (0..3)
+            .map(|i| (format!("voteClean{i}"), good.as_slice()))
+            .collect();
+        parse_vote_account_states(&accounts).unwrap();
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("Parsed 3 vote accounts, 3 on vote state v4, unparsed 0"),
+            "the zero is the baseline, so it must be logged: {log}"
+        );
+    }
+
     #[test]
     fn a_majority_of_unparsed_vote_accounts_fails_the_run() {
         let good = v4_account(733, 1234, 0, 3762);
@@ -1779,5 +1899,178 @@ mod stake_account_tests {
         assert_eq!(entry.activating, 300);
         assert_eq!(entry.deactivating, 200);
         assert_eq!(assigned, 1);
+    }
+}
+
+#[cfg(test)]
+mod collector_health_tests {
+    use super::*;
+
+    const RENT_MINIMUM: u64 = 890_880;
+    const COLLECTOR: Pubkey = Pubkey::new_from_array([5; 32]);
+
+    fn account(owner: Pubkey, lamports: u64) -> Account {
+        Account {
+            lamports,
+            data: vec![],
+            owner,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn a_rent_exempt_system_account_is_healthy() {
+        let health = evaluate_collector(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM)),
+        );
+        assert_eq!(
+            health,
+            CollectorHealth {
+                owner: Some(solana_sdk::system_program::id()),
+                lamports: RENT_MINIMUM,
+                healthy: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn a_funded_system_account_below_rent_is_healthy() {
+        let health = evaluate_collector(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), 1)),
+        );
+        assert_eq!(
+            health.healthy,
+            Some(true),
+            "agave skips the rent check when the collector held lamports before the payout"
+        );
+        assert_eq!(health.lamports, 1);
+    }
+
+    #[test]
+    fn an_account_not_owned_by_the_system_program_is_unhealthy() {
+        let owner = solana_stake_interface::program::id();
+        let health = evaluate_collector(&COLLECTOR, Some(&account(owner, u64::MAX)));
+        assert_eq!(health.healthy, Some(false));
+        assert_eq!(health.owner, Some(owner));
+    }
+
+    #[test]
+    fn a_missing_account_is_unknown_because_the_deposit_can_fund_it() {
+        assert_eq!(
+            evaluate_collector(&COLLECTOR, None),
+            CollectorHealth {
+                owner: None,
+                lamports: 0,
+                healthy: None,
+            },
+            "agave deposit_fees defaults a missing account and checks rent after adding the payout"
+        );
+    }
+
+    #[test]
+    fn the_incinerator_is_unhealthy_because_the_commission_burns() {
+        assert_eq!(
+            evaluate_collector(&solana_sdk::incinerator::id(), None).healthy,
+            Some(false),
+            "agave zeroes the incinerator every block, so it reads as missing"
+        );
+        assert_eq!(
+            evaluate_collector(
+                &solana_sdk::incinerator::id(),
+                Some(&account(solana_sdk::system_program::id(), u64::MAX)),
+            )
+            .healthy,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_is_not_checked() {
+        let vote_account = COLLECTOR.to_string();
+        assert_eq!(checked_collector(&vote_account, Some(COLLECTOR)), None);
+        assert_eq!(checked_collector(&vote_account, None), None);
+        let elsewhere = Pubkey::new_from_array([6; 32]);
+        assert_eq!(
+            checked_collector(&vote_account, Some(elsewhere)),
+            Some(elsewhere)
+        );
+    }
+
+    fn state(inflation: Option<Pubkey>, block_revenue: Option<Pubkey>) -> VoteStateFields {
+        VoteStateFields {
+            authorized_withdrawer: Pubkey::new_from_array([9; 32]),
+            inflation_rewards_commission_bps: Some(500),
+            inflation_rewards_commission_bps_is_v4: Some(true),
+            inflation_rewards_collector: inflation,
+            block_revenue_collector: block_revenue,
+            block_revenue_commission_bps: Some(10_000),
+            pending_delegator_rewards: Some(0),
+        }
+    }
+
+    fn health(healthy: bool) -> CollectorHealth {
+        CollectorHealth {
+            owner: Some(solana_sdk::system_program::id()),
+            lamports: RENT_MINIMUM,
+            healthy: Some(healthy),
+        }
+    }
+
+    #[test]
+    fn each_kind_reads_the_health_of_its_own_collector() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let inflation = Pubkey::new_from_array([1; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map = HashMap::from([(inflation, health(true)), (block_revenue, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(inflation), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(true)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn one_collector_shared_by_both_kinds_reads_one_entry() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let shared = Pubkey::new_from_array([3; 32]);
+        let health_map = HashMap::from([(shared, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(shared), Some(shared))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(false)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_or_a_missing_state_reads_no_health() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map =
+            HashMap::from([(vote_account, health(false)), (block_revenue, health(true))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(vote_account), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(
+            inflation_health, None,
+            "agave pays the vote account unchecked, so its entry must not be read"
+        );
+        assert_eq!(block_revenue_health, Some(&health(true)));
+
+        assert_eq!(
+            collector_health_of(&vote_account.to_string(), None, &health_map),
+            (None, None)
+        );
     }
 }

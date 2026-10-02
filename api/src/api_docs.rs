@@ -198,4 +198,26 @@ mod tests {
             "path parameters without a matching path segment: {orphans:?}"
         );
     }
+
+    #[test]
+    fn commission_bps_and_collector_health_fields_are_documented() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for (schema, field) in [
+            ("ValidatorRecord", "commission_effective_bps"),
+            ("ValidatorRecord", "inflation_rewards_collector_healthy"),
+            ("ValidatorRecord", "block_revenue_collector_healthy"),
+            ("ValidatorEpochStats", "inflation_rewards_collector_healthy"),
+            ("ValidatorEpochStats", "block_revenue_collector_healthy"),
+            ("CommissionRecord", "commission_bps"),
+        ] {
+            let description = spec["components"]["schemas"][schema]["properties"][field]
+                ["description"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                !description.is_empty(),
+                "{schema}.{field} must be in the spec with its doc comment"
+            );
+        }
+    }
 }
