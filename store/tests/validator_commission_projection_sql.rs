@@ -449,6 +449,56 @@ async fn load_ruggers_detects_a_rug_in_epochs_the_backfill_filled() {
 }
 
 #[tokio::test]
+async fn load_ruggers_does_not_flag_an_honest_cut_while_the_applied_rate_lags_it() {
+    let schema = "ds_test_load_ruggers_honest_cut";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // Cut from 100 to 5 at 1100: agave keeps charging 100 for 1100 and 1101, the epoch_stakes vintage.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityCutter', 'voteCutter', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 100, 100, 100, 100),
+                ('identityCutter', 'voteCutter', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 100, 100, 100, 100),
+                ('identityCutter', 'voteCutter', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identityCutter', 'voteCutter', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identityCutter', 'voteCutter', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identitySpiker', 'voteSpiker', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identitySpiker', 'voteSpiker', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    assert!(
+        !ruggers.contains_key("voteCutter"),
+        "the applied 100 matches what the vintage epochs advertised, so the cut is not a rug"
+    );
+    let spiker = ruggers
+        .get("voteSpiker")
+        .expect("a spike hidden between samples at the vintage epochs is still a rug");
+    assert_eq!(spiker.epochs, vec![1100, 1101]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
     let schema = "ds_test_load_ruggers_null_floor";
     if skip_without_database(schema) {

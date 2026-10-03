@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 /// `commission_effective` came from the epoch's reward row, the rate the runtime applied.
 pub const COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW: &str = "reward_row";
-/// `commission_effective` came from vote state sampled at the close of E-2, the state agave's `epoch_stakes(E)` applies, since SIMD-0232 removed the rate from reward rows.
+/// `commission_effective` came from vote state sampled at the close of E-2, the state agave's `epoch_stakes(E)` applies, since SIMD-0232 removed the rate from reward rows; a change after E-2's last hourly sample is missed.
 pub const COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE: &str = "vote_state";
 
 /// Served instead of null so every consumer has a client name to render.

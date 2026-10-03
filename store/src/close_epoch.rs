@@ -18,10 +18,16 @@ pub struct CloseEpochParams {
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SampledCommission {
+    Bps(u16),
+    Percent(u8),
+}
+
 // A reward row still wins where one exists, so pre-1030 epochs reprocess to the same values.
 fn resolve_commission_effective(
     from_reward_row: Option<u8>,
-    sampled_bps: Option<u16>,
+    sampled: Option<SampledCommission>,
 ) -> (Option<i32>, Option<i32>, Option<&'static str>) {
     if let Some(commission) = from_reward_row {
         return (
@@ -30,10 +36,15 @@ fn resolve_commission_effective(
             Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
         );
     }
-    match sampled_bps {
-        Some(bps) => (
+    match sampled {
+        Some(SampledCommission::Bps(bps)) => (
             Some(i32::from(bps_to_percent(bps))),
             Some(i32::from(bps)),
+            Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+        ),
+        Some(SampledCommission::Percent(percent)) => (
+            Some(i32::from(percent)),
+            None,
             Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
         ),
         None => (None, None, None),
@@ -41,16 +52,18 @@ fn resolve_commission_effective(
 }
 
 // Agave's order for epoch E: epoch_stakes(E) frozen at the close of E-2, then the close of E-1, then live.
-async fn load_sampled_commission_bps(
+// An unparsed vote state keeps its row's vintage through the advertised percent, as agave falls back only on absence.
+async fn load_sampled_commission(
     psql_client: &Client,
     epoch: &Decimal,
-) -> anyhow::Result<HashMap<String, u16>> {
+) -> anyhow::Result<HashMap<String, SampledCommission>> {
     let rows = psql_client
         .query(
-            "SELECT DISTINCT ON (vote_account) vote_account, inflation_rewards_commission_bps
+            "SELECT DISTINCT ON (vote_account)
+                 vote_account, inflation_rewards_commission_bps, commission_advertised
              FROM validators
              WHERE epoch BETWEEN $1::NUMERIC - 2 AND $1::NUMERIC
-               AND inflation_rewards_commission_bps IS NOT NULL
+               AND (inflation_rewards_commission_bps IS NOT NULL OR commission_advertised IS NOT NULL)
              ORDER BY vote_account, epoch",
             &[epoch],
         )
@@ -58,8 +71,13 @@ async fn load_sampled_commission_bps(
 
     let mut sampled = HashMap::with_capacity(rows.len());
     for row in rows {
-        let bps: i32 = row.get("inflation_rewards_commission_bps");
-        sampled.insert(row.get("vote_account"), u16::try_from(bps)?);
+        let commission = match row.get::<_, Option<i32>>("inflation_rewards_commission_bps") {
+            Some(bps) => SampledCommission::Bps(u16::try_from(bps)?),
+            None => SampledCommission::Percent(u8::try_from(
+                row.get::<_, i32>("commission_advertised"),
+            )?),
+        };
+        sampled.insert(row.get("vote_account"), commission);
     }
     Ok(sampled)
 }
@@ -70,10 +88,10 @@ async fn store_commission_outside_the_snapshot(
     epoch: &Decimal,
     vote_accounts: &[&str],
     rates: &[i32],
-    bps: &[i32],
+    bps: &[Option<i32>],
     updated_at: &DateTime<Utc>,
-) -> anyhow::Result<()> {
-    psql_client
+) -> anyhow::Result<u64> {
+    let updated = psql_client
         .execute(
             "UPDATE validators
              SET commission_effective = u.commission_effective,
@@ -94,7 +112,7 @@ async fn store_commission_outside_the_snapshot(
             ],
         )
         .await?;
-    Ok(())
+    Ok(updated)
 }
 
 // The in-memory tally sees only snapshot validators, so re-count in the DB.
@@ -272,7 +290,7 @@ pub async fn close_epoch(
 
     info!("Loaded the snapshot");
 
-    let sampled_commission_bps = load_sampled_commission_bps(psql_client, &snapshot_epoch).await?;
+    let sampled_commission = load_sampled_commission(psql_client, &snapshot_epoch).await?;
 
     let validator_update_records: Vec<_> = snapshot
         .validators
@@ -283,7 +301,7 @@ pub async fn close_epoch(
                     rewards
                         .get(vote_account)
                         .and_then(|r| r.commission_effective),
-                    sampled_commission_bps.get(vote_account).copied(),
+                    sampled_commission.get(vote_account).copied(),
                 );
             ValidatorUpdateRecord {
                 vote_account: vote_account.clone(),
@@ -383,14 +401,15 @@ pub async fn close_epoch(
 
     let mut outside_vote_accounts: Vec<&str> = vec![];
     let mut outside_rates: Vec<i32> = vec![];
-    let mut outside_bps: Vec<i32> = vec![];
-    for (vote_account, bps) in sampled_commission_bps
+    let mut outside_bps: Vec<Option<i32>> = vec![];
+    for (vote_account, sampled) in sampled_commission
         .iter()
         .filter(|(vote_account, _)| !snapshot.validators.contains_key(*vote_account))
     {
+        let (rate, bps, _) = resolve_commission_effective(None, Some(*sampled));
         outside_vote_accounts.push(vote_account.as_str());
-        outside_rates.push(i32::from(bps_to_percent(*bps)));
-        outside_bps.push(i32::from(*bps));
+        outside_rates.extend(rate);
+        outside_bps.push(bps);
     }
     // A closed epoch is never re-listed, so the floor below must land even when this write fails.
     if !outside_vote_accounts.is_empty() {
@@ -404,9 +423,8 @@ pub async fn close_epoch(
         )
         .await
         {
-            Ok(()) => info!(
-                "Effective commission from sampled vote state for {} validators the snapshot did not list",
-                outside_vote_accounts.len()
+            Ok(updated) => info!(
+                "Effective commission from sampled vote state for {updated} validators the snapshot did not list"
             ),
             Err(err) => warn!(
                 "Could not store effective commission for validators outside the snapshot: {err}"
@@ -430,7 +448,7 @@ mod tests {
     #[test]
     fn a_reward_row_still_wins_so_closed_epochs_reprocess_unchanged() {
         assert_eq!(
-            resolve_commission_effective(Some(7), Some(300)),
+            resolve_commission_effective(Some(7), Some(SampledCommission::Bps(300))),
             (Some(7), None, Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW))
         );
     }
@@ -438,7 +456,7 @@ mod tests {
     #[test]
     fn a_missing_reward_row_falls_back_to_the_sampled_vote_state() {
         assert_eq!(
-            resolve_commission_effective(None, Some(700)),
+            resolve_commission_effective(None, Some(SampledCommission::Bps(700))),
             (
                 Some(7),
                 Some(700),
@@ -449,15 +467,29 @@ mod tests {
 
     #[test]
     fn the_fallback_rounds_basis_points_up_so_the_eligibility_cap_stays_strict() {
-        assert_eq!(resolve_commission_effective(None, Some(1_001)).0, Some(11));
-        assert_eq!(resolve_commission_effective(None, Some(1_000)).0, Some(10));
         assert_eq!(
-            resolve_commission_effective(None, Some(1_001)).1,
+            resolve_commission_effective(None, Some(SampledCommission::Bps(1_001))).0,
+            Some(11)
+        );
+        assert_eq!(
+            resolve_commission_effective(None, Some(SampledCommission::Bps(1_000))).0,
+            Some(10)
+        );
+        assert_eq!(
+            resolve_commission_effective(None, Some(SampledCommission::Bps(1_001))).1,
             Some(1_001)
         );
         assert_eq!(
-            resolve_commission_effective(None, Some(25_600)).0,
+            resolve_commission_effective(None, Some(SampledCommission::Bps(25_600))).0,
             Some(100)
+        );
+    }
+
+    #[test]
+    fn an_unparsed_vote_state_resolves_from_its_advertised_percent_without_bps() {
+        assert_eq!(
+            resolve_commission_effective(None, Some(SampledCommission::Percent(7))),
+            (Some(7), None, Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE))
         );
     }
 
@@ -469,7 +501,7 @@ mod tests {
     #[test]
     fn a_genuine_zero_is_resolved_not_missing() {
         assert_eq!(
-            resolve_commission_effective(None, Some(0)),
+            resolve_commission_effective(None, Some(SampledCommission::Bps(0))),
             (
                 Some(0),
                 Some(0),

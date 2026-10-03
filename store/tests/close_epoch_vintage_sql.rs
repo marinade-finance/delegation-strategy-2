@@ -1,25 +1,22 @@
 mod common;
 
-use clap::Parser;
-use collect::slot_params::baseline_slots_per_year;
 use collect::validators::Snapshot;
 use collect::validators_performance::{
-    ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
+    ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
 };
 use common::{
-    migrated_client, skip_without_database, store_snapshot, validator_performance,
-    validator_snapshot, write_yaml,
+    migrated_client, run_close_epoch, skip_without_database, store_snapshot, validator_performance,
+    validator_snapshot,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::close_epoch::{close_epoch, CloseEpochParams};
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1045;
 const CHANGED_LATE: &str = "voteChangedAfterTheVintage";
 const NEW_LAST_EPOCH: &str = "voteFirstSampledLastEpoch";
 const NEW_THIS_EPOCH: &str = "voteFirstSampledThisEpoch";
-const UNSAMPLED: &str = "voteNeverSampled";
+const UNPARSED_AT_VINTAGE: &str = "voteUnparsedAtTheVintage";
 const OUTSIDE: &str = "voteOutsideTheSnapshot";
 const REWARD_ROW: &str = "voteWithARewardRow";
 
@@ -40,11 +37,14 @@ async fn store_samples(client: &mut Client, epoch: u64, samples: &[(&str, Option
     store_snapshot(client, &format!("vintage-{epoch}"), &snapshot).await;
 }
 
-fn performance_snapshot(listed: &[&str], reward_rows: &[(&str, u8)]) -> String {
-    let validators: HashMap<_, _> = listed
+fn performance_snapshot(
+    listed: &[&str],
+    reward_rows: &[(&str, u8)],
+) -> ValidatorsPerformanceSnapshot {
+    let validators: HashMap<String, ValidatorPerformance> = listed
         .iter()
         .map(|vote_account| (vote_account.to_string(), validator_performance()))
-        .collect::<HashMap<String, ValidatorPerformance>>();
+        .collect();
     let rewards = listed
         .iter()
         .map(|vote_account| {
@@ -60,41 +60,7 @@ fn performance_snapshot(listed: &[&str], reward_rows: &[(&str, u8)]) -> String {
             )
         })
         .collect();
-    serde_yaml::to_string(&ValidatorsPerformanceSnapshot {
-        epoch: EPOCH,
-        epoch_slot: 432_000,
-        transaction_count: 0,
-        created_at: "2026-10-01T14:00:00Z".into(),
-        slots_per_year: baseline_slots_per_year(),
-        cluster_inflation: Some(ClusterInflation {
-            sol_total_supply: 0,
-            inflation: 0f64,
-            inflation_taper: 0f64,
-        }),
-        validators,
-        nodes: Default::default(),
-        rewards: Some(rewards),
-    })
-    .unwrap()
-}
-
-async fn run_close_epoch(client: &mut Client, schema_tag: &str, snapshot: &str) {
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, $1, 0, NOW()), (432000, $1, 0, NOW())",
-            &[&Decimal::from(EPOCH)],
-        )
-        .await
-        .unwrap();
-    let path = write_yaml(schema_tag, snapshot);
-    close_epoch(
-        CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+    common::performance_snapshot(EPOCH, validators, rewards)
 }
 
 async fn read_effective(
@@ -122,7 +88,7 @@ async fn seed_three_epochs(client: &mut Client) {
         EPOCH - 2,
         &[
             (CHANGED_LATE, Some(500)),
-            (UNSAMPLED, None),
+            (UNPARSED_AT_VINTAGE, None),
             (OUTSIDE, Some(300)),
             (REWARD_ROW, Some(500)),
         ],
@@ -134,7 +100,7 @@ async fn seed_three_epochs(client: &mut Client) {
         &[
             (CHANGED_LATE, Some(800)),
             (NEW_LAST_EPOCH, Some(800)),
-            (UNSAMPLED, None),
+            (UNPARSED_AT_VINTAGE, Some(800)),
             (OUTSIDE, Some(500)),
             (REWARD_ROW, Some(800)),
         ],
@@ -147,7 +113,7 @@ async fn seed_three_epochs(client: &mut Client) {
             (CHANGED_LATE, Some(900)),
             (NEW_LAST_EPOCH, Some(900)),
             (NEW_THIS_EPOCH, Some(900)),
-            (UNSAMPLED, None),
+            (UNPARSED_AT_VINTAGE, Some(900)),
             (OUTSIDE, Some(700)),
             (REWARD_ROW, Some(900)),
         ],
@@ -168,7 +134,7 @@ async fn close_epoch_prices_the_vote_state_agave_applied_to_the_epoch() {
         CHANGED_LATE,
         NEW_LAST_EPOCH,
         NEW_THIS_EPOCH,
-        UNSAMPLED,
+        UNPARSED_AT_VINTAGE,
         REWARD_ROW,
     ];
     run_close_epoch(
@@ -195,9 +161,9 @@ async fn close_epoch_prices_the_vote_state_agave_applied_to_the_epoch() {
         "with neither snapshot agave reads the live state, the epoch's own last sample"
     );
     assert_eq!(
-        read_effective(&client, UNSAMPLED).await,
-        (None, None, None),
-        "no sample in any of the three epochs leaves the rate unknown"
+        read_effective(&client, UNPARSED_AT_VINTAGE).await,
+        (Some(7), None, vote_state.clone()),
+        "an unparsed E-2 vote state keeps its vintage through the advertised percent, not E-1's bps"
     );
     assert_eq!(
         read_effective(&client, OUTSIDE).await,

@@ -555,7 +555,7 @@ pub async fn load_versions(
 
     Ok(records)
 }
-// From 1030 on commission_effective is close_epoch's vote-state sample or the 0029 backfill.
+// From 1030 on commission_effective is close_epoch's vote-state sample at the epoch_stakes vintage.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
@@ -567,7 +567,10 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                     commission_effective,
                     commission_min_observed,
                     LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission,
+                    CASE WHEN LAG(epoch, 2) OVER(PARTITION BY vote_account ORDER BY epoch) = epoch - 2
+                        THEN LAG(commission_min_observed, 2) OVER(PARTITION BY vote_account ORDER BY epoch)
+                    END AS vintage_min_observed
                 FROM
                     validators
             ),
@@ -583,7 +586,9 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                     -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
                     commission_min_observed IS NOT NULL
                     AND (
-                        (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
+                        -- The applied rate is epoch_stakes(E), so a cut it still lags must not read as a rug
+                        (commission_effective > commission_min_observed AND commission_effective > COALESCE(vintage_min_observed, -1)
+                            AND commission_effective > 10 AND commission_min_observed <= 10)
                         OR
                         (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
                         OR
@@ -643,6 +648,9 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
     Ok(records)
 }
 
+// One past any real slot index, so the applied rate sorts after every sample of its epoch.
+pub const APPLIED_COMMISSION_EPOCH_SLOT: u64 = 432_000;
+
 pub async fn load_commissions(
     psql_client: &Client,
     epochs: u64,
@@ -662,14 +670,17 @@ pub async fn load_commissions(
             UNION
             SELECT
                 vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, 432000, updated_at,
+				epochs.end_at AS epoch_end, $2::NUMERIC, updated_at,
                 commission_effective_bps
             FROM validators
             LEFT JOIN epochs ON validators.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[&Decimal::from(epochs)],
+            &[
+                &Decimal::from(epochs),
+                &Decimal::from(APPLIED_COMMISSION_EPOCH_SLOT),
+            ],
         )
         .await?;
 

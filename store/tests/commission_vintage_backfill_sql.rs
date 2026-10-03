@@ -8,14 +8,14 @@ const BACKFILL: &str =
     include_str!("../../migrations/0035-commission-effective-vintage-backfill.sql");
 const OPEN_EPOCH: u64 = 1041;
 
-struct Row {
-    vote_account: &'static str,
-    epoch: u64,
-    advertised: i32,
-    effective: Option<i32>,
-    source: Option<&'static str>,
-    sampled_bps: Option<i32>,
-}
+type Row = (
+    &'static str,
+    u64,
+    i32,
+    Option<i32>,
+    Option<&'static str>,
+    Option<i32>,
+);
 
 async fn seed(client: &Client, rows: &[Row]) {
     for epoch in 1029..OPEN_EPOCH {
@@ -28,7 +28,7 @@ async fn seed(client: &Client, rows: &[Row]) {
             .await
             .unwrap();
     }
-    for row in rows {
+    for (vote_account, epoch, advertised, effective, source, sampled_bps) in rows {
         client
             .execute(
                 "INSERT INTO validators (
@@ -43,12 +43,12 @@ async fn seed(client: &Client, rows: &[Row]) {
                     GREATEST($3::INTEGER, $4::INTEGER), LEAST($3::INTEGER, $4::INTEGER)
                 )",
                 &[
-                    &row.vote_account,
-                    &Decimal::from(row.epoch),
-                    &row.advertised,
-                    &row.effective,
-                    &row.source,
-                    &row.sampled_bps,
+                    vote_account,
+                    &Decimal::from(*epoch),
+                    advertised,
+                    effective,
+                    source,
+                    sampled_bps,
                 ],
             )
             .await
@@ -64,17 +64,9 @@ async fn seed(client: &Client, rows: &[Row]) {
         .unwrap();
 }
 
-type Resolved = (
-    String,
-    u64,
-    Option<i32>,
-    Option<i32>,
-    Option<String>,
-    Option<i32>,
-    Option<i32>,
-);
-
-async fn read_all(client: &Client) -> Vec<Resolved> {
+// One line per row, "vote epoch effective bps source max min", so the expected table stays readable.
+async fn read_all(client: &Client) -> Vec<String> {
+    let show = |value: Option<i32>| value.map_or("-".to_string(), |v| v.to_string());
     client
         .query(
             "SELECT vote_account, epoch, commission_effective, commission_effective_bps,
@@ -86,55 +78,19 @@ async fn read_all(client: &Client) -> Vec<Resolved> {
         .unwrap()
         .iter()
         .map(|row| {
-            (
-                row.get("vote_account"),
-                row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get("commission_effective"),
-                row.get("commission_effective_bps"),
-                row.get("commission_effective_source"),
-                row.get("commission_max_observed"),
-                row.get("commission_min_observed"),
+            format!(
+                "{} {} {} {} {} {} {}",
+                row.get::<_, String>("vote_account"),
+                row.get::<_, Decimal>("epoch"),
+                show(row.get("commission_effective")),
+                show(row.get("commission_effective_bps")),
+                row.get::<_, Option<String>>("commission_effective_source")
+                    .unwrap_or("-".to_string()),
+                show(row.get("commission_max_observed")),
+                show(row.get("commission_min_observed")),
             )
         })
         .collect()
-}
-
-fn row(
-    vote_account: &'static str,
-    epoch: u64,
-    advertised: i32,
-    effective: Option<i32>,
-    source: Option<&'static str>,
-    sampled_bps: Option<i32>,
-) -> Row {
-    Row {
-        vote_account,
-        epoch,
-        advertised,
-        effective,
-        source,
-        sampled_bps,
-    }
-}
-
-fn expected(
-    vote_account: &str,
-    epoch: u64,
-    effective: Option<i32>,
-    bps: Option<i32>,
-    source: Option<&str>,
-    max: Option<i32>,
-    min: Option<i32>,
-) -> Resolved {
-    (
-        vote_account.to_string(),
-        epoch,
-        effective,
-        bps,
-        source.map(str::to_string),
-        max,
-        min,
-    )
 }
 
 #[tokio::test]
@@ -150,19 +106,19 @@ async fn backfill_re_resolves_closed_epochs_from_1030_at_the_applied_vintage() {
         &client,
         &[
             // Before bps sampling: the 0029 backfill copied each epoch's own advertised rate.
-            row("voteAdvertised", 1031, 0, Some(0), None, None),
-            row("voteAdvertised", 1032, 0, Some(0), None, None),
-            row("voteAdvertised", 1033, 5, Some(5), None, None),
-            row("voteAdvertised", 1034, 5, Some(5), None, None),
-            row("voteAdvertised", 1035, 5, Some(5), None, None),
+            ("voteAdvertised", 1031, 0, Some(0), None, None),
+            ("voteAdvertised", 1032, 0, Some(0), None, None),
+            ("voteAdvertised", 1033, 5, Some(5), None, None),
+            ("voteAdvertised", 1034, 5, Some(5), None, None),
+            ("voteAdvertised", 1035, 5, Some(5), None, None),
             // close_epoch read each epoch's own last sample.
-            row("voteSampled", 1036, 5, Some(5), vote_state, Some(500)),
-            row("voteSampled", 1037, 5, Some(5), vote_state, Some(500)),
-            row("voteSampled", 1038, 9, Some(9), vote_state, Some(900)),
-            row("voteSampled", 1039, 9, Some(9), vote_state, Some(900)),
-            row("voteSampled", 1040, 9, Some(9), vote_state, Some(900)),
-            row("voteSampled", OPEN_EPOCH, 9, None, None, Some(900)),
-            row(
+            ("voteSampled", 1036, 5, Some(5), vote_state, Some(500)),
+            ("voteSampled", 1037, 5, Some(5), vote_state, Some(500)),
+            ("voteSampled", 1038, 9, Some(9), vote_state, Some(900)),
+            ("voteSampled", 1039, 9, Some(9), vote_state, Some(900)),
+            ("voteSampled", 1040, 9, Some(9), vote_state, Some(900)),
+            ("voteSampled", OPEN_EPOCH, 9, None, None, Some(900)),
+            (
                 "voteRewardRow",
                 1037,
                 7,
@@ -170,7 +126,7 @@ async fn backfill_re_resolves_closed_epochs_from_1030_at_the_applied_vintage() {
                 Some("reward_row"),
                 Some(700),
             ),
-            row(
+            (
                 "voteRewardRow",
                 1038,
                 7,
@@ -178,8 +134,8 @@ async fn backfill_re_resolves_closed_epochs_from_1030_at_the_applied_vintage() {
                 Some("reward_row"),
                 Some(700),
             ),
-            row("voteBefore1030", 1028, 9, Some(9), None, None),
-            row("voteBefore1030", 1029, 9, Some(7), None, None),
+            ("voteBefore1030", 1028, 9, Some(9), None, None),
+            ("voteBefore1030", 1029, 9, Some(7), None, None),
         ],
     )
     .await;
@@ -190,142 +146,22 @@ async fn backfill_re_resolves_closed_epochs_from_1030_at_the_applied_vintage() {
         resolved,
         vec![
             // The raise to 5 in 1033 applies from 1035, two epochs later.
-            expected(
-                "voteAdvertised",
-                1031,
-                Some(0),
-                None,
-                None,
-                Some(0),
-                Some(0)
-            ),
-            expected(
-                "voteAdvertised",
-                1032,
-                Some(0),
-                None,
-                None,
-                Some(0),
-                Some(0)
-            ),
-            expected(
-                "voteAdvertised",
-                1033,
-                Some(0),
-                None,
-                None,
-                Some(5),
-                Some(0)
-            ),
-            expected(
-                "voteAdvertised",
-                1034,
-                Some(0),
-                None,
-                None,
-                Some(5),
-                Some(0)
-            ),
-            expected(
-                "voteAdvertised",
-                1035,
-                Some(5),
-                None,
-                None,
-                Some(5),
-                Some(5)
-            ),
-            expected(
-                "voteBefore1030",
-                1028,
-                Some(9),
-                None,
-                None,
-                Some(9),
-                Some(9)
-            ),
-            expected(
-                "voteBefore1030",
-                1029,
-                Some(7),
-                None,
-                None,
-                Some(9),
-                Some(7)
-            ),
-            expected(
-                "voteRewardRow",
-                1037,
-                Some(3),
-                None,
-                Some("reward_row"),
-                Some(7),
-                Some(3)
-            ),
-            expected(
-                "voteRewardRow",
-                1038,
-                Some(3),
-                None,
-                Some("reward_row"),
-                Some(7),
-                Some(3)
-            ),
+            "voteAdvertised 1031 0 - - 0 0",
+            "voteAdvertised 1032 0 - - 0 0",
+            "voteAdvertised 1033 0 - - 5 0",
+            "voteAdvertised 1034 0 - - 5 0",
+            "voteAdvertised 1035 5 - - 5 5",
+            "voteBefore1030 1028 9 - - 9 9",
+            "voteBefore1030 1029 7 - - 9 7",
+            "voteRewardRow 1037 3 - reward_row 7 3",
+            "voteRewardRow 1038 3 - reward_row 7 3",
             // 1036 and 1037 have no E-2 bps and fall back like agave; the raise to 9 lands in 1040.
-            expected(
-                "voteSampled",
-                1036,
-                Some(5),
-                Some(500),
-                vote_state,
-                Some(5),
-                Some(5)
-            ),
-            expected(
-                "voteSampled",
-                1037,
-                Some(5),
-                Some(500),
-                vote_state,
-                Some(5),
-                Some(5)
-            ),
-            expected(
-                "voteSampled",
-                1038,
-                Some(5),
-                Some(500),
-                vote_state,
-                Some(9),
-                Some(5)
-            ),
-            expected(
-                "voteSampled",
-                1039,
-                Some(5),
-                Some(500),
-                vote_state,
-                Some(9),
-                Some(5)
-            ),
-            expected(
-                "voteSampled",
-                1040,
-                Some(9),
-                Some(900),
-                vote_state,
-                Some(12),
-                Some(9)
-            ),
-            expected(
-                "voteSampled",
-                OPEN_EPOCH,
-                None,
-                None,
-                None,
-                Some(9),
-                Some(9)
-            ),
+            "voteSampled 1036 5 500 vote_state 5 5",
+            "voteSampled 1037 5 500 vote_state 5 5",
+            "voteSampled 1038 5 500 vote_state 9 5",
+            "voteSampled 1039 5 500 vote_state 9 5",
+            "voteSampled 1040 9 900 vote_state 12 9",
+            "voteSampled 1041 - - - 9 9",
         ],
         "only closed epochs from 1030 on move, reward rows and the open epoch stay as they were"
     );
