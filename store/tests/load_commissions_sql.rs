@@ -36,10 +36,11 @@ async fn load_commissions_carries_bps_only_on_a_vote_state_applied_rate() {
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
                 leader_slots, blocks_produced, skip_rate, updated_at,
-                commission_effective, commission_effective_source, inflation_rewards_commission_bps
+                commission_effective, commission_effective_source, commission_effective_bps,
+                inflation_rewards_commission_bps
             ) VALUES
-                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'vote_state', 650),
-                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'reward_row', 650)",
+                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'vote_state', 650, 720),
+                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'reward_row', NULL, 650)",
             &[&Decimal::from(EPOCH)],
         )
         .await

@@ -1,17 +1,14 @@
 mod common;
 
-use clap::Parser;
-use collect::slot_params::baseline_slots_per_year;
 use collect::validators_performance::{
-    ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
+    ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
 };
 use common::{
     migrated_client, skip_without_database, store_snapshot, validator_performance,
-    validator_snapshot, write_yaml,
+    validator_snapshot,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::close_epoch::{close_epoch, CloseEpochParams};
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1035;
@@ -34,57 +31,25 @@ async fn seed_validators(client: &mut Client, epoch: u64, schema_tag: &str) {
     store_snapshot(client, schema_tag, &snapshot).await;
 }
 
-fn performance_snapshot(listed_reward: Option<u8>) -> String {
-    let mut validators = HashMap::new();
-    validators.insert(
+fn performance_snapshot(listed_reward: Option<u8>) -> ValidatorsPerformanceSnapshot {
+    let validators = HashMap::from([(
         LISTED.to_string(),
         ValidatorPerformance {
             commission: 10,
             ..validator_performance()
         },
-    );
-    let mut rewards = HashMap::new();
-    rewards.insert(
+    )]);
+    let rewards = HashMap::from([(
         LISTED.to_string(),
         ValidatorRewards {
             commission_effective: listed_reward,
         },
-    );
-    serde_yaml::to_string(&ValidatorsPerformanceSnapshot {
-        epoch: EPOCH,
-        epoch_slot: 432_000,
-        transaction_count: 0,
-        created_at: "2026-09-16T23:00:00Z".into(),
-        slots_per_year: baseline_slots_per_year(),
-        cluster_inflation: Some(ClusterInflation {
-            sol_total_supply: 0,
-            inflation: 0f64,
-            inflation_taper: 0f64,
-        }),
-        validators,
-        nodes: Default::default(),
-        rewards: Some(rewards),
-    })
-    .unwrap()
+    )]);
+    common::performance_snapshot(EPOCH, validators, rewards)
 }
 
 async fn run_close_epoch(client: &mut Client, schema_tag: &str, listed_reward: Option<u8>) {
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, $1, 0, NOW()), (432000, $1, 0, NOW())",
-            &[&Decimal::from(EPOCH)],
-        )
-        .await
-        .unwrap();
-    let path = write_yaml(schema_tag, &performance_snapshot(listed_reward));
-    close_epoch(
-        CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+    common::run_close_epoch(client, schema_tag, &performance_snapshot(listed_reward)).await;
 }
 
 async fn read_effective(
@@ -149,8 +114,8 @@ async fn close_epoch_resolves_a_validator_the_snapshot_never_listed() {
     );
     assert_eq!(
         read_effective(&client, UNSAMPLED, EPOCH).await,
-        (None, None),
-        "a row outside the snapshot with no sampled rate is left unresolved rather than written"
+        (Some(7), Some("vote_state".to_string())),
+        "an unparsed vote state still has its advertised percent, the same sample's u8 rate"
     );
     assert_eq!(
         read_floor(&client, OUTSIDE, EPOCH).await,

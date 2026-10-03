@@ -2,8 +2,14 @@
 #![allow(dead_code)]
 
 use clap::Parser;
+use collect::slot_params::baseline_slots_per_year;
 use collect::validators::{Snapshot, ValidatorSnapshot};
-use collect::validators_performance::ValidatorPerformance;
+use collect::validators_performance::{
+    ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
+};
+use rust_decimal::Decimal;
+use std::collections::HashMap;
+use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::validators::{store_validators, StoreValidatorsParams};
 use tokio_postgres::{Client, NoTls};
 
@@ -128,6 +134,51 @@ pub async fn store_snapshot(client: &mut Client, name: &str, snapshot: &Snapshot
     let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
     store_validators(
         StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
+        client,
+    )
+    .await
+    .unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+pub fn performance_snapshot(
+    epoch: u64,
+    validators: HashMap<String, ValidatorPerformance>,
+    rewards: HashMap<String, ValidatorRewards>,
+) -> ValidatorsPerformanceSnapshot {
+    ValidatorsPerformanceSnapshot {
+        epoch,
+        epoch_slot: 432_000,
+        transaction_count: 0,
+        created_at: "2026-09-16T23:00:00Z".into(),
+        slots_per_year: baseline_slots_per_year(),
+        cluster_inflation: Some(ClusterInflation {
+            sol_total_supply: 0,
+            inflation: 0f64,
+            inflation_taper: 0f64,
+        }),
+        validators,
+        nodes: Default::default(),
+        rewards: Some(rewards),
+    }
+}
+
+pub async fn run_close_epoch(
+    client: &mut Client,
+    name: &str,
+    snapshot: &ValidatorsPerformanceSnapshot,
+) {
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (0, $1, 0, NOW()), (432000, $1, 0, NOW())",
+            &[&Decimal::from(snapshot.epoch)],
+        )
+        .await
+        .unwrap();
+    let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
+    close_epoch(
+        CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
         client,
     )
     .await
