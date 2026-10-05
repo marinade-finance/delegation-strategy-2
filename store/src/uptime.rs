@@ -26,7 +26,9 @@ fn is_down(performance: &ValidatorPerformance, last_credits: Option<Decimal>) ->
     }
     match (performance.credits_total, last_credits) {
         (Some(credits_total), Some(last_credits)) => Decimal::from(credits_total) <= last_credits,
-        _ => performance.delinquent,
+        // No earlier snapshot to compare with. The next snapshot compares.
+        (Some(_), None) => false,
+        (None, _) => performance.delinquent,
     }
 }
 
@@ -253,8 +255,13 @@ mod tests {
     }
 
     #[test]
-    fn without_votes_and_no_previous_credits_keeps_the_rpc_delinquency() {
+    fn without_votes_and_no_previous_credits_is_up() {
+        assert!(!is_down(&performance(true, Some(0), Some(10)), None));
         assert!(!is_down(&performance(false, Some(0), Some(10)), None));
+    }
+
+    #[test]
+    fn without_votes_and_no_credits_keeps_the_rpc_delinquency() {
         assert!(is_down(
             &performance(true, Some(0), None),
             Some(Decimal::from(10))
