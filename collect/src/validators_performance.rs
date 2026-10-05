@@ -200,9 +200,6 @@ fn inflation_and_supply_at(
     (inflation, supply as u64)
 }
 
-// SIMD-0033 timely vote credits: at most 16 credits for each slot.
-const MAX_TOWER_CREDITS_IN_EPOCH: u64 = 16 * SLOTS_IN_EPOCH;
-
 pub fn validators_performance(
     client: &RpcClient,
     epoch: Epoch,

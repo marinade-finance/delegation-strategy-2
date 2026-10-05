@@ -1,6 +1,7 @@
 use crate::common::retry_blocking;
 use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
+use crate::slot_params::SLOTS_IN_EPOCH;
 use crate::validators::*;
 use bincode::deserialize;
 use csv::{required, Column};
@@ -64,6 +65,9 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
 
 pub type EpochCreditsEntry = (Epoch, u64, u64);
 
+// SIMD-0033 timely vote credits: at most 16 credits for each slot.
+pub const MAX_TOWER_CREDITS_IN_EPOCH: u64 = 16 * SLOTS_IN_EPOCH;
+
 // The agave Alpenglow vote reward code writes this marker in the migration epoch.
 // Entries before it count tower vote credits, entries after it count reward lamports.
 const EPOCH_CREDITS_MIGRATION_MARKER: Epoch = Epoch::MAX;
@@ -118,6 +122,14 @@ pub fn split_epoch_credits(
             let delta = epoch_credits_delta(history, epoch);
             match regime {
                 CreditsRegime::Tower => (delta, None),
+                // Testnet 1042: 4 of 469 accounts voted Tower, earned no Alpenglow reward, and got no marker.
+                CreditsRegime::Migration
+                    if delta
+                        .flatten()
+                        .is_none_or(|delta| delta <= MAX_TOWER_CREDITS_IN_EPOCH) =>
+                {
+                    (delta, None)
+                }
                 CreditsRegime::Migration | CreditsRegime::Alpenglow => (None, delta),
             }
         }
@@ -2144,6 +2156,36 @@ mod epoch_credits_tests {
                 regime: CreditsRegime::Alpenglow,
                 tower_credits: None,
                 vote_reward_lamports: Some(318328953220),
+            })
+        );
+    }
+
+    // testnet HmA5uZ5ExST9XDsYq93QRTMoP1eVFeork5ZmBMrJhMr4, vote state at epoch 1049
+    #[test]
+    fn migration_epoch_without_marker_keeps_tower_credits() {
+        let history = vec![
+            (1041, 1231213405, 1224498690),
+            (1042, 1231244005, 1231213405),
+        ];
+        assert_eq!(
+            split_epoch_credits(&history, 1042, Some(1042)),
+            Some(EpochCredits {
+                regime: CreditsRegime::Migration,
+                tower_credits: Some(30600),
+                vote_reward_lamports: None,
+            })
+        );
+    }
+
+    #[test]
+    fn migration_epoch_without_marker_above_tower_maximum_is_a_reward() {
+        let history = vec![(1042, 291696003588, 810741247)];
+        assert_eq!(
+            split_epoch_credits(&history, 1042, Some(1042)),
+            Some(EpochCredits {
+                regime: CreditsRegime::Migration,
+                tower_credits: Some(0),
+                vote_reward_lamports: Some(290885262341),
             })
         );
     }
