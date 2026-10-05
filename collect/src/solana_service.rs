@@ -190,7 +190,9 @@ pub fn is_alpenglow_active(client: &RpcClient) -> anyhow::Result<Option<Epoch>> 
                 )
             ) =>
         {
-            warn!("RPC has no getAgGenesisCert, so the cluster counts as not migrated to Alpenglow");
+            warn!(
+                "RPC has no getAgGenesisCert, so the cluster counts as not migrated to Alpenglow"
+            );
             None
         }
         Err(err) => return Err(err.into()),
