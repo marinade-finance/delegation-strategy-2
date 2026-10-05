@@ -37,13 +37,8 @@ pub async fn close_epoch(
 
     info!("Loaded the snapshot");
 
-    // A sealed epoch is never sealed twice. The trim runs after the seal, so a
-    // run that died between the two left the accumulators still holding the
-    // epoch, and the trim is the only outstanding work. Resealing instead would
-    // read accumulators the failed run had already partly trimmed and write an
-    // epoch with the intervals removed - erasing the very downtime the sealed
-    // document exists to record, on every hourly run until the epoch rolls
-    // over. Until now the only thing refusing that was the trim order.
+    // A run that died between the seal and the trim leaves the accumulators
+    // partly trimmed; resealing from them would erase the epoch's downtime.
     if directory
         .get::<EpochDoc>(&epoch_doc_path(EPOCHS_DIR, epoch))
         .await?
@@ -111,12 +106,8 @@ pub async fn close_epoch(
     .await?;
     info!("Sealed the streams of epoch {epoch}");
 
-    // The presence of this document is what marks the epoch sealed, and it is written
-    // before the accumulators are trimmed: a failure up to here leaves every `live/`
-    // document untouched, so the hourly re-run repeats this whole function byte for
-    // byte. Trimming first would let a failed trim hand the re-run an accumulator the
-    // epoch's samples had already been taken out of, and the reseal would then replace
-    // good sealed documents with the remnant.
+    // Its presence marks the epoch sealed, so it is written before the trim: a
+    // failure before this point leaves `live/` untouched and the re-run identical.
     let path = epoch_doc_path(EPOCHS_DIR, epoch);
     put_whole(directory, &path, &epoch_record).await?;
     info!("Closed epoch {epoch}");
@@ -124,15 +115,11 @@ pub async fn close_epoch(
     trim_accumulators(directory, epoch).await
 }
 
-/// Drops everything up to and including `epoch` from the four accumulators: a
-/// sealed epoch is served from its sealed document, so what is left here is
-/// what follows it.
+/// Drops everything up to and including `epoch` from the four accumulators.
 ///
-/// Each document is read immediately before its own write. The seal above
-/// spends a dozen round trips, and collector-performance rewrites all four
-/// every minute, so an ETag read before it has a real chance of being stale by
-/// the time it is used - and a 412 here lands after the epoch document exists,
-/// where nothing offers the epoch again.
+/// Each document is read immediately before its own write: collector-performance
+/// rewrites all four every minute, and a 412 here lands after the epoch document
+/// exists, where nothing offers the epoch again.
 async fn trim_accumulators(directory: &Directory, epoch: u64) -> anyhow::Result<()> {
     let uptimes = read_live::<UptimesDoc>(directory, LIVE_UPTIMES).await?;
     directory
@@ -241,7 +228,6 @@ async fn build_epoch_record(
     })
 }
 
-/// The finalized performance of the epoch, which only close-epoch knows.
 fn apply_finalized_performance(
     validators: &mut SnapshotDoc,
     snapshot: &ValidatorsPerformanceSnapshot,
@@ -286,8 +272,7 @@ fn apply_uptimes(
     }
 }
 
-/// `None` where the validator was never down in the epoch, which is what the
-/// missing row meant.
+/// `None` where the validator was never down in the epoch.
 fn downtime_seconds<'a>(
     intervals: impl Iterator<Item = &'a UptimeInterval>,
     epoch: u64,
@@ -324,8 +309,6 @@ fn apply_observed_commissions(
     }
 }
 
-/// GREATEST/LEAST over the observed, advertised and effective commissions,
-/// ignoring the ones that are not known.
 fn extreme(validator: &Validator, observed: Option<i32>, pick: fn(i32, i32) -> i32) -> Option<i32> {
     [
         observed,

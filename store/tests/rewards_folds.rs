@@ -10,7 +10,6 @@ const INFLATION: f64 = 0.043;
 const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
 const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
 
-/// What `get_estimated_inflation_rewards` divided by before the column existed.
 const LEGACY_EPOCHS_PER_YEAR: f64 = 365.25 / 2.0;
 
 fn at(moment: &str) -> DateTime<Utc> {

@@ -9,7 +9,6 @@ struct Body {
     epoch: u64,
 }
 
-/// Answers one connection with a canned response and keeps the request head.
 struct CannedServer {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
@@ -20,8 +19,6 @@ impl CannedServer {
         Self::start_each(&[response]).await
     }
 
-    /// Answers the nth request with the nth response, so a client that makes
-    /// more than one call can be driven through all of them.
     async fn start_each(responses: &[&str]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("test port");
         let url = format!("http://{}", listener.local_addr().expect("test addr"));
@@ -204,7 +201,6 @@ async fn an_unexpected_status_carries_it() {
     assert!(format!("{error}").contains("403"), "{error}");
 }
 
-/// One NDJSON listing line for an epoch under `/validators/snapshot`.
 fn entry_line(epoch: &str) -> String {
     format!(
         "{{\"path\":\"/validators/snapshot/{epoch}\",\"name\":\"{epoch}\",\"version\":\"1\",\

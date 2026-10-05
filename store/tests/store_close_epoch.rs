@@ -329,10 +329,9 @@ async fn close_epoch_seals_derives_and_marks_the_epoch_closed() {
     );
 }
 
-/// The epochs document is written before the accumulators are trimmed, so a run that dies
-/// between the two leaves the epoch sealed and `live/` still holding its samples. Readers
-/// must take the sealed document and ignore what is left behind, or the next warm would
-/// count the epoch twice.
+/// A run that dies between the seal and the trim leaves `live/` holding the
+/// epoch's samples. Readers must take the sealed document and ignore them, or
+/// the next warm counts the epoch twice.
 #[tokio::test]
 async fn a_sealed_epoch_is_read_from_its_seal_while_live_still_holds_it() {
     let Some(store) = common::directory_store("close-epoch-leftover").await else {
@@ -396,11 +395,9 @@ async fn a_sealed_epoch_is_read_from_its_seal_while_live_still_holds_it() {
     );
 }
 
-/// A crash between the seal and the trim leaves the accumulators still holding
-/// the epoch. The rerun that follows must not seal again: it would read
-/// accumulators the failed run had already partly trimmed and write a sealed
-/// document with those intervals missing, erasing the downtime it exists to
-/// record.
+/// A crash between the seal and the trim leaves the accumulators holding the
+/// epoch. The rerun must trim, not reseal from accumulators already partly
+/// trimmed, which would erase the downtime the seal records.
 #[tokio::test]
 async fn a_rerun_of_a_sealed_epoch_trims_without_resealing() {
     let Some(store) = common::directory_store("close-epoch-rerun").await else {
@@ -419,7 +416,10 @@ async fn a_rerun_of_a_sealed_epoch_trims_without_resealing() {
         .expect("sealed uptimes")
         .body;
     let intervals = sealed[VOTE_ACCOUNT].len();
-    assert!(intervals > 0, "the first close sealed the epoch's intervals");
+    assert!(
+        intervals > 0,
+        "the first close sealed the epoch's intervals"
+    );
 
     // The accumulators are trimmed by now, so a second close reads exactly what
     // a run that died mid-trim would have left behind.

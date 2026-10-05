@@ -209,7 +209,6 @@ We are checking if:
 - Previous commission is more than 10, current commission is less than or equal to 10, and the next commission is more than 10 OR
 - Previous commission is less than or equal to 10, current commission is more than 10, and the next commission is less than or equal to 10
  */
-/// One epoch's commissions of one validator, as the rug rule reads them.
 struct CommissionPoint {
     epoch: u64,
     effective: Option<i32>,
@@ -795,7 +794,6 @@ pub async fn load_validators(
     let apy_calculators = get_apy_calculators(warehouse)?;
     let concentrations = load_dc_concentration_stats(warehouse, 1)?.first().cloned();
 
-    // The epoch a validator was first seen in, over every epoch still held.
     let mut first_epochs: HashMap<&String, u64> = Default::default();
     for (epoch, snapshot) in warehouse.snapshots.iter() {
         for vote_account in snapshot.keys() {
@@ -1087,8 +1085,7 @@ pub async fn load_validators(
     Ok(records)
 }
 
-/// What `CONCAT(dc_continent, '/', dc_country, '/', dc_city)` rendered: the
-/// parts that are unknown are empty, and the key exists either way.
+/// Unknown parts are empty, and the key exists either way.
 pub fn full_city(validator: &Validator) -> String {
     format!(
         "{}/{}/{}",
@@ -1146,7 +1143,6 @@ pub fn load_scores_in_epochs(
         .collect()
 }
 
-/// The newest epoch ds-scoring has published, in the version it serves now.
 pub fn load_last_scoring_run(warehouse: &Warehouse) -> Option<ScoringRunRecord> {
     let Some((_, breakdowns)) = warehouse.scoring.iter().next_back() else {
         log::warn!("No scoring run was found!");
@@ -1254,7 +1250,7 @@ pub fn load_block_production_stats(
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
 
     let mut stats: Vec<_> = Default::default();
-    // The SQL bound was exclusive and the series it feeds is drawn that way.
+    // Exclusive lower bound: the series this feeds is drawn that way.
     for (epoch, snapshot) in warehouse.snapshots.range(first_epoch + 1..).rev() {
         let blocks_produced: u64 = snapshot
             .values()
@@ -1287,7 +1283,6 @@ struct StakeDistribution {
     count_by: HashMap<String, u64>,
 }
 
-/// The validators of one epoch, or none where no snapshot landed for it.
 fn snapshot_of(warehouse: &Warehouse, epoch: u64) -> impl Iterator<Item = &Validator> {
     warehouse
         .snapshots
@@ -1458,7 +1453,6 @@ pub fn load_feature_set_stats(
 }
 
 pub fn load_cluster_stats(warehouse: &Warehouse, epochs: u64) -> anyhow::Result<ClusterStats> {
-    // Vendor and lineage are two folds of one per-client-id distribution.
     let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(ClusterStats {
         block_production_stats: load_block_production_stats(warehouse, epochs)?,
@@ -1587,7 +1581,6 @@ pub fn load_validators_aggregated_flat(
     Ok(validators)
 }
 
-/// The cluster-wide figures one epoch's averages are taken against.
 struct ClusterEpoch {
     weighted_skip_rate: Option<f64>,
     concentration_by_aso: HashMap<String, f64>,

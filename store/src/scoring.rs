@@ -41,7 +41,6 @@ fn voter_max_commission_in_epoch(
     let changes = warehouse.commissions_of(epoch);
 
     for (vote_account, validator) in snapshot.iter() {
-        // Only a validator with a commission observation of its own counts.
         let Some(observed) = changes.get(vote_account) else {
             continue;
         };

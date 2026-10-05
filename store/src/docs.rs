@@ -1,5 +1,5 @@
 //! The documents stored in marinade-directory and the rules for merging a
-//! fresh snapshot into one. Every writer and every reader agree here.
+//! fresh snapshot into one.
 
 use crate::directory::{Directory, Precondition};
 use crate::dto::{
@@ -40,7 +40,6 @@ pub fn scoring_breakdowns_path(epoch: u64) -> String {
     format!("{SCORING_DIR}/{epoch}/breakdowns")
 }
 
-/// The snapshot of one epoch, keyed by vote account.
 pub type SnapshotDoc = BTreeMap<String, Validator>;
 
 /// What `store validators` cannot see stays: the snapshot's `version` and
@@ -71,7 +70,6 @@ pub fn merge_snapshot(doc: &mut SnapshotDoc, incoming: SnapshotDoc) {
     }
 }
 
-/// The latest MEV observation of one validator in one epoch.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MevEntry {
     pub vote_account: String,
@@ -107,7 +105,6 @@ impl MevEntry {
 
 pub type MevDoc = BTreeMap<String, MevEntry>;
 
-/// The latest priority-fee observation of one validator in one epoch.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PriorityFeeEntry {
     pub vote_account: String,
@@ -186,7 +183,6 @@ pub fn merge_block_rewards(doc: &mut BlockRewardsDoc, incoming: BlockRewardsDoc)
     }
 }
 
-/// One settlement of one validator in one epoch, keyed by `(reason, meta)`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventEntry {
     pub reason: String,
@@ -327,8 +323,6 @@ pub struct UptimeInterval {
     pub end_at: DateTime<Utc>,
 }
 
-/// One validator's uptime: the interval still being extended, and the ones
-/// closed since the last seal.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UptimeState {
     pub open: UptimeInterval,

@@ -385,7 +385,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     )
     .await?;
 
-    // The store, not the cache, tells a fresh environment from lost data: a cold cache is empty either way.
+    // A cold cache is empty either way; only the store tells a fresh environment from lost data.
     if validators.is_empty() {
         let has_snapshots = store::warehouse::has_validators(&directory).await?;
         anyhow::ensure!(
@@ -604,8 +604,6 @@ pub fn spawn_cache_warmer(context: WrappedContext, ready: ReadyFlag) {
 
             loop {
                 info!("Warming up the cache");
-                // Every step folds the same documents, so a refresh that fails
-                // leaves them all pending rather than republishing stale data.
                 match refresh_documents(&context).await {
                     Ok(()) => warm_pending(&context, &steps, &mut pending).await,
                     Err(err) => error!("Failed to refresh the documents: {err}"),

@@ -46,10 +46,10 @@ export DIRECTORY_TOKEN="$HEADER.$CLAIMS.$(printf "$HEADER.$CLAIMS" \
 
 # 2. Run the tests
 
-The tests own their store: each one starts `fsouza/fake-gcs-server` and
-`marinade-directory` with `docker`, creates a versioned bucket, mints its own
-token and stops both when it ends. Without `docker` they say why they skipped
-and pass.
+The tests own their store: each one starts `marinade-directory` on its
+in-memory backend with `docker`, mints its own token and stops the container
+when it ends — no bucket and no emulator, since the mem backend answers the
+same contract. Without `docker` they say why they skipped and pass.
 
 ```bash
 cargo test --all-features

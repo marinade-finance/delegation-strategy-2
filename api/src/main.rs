@@ -49,8 +49,6 @@ pub struct Params {
     #[structopt(long = "blacklist-path")]
     blacklist_path: String,
 
-    // The blacklist's source of truth is ds-sam-pipeline; fetch it into
-    // blacklist-path at startup and on an interval instead of committing a copy.
     #[structopt(
         long = "blacklist-url",
         env = "BLACKLIST_URL",
@@ -72,17 +70,14 @@ async fn main() -> anyhow::Result<()> {
 
     let params = Params::from_args();
 
-    // One client with a bounded connect + total timeout, shared by the startup
-    // fetch and the refresh loop: a hung upstream must never stall startup before
-    // the port binds, nor wedge a refresh iteration.
+    // Bounded so a hung upstream can stall neither startup nor a refresh.
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    // Blacklist lives in ds-sam-pipeline; pull it to the local cache path before
-    // serving, then refresh hourly. Fail loud if the first fetch fails — scoring
-    // must never run against a missing blacklist (that would blacklist nobody).
+    // Scoring against a missing blacklist would blacklist nobody, so a failed
+    // first fetch aborts startup.
     fetch_blacklist(&http_client, &params.blacklist_url, &params.blacklist_path)
         .await
         .map_err(|err| anyhow::anyhow!("Initial blacklist fetch failed: {err}"))?;
@@ -341,17 +336,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// The blacklist is a committed base of 524 rows plus scraped additions, so a
-// valid fetch is always well over this floor. A body below it is empty/HTML/
-// truncated and must never overwrite the last-good copy — an empty blacklist
-// would blacklist nobody.
+// A valid blacklist is far above this floor; a body below it is empty, HTML or
+// truncated and must not overwrite the last good copy.
 const MIN_BLACKLIST_ROWS: usize = 50;
 
-// Fetch the blacklist CSV and write it atomically to `path` (temp + rename), so a
-// concurrent reader never sees a half file and a failed fetch leaves the last
-// good copy in place. The body is validated BEFORE the rename, so a 200 carrying
-// an empty/HTML/truncated payload returns Err with the previous file untouched:
-// startup fails loud, the refresh loop logs loud and keeps serving the old copy.
+// Validated before the temp + rename, so a 200 carrying a bad payload leaves the
+// previous file untouched and a reader never sees a half file.
 async fn fetch_blacklist(client: &reqwest::Client, url: &str, path: &str) -> anyhow::Result<()> {
     let body = client
         .get(url)

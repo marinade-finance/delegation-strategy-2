@@ -16,7 +16,6 @@ use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::RangeInclusive;
 
-/// The accumulators, as they stood at the last warm.
 #[derive(Default)]
 pub struct Live {
     pub uptimes: UptimesDoc,
@@ -43,7 +42,6 @@ pub struct Warehouse {
 }
 
 impl Warehouse {
-    /// Refreshes every document of the last `epochs` epochs.
     pub async fn warm(&mut self, directory: &Directory, epochs: u64) -> anyhow::Result<()> {
         let Some(last_epoch) = last_epoch(directory).await? else {
             info!("No epoch has a snapshot yet");
@@ -97,14 +95,12 @@ impl Warehouse {
         Ok(())
     }
 
-    /// The last epoch cluster info was sampled in, which is what the SQL path
-    /// read off the `cluster_info` table.
+    /// The last epoch cluster info was sampled in, sealed or live.
     pub fn last_cluster_epoch(&self) -> u64 {
         let sealed = self.cluster_info.keys().max().copied().unwrap_or(0);
         sealed.max(self.live.cluster_info.epoch)
     }
 
-    /// The last epoch with a snapshot.
     pub fn last_epoch(&self) -> u64 {
         self.snapshots.keys().max().copied().unwrap_or(0)
     }
@@ -317,8 +313,6 @@ impl Warehouse {
     }
 }
 
-/// The newest epoch under `/validators/snapshot`, in the store's natural
-/// order, or `None` before the first snapshot is written.
 async fn last_epoch(directory: &Directory) -> anyhow::Result<Option<u64>> {
     let Some(path) = directory.resolve(&format!("{SNAPSHOT_DIR}/@last")).await? else {
         return Ok(None);

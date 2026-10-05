@@ -25,7 +25,6 @@ pub enum Precondition {
     IfMatch(String),
 }
 
-/// One line of a `GET /v1/{dir}/*` listing.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Entry {
     pub path: String,
@@ -303,7 +302,6 @@ impl Directory {
     }
 }
 
-/// The URL of the listing page after this one, from `Link: <uri>; rel="next"`.
 fn next_page(response: &Response) -> Option<String> {
     let value = response.headers().get(LINK)?.to_str().ok()?;
     if !value.contains("rel=\"next\"") {

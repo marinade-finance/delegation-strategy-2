@@ -30,8 +30,6 @@ pub async fn store_uptime(params: StoreUptimeParams, directory: &Directory) -> a
     write_uptimes(directory, stored, &snapshot).await
 }
 
-/// Applies one sample to the accumulator and writes it back under the version
-/// it was read at.
 pub async fn write_uptimes(
     directory: &Directory,
     stored: Option<Doc<UptimesDoc>>,
@@ -69,9 +67,6 @@ fn refuse_older_epoch(uptimes: &UptimesDoc, epoch: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Extends the open interval while the status and the epoch hold and the
-/// sample is inside the extension window; otherwise closes it and opens a new
-/// one at the sample.
 pub fn apply_uptime_samples(
     uptimes: &mut UptimesDoc,
     snapshot: &ValidatorsPerformanceSnapshot,
@@ -106,7 +101,6 @@ pub fn apply_uptime_samples(
             continue;
         }
         if within_window {
-            // A status or epoch change ends the interval where the sample found it.
             state.open.end_at = created_at;
         }
         let closed = std::mem::replace(&mut state.open, opened);

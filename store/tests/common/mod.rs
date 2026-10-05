@@ -57,10 +57,9 @@ pub fn validator(vote_account: &str, epoch: u64) -> Validator {
     }
 }
 
-/// The tests own their store: one marinade-directory container on its
-/// in-memory backend, torn down when the handle drops. No bucket emulator: the
-/// mem backend answers the same six-call contract a GCS/S3 bucket does, which
-/// is all the client under test ever speaks to.
+/// One marinade-directory container per test, on its in-memory backend, torn
+/// down when the handle drops. The mem backend answers the same six-call
+/// contract a GCS/S3 bucket does, which is all the client speaks to.
 pub const DIRECTORY_IMAGE: &str = "marinade-directory:test";
 const JWT_SECRET: &str = "delegation-strategy-test-secret-at-least-32b";
 const DIRECTORY_PORT: u16 = 3000;
@@ -78,8 +77,7 @@ impl DirectoryStore {
     }
 }
 
-/// `None` — with the reason on stderr — where docker cannot run, which is the
-/// contract the SQL harness had.
+/// `None`, with the reason on stderr, where docker cannot run.
 pub async fn directory_store(test: &str) -> Option<DirectoryStore> {
     if !docker_available() {
         eprintln!("skipping {test}: docker is not available");

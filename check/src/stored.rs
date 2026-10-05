@@ -1,5 +1,3 @@
-//! What the store already holds, which is what every check compares against.
-
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use store::directory::Directory;
@@ -11,7 +9,6 @@ struct StoredSample {
     epoch_slot: u64,
 }
 
-/// The newest epoch with a document under `dir`.
 pub async fn last_epoch(directory: &Directory, dir: &str) -> anyhow::Result<Option<u64>> {
     Ok(directory
         .list(dir)
