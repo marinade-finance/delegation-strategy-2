@@ -200,6 +200,21 @@ mod tests {
     }
 
     #[test]
+    fn unconsumed_commission_endpoints_are_deprecated() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for path in [
+            "/validators/{vote_account}/commissions",
+            "/reports/commission-changes",
+        ] {
+            assert_eq!(
+                spec["paths"][path]["get"]["deprecated"],
+                serde_json::Value::Bool(true),
+                "{path} must be marked deprecated in the spec"
+            );
+        }
+    }
+
+    #[test]
     fn commission_bps_and_collector_health_fields_are_documented() {
         let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
         for (schema, field) in [
@@ -208,7 +223,6 @@ mod tests {
             ("ValidatorRecord", "block_revenue_collector_healthy"),
             ("ValidatorEpochStats", "inflation_rewards_collector_healthy"),
             ("ValidatorEpochStats", "block_revenue_collector_healthy"),
-            ("CommissionRecord", "commission_bps"),
         ] {
             let description = spec["components"]["schemas"][schema]["properties"][field]
                 ["description"]
