@@ -350,7 +350,7 @@ struct Accumulator<B> {
     net_apy: StakeWeighted,
     take_rate: StakeWeighted,
     credits: StakeWeighted,
-    vote_reward_lamports: StakeWeighted,
+    vote_reward_per_stake: StakeWeighted,
     marinade_score: StakeWeighted,
     apy: StakeWeighted,
     commission: StakeWeighted,
@@ -371,7 +371,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: Default::default(),
             take_rate: Default::default(),
             credits: Default::default(),
-            vote_reward_lamports: Default::default(),
+            vote_reward_per_stake: Default::default(),
             marinade_score: Default::default(),
             apy: Default::default(),
             commission: Default::default(),
@@ -421,10 +421,10 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
         self.net_apy.add(validator.net_apy, weight);
         self.take_rate.add(validator.avg_take_rate, weight);
         self.credits.add(Some(validator.credits as f64), weight);
-        self.vote_reward_lamports.add(
+        self.vote_reward_per_stake.add(
             validator
-                .vote_reward_lamports
-                .map(|lamports| lamports as f64),
+                .vote_reward_per_stake()
+                .and_then(|rate| rate.to_f64()),
             weight,
         );
         self.marinade_score.add(validator.score, weight);
@@ -481,7 +481,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
-            vote_reward_lamports: self.vote_reward_lamports.mean(),
+            vote_reward_per_stake: self.vote_reward_per_stake.mean(),
             marinade_score: self.marinade_score.mean(),
             apy: self.apy.mean(),
             commission: self.commission.mean(),
@@ -549,9 +549,9 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         net_apy: finite(validator.net_apy),
         take_rate: finite(validator.avg_take_rate),
         credits: Some(validator.credits as f64),
-        vote_reward_lamports: validator
-            .vote_reward_lamports
-            .map(|lamports| lamports as f64),
+        vote_reward_per_stake: validator
+            .vote_reward_per_stake()
+            .and_then(|rate| rate.to_f64()),
         marinade_score: finite(validator.score),
         apy: finite(validator.avg_apy),
         commission: worst_known_commission(

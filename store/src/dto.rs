@@ -512,6 +512,13 @@ pub struct ValidatorRecord {
     pub protected: bool,
 }
 
+impl ValidatorRecord {
+    pub fn vote_reward_per_stake(&self) -> Option<Decimal> {
+        let lamports = self.vote_reward_lamports?;
+        (!self.activated_stake.is_zero()).then(|| Decimal::from(lamports) / self.activated_stake)
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct UptimeRecord {
     pub epoch: u64,
@@ -877,7 +884,8 @@ pub struct ValidatorGroupRecord {
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
-    pub vote_reward_lamports: Option<f64>,
+    /// Stake-weighted mean of the members' `vote_reward_lamports / activated_stake`. Null before Alpenglow.
+    pub vote_reward_per_stake: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
     pub commission: Option<f64>,

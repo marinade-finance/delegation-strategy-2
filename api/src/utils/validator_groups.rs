@@ -86,7 +86,7 @@ fn secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
         // Breaks ties on `credits`, which is 0 for every validator after the Alpenglow migration epoch.
         OrderField::Credits => |group: &ValidatorGroupRecord| {
             group
-                .vote_reward_lamports
+                .vote_reward_per_stake
                 .and_then(Decimal::from_f64_retain)
                 .into()
         },
@@ -297,19 +297,19 @@ mod tests {
     }
 
     #[test]
-    fn credits_order_breaks_ties_on_vote_reward_lamports() {
+    fn credits_order_breaks_ties_on_vote_reward_per_stake() {
         let with_credits =
-            |key: &str, credits: Option<f64>, lamports: Option<f64>| ValidatorGroupRecord {
+            |key: &str, credits: Option<f64>, rate: Option<f64>| ValidatorGroupRecord {
                 credits,
-                vote_reward_lamports: lamports,
+                vote_reward_per_stake: rate,
                 ..group(key, 100)
             };
         let sorted = sort_groups(
             vec![
                 with_credits("missing", None, None),
-                with_credits("low", Some(10.0), Some(500.0)),
-                with_credits("migration_low", Some(20.0), Some(100.0)),
-                with_credits("migration_high", Some(20.0), Some(900.0)),
+                with_credits("low", Some(10.0), Some(0.005)),
+                with_credits("migration_low", Some(20.0), Some(0.001)),
+                with_credits("migration_high", Some(20.0), Some(0.009)),
             ],
             OrderField::Credits,
             &OrderDirection::DESC,

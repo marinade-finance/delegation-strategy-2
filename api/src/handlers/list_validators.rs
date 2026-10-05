@@ -409,9 +409,7 @@ type FieldExtractor = fn(&ValidatorRecord) -> SortKey;
 fn get_secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
         // Breaks ties on `credits`, which is 0 for every validator after the Alpenglow migration epoch.
-        OrderField::Credits => {
-            |a: &ValidatorRecord| a.vote_reward_lamports.map(Decimal::from).into()
-        }
+        OrderField::Credits => |a: &ValidatorRecord| a.vote_reward_per_stake().into(),
         _ => |_: &ValidatorRecord| SortKey::Missing,
     }
 }
@@ -2239,6 +2237,26 @@ mod tests {
                 &OrderDirection::ASC
             )),
             vec!["low", "high"]
+        );
+    }
+
+    #[test]
+    fn credits_order_breaks_ties_on_vote_reward_per_stake() {
+        let alpenglow = |vote_account: &str, stake: i64, lamports: u64| ValidatorRecord {
+            credits: 0,
+            vote_reward_lamports: Some(lamports),
+            ..validator(vote_account, stake, vec![])
+        };
+        assert_eq!(
+            order(sort_validators(
+                vec![
+                    alpenglow("big_stake_low_rate", 1000, 100),
+                    alpenglow("small_stake_high_rate", 100, 50),
+                ],
+                OrderField::Credits,
+                &OrderDirection::DESC
+            )),
+            vec!["small_stake_high_rate", "big_stake_low_rate"]
         );
     }
 
