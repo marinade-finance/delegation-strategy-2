@@ -123,9 +123,9 @@ async fn an_alpenglow_epoch_stores_null_credits() {
 
     // EPOCH is the first epoch with vote_reward_lamports, so it is the migration epoch
     let record = load_record(&client).await;
-    assert_eq!(record.credits, 0);
+    assert_eq!(record.credits, None);
     assert_eq!(record.vote_reward_lamports, Some(298929716564));
-    assert_eq!(record.epoch_stats[0].credits, 0);
+    assert_eq!(record.epoch_stats[0].credits, None);
     assert!(record.epoch_stats[0].apy.is_some());
 
     let mut snapshot = validator_snapshot(EPOCH - 1, "identityAlpenglow", VOTE_ACCOUNT);
@@ -133,9 +133,9 @@ async fn an_alpenglow_epoch_stores_null_credits() {
     store_snapshot(&mut client, schema, &snapshot).await;
 
     let record = load_record(&client).await;
-    assert_eq!(record.credits, 0);
+    assert_eq!(record.credits, None);
     assert_eq!(record.vote_reward_lamports, Some(298929716564));
-    assert_eq!(record.epoch_stats[0].credits, 0);
+    assert_eq!(record.epoch_stats[0].credits, None);
 }
 
 async fn load_record(client: &Client) -> ValidatorRecord {

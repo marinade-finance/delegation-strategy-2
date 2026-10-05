@@ -83,7 +83,7 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
 
 fn secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
     match order_field {
-        // Breaks ties on `credits`, which is 0 for every validator after the Alpenglow migration epoch.
+        // Breaks ties on `credits`, which is null for every group after the Alpenglow migration epoch.
         OrderField::Credits => |group: &ValidatorGroupRecord| {
             group
                 .vote_reward_per_stake

@@ -111,10 +111,10 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 | Field | Before Alpenglow | Migration epoch | After the migration epoch |
 |---|---|---|---|
-| `credits` | tower vote credits | tower credits before the migration | `0` |
+| `credits` | tower vote credits | tower credits before the migration | `null` |
 | `vote_reward_lamports` | `null` | vote rewards after the migration | vote rewards |
 
-`credits` is also `0` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits` and `epoch_stats[].vote_reward_lamports`.
+`credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
 
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 

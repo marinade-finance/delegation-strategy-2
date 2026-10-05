@@ -1293,7 +1293,7 @@ pub async fn load_validators(
                 }
             });
             let (apr, apy) = (yields.map(|(apr, _)| apr), yields.map(|(_, apy)| apy));
-            let credits: u64 = tower_credits.unwrap_or(0);
+            let credits = tower_credits;
 
             let dc_full_city = row
                 .get::<_, Option<String>>("dc_full_city")
@@ -2281,10 +2281,9 @@ pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bo
             .iter()
             .find(|&epoch_stat| epoch_stat.epoch == epoch)
             .is_some_and(|epoch_stat| {
-                // After Alpenglow, `credits is always 0 so we added `uptime_pct` here.
-                // It is `None` for the open epoch.
+                // `credits` is null after Alpenglow. `uptime_pct` is `None` for the open epoch.
                 epoch_stat.activated_stake > Decimal::from(0)
-                    || epoch_stat.credits > 0
+                    || epoch_stat.credits.is_some_and(|credits| credits > 0)
                     || epoch_stat
                         .uptime_pct
                         .is_none_or(|uptime_pct| uptime_pct > 0.0)

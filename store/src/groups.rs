@@ -420,7 +420,8 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
 
         self.net_apy.add(validator.net_apy, weight);
         self.take_rate.add(validator.avg_take_rate, weight);
-        self.credits.add(Some(validator.credits as f64), weight);
+        self.credits
+            .add(validator.credits.map(|credits| credits as f64), weight);
         self.vote_reward_per_stake.add(
             validator
                 .vote_reward_per_stake()
@@ -548,7 +549,7 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         stake_delta_30d: validator.stake_delta_30d,
         net_apy: finite(validator.net_apy),
         take_rate: finite(validator.avg_take_rate),
-        credits: Some(validator.credits as f64),
+        credits: validator.credits.map(|credits| credits as f64),
         vote_reward_per_stake: validator
             .vote_reward_per_stake()
             .and_then(|rate| rate.to_f64()),
@@ -1082,7 +1083,7 @@ mod tests {
                         epoch_stats,
                         net_apy: member.net_apy,
                         avg_take_rate: member.take_rate,
-                        credits: member.credits,
+                        credits: Some(member.credits),
                         score: member.marinade_score,
                         avg_apy: member.apy,
                         commission_max_observed: member.commission_max_observed,
@@ -1792,7 +1793,7 @@ mod tests {
             Member::new("staked", last_two_epochs(700, AGAVE, Some("Hetzner"))),
         ]);
         for stats in validators.get_mut("voting").unwrap().epoch_stats.iter_mut() {
-            stats.credits = 1;
+            stats.credits = Some(1);
         }
 
         assert_eq!(
