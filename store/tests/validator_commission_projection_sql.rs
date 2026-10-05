@@ -475,7 +475,28 @@ async fn load_ruggers_does_not_flag_an_honest_cut_while_the_applied_rate_lags_it
                 ('identitySpiker', 'voteSpiker', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 5),
                 ('identitySpiker', 'voteSpiker', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
                 ('identitySpiker', 'voteSpiker', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
-                ('identitySpiker', 'voteSpiker', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+                ('identitySpiker', 'voteSpiker', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1097, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 20, 20, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 20, 20, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 20, 5, 20),
+                ('identityShortHold', 'voteShortHold', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 20, 5, 20),
+                ('identityShortHold', 'voteShortHold', 1103, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+    // Raised to 20 during 1099 and cut back during 1101, so the applied 20 lands on 1101 and 1102.
+    client
+        .execute(
+            "INSERT INTO commissions (vote_account, commission, epoch_slot, epoch, created_at) VALUES
+                ('voteShortHold', 5, 100, 1099, NOW()),
+                ('voteShortHold', 20, 200, 1099, NOW()),
+                ('voteShortHold', 20, 100, 1100, NOW()),
+                ('voteShortHold', 20, 100, 1101, NOW()),
+                ('voteShortHold', 5, 200, 1101, NOW()),
+                ('voteShortHold', 5, 100, 1102, NOW())",
             &[],
         )
         .await
@@ -486,6 +507,10 @@ async fn load_ruggers_does_not_flag_an_honest_cut_while_the_applied_rate_lags_it
     assert!(
         !ruggers.contains_key("voteCutter"),
         "the applied 100 matches what the vintage epochs advertised, so the cut is not a rug"
+    );
+    assert!(
+        !ruggers.contains_key("voteShortHold"),
+        "a rate held two epochs is applied two epochs later, so its cut is not a rug"
     );
     let spiker = ruggers
         .get("voteSpiker")

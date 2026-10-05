@@ -128,7 +128,7 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 }
 ```
 
-## Commissions
+## Commissions (deprecated)
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/commissions | jq
 ```
@@ -290,7 +290,7 @@ curl -sLfS 'http://localhost:8000/reports/scoring' | jq
 }
 ```
 
-## Reports - commission changes
+## Reports - commission changes (deprecated)
 ```bash
 curl -sfLS localhost:8000/reports/commission-changes | jq
 ```

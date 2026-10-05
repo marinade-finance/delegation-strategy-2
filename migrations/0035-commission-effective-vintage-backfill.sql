@@ -29,7 +29,7 @@ UPDATE validators
 SET
   commission_effective = CEIL(LEAST(resolved.rate_bps, 10000) / 100.0)::INTEGER,
   commission_effective_bps = CASE WHEN resolved.from_bps THEN resolved.rate_bps END,
-  commission_effective_source = CASE WHEN resolved.from_bps THEN 'vote_state' ELSE validators.commission_effective_source END
+  commission_effective_source = 'vote_state'
 FROM resolved
 WHERE validators.vote_account = resolved.vote_account
   AND validators.epoch = resolved.epoch

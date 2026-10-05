@@ -7,8 +7,8 @@ use store::utils::load_commissions;
 const EPOCH: u64 = 1000;
 
 #[tokio::test]
-async fn load_commissions_carries_bps_only_on_a_vote_state_applied_rate() {
-    let schema = "ds_test_load_commissions_bps";
+async fn load_commissions_serves_only_the_advertised_samples() {
+    let schema = "ds_test_load_commissions_advertised";
     if skip_without_database(schema) {
         return;
     }
@@ -36,11 +36,10 @@ async fn load_commissions_carries_bps_only_on_a_vote_state_applied_rate() {
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
                 leader_slots, blocks_produced, skip_rate, updated_at,
-                commission_effective, commission_effective_source, commission_effective_bps,
-                inflation_rewards_commission_bps
+                commission_effective, commission_effective_source, commission_effective_bps
             ) VALUES
-                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'vote_state', 650, 720),
-                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 'reward_row', NULL, 650)",
+                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 'vote_state', 850),
+                ('idApplied', 'voteApplied', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 'vote_state', 850)",
             &[&Decimal::from(EPOCH)],
         )
         .await
@@ -48,25 +47,18 @@ async fn load_commissions_carries_bps_only_on_a_vote_state_applied_rate() {
 
     let commissions = load_commissions(&client, 1).await.unwrap();
 
-    let mut sampled: Vec<_> = commissions["voteSampled"]
+    let sampled: Vec<_> = commissions["voteSampled"]
         .iter()
-        .map(|record| (record.epoch_slot, record.commission, record.commission_bps))
+        .map(|record| (record.epoch, record.epoch_slot, record.commission))
         .collect();
-    sampled.sort();
     assert_eq!(
         sampled,
-        vec![(100, 7, None), (432000, 7, Some(650))],
-        "the advertised sample has no bps; the effective vote-state row carries its own"
+        vec![(EPOCH, 100, 7)],
+        "the applied rate lags the advertised timeline, so it is not a point on it"
     );
-
-    let reward: Vec<_> = commissions["voteReward"]
-        .iter()
-        .map(|record| (record.commission, record.commission_bps))
-        .collect();
-    assert_eq!(
-        reward,
-        vec![(7, None)],
-        "a reward row applied the whole percent, not the sampled bps"
+    assert!(
+        !commissions.contains_key("voteApplied"),
+        "a validator with only an applied rate has no advertised samples"
     );
 
     client

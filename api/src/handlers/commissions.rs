@@ -33,6 +33,7 @@ pub struct QueryParams {
         (status = 200, body = ResponseCommissions)
     )
 )]
+#[deprecated = "No known consumer; scheduled for removal"]
 pub async fn handler(
     vote_account: String,
     query_params: QueryParams,

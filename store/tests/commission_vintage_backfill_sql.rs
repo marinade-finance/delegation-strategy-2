@@ -146,11 +146,11 @@ async fn backfill_re_resolves_closed_epochs_from_1030_at_the_applied_vintage() {
         resolved,
         vec![
             // The raise to 5 in 1033 applies from 1035, two epochs later.
-            "voteAdvertised 1031 0 - - 0 0",
-            "voteAdvertised 1032 0 - - 0 0",
-            "voteAdvertised 1033 0 - - 5 0",
-            "voteAdvertised 1034 0 - - 5 0",
-            "voteAdvertised 1035 5 - - 5 5",
+            "voteAdvertised 1031 0 - vote_state 0 0",
+            "voteAdvertised 1032 0 - vote_state 0 0",
+            "voteAdvertised 1033 0 - vote_state 5 0",
+            "voteAdvertised 1034 0 - vote_state 5 0",
+            "voteAdvertised 1035 5 - vote_state 5 5",
             "voteBefore1030 1028 9 - - 9 9",
             "voteBefore1030 1029 7 - - 9 7",
             "voteRewardRow 1037 3 - reward_row 7 3",

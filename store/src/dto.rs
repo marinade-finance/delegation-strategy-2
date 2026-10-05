@@ -736,8 +736,6 @@ pub struct CommissionRecord {
     pub epoch_slot: u64,
     pub commission: u8,
     pub created_at: DateTime<Utc>,
-    /// Basis points behind `commission` on an epoch's applied rate sampled from vote state; null on an advertised sample and on a rate taken from a reward row.
-    pub commission_bps: Option<i32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

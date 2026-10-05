@@ -406,10 +406,11 @@ pub async fn close_epoch(
         .iter()
         .filter(|(vote_account, _)| !snapshot.validators.contains_key(*vote_account))
     {
-        let (rate, bps, _) = resolve_commission_effective(None, Some(*sampled));
-        outside_vote_accounts.push(vote_account.as_str());
-        outside_rates.extend(rate);
-        outside_bps.push(bps);
+        if let (Some(rate), bps, _) = resolve_commission_effective(None, Some(*sampled)) {
+            outside_vote_accounts.push(vote_account.as_str());
+            outside_rates.push(rate);
+            outside_bps.push(bps);
+        }
     }
     // A closed epoch is never re-listed, so the floor below must land even when this write fails.
     if !outside_vote_accounts.is_empty() {

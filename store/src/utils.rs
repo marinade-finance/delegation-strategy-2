@@ -560,19 +560,28 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
     let rows = psql_client
         .query(
             "
-            WITH commission_changes AS (
+            WITH sample_floors AS (
+                SELECT vote_account, epoch, MIN(commission) AS commission_min
+                FROM commissions
+                GROUP BY vote_account, epoch
+            ),
+            commission_changes AS (
                 SELECT
-                    vote_account,
-                    epoch,
+                    validators.vote_account,
+                    validators.epoch,
                     commission_effective,
                     commission_min_observed,
-                    LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission,
-                    CASE WHEN LAG(epoch, 2) OVER(PARTITION BY vote_account ORDER BY epoch) = epoch - 2
-                        THEN LAG(commission_min_observed, 2) OVER(PARTITION BY vote_account ORDER BY epoch)
-                    END AS vintage_min_observed
+                    LAG(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS prev_commission,
+                    LEAD(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS next_commission,
+                    -- Without commission_effective, which at E-2 is itself the lagged rate of E-4
+                    CASE WHEN LAG(validators.epoch, 2) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) = validators.epoch - 2
+                        THEN LAG(LEAST(sample_floors.commission_min, commission_advertised), 2)
+                            OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch)
+                    END AS vintage_floor
                 FROM
                     validators
+                    LEFT JOIN sample_floors
+                        ON sample_floors.vote_account = validators.vote_account AND sample_floors.epoch = validators.epoch
             ),
             filtered_commissions AS (
                 SELECT
@@ -587,7 +596,7 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                     commission_min_observed IS NOT NULL
                     AND (
                         -- The applied rate is epoch_stakes(E), so a cut it still lags must not read as a rug
-                        (commission_effective > commission_min_observed AND commission_effective > COALESCE(vintage_min_observed, -1)
+                        (commission_effective > commission_min_observed AND commission_effective > COALESCE(vintage_floor, -1)
                             AND commission_effective > 10 AND commission_min_observed <= 10)
                         OR
                         (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
@@ -648,9 +657,6 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
     Ok(records)
 }
 
-// One past any real slot index, so the applied rate sorts after every sample of its epoch.
-pub const APPLIED_COMMISSION_EPOCH_SLOT: u64 = 432_000;
-
 pub async fn load_commissions(
     psql_client: &Client,
     epochs: u64,
@@ -662,25 +668,13 @@ pub async fn load_commissions(
             SELECT
                 vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
 				epochs.end_at AS epoch_end,
-				epoch_slot, created_at, NULL::INTEGER AS commission_bps
+				epoch_slot, created_at
             FROM commissions
             LEFT JOIN epochs ON commissions.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
-            UNION
-            SELECT
-                vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, $2::NUMERIC, updated_at,
-                commission_effective_bps
-            FROM validators
-            LEFT JOIN epochs ON validators.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[
-                &Decimal::from(epochs),
-                &Decimal::from(APPLIED_COMMISSION_EPOCH_SLOT),
-            ],
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
@@ -700,7 +694,6 @@ pub async fn load_commissions(
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
             created_at: row.get("created_at"),
-            commission_bps: row.get("commission_bps"),
         })
     }
 
