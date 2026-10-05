@@ -105,7 +105,20 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
 }
 ```
 
-`credits` and `epoch_stats[].credits` hold tower vote credits only. They are `0` in an Alpenglow epoch after the migration epoch, and when the collector found no credits for the epoch. In the migration epoch, they hold the tower part of the epoch. `vote_reward_lamports` and `epoch_stats[].vote_reward_lamports` are `null` before Alpenglow. `order_field=Credits` sorts on `credits`, then on `vote_reward_lamports`. When `vote_reward_lamports` is not `null`, `apr` and `apy` come from `vote_reward_lamports / activated_stake` after commission. In the migration epoch, this leaves out the reward of the tower credits. Before Alpenglow, `apr` and `apy` come from the tower credits.
+### Credits after Alpenglow
+
+Alpenglow replaces tower vote credits with vote rewards in lamports. The API gives each value its own field.
+
+| Field | Before Alpenglow | Migration epoch | After the migration epoch |
+|---|---|---|---|
+| `credits` | tower vote credits | tower credits before the migration | `0` |
+| `vote_reward_lamports` | `null` | vote rewards after the migration | vote rewards |
+
+`credits` is also `0` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits` and `epoch_stats[].vote_reward_lamports`.
+
+`apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
+
+`order_field=Credits` sorts on `credits`, then on the vote reward per lamport of stake. `/clients` and `/providers` use `vote_reward_per_stake` as the second key. This field is the stake-weighted mean of the same ratio.
 
 ## Uptimes
 ```bash
