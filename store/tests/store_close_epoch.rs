@@ -49,17 +49,6 @@ fn performance(commission: u8, delinquent: bool) -> ValidatorPerformance {
     }
 }
 
-/// Fixtures are written under one directory and removed by the test that wrote them, so
-/// the name carries a counter: two tests naming the same snapshot run in parallel threads
-/// and would otherwise delete each other's file.
-fn write_yaml<T: serde::Serialize>(name: &str, snapshot: &T) -> String {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{nth}.yaml"));
-    std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
-    path.to_str().expect("snapshot path").to_string()
-}
-
 fn stream_snapshot(
     created_at: &str,
     commission: u8,
@@ -98,7 +87,7 @@ async fn seed_validators(directory: &Directory) {
             performance(ADVERTISED, false),
         )],
     };
-    let path = write_yaml("close-epoch-validators", &snapshot);
+    let path = common::write_yaml("close-epoch-validators", &snapshot);
     store_validators(
         StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
@@ -116,7 +105,7 @@ async fn seed_streams(directory: &Directory) {
         ("close-epoch-s2", "2026-08-03T00:01:00Z", 9, false, 400),
     ] {
         let snapshot = stream_snapshot(created_at, commission, delinquent, transaction_count);
-        let path = write_yaml(name, &snapshot);
+        let path = common::write_yaml(name, &snapshot);
         store_uptime(
             StoreUptimeParams::parse_from(["store", "--snapshot-file", &path]),
             directory,
@@ -179,7 +168,7 @@ async fn run_close_epoch(directory: &Directory) {
         rewards: Some(rewards),
         nodes: Default::default(),
     };
-    let path = write_yaml("close-epoch-finalized", &snapshot);
+    let path = common::write_yaml("close-epoch-finalized", &snapshot);
     close_epoch(
         CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
         directory,

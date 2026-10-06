@@ -75,17 +75,6 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
     }
 }
 
-/// Fixtures are written under one directory and removed by the test that wrote them, so
-/// the name carries a counter: two tests naming the same snapshot run in parallel threads
-/// and would otherwise delete each other's file.
-fn write_yaml<T: serde::Serialize>(name: &str, snapshot: &T) -> String {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{nth}.yaml"));
-    std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
-    path.to_str().expect("snapshot path").to_string()
-}
-
 async fn run_store_validators(directory: &Directory, name: &str, client: &ClientFields) {
     let snapshot = Snapshot {
         epoch: EPOCH,
@@ -98,7 +87,7 @@ async fn run_store_validators(directory: &Directory, name: &str, client: &Client
             ..common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, performance(client))
         }],
     };
-    let path = write_yaml(name, &snapshot);
+    let path = common::write_yaml(name, &snapshot);
     store_validators(
         StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
@@ -208,7 +197,7 @@ async fn store_validators_keeps_the_version_a_snapshot_cannot_see() {
     run_store_validators(&directory, "version-seed", &agave()).await;
     let mut blind = no_client();
     blind.client_id_raw = None;
-    let path = write_yaml(
+    let path = common::write_yaml(
         "version-blind",
         &Snapshot {
             epoch: EPOCH,
@@ -278,7 +267,7 @@ async fn run_store_jito(directory: &Directory, name: &str, account_type: JitoAcc
             );
         }
     }
-    let path = write_yaml(
+    let path = common::write_yaml(
         name,
         &JitoSnapshot {
             epoch: EPOCH,
@@ -356,7 +345,7 @@ async fn store_jito_keeps_one_latest_observation_per_vote_account() {
 }
 
 async fn run_store_events(directory: &Directory, name: &str, amount: i64, epoch: u64) {
-    let path = write_yaml(
+    let path = common::write_yaml(
         name,
         &ValidatorsEventsSnapshot {
             version: 1,
@@ -428,7 +417,7 @@ async fn store_events_merges_on_reason_and_meta() {
 }
 
 async fn run_store_block_rewards(directory: &Directory, name: &str, amount: u64) {
-    let path = write_yaml(
+    let path = common::write_yaml(
         name,
         &ValidatorsBlockRewardsSnapshot {
             version: 1,

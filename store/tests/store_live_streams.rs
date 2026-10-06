@@ -34,13 +34,13 @@ fn performance(delinquent: bool) -> ValidatorPerformance {
     }
 }
 
-fn performance_snapshot(
+fn snapshot_of(
     created_at: &str,
-    delinquent: bool,
     epoch: u64,
+    performance: ValidatorPerformance,
 ) -> ValidatorsPerformanceSnapshot {
     let mut validators = HashMap::new();
-    validators.insert(VOTE_ACCOUNT.to_string(), performance(delinquent));
+    validators.insert(VOTE_ACCOUNT.to_string(), performance);
     ValidatorsPerformanceSnapshot {
         epoch,
         epoch_slot: 1,
@@ -65,15 +65,10 @@ async fn run_store_uptime_in_epoch(
     delinquent: bool,
     epoch: u64,
 ) {
-    let snapshot = performance_snapshot(created_at, delinquent, epoch);
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.yaml"));
-    std::fs::write(&path, serde_yaml::to_string(&snapshot).expect("yaml")).expect("snapshot file");
+    let snapshot = snapshot_of(created_at, epoch, performance(delinquent));
+    let path = common::write_yaml(name, &snapshot);
     store_uptime(
-        StoreUptimeParams::parse_from([
-            "store",
-            "--snapshot-file",
-            path.to_str().expect("snapshot path"),
-        ]),
+        StoreUptimeParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -117,7 +112,7 @@ async fn a_conflicting_write_is_an_error_and_leaves_the_document_alone() {
         .expect("uptimes document");
     assert_ne!(current.etag, stale.etag);
 
-    let snapshot = performance_snapshot("2026-08-03T00:01:30Z", true, EPOCH);
+    let snapshot = snapshot_of("2026-08-03T00:01:30Z", EPOCH, performance(true));
     let error = write_uptimes(&directory, Some(stale), &snapshot)
         .await
         .expect_err("a write against a stale version must fail");
@@ -229,7 +224,7 @@ async fn a_sample_from_a_passed_epoch_is_refused() {
 
     run_store_uptime(&directory, "older-seed", "2026-08-03T00:00:00Z", false).await;
 
-    let snapshot = performance_snapshot("2026-08-03T00:01:00Z", false, EPOCH - 1);
+    let snapshot = snapshot_of("2026-08-03T00:01:00Z", EPOCH - 1, performance(false));
     let stored = directory
         .get::<UptimesDoc>(LIVE_UPTIMES)
         .await
@@ -240,47 +235,21 @@ async fn a_sample_from_a_passed_epoch_is_refused() {
     assert!(error.to_string().contains("older than"), "{error}");
 }
 
-fn snapshot_of(
-    created_at: &str,
-    performance: ValidatorPerformance,
-) -> ValidatorsPerformanceSnapshot {
-    let mut validators = HashMap::new();
-    validators.insert(VOTE_ACCOUNT.to_string(), performance);
-    ValidatorsPerformanceSnapshot {
-        epoch: EPOCH,
-        epoch_slot: 1,
-        transaction_count: 100,
-        created_at: created_at.into(),
-        slots_per_year: baseline_slots_per_year(),
-        cluster_inflation: None,
-        validators,
-        rewards: None,
-        nodes: Default::default(),
-    }
-}
-
-fn write_snapshot(name: &str, snapshot: &ValidatorsPerformanceSnapshot) -> String {
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.yaml"));
-    std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
-    path.to_str().expect("snapshot path").to_string()
-}
-
 async fn run_store_commissions(
     directory: &Directory,
     name: &str,
     created_at: &str,
     commission: u8,
 ) {
-    let path = write_snapshot(
-        name,
-        &snapshot_of(
-            created_at,
-            ValidatorPerformance {
-                commission,
-                ..performance(false)
-            },
-        ),
+    let snapshot = snapshot_of(
+        created_at,
+        EPOCH,
+        ValidatorPerformance {
+            commission,
+            ..performance(false)
+        },
     );
+    let path = common::write_yaml(name, &snapshot);
     store_commissions(
         StoreCommissionsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
@@ -329,17 +298,16 @@ async fn run_store_versions(
     client_id: Option<u16>,
     client_id_raw: Option<&str>,
 ) {
-    let path = write_snapshot(
-        name,
-        &snapshot_of(
-            created_at,
-            ValidatorPerformance {
-                client_id,
-                client_id_raw: client_id_raw.map(str::to_string),
-                ..performance(false)
-            },
-        ),
+    let snapshot = snapshot_of(
+        created_at,
+        EPOCH,
+        ValidatorPerformance {
+            client_id,
+            client_id_raw: client_id_raw.map(str::to_string),
+            ..performance(false)
+        },
     );
+    let path = common::write_yaml(name, &snapshot);
     store_versions(
         StoreVersionsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
@@ -434,7 +402,8 @@ async fn store_cluster_info_appends_one_sample_per_run() {
         ("cluster-info-first", "2026-08-03T00:00:00Z"),
         ("cluster-info-second", "2026-08-03T00:01:00Z"),
     ] {
-        let path = write_snapshot(name, &snapshot_of(created_at, performance(false)));
+        let snapshot = snapshot_of(created_at, EPOCH, performance(false));
+        let path = common::write_yaml(name, &snapshot);
         store_cluster_info(
             StoreClusterInfoParams::parse_from(["store", "--snapshot-file", &path]),
             &directory,
