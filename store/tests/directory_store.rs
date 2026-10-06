@@ -98,6 +98,18 @@ async fn documents_round_trip_through_the_store() {
         .expect("list of an unwritten parent")
         .is_empty());
 
+    assert!(directory
+        .resolve("/validators/epochs/@last")
+        .await
+        .expect("resolve of an empty collection")
+        .is_none());
+
+    let forbidden = directory
+        .get::<Doc>("/other/path")
+        .await
+        .expect_err("a path outside the token's grants");
+    assert!(forbidden.to_string().contains("403"), "{forbidden}");
+
     directory.ready().await.expect("ready");
 }
 

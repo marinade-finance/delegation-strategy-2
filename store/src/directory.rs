@@ -319,7 +319,3 @@ fn read_etag(response: &Response) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
 }
-
-#[cfg(test)]
-#[path = "directory_test.rs"]
-mod directory_test;
