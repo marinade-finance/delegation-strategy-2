@@ -83,26 +83,19 @@ pub async fn store_uptime(
                 .map(|credits| (row.get("vote_account"), credits))
         })
         .collect();
-    let downs: HashMap<&str, bool> = snapshot
+    let statuses: HashMap<&str, (bool, Option<Decimal>)> = snapshot
         .validators
         .iter()
         .map(|(vote_account, performance)| {
             (
                 vote_account.as_str(),
-                is_down(
-                    performance,
-                    last_credits.get(vote_account.as_str()).copied(),
+                (
+                    is_down(
+                        performance,
+                        last_credits.get(vote_account.as_str()).copied(),
+                    ),
+                    performance.credits_total.map(Decimal::from),
                 ),
-            )
-        })
-        .collect();
-    let credits_totals: HashMap<&str, Option<Decimal>> = snapshot
-        .validators
-        .iter()
-        .map(|(vote_account, performance)| {
-            (
-                vote_account.as_str(),
-                performance.credits_total.map(Decimal::from),
             )
         })
         .collect();
@@ -118,9 +111,8 @@ pub async fn store_uptime(
             .checked_add_signed(status_max_delay_to_extend)
             .unwrap();
 
-        if let Some(down) = downs.get(vote_account) {
-            let status_from_snapshot = status_from_down(*down);
-            let credits_total = credits_totals[vote_account];
+        if let Some(&(down, credits_total)) = statuses.get(vote_account) {
+            let status_from_snapshot = status_from_down(down);
             if latest_end_extension_at > snapshot_created_at {
                 if status == status_from_snapshot && epoch == snapshot_epoch {
                     validators_with_extended_status.insert(vote_account.to_string());
@@ -161,10 +153,9 @@ pub async fn store_uptime(
         "vote_account, status, epoch, start_at, end_at, last_credits".to_string(),
     );
 
-    for vote_account in snapshot.validators.keys() {
-        if !validators_with_extended_status.contains(vote_account) {
-            let credits_total = &credits_totals[vote_account.as_str()];
-            if downs[vote_account.as_str()] {
+    for (vote_account, (down, credits_total)) in statuses.iter() {
+        if !validators_with_extended_status.contains(*vote_account) {
+            if *down {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                     vote_account,
                     &DOWN,

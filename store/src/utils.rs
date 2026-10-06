@@ -1297,8 +1297,7 @@ pub async fn load_validators(
                     (None, None) => None,
                 }
             });
-            let (apr, apy) = (yields.map(|(apr, _)| apr), yields.map(|(_, apy)| apy));
-            let credits = tower_credits;
+            let (apr, apy) = yields.unzip();
 
             let dc_full_city = row
                 .get::<_, Option<String>>("dc_full_city")
@@ -1420,7 +1419,7 @@ pub async fn load_validators(
                     direct_deactivating_stake: row
                         .get::<_, Option<Decimal>>("direct_deactivating_stake"),
                     superminority: row.get("superminority"),
-                    credits,
+                    credits: tower_credits,
                     vote_reward_lamports,
                     score: None,
 
@@ -1582,7 +1581,7 @@ pub async fn load_validators(
                 superminority: row.get("superminority"),
                 stake_to_become_superminority: row
                     .get::<_, Decimal>("stake_to_become_superminority"),
-                credits,
+                credits: tower_credits,
                 vote_reward_lamports,
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
