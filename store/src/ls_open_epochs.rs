@@ -1,10 +1,10 @@
 use crate::directory::Directory;
 use crate::docs::{EPOCHS_DIR, SNAPSHOT_DIR};
+use clap::Parser;
 use log::info;
 use std::collections::HashSet;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct LsOpenEpochsParams {}
 
 pub async fn list_open_epochs(directory: &Directory) -> anyhow::Result<()> {

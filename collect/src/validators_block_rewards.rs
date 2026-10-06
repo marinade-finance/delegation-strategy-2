@@ -1,5 +1,6 @@
 use crate::{common::*, solana_service::solana_client_with_timeout};
 use anyhow::Context;
+use clap::Parser;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -8,36 +9,35 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_sdk::clock::Epoch;
 use std::time::Duration;
-use structopt::StructOpt;
 
 // BigQuery table name to store block rewards data
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
 pub const BLOCK_REWARDS_TABLE: &str = "rewards_validators_blocks";
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct BlockRewardsParams {
-    #[structopt(
+    #[arg(
         env = "gcp-table",
         help = "BigQuery table name to search in.",
         default_value = BLOCK_REWARDS_TABLE
     )]
     gcp_table_name: String,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(
+    #[arg(
         long = "epoch",
         help = "Act as if current epoch was set to this value."
     )]
     epoch: Option<u64>,
 
-    #[structopt(
+    #[arg(
         long = "loading-limit",
         env = "LOADING_LIMIT",
         help = "When loading validators' block rewards data, we expect a higher number from the ETL to consider the data valid.",
@@ -45,7 +45,7 @@ pub struct BlockRewardsParams {
     )]
     loading_limit: u32,
 
-    #[structopt(
+    #[arg(
         long = "max-data-delay-hours",
         env = "MAX_DATA_DELAY_HOURS",
         help = "Fail instead of skipping when block rewards data is still missing this many hours after the target epoch ended. 0 disables the check. Ignored when --epoch is set (backfill).",

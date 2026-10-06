@@ -1,10 +1,14 @@
 pub mod common;
 pub mod marinade_service;
+pub mod releases;
 pub mod slot_params;
 pub mod solana_service;
+pub mod take_rates;
+pub mod validator_version;
 pub mod validators;
 pub mod validators_block_rewards;
 pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_performance;
+pub mod validators_sandwiches;
 pub mod whois_service;

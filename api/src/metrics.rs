@@ -21,6 +21,21 @@ lazy_static! {
         "How many times /validators endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_CLIENTS: IntCounter = register_int_counter!(
+        "ds_request_count_clients",
+        "How many times /clients endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_RELEASES: IntCounter = register_int_counter!(
+        "ds_request_count_releases",
+        "How many times /releases endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_PROVIDERS: IntCounter = register_int_counter!(
+        "ds_request_count_providers",
+        "How many times /providers endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN: IntCounter = register_int_counter!(
         "ds_request_count_validator_score_breakdown",
         "How many times /validators/score-breakdown endpoint was requested"
@@ -51,6 +66,11 @@ lazy_static! {
         "How many times /commissions endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_TAKE_RATES: IntCounter = register_int_counter!(
+        "ds_request_count_take_rates",
+        "How many times /take-rates endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VERSIONS: IntCounter = register_int_counter!(
         "ds_request_count_versions",
         "How many times /versions endpoint was requested"
@@ -75,6 +95,19 @@ lazy_static! {
         "ds_cache_last_success_seconds",
         "Unix timestamp of the last successful load of each cache",
         &["cache"]
+    )
+    .unwrap();
+    // SIMD-0232 ran a full epoch before an audit caught it: nothing exported who had no rate left.
+    pub static ref VALIDATOR_INFLATION_COMMISSION_SOURCE: IntGaugeVec = register_int_gauge_vec!(
+        "ds_validator_inflation_commission_source",
+        "Validators in the cache by where their inflation commission was resolved from",
+        &["source"]
+    )
+    .unwrap();
+    pub static ref VALIDATOR_UNHEALTHY_COLLECTOR: IntGaugeVec = register_int_gauge_vec!(
+        "ds_validator_unhealthy_collector",
+        "Validators whose SIMD-0232 collector would burn the commission at payout",
+        &["kind"]
     )
     .unwrap();
 }

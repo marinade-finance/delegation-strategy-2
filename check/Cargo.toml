@@ -12,7 +12,7 @@ log = { workspace = true }
 env_logger = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
-solana-client = { workspace = true }
-structopt = { workspace = true }
+solana-rpc-client = { workspace = true }
+clap = { workspace = true }
 tokio = { workspace = true }
 validator = { workspace = true }

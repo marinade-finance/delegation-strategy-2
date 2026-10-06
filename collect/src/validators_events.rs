@@ -1,5 +1,6 @@
 use crate::{common::*, solana_service::solana_client_with_timeout};
 use anyhow::Context;
+use clap::Parser;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -8,36 +9,35 @@ use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_sdk::clock::Epoch;
 use std::time::Duration;
-use structopt::StructOpt;
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
 pub const PSR_SETTLEMENTS_TABLE: &str = "psr_settlements";
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct EventsParams {
-    #[structopt(
+    #[arg(
         env = "gcp-table",
         help = "BigQuery table name to search in.",
         default_value = PSR_SETTLEMENTS_TABLE
     )]
     gcp_table_name: String,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(
+    #[arg(
         long = "epochs-back",
         help = "How many epochs back from the current epoch to (re-)query. Settlements can arrive several epochs late, so a window is re-queried each run to backfill them.",
         default_value = "10"
     )]
     epochs_back: u64,
 
-    #[structopt(
+    #[arg(
         long = "from-epoch",
         help = "Query settlements from this epoch onwards. Overrides --epochs-back (use for historical backfill)."
     )]
@@ -78,10 +78,13 @@ async fn query_validator_settlements(
     let project_table_name = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.{table_name}");
     info!("Querying BigQuery for settlements from epoch {from_epoch} from project table {project_table_name}");
 
+    // Direct-staking PSR is charged to the same bonds and shares these tables, and it is attributed
+    // per staker elsewhere; summed in here it would silently inflate a validator's PSR totals.
     let query = format!(
         "SELECT epoch, vote_account, reason, meta, CAST(SUM(amount) AS INT64) AS amount \
          FROM `{project_table_name}` \
          WHERE epoch >= {from_epoch} AND vote_account IS NOT NULL \
+           AND product <> 'single-validator' \
          GROUP BY epoch, vote_account, reason, meta \
          ORDER BY epoch DESC"
     );

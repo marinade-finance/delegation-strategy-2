@@ -6,52 +6,52 @@ use crate::validators_performance::{validators_performance, ValidatorPerformance
 use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
-use log::info;
+use clap::Parser;
+use log::{info, warn};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::time::Duration;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct ValidatorsParams {
-    #[structopt(long = "whois", help = "Base URL for whois API.")]
+    #[arg(long = "whois", help = "Base URL for whois API.")]
     whois: Option<String>,
 
-    #[structopt(
+    #[arg(
         long = "whois-bearer-token",
         help = "Bearer token to be used to fetch data from whois API"
     )]
-    whois_bearer_token: Option<String>,
+    whois_bearer_token: Option<BearerToken>,
 
-    #[structopt(
+    #[arg(
         long = "bonds-url",
         default_value = "https://validator-bonds-api.marinade.finance/bonds/bidding"
     )]
     pub bonds_url: String,
 
-    #[structopt(
+    #[arg(
         long = "allow-zero-funded-bonds",
         help = "When set (or ALLOW_ZERO_FUNDED_BONDS=true), if all bonds have funded_amount == 0, log a warning instead of failing."
     )]
     pub allow_zero_funded_bonds: bool,
 
-    #[structopt(
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
     )]
     rpc_attempts: usize,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
+    #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
 }
 
@@ -132,9 +132,45 @@ pub struct ValidatorSnapshot {
     pub marinade_stake: u64,
     pub marinade_native_stake: u64,
     pub institutional_stake: u64,
+    // Absent in a snapshot an older binary wrote.
+    #[serde(default)]
+    pub activating_stake: Option<u64>,
+    #[serde(default)]
+    pub deactivating_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_activating_stake: Option<u64>,
+    #[serde(default)]
+    pub direct_deactivating_stake: Option<u64>,
     pub superminority: bool,
     pub stake_to_become_superminority: u64,
     pub performance: ValidatorPerformance,
+    // Absent both in a pre-deploy snapshot and per validator on a pre-v4 state; store reads both.
+    #[serde(default)]
+    pub inflation_rewards_collector: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps: Option<u16>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_commission_bps: Option<u16>,
+    #[serde(default)]
+    pub pending_delegator_rewards: Option<u64>,
+    #[serde(default)]
+    pub inflation_rewards_collector_owner: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_collector_lamports: Option<u64>,
+    #[serde(default)]
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_collector_owner: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector_lamports: Option<u64>,
+    #[serde(default)]
+    pub block_revenue_collector_healthy: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,28 +222,60 @@ pub fn collect_validators_info(
     let marinade_stake = get_marinade_stakes(&client, epoch, &stake_history)?;
     let foundation_stake = get_foundation_stakes(&client, epoch, &stake_history)?;
     let institutional_stake = get_institutional_stakes(&client, epoch, &stake_history)?;
+    let direct_stake = get_direct_stakes(&client, epoch, &stake_history)?;
     let marinade_native_stake = get_marinade_native_stakes(&client, epoch, &stake_history)?;
     let allow_zero_funded_bonds = validator_params.allow_zero_funded_bonds
         || std::env::var("ALLOW_ZERO_FUNDED_BONDS")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
-    let self_stake = get_self_stake(
+    // One vote-program scan feeds both the withdraw authorities and the vote state below.
+    let vote_account_states = get_vote_account_states(&client)?;
+    let collector_health = get_collector_health(&client, &vote_account_states)?;
+    let stake_account_totals = get_stake_account_totals(
         &client,
         epoch,
         &stake_history,
         &validator_params.bonds_url,
         allow_zero_funded_bonds,
         validator_params.rpc_attempts,
+        &vote_account_states,
     )?;
     let validators_info = get_validators_info(&client)?;
     let node_info = get_cluster_nodes_info(&client)?;
 
-    info!("Self stake: {}", self_stake.values().sum::<u64>());
+    info!(
+        "Self stake: {}",
+        stake_account_totals
+            .values()
+            .map(|t| t.self_stake)
+            .sum::<u64>()
+    );
+    info!(
+        "Pending stake: {} activating, {} deactivating",
+        stake_account_totals
+            .values()
+            .map(|t| t.activating)
+            .sum::<u64>(),
+        stake_account_totals
+            .values()
+            .map(|t| t.deactivating)
+            .sum::<u64>()
+    );
     info!(
         "Foundation stake: {}",
         foundation_stake.values().sum::<u64>()
     );
+    info!(
+        "Direct stake: {} effective, {} activating, {} deactivating over {} validators",
+        direct_stake.values().map(|s| s.effective).sum::<u64>(),
+        direct_stake.values().map(|s| s.activating).sum::<u64>(),
+        direct_stake.values().map(|s| s.deactivating).sum::<u64>(),
+        direct_stake.len()
+    );
+    if direct_stake.is_empty() {
+        warn!("Direct stake scan found nothing, every validator stores 0 direct stake");
+    }
 
     let data_centers = match validator_params.whois {
         Some(whois) => {
@@ -216,7 +284,7 @@ pub fn collect_validators_info(
                 .filter_map(|(identity, n)| n.ip.clone().map(|ip| (identity.clone(), ip)))
                 .collect();
             get_data_centers(
-                WhoisClient::new(whois, validator_params.whois_bearer_token),
+                WhoisClient::new(whois, validator_params.whois_bearer_token)?,
                 node_ips,
             )?
         }
@@ -251,6 +319,15 @@ pub fn collect_validators_info(
             .unwrap_or_else(Default::default);
 
         let node = node_info.get(&identity);
+        // An account the scan could not parse leaves the v4 fields null, never a made-up default.
+        let vote_state = vote_account_states.get(&vote_pubkey);
+        let stake_totals = stake_account_totals
+            .get(&vote_pubkey)
+            .copied()
+            .unwrap_or_default();
+        let direct = direct_stake.get(&vote_pubkey).copied().unwrap_or_default();
+        let (inflation_health, block_revenue_health) =
+            collector_health_of(&vote_pubkey, vote_state, &collector_health);
 
         validators.push(ValidatorSnapshot {
             vote_account: vote_pubkey.clone(),
@@ -275,14 +352,43 @@ pub fn collect_validators_info(
             activated_stake: vote_account.activated_stake,
             marinade_stake: *marinade_stake.get(&vote_pubkey).unwrap_or(&0),
             foundation_stake: *foundation_stake.get(&vote_pubkey).unwrap_or(&0),
-            self_stake: *self_stake.get(&vote_pubkey).unwrap_or(&0),
+            self_stake: stake_totals.self_stake,
             marinade_native_stake: *marinade_native_stake.get(&vote_pubkey).unwrap_or(&0),
             institutional_stake: *institutional_stake.get(&vote_pubkey).unwrap_or(&0),
+            activating_stake: Some(stake_totals.activating),
+            deactivating_stake: Some(stake_totals.deactivating),
+            direct_stake: Some(direct.effective),
+            direct_activating_stake: Some(direct.activating),
+            direct_deactivating_stake: Some(direct.deactivating),
             superminority: minimum_superminority_stake <= vote_account.activated_stake,
             stake_to_become_superminority: minimum_superminority_stake
                 .saturating_sub(vote_account.activated_stake),
 
             performance: performance.get(&vote_pubkey).unwrap().clone(),
+
+            inflation_rewards_collector: vote_state
+                .and_then(|state| state.inflation_rewards_collector)
+                .map(|collector| collector.to_string()),
+            block_revenue_collector: vote_state
+                .and_then(|state| state.block_revenue_collector)
+                .map(|collector| collector.to_string()),
+            inflation_rewards_commission_bps: vote_state
+                .and_then(|state| state.inflation_rewards_commission_bps),
+            inflation_rewards_commission_bps_is_v4: vote_state
+                .and_then(|state| state.inflation_rewards_commission_bps_is_v4),
+            block_revenue_commission_bps: vote_state
+                .and_then(|state| state.block_revenue_commission_bps),
+            pending_delegator_rewards: vote_state.and_then(|state| state.pending_delegator_rewards),
+            inflation_rewards_collector_owner: inflation_health
+                .and_then(|h| h.owner)
+                .map(|owner| owner.to_string()),
+            inflation_rewards_collector_lamports: inflation_health.map(|h| h.lamports),
+            inflation_rewards_collector_healthy: inflation_health.and_then(|h| h.healthy),
+            block_revenue_collector_owner: block_revenue_health
+                .and_then(|h| h.owner)
+                .map(|owner| owner.to_string()),
+            block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
+            block_revenue_collector_healthy: block_revenue_health.and_then(|h| h.healthy),
         });
     }
 

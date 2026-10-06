@@ -3,26 +3,27 @@ use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
 use crate::validators::*;
 use bincode::deserialize;
+use csv::{required, Column};
 use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{
-    client_error::ClientError,
-    rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, RpcFilterType},
-    rpc_request::RpcRequest,
-    rpc_response::RpcVoteAccountStatus,
-};
 use solana_commitment_config::CommitmentConfig;
-use solana_config_program::{get_config_data, ConfigKeys};
+use solana_config_program_client::{get_config_data, ConfigKeys};
 use solana_program::{
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::client_error::Error as ClientError;
+use solana_rpc_client_api::config::{
+    RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
+};
+use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
+use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
@@ -41,6 +42,7 @@ use std::{
 
 const RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS: u64 = 200;
 const WITHDRAW_AUTHORITY_OFFSET: usize = 4 + 8 + 32;
+const MAX_GET_INFLATION_REWARD_ADDRESSES: usize = 32;
 
 pub fn solana_client(url: String, commitment: String) -> RpcClient {
     RpcClient::new_with_commitment(url, CommitmentConfig::from_str(&commitment).unwrap())
@@ -60,10 +62,8 @@ pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory>
     )?)
 }
 
-pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashMap<String, u64>> {
+pub fn get_credits(vote_accounts: &RpcVoteAccountStatus, epoch: Epoch) -> HashMap<String, u64> {
     info!("Getting credits");
-    let vote_accounts = rpc_client.get_vote_accounts()?;
-
     let mut credits = HashMap::new();
 
     for vote_account in vote_accounts
@@ -81,7 +81,7 @@ pub fn get_credits(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<HashM
         }
     }
 
-    Ok(credits)
+    credits
 }
 
 const CLIENT_IDS_CSV: &str = include_str!("../client-ids.csv");
@@ -91,23 +91,30 @@ struct ClientRegistry {
     ids_by_name: HashMap<String, u16>,
 }
 
+const CLIENT_ID_COLUMNS: [Column; 2] = [required("client_id"), required("client_name")];
+
+#[derive(Deserialize)]
+struct ClientIdRow {
+    client_id: u16,
+    client_name: String,
+}
+
+fn parse_client_registry(text: &str) -> anyhow::Result<ClientRegistry> {
+    let mut names = HashMap::new();
+    let mut ids_by_name = HashMap::new();
+
+    for row in csv::parse::<ClientIdRow>(text, &CLIENT_ID_COLUMNS, "client-ids.csv")? {
+        ids_by_name.insert(canonical_client_name(&row.client_name), row.client_id);
+        names.insert(row.client_id, row.client_name);
+    }
+
+    Ok(ClientRegistry { names, ids_by_name })
+}
+
 fn client_registry() -> &'static ClientRegistry {
     static REGISTRY: OnceLock<ClientRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        let mut names = HashMap::new();
-        let mut ids_by_name = HashMap::new();
-        let mut reader = csv::Reader::from_reader(CLIENT_IDS_CSV.as_bytes());
-        for record in reader.records().flatten() {
-            let (Some(id), Some(name)) = (record.get(0), record.get(1)) else {
-                continue;
-            };
-            let Ok(id) = id.trim().parse::<u16>() else {
-                continue;
-            };
-            ids_by_name.insert(canonical_client_name(name), id);
-            names.insert(id, name.trim().to_string());
-        }
-        ClientRegistry { names, ids_by_name }
+        parse_client_registry(CLIENT_IDS_CSV).unwrap_or_else(|err| panic!("{err:#}"))
     })
 }
 
@@ -117,6 +124,31 @@ fn canonical_client_name(name: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(|c| c.to_lowercase())
         .collect()
+}
+
+/// How one registry id groups. `label()` renders the lineage and the engine for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClientGrouping {
+    /// Who ships the binary.
+    vendor: &'static str,
+    /// Which codebase it forks.
+    lineage: &'static str,
+    /// The block engine the binary runs. `None` for a client running on its own.
+    engine: Option<&'static str>,
+}
+
+impl ClientGrouping {
+    const fn new(
+        vendor: &'static str,
+        lineage: &'static str,
+        engine: Option<&'static str>,
+    ) -> Self {
+        Self {
+            vendor,
+            lineage,
+            engine,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,66 +201,66 @@ impl ClientId {
     }
 
     pub fn vendor(&self) -> Option<&'static str> {
-        self.groupings().map(|(vendor, _, _)| vendor)
+        self.groupings().map(|grouping| grouping.vendor)
     }
 
     pub fn lineage(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, lineage, _)| lineage)
+        self.groupings().map(|grouping| grouping.lineage)
     }
 
-    pub fn label(&self) -> Option<&'static str> {
-        self.groupings().map(|(_, _, label)| label)
+    pub fn engine(&self) -> Option<&'static str> {
+        self.groupings().and_then(|grouping| grouping.engine)
     }
 
-    // Vendor is who ships the binary, lineage is which codebase it forks, label renders the pair for
-    // display; the registry assigns a separate id per lineage variant of a vendor, so all three are a
-    // function of the id alone.
-    fn groupings(&self) -> Option<(&'static str, &'static str, &'static str)> {
+    /// The lineage as display text, and the block engine after it: `Agave + Jito`.
+    pub fn label(&self) -> Option<String> {
+        let grouping = self.groupings()?;
+        let mut label = grouping.lineage.to_string();
+        label[..1].make_ascii_uppercase();
+        if let Some(engine) = grouping.engine {
+            label.push_str(" + ");
+            label.push_str(engine);
+        }
+
+        Some(label)
+    }
+
+    // Vendor is who ships the binary, lineage is which codebase it forks, engine is the block engine
+    // the binary runs; the registry assigns a separate id per lineage variant of a vendor, so all
+    // three are a function of the id alone.
+    fn groupings(&self) -> Option<ClientGrouping> {
         let ClientId::Registered(id) = self else {
             return None;
         };
-        // Ids 2 and 5 carry no "+ Jito": the bundle tile is a config flag in the same binary, so gossip
+        // Ids 2 and 5 run no engine: the bundle tile is a config flag in the same binary, so gossip
         // cannot tell a bundle-running node from a plain one, and neither claim is observable.
         Some(match id {
-            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it labels bare like id 3.
-            0 => ("solana-labs", "agave", "Agave"),
-            1 => ("jito", "agave", "Agave + Jito"),
-            2 => ("frankendancer", "frankendancer", "Frankendancer"),
-            3 => ("agave", "agave", "Agave"),
-            4 => ("paladin", "agave", "Agave + Paladin"),
-            5 => ("firedancer", "firedancer", "Firedancer"),
-            6 => ("bam", "agave", "Agave + JitoBAM"),
-            7 => ("sig", "sig", "Sig"),
-            8 => ("rakurai", "agave", "Agave + Rakurai"),
-            9 => ("harmonic", "firedancer", "Firedancer + Harmonic"),
-            10 => ("harmonic", "agave", "Agave + Harmonic"),
-            11 => ("harmonic", "frankendancer", "Frankendancer + Harmonic"),
-            12 => ("bam", "frankendancer", "Frankendancer + JitoBAM"),
-            13 => ("raiku", "agave", "Agave + Raiku"),
+            // Id 0 is Agave's pre-rename vendor, not a fork of it, so it runs no engine like id 3.
+            0 => ClientGrouping::new("solana-labs", "agave", None),
+            1 => ClientGrouping::new("jito", "agave", Some("Jito")),
+            2 => ClientGrouping::new("frankendancer", "frankendancer", None),
+            3 => ClientGrouping::new("agave", "agave", None),
+            4 => ClientGrouping::new("paladin", "agave", Some("Paladin")),
+            5 => ClientGrouping::new("firedancer", "firedancer", None),
+            6 => ClientGrouping::new("bam", "agave", Some("JitoBAM")),
+            7 => ClientGrouping::new("sig", "sig", None),
+            8 => ClientGrouping::new("rakurai", "agave", Some("Rakurai")),
+            9 => ClientGrouping::new("harmonic", "firedancer", Some("Harmonic")),
+            10 => ClientGrouping::new("harmonic", "agave", Some("Harmonic")),
+            11 => ClientGrouping::new("harmonic", "frankendancer", Some("Harmonic")),
+            12 => ClientGrouping::new("bam", "frankendancer", Some("JitoBAM")),
+            13 => ClientGrouping::new("raiku", "agave", Some("Raiku")),
             _ => return None,
         })
     }
 }
 
 // A malformed gossip version is dropped so store never replaces the last known good version with it.
-fn is_plausible_node_version(version: &str) -> bool {
-    let numeric = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-    let mut parts = version.splitn(3, '.');
-    parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(numeric)
-        && parts.next().is_some_and(|p| match p.split_once('-') {
-            None => numeric(p),
-            Some((patch, prerelease)) => {
-                numeric(patch)
-                    && !prerelease.is_empty()
-                    && prerelease
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'.')
-            }
-        })
+pub fn is_plausible_node_version(version: &str) -> bool {
+    crate::validator_version::ValidatorVersion::from_gossip(version).is_ok()
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeContact {
     pub ip: Option<String>,
     pub gossip_port: Option<u16>,
@@ -461,7 +493,7 @@ fn parse_validator_info(
     pubkey: &Pubkey,
     account: &Account,
 ) -> anyhow::Result<(Pubkey, ValidatorInfo)> {
-    if account.owner != solana_config_program::id() {
+    if account.owner != solana_config_program_client::ID {
         anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
@@ -487,7 +519,7 @@ pub fn get_validators_info(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
     info!("Getting validator info");
-    let validator_info = rpc_client.get_program_accounts(&solana_config_program::id())?;
+    let validator_info = rpc_client.get_program_accounts(&solana_config_program_client::ID)?;
 
     let mut validator_info_map = HashMap::new();
     if validator_info.is_empty() {
@@ -510,30 +542,285 @@ fn extract_json_value(json: &Map<String, Value>, key: String) -> Option<String> 
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-// Relies on vote account layout and needs updating in case the authorized withdrawer position would change
-pub fn get_withdraw_authorities(
+// Bincode discriminants of VoteStateVersions; 0 is Uninitialized and carries no withdrawer to read.
+const VOTE_STATE_VERSION_UNINITIALIZED: u32 = 0;
+const VOTE_STATE_VERSION_V1_14_11: u32 = 1;
+const VOTE_STATE_VERSION_V3: u32 = 2;
+const VOTE_STATE_VERSION_V4: u32 = 3;
+
+const VOTE_AUTHORIZED_WITHDRAWER_OFFSET: usize = 4 + 32;
+// Byte 68 is the v1/v3 commission and the v4 collector, so reads past it dispatch on version.
+const VOTE_PRE_V4_COMMISSION_OFFSET: usize = 68;
+const VOTE_V4_INFLATION_REWARDS_COLLECTOR_OFFSET: usize = 68;
+const VOTE_V4_BLOCK_REVENUE_COLLECTOR_OFFSET: usize = 100;
+const VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET: usize = 132;
+const VOTE_V4_BLOCK_REVENUE_COMMISSION_BPS_OFFSET: usize = 134;
+const VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET: usize = 136;
+
+// Names and null semantics match solana-snapshot-parser's ValidatorMeta so both stay reconcilable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoteStateFields {
+    pub authorized_withdrawer: Pubkey,
+    // None where this build does not know the commission offset; the withdrawer still reads.
+    pub inflation_rewards_commission_bps: Option<u16>,
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    pub inflation_rewards_collector: Option<Pubkey>,
+    pub block_revenue_collector: Option<Pubkey>,
+    pub block_revenue_commission_bps: Option<u16>,
+    pub pending_delegator_rewards: Option<u64>,
+}
+
+fn read_array<const N: usize>(data: &[u8], offset: usize, field: &str) -> anyhow::Result<[u8; N]> {
+    data.get(offset..offset + N)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "vote account holds {} bytes, too few to read {field} at {offset}",
+                data.len()
+            )
+        })
+}
+
+fn read_pubkey(data: &[u8], offset: usize, field: &str) -> anyhow::Result<Pubkey> {
+    Ok(Pubkey::new_from_array(read_array::<32>(
+        data, offset, field,
+    )?))
+}
+
+pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
+    let version = u32::from_le_bytes(read_array::<4>(data, 0, "the version discriminant")?);
+    let authorized_withdrawer = read_pubkey(
+        data,
+        VOTE_AUTHORIZED_WITHDRAWER_OFFSET,
+        "authorized_withdrawer",
+    )?;
+
+    match version {
+        VOTE_STATE_VERSION_UNINITIALIZED => {
+            anyhow::bail!("vote state version {version} carries no authorized withdrawer")
+        }
+        VOTE_STATE_VERSION_V1_14_11 | VOTE_STATE_VERSION_V3 => {
+            let commission = read_array::<1>(data, VOTE_PRE_V4_COMMISSION_OFFSET, "commission")?[0];
+            Ok(VoteStateFields {
+                authorized_withdrawer,
+                // agave synthesizes the same projection, so the runtime applies it either way.
+                inflation_rewards_commission_bps: Some(u16::from(commission).saturating_mul(100)),
+                inflation_rewards_commission_bps_is_v4: Some(false),
+                inflation_rewards_collector: None,
+                block_revenue_collector: None,
+                block_revenue_commission_bps: None,
+                pending_delegator_rewards: None,
+            })
+        }
+        VOTE_STATE_VERSION_V4 => Ok(VoteStateFields {
+            authorized_withdrawer,
+            inflation_rewards_commission_bps: Some(u16::from_le_bytes(read_array::<2>(
+                data,
+                VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET,
+                "inflation_rewards_commission_bps",
+            )?)),
+            inflation_rewards_commission_bps_is_v4: Some(true),
+            inflation_rewards_collector: Some(read_pubkey(
+                data,
+                VOTE_V4_INFLATION_REWARDS_COLLECTOR_OFFSET,
+                "inflation_rewards_collector",
+            )?),
+            block_revenue_collector: Some(read_pubkey(
+                data,
+                VOTE_V4_BLOCK_REVENUE_COLLECTOR_OFFSET,
+                "block_revenue_collector",
+            )?),
+            block_revenue_commission_bps: Some(u16::from_le_bytes(read_array::<2>(
+                data,
+                VOTE_V4_BLOCK_REVENUE_COMMISSION_BPS_OFFSET,
+                "block_revenue_commission_bps",
+            )?)),
+            pending_delegator_rewards: Some(u64::from_le_bytes(read_array::<8>(
+                data,
+                VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET,
+                "pending_delegator_rewards",
+            )?)),
+        }),
+        // An unknown version still yields the withdrawer; its SIMD-0185 offsets may have moved.
+        _ => Ok(VoteStateFields {
+            authorized_withdrawer,
+            inflation_rewards_commission_bps: None,
+            inflation_rewards_commission_bps_is_v4: None,
+            inflation_rewards_collector: None,
+            block_revenue_collector: None,
+            block_revenue_commission_bps: None,
+            pending_delegator_rewards: None,
+        }),
+    }
+}
+
+// Half the fleet unparsed is a layout change, not the usual few uninitialized accounts.
+const MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT: usize = 50;
+
+// Relies on the vote account layout and needs updating if any field position changes.
+pub fn get_vote_account_states(
     rpc_client: &RpcClient,
-) -> anyhow::Result<HashSet<(String, String)>> {
-    let mut withdraw_authorities: HashSet<(String, String)> = HashSet::default();
+) -> anyhow::Result<HashMap<String, VoteStateFields>> {
+    info!("Getting vote account states");
     let vote_program_id = solana_vote_program::id();
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
+    let accounts: Vec<(String, &[u8])> = vote_accounts
+        .iter()
+        .map(|(account_pubkey, account)| (account_pubkey.to_string(), account.data.as_slice()))
+        .collect();
 
-    for (account_pubkey, account) in vote_accounts {
-        if account.data.len() < 68 {
-            continue;
+    parse_vote_account_states(&accounts)
+}
+
+fn parse_vote_account_states(
+    accounts: &[(String, &[u8])],
+) -> anyhow::Result<HashMap<String, VoteStateFields>> {
+    let mut states: HashMap<String, VoteStateFields> = HashMap::with_capacity(accounts.len());
+    let mut unparsed = 0usize;
+    let mut first_error = None;
+    for (account_pubkey, data) in accounts.iter() {
+        match parse_vote_state(data) {
+            Ok(state) => {
+                states.insert(account_pubkey.clone(), state);
+            }
+            Err(err) => {
+                unparsed += 1;
+                // Aggregated: one line each would be thousands on a cluster-wide shape change
+                first_error.get_or_insert_with(|| format!("{account_pubkey}: {err}"));
+            }
         }
-        let authorized_withdrawer =
-            Pubkey::new_from_array(account.data[36..68].try_into().map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to read vote account {account_pubkey} authorized_withdrawer: {e}"
-                )
-            })?);
-        withdraw_authorities.insert((
-            authorized_withdrawer.to_string(),
-            account_pubkey.to_string(),
-        ));
     }
-    Ok(withdraw_authorities)
+    if let Some(first_error) = first_error {
+        // A run writing zero self stake fleet-wide leaves nothing saying the data was wrong.
+        if unparsed * 100 > accounts.len() * MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT {
+            anyhow::bail!(
+                "Could not parse {unparsed} of {} vote accounts, first: {first_error}",
+                accounts.len()
+            );
+        }
+        warn!(
+            "Could not parse {unparsed} of {} vote accounts, first: {first_error}",
+            accounts.len()
+        );
+    }
+    let v4 = states
+        .values()
+        .filter(|state| state.inflation_rewards_commission_bps_is_v4 == Some(true))
+        .count();
+    // Self stake survives these; silence is how a version bump would reach close_epoch unnoticed.
+    let without_commission = states
+        .values()
+        .filter(|state| state.inflation_rewards_commission_bps.is_none())
+        .count();
+    if without_commission > 0 {
+        warn!(
+            "{without_commission} vote accounts hold a version this build reads no commission from"
+        );
+    }
+    // Logged at 0 too: that is the baseline MAX_UNPARSED_VOTE_ACCOUNTS_PERCENT gets tuned on.
+    info!(
+        "Parsed {} vote accounts, {v4} on vote state v4, unparsed {unparsed}",
+        states.len()
+    );
+
+    Ok(states)
+}
+
+pub fn withdraw_authorities(
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> HashSet<(String, String)> {
+    vote_account_states
+        .iter()
+        .map(|(vote_account, state)| {
+            (
+                state.authorized_withdrawer.to_string(),
+                vote_account.clone(),
+            )
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectorHealth {
+    pub owner: Option<Pubkey>,
+    pub lamports: u64,
+    // None where the account is missing: agave pays it only when the payout alone covers rent.
+    pub healthy: Option<bool>,
+}
+
+// agave credits the vote account without the SIMD-0232 collector checks, so there is nothing to check.
+pub fn checked_collector(vote_account: &str, collector: Option<Pubkey>) -> Option<Pubkey> {
+    collector.filter(|collector| collector.to_string() != vote_account)
+}
+
+pub fn collector_health_of<'a>(
+    vote_account: &str,
+    state: Option<&VoteStateFields>,
+    health: &'a HashMap<Pubkey, CollectorHealth>,
+) -> (Option<&'a CollectorHealth>, Option<&'a CollectorHealth>) {
+    let health_of = |collector: Option<Pubkey>| {
+        checked_collector(vote_account, collector).and_then(|c| health.get(&c))
+    };
+    (
+        health_of(state.and_then(|state| state.inflation_rewards_collector)),
+        health_of(state.and_then(|state| state.block_revenue_collector)),
+    )
+}
+
+// relax_post_exec_min_balance_check is active, so agave checks rent only on an account it creates.
+fn evaluate_collector(collector: &Pubkey, account: Option<&Account>) -> CollectorHealth {
+    let healthy = if *collector == solana_sdk::incinerator::id() {
+        Some(false)
+    } else {
+        account.map(|account| solana_sdk::system_program::check_id(&account.owner))
+    };
+    CollectorHealth {
+        owner: account.map(|account| account.owner),
+        lamports: account.map_or(0, |account| account.lamports),
+        healthy,
+    }
+}
+
+pub fn get_collector_health(
+    rpc_client: &RpcClient,
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> anyhow::Result<HashMap<Pubkey, CollectorHealth>> {
+    let checked = |kind: fn(&VoteStateFields) -> Option<Pubkey>| -> HashSet<Pubkey> {
+        vote_account_states
+            .iter()
+            .filter_map(|(vote_account, state)| checked_collector(vote_account, kind(state)))
+            .collect()
+    };
+    let inflation = checked(|state| state.inflation_rewards_collector);
+    let block_revenue = checked(|state| state.block_revenue_collector);
+    let collectors: Vec<Pubkey> = inflation.union(&block_revenue).copied().collect();
+    info!("Checking {} distinct collector accounts", collectors.len());
+
+    let mut health = HashMap::with_capacity(collectors.len());
+    for chunk in collectors.chunks(MAX_MULTIPLE_ACCOUNTS) {
+        for (collector, account) in chunk.iter().zip(rpc_client.get_multiple_accounts(chunk)?) {
+            health.insert(*collector, evaluate_collector(collector, account.as_ref()));
+        }
+    }
+
+    for (kind, collectors) in [
+        ("inflation rewards", &inflation),
+        ("block revenue", &block_revenue),
+    ] {
+        let mut unhealthy = collectors.iter().filter(|collector| {
+            health
+                .get(collector)
+                .is_some_and(|h| h.healthy == Some(false))
+        });
+        if let Some(first) = unhealthy.next() {
+            warn!(
+                "{} {kind} collectors would burn their commission, first: {first}",
+                unhealthy.count() + 1
+            );
+        }
+    }
+
+    Ok(health)
 }
 
 // solana-client 2.2 RpcInflationReward predates commission_bps and would drop it.
@@ -558,9 +845,8 @@ struct CommissionStats {
     no_reward: usize,
 }
 
-// Agave projects commissionBps onto the legacy percent this way; rounding down instead would let a
-// validator above the 10% eligibility cap read as exactly at it.
-fn bps_to_percent(bps: u16) -> u8 {
+// Rounds up where agave's commission_percent() floors: down reads just over the 10% cap as at it.
+pub fn bps_to_percent(bps: u16) -> u8 {
     bps.min(10_000).div_ceil(100) as u8
 }
 
@@ -604,7 +890,7 @@ pub fn get_commission_from_inflation_rewards(
         .collect();
     let mut result: HashMap<String, u8> = Default::default();
     let mut stats = CommissionStats::default();
-    for vote_addresses_chunk in vote_addresses.chunks(100) {
+    for vote_addresses_chunk in vote_addresses.chunks(MAX_GET_INFLATION_REWARD_ADDRESSES) {
         let addresses: Vec<String> = vote_addresses_chunk
             .iter()
             .map(|address| address.to_string())
@@ -659,24 +945,37 @@ pub fn get_commission_from_inflation_rewards(
     Ok(result)
 }
 
-pub fn get_self_stake(
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StakeAccountTotals {
+    // Only accounts whose withdrawer is the vote account's own, plus its bond.
+    pub self_stake: u64,
+    // Every stake account, whoever owns it.
+    pub activating: u64,
+    pub deactivating: u64,
+}
+
+pub fn get_stake_account_totals(
     rpc_client: &RpcClient,
     epoch: Epoch,
     stake_history: &StakeHistory,
     bonds_url: &str,
     allow_zero_funded_bonds: bool,
     rpc_attempts: usize,
-) -> anyhow::Result<HashMap<String, u64>> {
-    let withdraw_authorities = get_withdraw_authorities(rpc_client)?;
-    let mut self_stake = fetch_self_stake(
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> anyhow::Result<HashMap<String, StakeAccountTotals>> {
+    let mut totals = fetch_stake_account_totals(
         rpc_client,
-        withdraw_authorities,
+        withdraw_authorities(vote_account_states),
         epoch,
         stake_history,
         rpc_attempts,
     )?;
 
-    assert!(!self_stake.is_empty(), "Failed to fetch self stake data");
+    // A pending-only entry fills the map without any self stake.
+    assert!(
+        totals.values().any(|t| t.self_stake != 0),
+        "Failed to fetch self stake data"
+    );
 
     let bonds = fetch_bonds(bonds_url)?;
     if bonds.is_empty() {
@@ -707,9 +1006,9 @@ pub fn get_self_stake(
             .funded_amount
             .to_u64()
             .ok_or_else(|| anyhow::anyhow!("Failed to convert Bond Decimal value to u64"))?;
-        *self_stake.entry(bond.vote_account).or_insert(0) += funded_amount_u64;
+        totals.entry(bond.vote_account).or_default().self_stake += funded_amount_u64;
     }
-    Ok(self_stake)
+    Ok(totals)
 }
 
 fn fetch_stake_accounts_on_page(
@@ -755,9 +1054,9 @@ fn fetch_stake_accounts_on_page(
     Ok(self_stakes)
 }
 
-fn process_accounts_for_self_stake(
+fn process_stake_accounts(
     accounts: Vec<(Pubkey, Account)>,
-    self_stake: &mut HashMap<String, u64>,
+    totals: &mut HashMap<String, StakeAccountTotals>,
     withdraw_authorities: &HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
@@ -768,18 +1067,25 @@ fn process_accounts_for_self_stake(
             if let Some((withdrawer_key, vote_key)) = get_withdrawer_and_vote_keys(&stake_account) {
                 let StakeHistoryEntry {
                     effective,
-                    activating: _,
-                    deactivating: _,
+                    activating,
+                    deactivating,
                 } = stake_account
                     .stake()
                     .unwrap()
                     .delegation
                     .stake_activating_and_deactivating(epoch, stake_history, None);
-                if withdraw_authorities.contains(&(withdrawer_key, vote_key.clone()))
-                    && effective != 0
-                {
+                let is_self_stake = withdraw_authorities
+                    .contains(&(withdrawer_key, vote_key.clone()))
+                    && effective != 0;
+                if !is_self_stake && activating == 0 && deactivating == 0 {
+                    continue;
+                }
+                let totals = totals.entry(vote_key).or_default();
+                totals.activating += activating;
+                totals.deactivating += deactivating;
+                if is_self_stake {
                     self_stake_assigned += 1;
-                    update_self_stake(self_stake, &vote_key, effective);
+                    totals.self_stake += effective;
                 }
             }
         }
@@ -799,25 +1105,20 @@ fn get_withdrawer_and_vote_keys(stake_account: &StakeStateV2) -> Option<(String,
     })
 }
 
-fn update_self_stake(self_stake: &mut HashMap<String, u64>, vote_key: &str, lamports: u64) {
-    let stake_entry = self_stake.entry(vote_key.to_string()).or_insert(0);
-    *stake_entry += lamports;
-}
-
-pub fn fetch_self_stake(
+fn fetch_stake_account_totals(
     rpc_client: &RpcClient,
     withdraw_authorities: HashSet<(String, String)>,
     epoch: Epoch,
     stake_history: &StakeHistory,
     rpc_attemtps: usize,
-) -> anyhow::Result<HashMap<String, u64>> {
-    let mut self_stake: HashMap<String, u64> = HashMap::default();
+) -> anyhow::Result<HashMap<String, StakeAccountTotals>> {
+    let mut totals: HashMap<String, StakeAccountTotals> = HashMap::default();
     for page in 0..=u8::MAX {
         match fetch_stake_accounts_on_page(rpc_client, page, rpc_attemtps) {
             Ok(accounts) => {
-                let processed = process_accounts_for_self_stake(
+                let processed = process_stake_accounts(
                     accounts,
-                    &mut self_stake,
+                    &mut totals,
                     &withdraw_authorities,
                     epoch,
                     stake_history,
@@ -832,7 +1133,7 @@ pub fn fetch_self_stake(
         sleep(Duration::from_millis(RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS));
     }
 
-    Ok(self_stake)
+    Ok(totals)
 }
 
 #[cfg(test)]
@@ -998,6 +1299,7 @@ mod tests {
     // grouping arm fails here instead of silently becoming an unclassified validator.
     #[test]
     fn every_registered_client_id_has_groupings() {
+        assert!(!client_registry().names.is_empty());
         for (id, name) in client_registry().names.iter() {
             assert!(
                 ClientId::Registered(*id).groupings().is_some(),
@@ -1034,21 +1336,22 @@ mod tests {
 
     #[test]
     fn client_label_pairs_lineage_with_the_vendor_modification() {
-        let label = |raw| resolve_client_id(Some(raw)).label();
-        assert_eq!(label("Agave"), Some("Agave"));
-        assert_eq!(label("Solana Labs"), Some("Agave"));
-        assert_eq!(label("JitoLabs"), Some("Agave + Jito"));
-        assert_eq!(label("AgaveBam"), Some("Agave + JitoBAM"));
-        assert_eq!(label("AgavePaladin"), Some("Agave + Paladin"));
-        assert_eq!(label("Unknown(8)"), Some("Agave + Rakurai"));
-        assert_eq!(label("Unknown(10)"), Some("Agave + Harmonic"));
-        assert_eq!(label("Raiku"), Some("Agave + Raiku"));
-        assert_eq!(label("Frankendancer"), Some("Frankendancer"));
-        assert_eq!(label("Unknown(11)"), Some("Frankendancer + Harmonic"));
-        assert_eq!(label("Unknown(12)"), Some("Frankendancer + JitoBAM"));
-        assert_eq!(label("Firedancer"), Some("Firedancer"));
-        assert_eq!(label("Unknown(9)"), Some("Firedancer + Harmonic"));
-        assert_eq!(label("Sig"), Some("Sig"));
+        let label = |raw: &str| resolve_client_id(Some(raw)).label();
+        let some = |label: &str| Some(label.to_string());
+        assert_eq!(label("Agave"), some("Agave"));
+        assert_eq!(label("Solana Labs"), some("Agave"));
+        assert_eq!(label("JitoLabs"), some("Agave + Jito"));
+        assert_eq!(label("AgaveBam"), some("Agave + JitoBAM"));
+        assert_eq!(label("AgavePaladin"), some("Agave + Paladin"));
+        assert_eq!(label("Unknown(8)"), some("Agave + Rakurai"));
+        assert_eq!(label("Unknown(10)"), some("Agave + Harmonic"));
+        assert_eq!(label("Raiku"), some("Agave + Raiku"));
+        assert_eq!(label("Frankendancer"), some("Frankendancer"));
+        assert_eq!(label("Unknown(11)"), some("Frankendancer + Harmonic"));
+        assert_eq!(label("Unknown(12)"), some("Frankendancer + JitoBAM"));
+        assert_eq!(label("Firedancer"), some("Firedancer"));
+        assert_eq!(label("Unknown(9)"), some("Firedancer + Harmonic"));
+        assert_eq!(label("Sig"), some("Sig"));
         assert_eq!(label("Unknown(86)"), None);
         assert_eq!(resolve_client_id(None).label(), None);
     }
@@ -1060,6 +1363,7 @@ mod tests {
         for id in client_registry().names.keys() {
             let client = ClientId::Registered(*id);
             let (lineage, label) = (client.lineage().unwrap(), client.label().unwrap());
+            let label = label.as_str();
             let mut expected = lineage.to_string();
             expected[..1].make_ascii_uppercase();
             assert!(
@@ -1220,6 +1524,553 @@ mod tests {
         assert_eq!(
             parse_socket_addr("[2001:db8::1]:8001"),
             Some(("2001:db8::1".to_string(), 8001))
+        );
+    }
+}
+
+#[cfg(test)]
+mod vote_state_tests {
+    use super::*;
+
+    const NODE: [u8; 32] = [1; 32];
+    const WITHDRAWER: [u8; 32] = [2; 32];
+    const INFLATION_COLLECTOR: [u8; 32] = [3; 32];
+    const BLOCK_COLLECTOR: [u8; 32] = [4; 32];
+
+    // By hand because the pinned solana-client predates VoteStateV4; this pins agave's frame_v4.rs.
+    fn pre_v4_account(version: u32, commission: u8, total_len: usize) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&version.to_le_bytes());
+        data.extend_from_slice(&NODE);
+        data.extend_from_slice(&WITHDRAWER);
+        data.push(commission);
+        data.resize(total_len.max(data.len()), 0);
+        data
+    }
+
+    fn v4_account(
+        inflation_bps: u16,
+        block_bps: u16,
+        pending_delegator_rewards: u64,
+        total_len: usize,
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&VOTE_STATE_VERSION_V4.to_le_bytes());
+        data.extend_from_slice(&NODE);
+        data.extend_from_slice(&WITHDRAWER);
+        data.extend_from_slice(&INFLATION_COLLECTOR);
+        data.extend_from_slice(&BLOCK_COLLECTOR);
+        data.extend_from_slice(&inflation_bps.to_le_bytes());
+        data.extend_from_slice(&block_bps.to_le_bytes());
+        data.extend_from_slice(&pending_delegator_rewards.to_le_bytes());
+        data.resize(total_len.max(data.len()), 0);
+        data
+    }
+
+    #[test]
+    fn v4_field_offsets_match_the_agave_frame() {
+        let state = parse_vote_state(&v4_account(733, 1234, 42, 3762)).unwrap();
+        assert_eq!(
+            state,
+            VoteStateFields {
+                authorized_withdrawer: Pubkey::new_from_array(WITHDRAWER),
+                inflation_rewards_commission_bps: Some(733),
+                inflation_rewards_commission_bps_is_v4: Some(true),
+                inflation_rewards_collector: Some(Pubkey::new_from_array(INFLATION_COLLECTOR)),
+                block_revenue_collector: Some(Pubkey::new_from_array(BLOCK_COLLECTOR)),
+                block_revenue_commission_bps: Some(1234),
+                pending_delegator_rewards: Some(42),
+            }
+        );
+    }
+
+    #[test]
+    fn a_pre_v4_state_yields_no_collector_rather_than_a_zeroed_pubkey() {
+        for version in [VOTE_STATE_VERSION_V1_14_11, VOTE_STATE_VERSION_V3] {
+            let state = parse_vote_state(&pre_v4_account(version, 7, 3762)).unwrap();
+            assert_eq!(
+                state.authorized_withdrawer,
+                Pubkey::new_from_array(WITHDRAWER),
+                "the withdrawer sits at the same offset on every supported version"
+            );
+            assert_eq!(state.inflation_rewards_collector, None);
+            assert_eq!(state.block_revenue_collector, None);
+            assert_eq!(state.block_revenue_commission_bps, None);
+            assert_eq!(state.pending_delegator_rewards, None);
+            assert_ne!(
+                state.inflation_rewards_collector,
+                Some(Pubkey::default()),
+                "absence must not read as the system program"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pre_v4_commission_projects_to_basis_points_and_says_it_is_not_v4() {
+        let state = parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_V3, 7, 3762)).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps, Some(700));
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(false));
+    }
+
+    // A commission byte above 100 is invalid on chain; agave saturates rather than overflows.
+    #[test]
+    fn a_pre_v4_commission_beyond_the_full_range_saturates() {
+        let state =
+            parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_V3, u8::MAX, 3762)).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps, Some(25_500));
+    }
+
+    #[test]
+    fn a_v4_state_carries_the_basis_points_a_percent_cannot_express() {
+        let state = parse_vote_state(&v4_account(749, 10_000, 0, 3762)).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps, Some(749));
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
+        assert_eq!(
+            state.block_revenue_commission_bps,
+            Some(10_000),
+            "the migration default keeps all block revenue with the validator"
+        );
+    }
+
+    #[test]
+    fn a_truncated_account_errors_instead_of_reading_a_zeroed_field() {
+        let v4 = v4_account(733, 1234, 42, 144);
+        for len in 0..v4.len() {
+            assert!(
+                parse_vote_state(&v4[..len]).is_err(),
+                "v4 truncated to {len} bytes must not parse"
+            );
+        }
+        let pre_v4 = pre_v4_account(VOTE_STATE_VERSION_V3, 7, 69);
+        for len in 0..pre_v4.len() {
+            assert!(
+                parse_vote_state(&pre_v4[..len]).is_err(),
+                "v3 truncated to {len} bytes must not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn an_uninitialized_version_errors_rather_than_guessing_offsets() {
+        assert!(
+            parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762)).is_err(),
+            "version 0 holds no withdrawer where every later version puts one"
+        );
+    }
+
+    // Self stake reads the withdrawer alone, so a version bump must not drop the account.
+    #[test]
+    fn an_unknown_version_yields_the_withdrawer_and_no_commission() {
+        for version in [4u32, u32::MAX] {
+            let state = parse_vote_state(&pre_v4_account(version, 7, 3762)).unwrap();
+            assert_eq!(
+                state.authorized_withdrawer,
+                Pubkey::new_from_array(WITHDRAWER),
+                "version {version} must still resolve self stake"
+            );
+            assert_eq!(
+                state.inflation_rewards_commission_bps, None,
+                "version {version} must not be read at v1/v3 offsets"
+            );
+            assert_eq!(state.inflation_rewards_commission_bps_is_v4, None);
+            assert_eq!(state.inflation_rewards_collector, None);
+            assert_eq!(state.block_revenue_collector, None);
+            assert_eq!(state.block_revenue_commission_bps, None);
+            assert_eq!(state.pending_delegator_rewards, None);
+        }
+    }
+
+    #[test]
+    fn a_minority_of_unparsed_vote_accounts_still_yields_the_rest() {
+        let good = v4_account(733, 1234, 0, 3762);
+        let bad = pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762);
+        let mut accounts: Vec<(String, &[u8])> = (0..6)
+            .map(|i| (format!("vote{i}"), good.as_slice()))
+            .collect();
+        accounts.push(("voteBad".to_string(), bad.as_slice()));
+
+        let states = parse_vote_account_states(&accounts).unwrap();
+        assert_eq!(states.len(), 6);
+        assert!(!states.contains_key("voteBad"));
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_clean_parse_still_logs_an_unparsed_count_of_zero() {
+        let captured = CapturedLog::default();
+        env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .target(env_logger::Target::Pipe(Box::new(captured.clone())))
+            .try_init()
+            .expect("no other test in this crate installs a logger");
+
+        let good = v4_account(733, 1234, 0, 3762);
+        let accounts: Vec<(String, &[u8])> = (0..3)
+            .map(|i| (format!("voteClean{i}"), good.as_slice()))
+            .collect();
+        parse_vote_account_states(&accounts).unwrap();
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("Parsed 3 vote accounts, 3 on vote state v4, unparsed 0"),
+            "the zero is the baseline, so it must be logged: {log}"
+        );
+    }
+
+    #[test]
+    fn a_majority_of_unparsed_vote_accounts_fails_the_run() {
+        let good = v4_account(733, 1234, 0, 3762);
+        let bad = pre_v4_account(VOTE_STATE_VERSION_UNINITIALIZED, 7, 3762);
+        let mut accounts: Vec<(String, &[u8])> = (0..6)
+            .map(|i| (format!("voteBad{i}"), bad.as_slice()))
+            .collect();
+        accounts.push(("voteGood".to_string(), good.as_slice()));
+
+        assert!(
+            parse_vote_account_states(&accounts).is_err(),
+            "a layout change must fail the run, not write zero self stake for the fleet"
+        );
+    }
+
+    #[test]
+    fn withdraw_authorities_pairs_every_parsed_account_with_its_withdrawer() {
+        let states = HashMap::from_iter([
+            (
+                "voteA".to_string(),
+                parse_vote_state(&v4_account(733, 1234, 0, 3762)).unwrap(),
+            ),
+            (
+                "voteB".to_string(),
+                parse_vote_state(&pre_v4_account(VOTE_STATE_VERSION_V3, 7, 3762)).unwrap(),
+            ),
+        ]);
+        let withdrawer = Pubkey::new_from_array(WITHDRAWER).to_string();
+        assert_eq!(
+            withdraw_authorities(&states),
+            HashSet::from_iter([
+                (withdrawer.clone(), "voteA".to_string()),
+                (withdrawer, "voteB".to_string()),
+            ])
+        );
+    }
+}
+
+#[cfg(test)]
+mod stake_account_tests {
+    use super::*;
+
+    const WITHDRAWER: [u8; 32] = [2; 32];
+    const EPOCH: Epoch = 900;
+    const VOTE: [u8; 32] = [7; 32];
+    const OTHER_WITHDRAWER: [u8; 32] = [8; 32];
+
+    fn stake_account(
+        withdrawer: [u8; 32],
+        stake: u64,
+        activation_epoch: Epoch,
+        deactivation_epoch: Epoch,
+    ) -> (Pubkey, Account) {
+        #[allow(deprecated)]
+        let state = StakeStateV2::Stake(
+            stake::state::Meta {
+                rent_exempt_reserve: 0,
+                authorized: stake::state::Authorized {
+                    staker: Pubkey::new_from_array(withdrawer),
+                    withdrawer: Pubkey::new_from_array(withdrawer),
+                },
+                lockup: Default::default(),
+            },
+            stake::state::Stake {
+                delegation: stake::state::Delegation {
+                    voter_pubkey: Pubkey::new_from_array(VOTE),
+                    stake,
+                    activation_epoch,
+                    deactivation_epoch,
+                    warmup_cooldown_rate: 0.25,
+                },
+                credits_observed: 0,
+            },
+            stake::stake_flags::StakeFlags::empty(),
+        );
+        let mut account = Account {
+            data: bincode::serialize(&state).unwrap(),
+            owner: stake::program::ID,
+            ..Default::default()
+        };
+        account.data.resize(200, 0);
+        (Pubkey::new_unique(), account)
+    }
+
+    fn self_stake_authorities() -> HashSet<(String, String)> {
+        HashSet::from_iter([(
+            Pubkey::new_from_array(WITHDRAWER).to_string(),
+            Pubkey::new_from_array(VOTE).to_string(),
+        )])
+    }
+
+    // An empty history sends every settled account down the "dropped out of history" path, which
+    // reports the delegation as fully effective. No path below reads an entry.
+    fn process(accounts: Vec<(Pubkey, Account)>) -> (HashMap<String, StakeAccountTotals>, u64) {
+        let mut totals = HashMap::default();
+        let assigned = process_stake_accounts(
+            accounts,
+            &mut totals,
+            &self_stake_authorities(),
+            EPOCH,
+            &StakeHistory::default(),
+        );
+        (totals, assigned)
+    }
+
+    fn vote_totals(totals: &HashMap<String, StakeAccountTotals>) -> StakeAccountTotals {
+        *totals
+            .get(&Pubkey::new_from_array(VOTE).to_string())
+            .expect("no entry for the vote account")
+    }
+
+    #[test]
+    fn a_third_party_account_activating_lands_in_the_totals_without_self_stake() {
+        let (totals, assigned) =
+            process(vec![stake_account(OTHER_WITHDRAWER, 500, EPOCH, u64::MAX)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.activating, 500);
+        assert_eq!(entry.deactivating, 0);
+        assert_eq!(entry.self_stake, 0);
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn a_settled_third_party_account_adds_no_entry_at_all() {
+        let (totals, assigned) = process(vec![stake_account(OTHER_WITHDRAWER, 500, 0, u64::MAX)]);
+
+        assert!(totals.is_empty());
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn a_self_stake_account_deactivating_counts_on_both_sides() {
+        let (totals, assigned) = process(vec![stake_account(WITHDRAWER, 500, 0, EPOCH)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.self_stake, 500);
+        assert_eq!(entry.deactivating, 500);
+        assert_eq!(entry.activating, 0);
+        assert_eq!(assigned, 1);
+    }
+
+    #[test]
+    fn a_self_stake_account_still_activating_counts_as_pending_only() {
+        let (totals, assigned) = process(vec![stake_account(WITHDRAWER, 500, EPOCH, u64::MAX)]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.activating, 500);
+        assert_eq!(
+            entry.self_stake, 0,
+            "zero effective stake keeps it out of the self stake sum"
+        );
+        assert_eq!(assigned, 0);
+    }
+
+    #[test]
+    fn the_totals_of_one_vote_account_add_up_over_several_accounts() {
+        let (totals, assigned) = process(vec![
+            stake_account(WITHDRAWER, 500, 0, u64::MAX),
+            stake_account(OTHER_WITHDRAWER, 300, EPOCH, u64::MAX),
+            stake_account(OTHER_WITHDRAWER, 200, 0, EPOCH),
+            stake_account(OTHER_WITHDRAWER, 900, 0, u64::MAX),
+        ]);
+
+        let entry = vote_totals(&totals);
+        assert_eq!(entry.self_stake, 500);
+        assert_eq!(entry.activating, 300);
+        assert_eq!(entry.deactivating, 200);
+        assert_eq!(assigned, 1);
+    }
+}
+
+#[cfg(test)]
+mod collector_health_tests {
+    use super::*;
+
+    const RENT_MINIMUM: u64 = 890_880;
+    const COLLECTOR: Pubkey = Pubkey::new_from_array([5; 32]);
+
+    fn account(owner: Pubkey, lamports: u64) -> Account {
+        Account {
+            lamports,
+            data: vec![],
+            owner,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn a_rent_exempt_system_account_is_healthy() {
+        let health = evaluate_collector(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM)),
+        );
+        assert_eq!(
+            health,
+            CollectorHealth {
+                owner: Some(solana_sdk::system_program::id()),
+                lamports: RENT_MINIMUM,
+                healthy: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn a_funded_system_account_below_rent_is_healthy() {
+        let health = evaluate_collector(
+            &COLLECTOR,
+            Some(&account(solana_sdk::system_program::id(), 1)),
+        );
+        assert_eq!(
+            health.healthy,
+            Some(true),
+            "agave skips the rent check when the collector held lamports before the payout"
+        );
+        assert_eq!(health.lamports, 1);
+    }
+
+    #[test]
+    fn an_account_not_owned_by_the_system_program_is_unhealthy() {
+        let owner = solana_stake_interface::program::id();
+        let health = evaluate_collector(&COLLECTOR, Some(&account(owner, u64::MAX)));
+        assert_eq!(health.healthy, Some(false));
+        assert_eq!(health.owner, Some(owner));
+    }
+
+    #[test]
+    fn a_missing_account_is_unknown_because_the_deposit_can_fund_it() {
+        assert_eq!(
+            evaluate_collector(&COLLECTOR, None),
+            CollectorHealth {
+                owner: None,
+                lamports: 0,
+                healthy: None,
+            },
+            "agave deposit_fees defaults a missing account and checks rent after adding the payout"
+        );
+    }
+
+    #[test]
+    fn the_incinerator_is_unhealthy_because_the_commission_burns() {
+        assert_eq!(
+            evaluate_collector(&solana_sdk::incinerator::id(), None).healthy,
+            Some(false),
+            "agave zeroes the incinerator every block, so it reads as missing"
+        );
+        assert_eq!(
+            evaluate_collector(
+                &solana_sdk::incinerator::id(),
+                Some(&account(solana_sdk::system_program::id(), u64::MAX)),
+            )
+            .healthy,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_is_not_checked() {
+        let vote_account = COLLECTOR.to_string();
+        assert_eq!(checked_collector(&vote_account, Some(COLLECTOR)), None);
+        assert_eq!(checked_collector(&vote_account, None), None);
+        let elsewhere = Pubkey::new_from_array([6; 32]);
+        assert_eq!(
+            checked_collector(&vote_account, Some(elsewhere)),
+            Some(elsewhere)
+        );
+    }
+
+    fn state(inflation: Option<Pubkey>, block_revenue: Option<Pubkey>) -> VoteStateFields {
+        VoteStateFields {
+            authorized_withdrawer: Pubkey::new_from_array([9; 32]),
+            inflation_rewards_commission_bps: Some(500),
+            inflation_rewards_commission_bps_is_v4: Some(true),
+            inflation_rewards_collector: inflation,
+            block_revenue_collector: block_revenue,
+            block_revenue_commission_bps: Some(10_000),
+            pending_delegator_rewards: Some(0),
+        }
+    }
+
+    fn health(healthy: bool) -> CollectorHealth {
+        CollectorHealth {
+            owner: Some(solana_sdk::system_program::id()),
+            lamports: RENT_MINIMUM,
+            healthy: Some(healthy),
+        }
+    }
+
+    #[test]
+    fn each_kind_reads_the_health_of_its_own_collector() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let inflation = Pubkey::new_from_array([1; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map = HashMap::from([(inflation, health(true)), (block_revenue, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(inflation), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(true)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn one_collector_shared_by_both_kinds_reads_one_entry() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let shared = Pubkey::new_from_array([3; 32]);
+        let health_map = HashMap::from([(shared, health(false))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(shared), Some(shared))),
+            &health_map,
+        );
+        assert_eq!(inflation_health, Some(&health(false)));
+        assert_eq!(block_revenue_health, Some(&health(false)));
+    }
+
+    #[test]
+    fn a_collector_equal_to_the_vote_account_or_a_missing_state_reads_no_health() {
+        let vote_account = Pubkey::new_from_array([7; 32]);
+        let block_revenue = Pubkey::new_from_array([2; 32]);
+        let health_map =
+            HashMap::from([(vote_account, health(false)), (block_revenue, health(true))]);
+
+        let (inflation_health, block_revenue_health) = collector_health_of(
+            &vote_account.to_string(),
+            Some(&state(Some(vote_account), Some(block_revenue))),
+            &health_map,
+        );
+        assert_eq!(
+            inflation_health, None,
+            "agave pays the vote account unchecked, so its entry must not be read"
+        );
+        assert_eq!(block_revenue_health, Some(&health(true)));
+
+        assert_eq!(
+            collector_health_of(&vote_account.to_string(), None, &health_map),
+            (None, None)
         );
     }
 }

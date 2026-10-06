@@ -13,7 +13,7 @@ log = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 env_logger = { workspace = true }
-structopt = { workspace = true }
+clap = { workspace = true }
 solana-program = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

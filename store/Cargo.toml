@@ -10,7 +10,7 @@ anyhow = { workspace = true }
 borsh = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-structopt = { workspace = true }
+clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
@@ -20,7 +20,7 @@ tokio = { workspace = true }
 google-cloud-bigquery = { workspace = true }
 collect = { path = "../collect" }
 chrono = { workspace = true }
-csv = { workspace = true }
+csv = { package = "ds-csv", path = "../csv" }
 utoipa = { workspace = true }
 
 [dev-dependencies]

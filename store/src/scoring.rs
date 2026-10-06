@@ -3,18 +3,18 @@ use crate::dto::{
     ValidatorScoreRecord,
 };
 use crate::warehouse::Warehouse;
+use csv::{required, Column};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const MAX_ALLOWED_COMMISSION: u8 = 10;
 const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
 
+const BLACKLIST_COLUMNS: [Column; 2] = [required("vote_account"), required("code")];
+
 fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, HashSet<String>>> {
-    let mut blacklist: Vec<BlacklistRecord> = Default::default();
-    let mut rdr = csv::Reader::from_path(blacklist_path)?;
-    for result in rdr.deserialize() {
-        blacklist.push(result?);
-    }
+    let blacklist: Vec<BlacklistRecord> =
+        csv::load_path(std::path::Path::new(blacklist_path), &BLACKLIST_COLUMNS)?;
 
     Ok(blacklist.into_iter().fold(
         HashMap::new(),

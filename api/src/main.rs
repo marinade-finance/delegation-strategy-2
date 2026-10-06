@@ -1,16 +1,19 @@
+// The `.or(...)` chain of route handles in main function requires this limit to be higher than default 128.
+#![recursion_limit = "256"]
+
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
     cluster_stats, commissions, config, docs, events, global_unstake_hints, glossary, health, jito,
-    jito_mev, list_validators, readiness, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
-    validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    jito_mev, list_clients, list_providers, list_validators, readiness, releases,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
+use clap::Parser;
 use env_logger::Env;
 use log::{error, info};
 use std::convert::Infallible;
 use std::sync::Arc;
-use structopt::StructOpt;
 use tokio::sync::RwLock;
 use warp::{Filter, Rejection};
 
@@ -21,45 +24,45 @@ pub mod handlers;
 pub mod metrics;
 pub mod utils;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct Params {
-    #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
+    #[arg(long = "directory-url", env = "DIRECTORY_URL")]
     pub directory_url: String,
 
-    #[structopt(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    #[arg(long = "directory-token", env = "DIRECTORY_TOKEN")]
     pub directory_token: String,
 
-    #[structopt(
+    #[arg(
         long = "validator-bonds-api-url",
         env = "VALIDATOR_BONDS_API_URL",
         default_value = "https://validator-bonds-api.marinade.finance"
     )]
     validator_bonds_api_url: String,
 
-    #[structopt(
+    #[arg(
         long = "apy-api-url",
         env = "APY_API_URL",
         default_value = "https://apy.marinade.finance"
     )]
     apy_api_url: String,
 
-    #[structopt(long = "glossary-path")]
+    #[arg(long = "glossary-path")]
     glossary_path: String,
 
-    #[structopt(long = "blacklist-path")]
+    #[arg(long = "blacklist-path")]
     blacklist_path: String,
 
-    #[structopt(
+    #[arg(
         long = "blacklist-url",
         env = "BLACKLIST_URL",
         default_value = "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/main/blacklist.csv"
     )]
     blacklist_url: String,
 
-    #[structopt(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
+    #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
-    #[structopt(long = "port", default_value = "8000")]
+    #[arg(long = "port", default_value = "8000")]
     port: u16,
 }
 
@@ -68,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     info!("Launching API");
 
-    let params = Params::from_args();
+    let params = Params::parse();
 
     // Bounded so a hung upstream can stall neither startup nor a refresh.
     let http_client = reqwest::Client::builder()
@@ -152,6 +155,27 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(list_validators::handler);
 
+    let route_clients = warp::path!("clients")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<list_clients::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(list_clients::handler);
+
+    let route_releases = warp::path!("releases")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<releases::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(releases::handler);
+
+    let route_providers = warp::path!("providers")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<list_providers::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(list_providers::handler);
+
     let route_validator_score_breakdown = warp::path!("validators" / "score-breakdown")
         .and(warp::path::end())
         .and(warp::get())
@@ -214,12 +238,20 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(versions::handler);
 
+    #[allow(deprecated)]
     let route_commissions = warp::path!("validators" / String / "commissions")
         .and(warp::path::end())
         .and(warp::get())
         .and(warp::query::<commissions::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(commissions::handler);
+
+    let route_take_rates = warp::path!("validators" / String / "take-rates")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<take_rates::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(take_rates::handler);
 
     let route_glossary = warp::path!("static" / "glossary.md")
         .and(warp::path::end())
@@ -233,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(config::handler);
 
+    #[allow(deprecated)]
     let route_reports_commission_changes = warp::path!("reports" / "commission-changes")
         .and(warp::path::end())
         .and(warp::get())
@@ -306,6 +339,9 @@ async fn main() -> anyhow::Result<()> {
         .or(route_readiness)
         .or(route_cluster_stats)
         .or(route_validators)
+        .or(route_clients)
+        .or(route_providers)
+        .or(route_releases)
         .or(route_validator_score_breakdown)
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
@@ -315,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_events)
         .or(route_versions)
         .or(route_commissions)
+        .or(route_take_rates)
         .or(route_glossary)
         .or(route_jito_mev)
         .or(route_jito_priority_fee)

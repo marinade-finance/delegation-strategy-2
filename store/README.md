@@ -33,6 +33,10 @@ $STORE commissions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 $STORE close-epoch --snapshot-file "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
 
 $STORE validators-block-rewards --snapshot-file "$OUTPUT_DIR"/validators-block-rewards.yaml
+$STORE validators-events --snapshot-file "$OUTPUT_DIR"/validators-events.yaml
+$STORE validators-sandwiches --snapshot-file "$OUTPUT_DIR"/validators-sandwiches.yaml
+$STORE take-rates --snapshot-file "$OUTPUT_DIR"/take-rates.yaml
+$STORE releases --snapshot-file "$OUTPUT_DIR"/releases.yaml
 
 $STORE jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
 $STORE jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
@@ -47,6 +51,9 @@ $STORE jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
 | `/validators/priority-fee/{epoch}` | `jito-priority` | the latest priority-fee observation |
 | `/validators/events/{epoch}` | `validators-events` | PSR settlements per vote account |
 | `/validators/block-rewards/{epoch}` | `validators-block-rewards` | block rewards per identity and vote account |
+| `/validators/validator-rewards/{epoch}` | `take-rates` | both sides of every reward component per vote account, and the take rate they make |
+| `/validators/sandwiches/{epoch}` | `validators-sandwiches` | the 30-day sandwich figures per vote account |
 | `/validators/epochs/{epoch}` | `close-epoch`, last | the sealed signal: start, end, supply, inflation |
 | `/validators/live/{uptimes,commissions,versions,cluster-info}` | the minute writers | the accumulators, under compare-and-swap |
 | `/validators/{uptimes,commissions,versions,cluster-info}/{epoch}` | `close-epoch` | what the accumulators held when the epoch closed |
+| `/validators/releases` | `releases` | every client release by lineage and version: publish time, SFDP floor, feature-gate floor |

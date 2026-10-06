@@ -1,41 +1,39 @@
 use crate::{common::*, solana_service::solana_client_with_timeout};
 use anchor_lang::AccountDeserialize;
+use clap::Parser;
 use jito_priority_fee_distribution::state::PriorityFeeDistributionAccount;
 use jito_tip_distribution::state::TipDistributionAccount;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_account_decoder::UiAccountEncoding;
-use solana_client::{
-    rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::{Memcmp, RpcFilterType},
-};
 use solana_program::pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_sdk::account::Account;
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct JitoParams {
-    #[structopt(
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
     )]
     rpc_attempts: usize,
 
-    #[structopt(
+    #[arg(
         long = "rpc-timeout",
         help = "How long to wait for RPC response (seconds).",
         default_value = "300"
     )]
     rpc_timeout: u64,
 
-    #[structopt(
+    #[arg(
         long = "epoch",
         help = "Overriding 'epoch' to act as if current epoch was set to this value."
     )]

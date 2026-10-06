@@ -1,11 +1,10 @@
 use crate::context::WrappedContext;
-use crate::utils::response_error;
+use crate::utils::response::{resolve_from_epoch, response_error};
 use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::EventEpochRecord;
-use store::validators_events::{get_events_with_context, resolve_epoch_for_date};
-use store::warehouse::Warehouse;
+use store::validators_events::get_events_with_context;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -16,35 +15,10 @@ pub struct ResponseEvents {
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
-    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the whole served range, which is the last 80 epochs; that range is a hard floor, so a lower value adds no epochs to the answer.
+    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the whole served range, which is the last 90 epochs; that range is a hard floor, so a lower value adds no epochs to the answer.
     query_from_epoch: Option<u64>,
     /// Lower-bound date (RFC3339), resolved to the first epoch ending on/after it. Mutually exclusive with `query_from_epoch`.
     query_from_date: Option<DateTime<Utc>>,
-}
-
-impl QueryParams {
-    /// Resolves the lower-bound epoch. `query_from_epoch` and `query_from_date` are mutually
-    /// exclusive; on failure returns the HTTP status + message to respond with.
-    fn resolve_from_epoch(
-        &self,
-        warehouse: &Warehouse,
-    ) -> Result<Option<u64>, (StatusCode, String)> {
-        match (self.query_from_epoch, self.query_from_date) {
-            (Some(_), Some(_)) => Err((
-                StatusCode::BAD_REQUEST,
-                "Specify only one of query_from_epoch / query_from_date".into(),
-            )),
-            (Some(epoch), None) => Ok(Some(epoch)),
-            (None, Some(date)) => match resolve_epoch_for_date(warehouse, date, true) {
-                Some(epoch) => Ok(Some(epoch)),
-                None => Err((
-                    StatusCode::BAD_REQUEST,
-                    "query_from_date is outside the recorded epoch range".into(),
-                )),
-            },
-            (None, None) => Ok(None),
-        }
-    }
 }
 
 #[utoipa::path(
@@ -90,7 +64,11 @@ pub async fn handler(
     let warehouse = context.read().await.warehouse.clone();
     let warehouse = warehouse.read().await;
 
-    let from_epoch = match query_params.resolve_from_epoch(&warehouse) {
+    let from_epoch = match resolve_from_epoch(
+        &warehouse,
+        query_params.query_from_epoch,
+        query_params.query_from_date,
+    ) {
         Ok(from_epoch) => from_epoch,
         Err((status, message)) => return Ok(response_error(status, message)),
     };

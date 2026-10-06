@@ -1,14 +1,14 @@
 use crate::directory::{Directory, Doc, Precondition};
 use crate::docs::{ClusterInfoDoc, ClusterInfoSample, LIVE_CLUSTER_INFO};
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use serde_yaml;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreClusterInfoParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

@@ -6,15 +6,15 @@ use crate::docs::{
 use crate::dto::{ValidatorBlockReward, ValidatorBlockRewardsRecord};
 use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_block_rewards::ValidatorsBlockRewardsSnapshot;
 use log::info;
 use serde_yaml;
 use std::collections::HashMap;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreBlockRewardsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

@@ -1,3 +1,4 @@
+use clap::Parser;
 use collect::validators::{Snapshot, ValidatorDataCenter, ValidatorSnapshot};
 use collect::validators_block_rewards::{ValidatorBlockRewards, ValidatorsBlockRewardsSnapshot};
 use collect::validators_events::{ValidatorSettlement, ValidatorsEventsSnapshot};
@@ -17,7 +18,6 @@ use store::validators::{store_validators, StoreValidatorsParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_jito::{store_jito, StoreJitoParams};
-use structopt::StructOpt;
 
 mod common;
 
@@ -91,35 +91,16 @@ async fn run_store_validators(directory: &Directory, name: &str, client: &Client
         epoch: EPOCH,
         created_at: CREATED_AT.into(),
         validators: vec![ValidatorSnapshot {
-            identity: IDENTITY.into(),
-            vote_account: VOTE_ACCOUNT.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
             data_center: Some(ValidatorDataCenter {
                 coordinates: Some((LON, LAT)),
                 ..Default::default()
             }),
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: performance(client),
+            ..common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, performance(client))
         }],
     };
     let path = write_yaml(name, &snapshot);
     store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -232,36 +213,18 @@ async fn store_validators_keeps_the_version_a_snapshot_cannot_see() {
         &Snapshot {
             epoch: EPOCH,
             created_at: CREATED_AT.into(),
-            validators: vec![ValidatorSnapshot {
-                identity: IDENTITY.into(),
-                vote_account: VOTE_ACCOUNT.into(),
-                node_ip: None,
-                gossip_port: None,
-                rpc_public: None,
-                pubsub_public: None,
-                info_name: None,
-                info_url: None,
-                info_details: None,
-                info_keybase: None,
-                info_icon_url: None,
-                data_center: None,
-                activated_stake: 100,
-                foundation_stake: 0,
-                self_stake: 0,
-                marinade_stake: 0,
-                marinade_native_stake: 0,
-                institutional_stake: 0,
-                superminority: false,
-                stake_to_become_superminority: 0,
-                performance: ValidatorPerformance {
+            validators: vec![common::validator_snapshot(
+                IDENTITY,
+                VOTE_ACCOUNT,
+                ValidatorPerformance {
                     version: None,
                     ..performance(&blind)
                 },
-            }],
+            )],
         },
     );
     store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         &directory,
     )
     .await
@@ -328,7 +291,7 @@ async fn run_store_jito(directory: &Directory, name: &str, account_type: JitoAcc
         },
     );
     store_jito(
-        StoreJitoParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreJitoParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
         account_type,
     )
@@ -420,7 +383,7 @@ async fn run_store_events(directory: &Directory, name: &str, amount: i64, epoch:
         },
     );
     store_events(
-        StoreEventsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreEventsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -483,7 +446,7 @@ async fn run_store_block_rewards(directory: &Directory, name: &str, amount: u64)
         },
     );
     store_block_rewards(
-        StoreBlockRewardsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreBlockRewardsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await

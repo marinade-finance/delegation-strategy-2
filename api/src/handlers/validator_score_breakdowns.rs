@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 
 use crate::metrics;
-use crate::utils::response_error;
+use crate::utils::response::response_error;
 use crate::{cache::CachedMultiRunScores, context::WrappedContext};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -20,6 +20,7 @@ pub struct ResponseScoreBreakdowns {
 }
 
 #[derive(Deserialize, Serialize, Debug, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
     query_vote_account: Option<String>,

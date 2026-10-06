@@ -9,12 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord, ValidatorRecord,
-    ValidatorScoreRecord, VersionRecord,
+    ClientRelease, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord,
+    ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord, ValidatorScoreRecord,
+    VersionRecord,
 };
+use store::groups::{ClientReleases, ValidatorGroupings};
+use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-use store::utils::{TakeRates, ValidatorOverlays};
+use store::utils::{RewardMixShares, TakeRates, ValidatorOverlays};
 
 pub(crate) use store::utils::DEFAULT_CACHE_EPOCHS;
 pub(crate) const DEFAULT_COMPUTING_EPOCHS: u64 = 20;
@@ -22,13 +25,18 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 6;
+const WARM_STEPS: usize = 7;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
+/// Raw incident material the served `incidents` arrays are projected from, per vote account.
+type CachedValidatorIncidents = ValidatorIncidents;
+/// Client and provider aggregates, derived from the validators they are published with.
+type CachedValidatorGroups = ValidatorGroupings;
 type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
+type CachedEpochRewardMix = HashMap<u64, RewardMixShares>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {
@@ -68,10 +76,13 @@ pub struct Cache {
     pub bond_flags: CachedBondFlags,
     pub net_apy: CachedNetApy,
     pub validators: CachedValidators,
+    pub validator_incidents: CachedValidatorIncidents,
+    pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
+    pub epoch_reward_mix: CachedEpochRewardMix,
     pub validators_single_run_scores: CachedSingleRunScores,
     pub validators_multi_run_scores: CachedMultiRunScores,
     pub per_epoch: Option<PerEpochCache>,
@@ -151,6 +162,18 @@ impl Cache {
         self.validators.clone()
     }
 
+    pub fn get_validator_incidents(&self) -> CachedValidatorIncidents {
+        self.validator_incidents.clone()
+    }
+
+    pub fn get_client_groups(&self) -> ValidatorGroupTree {
+        self.validator_groups.clients.clone()
+    }
+
+    pub fn get_provider_groups(&self) -> ValidatorProviderGroups {
+        self.validator_groups.providers.clone()
+    }
+
     // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
     pub fn bond_flags_updated_at(&self) -> Option<SystemTime> {
         let verified = self.bond_flags.verified.last_success?;
@@ -176,6 +199,10 @@ impl Cache {
 
     pub fn get_uptimes(&self, vote_account: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(vote_account).cloned()
+    }
+
+    pub fn get_epoch_reward_mix(&self) -> &CachedEpochRewardMix {
+        &self.epoch_reward_mix
     }
 
     pub fn get_validators_multi_run_scores(&self) -> CachedMultiRunScores {
@@ -377,13 +404,39 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         protected: bond_flags.protected.vote_accounts.clone(),
     };
 
-    let validators = store::utils::load_validators(
-        &*warehouse.read().await,
-        DEFAULT_CACHE_EPOCHS,
-        DEFAULT_COMPUTING_EPOCHS,
-        &overlays,
-    )
-    .await?;
+    let (mut validators, validator_incidents, releases) = {
+        let warehouse = warehouse.read().await;
+        let validators = store::utils::load_validators(
+            &warehouse,
+            DEFAULT_CACHE_EPOCHS,
+            DEFAULT_COMPUTING_EPOCHS,
+            &overlays,
+        )
+        .await?;
+
+        // The window ends at the newest epoch the validator records report, which is the same epoch
+        // the API measures its incident window back from. `cluster_info` can be an epoch ahead or
+        // behind it.
+        let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
+        let validator_incidents = store::utils::load_validator_incidents(
+            &warehouse,
+            (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS)..=last_epoch,
+            &validators,
+        )?;
+
+        let mut releases = ClientReleases::default();
+        for release in store::releases::load_releases(&warehouse, None, None) {
+            releases
+                .entry(release.client_lineage.to_lowercase())
+                .or_insert(ClientRelease {
+                    version: release.client_version,
+                    released_at: release.released_at,
+                    url: release.release_url,
+                });
+        }
+
+        (validators, validator_incidents, releases)
+    };
 
     // A cold cache is empty either way; only the store tells a fresh environment from lost data.
     if validators.is_empty() {
@@ -395,9 +448,28 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in the store, caching an empty set");
     }
 
+    // Off the executor thread: walks every cached epoch of every validator.
+    let (validators, validator_incidents, validator_groups) =
+        tokio::task::spawn_blocking(move || {
+            // The default filters; the query params of `/validators` override them per request.
+            let filters = IncidentFilters {
+                types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
+                ..IncidentFilters::default()
+            };
+            for (vote_account, record) in validators.iter_mut() {
+                record.incidents =
+                    validator_incidents.into_response_incidents(vote_account, &filters);
+            }
+            let validator_groups = store::groups::aggregate_all(&validators, &releases);
+            (validators, validator_incidents, validator_groups)
+        })
+        .await?;
+
     let validators_len = validators.len();
     {
         // Flags and net APY publish with the records they stamped, so their timestamps cannot outrun them.
+        // The group aggregates go with them for the same reason: read from a later refresh they would
+        // describe an epoch the validators no longer do.
         let mut ctx = context.write().await;
         if let Some(refreshed) = refreshed {
             ctx.cache.per_epoch = Some(refreshed);
@@ -405,6 +477,11 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
+        ctx.cache.validator_incidents = validator_incidents;
+        ctx.cache.validator_groups = validator_groups;
+        // Inside the commit: a failed warm must not leave the gauge describing unserved records.
+        record_inflation_commission_sources(ctx.cache.validators.values());
+        record_unhealthy_collectors(ctx.cache.validators.values());
     }
 
     info!(
@@ -470,6 +547,21 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(
         "Loaded cluster_stats to cache in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading epoch reward mix from the documents");
+    let warmup_timer = Instant::now();
+    let warehouse = context.read().await.warehouse.clone();
+    let epoch_reward_mix = store::take_rates::load_epoch_reward_mix(&*warehouse.read().await);
+
+    let epochs_len = epoch_reward_mix.len();
+    context.write().await.cache.epoch_reward_mix = epoch_reward_mix;
+    info!(
+        "Loaded epoch reward mix for {epochs_len} epochs to cache in {} ms",
         warmup_timer.elapsed().as_millis()
     );
 
@@ -545,6 +637,9 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("commissions", |c| Box::pin(warm_commissions_cache(c))),
         ("uptimes", |c| Box::pin(warm_uptimes_cache(c))),
         ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
+        ("epoch_reward_mix", |c| {
+            Box::pin(warm_epoch_reward_mix_cache(c))
+        }),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
     ]
 }
@@ -560,6 +655,81 @@ fn next_retry_s(current: u64) -> u64 {
 fn seconds_until_next_window() -> u64 {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     CACHE_WARMUP_TIME_S - now.as_secs() % CACHE_WARMUP_TIME_S
+}
+
+/// Neither an epoch-close source nor an advertised rate: nothing left to read.
+const COMMISSION_SOURCE_NONE: &str = "none";
+/// No epoch-close source yet, but the open epoch's snapshot carries a rate.
+const COMMISSION_SOURCE_ADVERTISED: &str = "advertised";
+/// A `commission_effective_source` this build does not know, folded in rather than labelled with itself.
+const COMMISSION_SOURCE_UNKNOWN: &str = "unknown";
+
+/// The label set is closed so that every series can be reset on every refresh; a free-text value would otherwise mint a series nothing ever zeroes again.
+const COMMISSION_SOURCES: [&str; 5] = [
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
+    store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+    COMMISSION_SOURCE_ADVERTISED,
+    COMMISSION_SOURCE_NONE,
+    COMMISSION_SOURCE_UNKNOWN,
+];
+
+fn commission_source_label(source: Option<&str>, has_advertised: bool) -> &'static str {
+    match source {
+        Some(source) => COMMISSION_SOURCES
+            .into_iter()
+            .find(|known| *known == source)
+            .unwrap_or(COMMISSION_SOURCE_UNKNOWN),
+        None if has_advertised => COMMISSION_SOURCE_ADVERTISED,
+        None => COMMISSION_SOURCE_NONE,
+    }
+}
+
+// Every series is set on every refresh, so an alert reads a resolved fleet as 0, not as gone.
+fn record_inflation_commission_sources<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) {
+    let mut counts: HashMap<&str, i64> = COMMISSION_SOURCES
+        .into_iter()
+        .map(|source| (source, 0))
+        .collect();
+    for record in validators {
+        let label = commission_source_label(
+            record.commission_effective_source.as_deref(),
+            record.commission_advertised.is_some(),
+        );
+        *counts.entry(label).or_insert(0) += 1;
+    }
+    for (source, count) in counts {
+        metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+            .with_label_values(&[source])
+            .set(count);
+    }
+}
+
+const COLLECTOR_KIND_INFLATION_REWARDS: &str = "inflation_rewards";
+const COLLECTOR_KIND_BLOCK_REVENUE: &str = "block_revenue";
+
+// A validator gone from the newest epoch keeps its last flag, which no later check can clear.
+fn record_unhealthy_collectors<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) {
+    let (mut inflation_rewards, mut block_revenue) = (0, 0);
+    for record in validators.filter(|record| record.has_last_epoch_stats) {
+        if record.inflation_rewards_collector_healthy == Some(false) {
+            inflation_rewards += 1;
+        }
+        if record.block_revenue_collector_healthy == Some(false) {
+            block_revenue += 1;
+        }
+    }
+    for (kind, count) in [
+        (COLLECTOR_KIND_INFLATION_REWARDS, inflation_rewards),
+        (COLLECTOR_KIND_BLOCK_REVENUE, block_revenue),
+    ] {
+        metrics::VALIDATOR_UNHEALTHY_COLLECTOR
+            .with_label_values(&[kind])
+            .set(count);
+    }
 }
 
 // Zero, not absent: an unregistered series makes a cache that never loaded invisible to a staleness alert.
@@ -588,7 +758,7 @@ async fn warm_pending(context: &WrappedContext, steps: &[WarmStep], pending: &mu
                 pending[index] = false;
                 record_success(name);
             }
-            Ok(Err(err)) => error!("Failed to update the {name}: {err}"),
+            Ok(Err(err)) => error!("Failed to update the {name}: {err:?}"),
             Err(_) => error!("Gave up on the {name} after {WARM_STEP_TIMEOUT_S} s"),
         }
     }
@@ -950,5 +1120,110 @@ mod tests {
     fn refresh_window_is_within_the_refresh_interval() {
         let seconds = seconds_until_next_window();
         assert!(seconds > 0 && seconds <= CACHE_WARMUP_TIME_S, "{seconds}");
+    }
+}
+
+#[cfg(test)]
+mod commission_source_metric_tests {
+    use super::*;
+
+    #[test]
+    fn an_epoch_close_source_is_reported_as_itself() {
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE
+        );
+        assert_eq!(
+            commission_source_label(
+                Some(store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
+                true
+            ),
+            store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW
+        );
+    }
+
+    // The fleet-wide state through epoch 1031: no close source, every consumer on the fallback.
+    #[test]
+    fn a_validator_on_the_advertised_fallback_is_told_apart_from_one_with_nothing() {
+        assert_eq!(
+            commission_source_label(None, true),
+            COMMISSION_SOURCE_ADVERTISED
+        );
+        assert_eq!(commission_source_label(None, false), COMMISSION_SOURCE_NONE);
+    }
+
+    // Only COMMISSION_SOURCES is reset, so a series minted off an unknown source would never clear.
+    #[test]
+    fn an_unrecognised_source_folds_into_one_that_gets_reset() {
+        assert_eq!(
+            commission_source_label(Some("backfilled_by_hand"), true),
+            COMMISSION_SOURCE_UNKNOWN
+        );
+        assert!(COMMISSION_SOURCES.contains(&COMMISSION_SOURCE_UNKNOWN));
+    }
+
+    #[test]
+    fn every_series_reports_a_zero_rather_than_disappearing() {
+        record_inflation_commission_sources(std::iter::empty());
+        for source in COMMISSION_SOURCES {
+            assert_eq!(
+                metrics::VALIDATOR_INFLATION_COMMISSION_SOURCE
+                    .get_metric_with_label_values(&[source])
+                    .unwrap()
+                    .get(),
+                0,
+                "{source} has to be alertable before it ever has a validator in it"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod unhealthy_collector_metric_tests {
+    use super::*;
+    use store::dto::ValidatorRecord;
+
+    fn record(inflation: Option<bool>, block: Option<bool>, current: bool) -> ValidatorRecord {
+        ValidatorRecord {
+            inflation_rewards_collector_healthy: inflation,
+            block_revenue_collector_healthy: block,
+            has_last_epoch_stats: current,
+            ..Default::default()
+        }
+    }
+
+    fn gauge(kind: &str) -> i64 {
+        metrics::VALIDATOR_UNHEALTHY_COLLECTOR
+            .get_metric_with_label_values(&[kind])
+            .unwrap()
+            .get()
+    }
+
+    #[test]
+    fn counts_only_current_validators_flagged_unhealthy_and_resets_each_refresh() {
+        let validators = [
+            record(Some(false), Some(false), true),
+            record(Some(false), Some(true), true),
+            record(None, None, true),
+            record(Some(false), Some(false), false),
+        ];
+        record_unhealthy_collectors(validators.iter());
+        assert_eq!(gauge(COLLECTOR_KIND_INFLATION_REWARDS), 2);
+        assert_eq!(
+            gauge(COLLECTOR_KIND_BLOCK_REVENUE),
+            1,
+            "an unchecked collector and a validator gone from the newest epoch do not count"
+        );
+
+        record_unhealthy_collectors(std::iter::empty());
+        assert_eq!(gauge(COLLECTOR_KIND_INFLATION_REWARDS), 0);
+        assert_eq!(
+            gauge(COLLECTOR_KIND_BLOCK_REVENUE),
+            0,
+            "a resolved fleet reads 0, so the alert clears"
+        );
     }
 }

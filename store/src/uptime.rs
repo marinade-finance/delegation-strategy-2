@@ -1,14 +1,14 @@
 use crate::directory::{Directory, Doc, Precondition};
 use crate::docs::{UptimeInterval, UptimeState, UptimeStatus, UptimesDoc, LIVE_UPTIMES};
 use chrono::{DateTime, Duration, Utc};
+use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::{info, warn};
 use serde_yaml;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreUptimeParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 

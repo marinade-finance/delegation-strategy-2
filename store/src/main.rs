@@ -1,3 +1,4 @@
+use clap::Parser;
 use collect::validators_jito::JitoAccountType;
 use env_logger::Env;
 use store::close_epoch::{close_epoch, CloseEpochParams};
@@ -5,33 +6,35 @@ use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use store::commissions::{store_commissions, StoreCommissionsParams};
 use store::directory::Directory;
 use store::ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
+use store::releases::{store_releases, StoreReleasesParams};
+use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::uptime::{store_uptime, StoreUptimeParams};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_jito::{store_jito, StoreJitoParams};
+use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
 use store::versions::{store_versions, StoreVersionsParams};
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct CommonParams {
-    #[structopt(long = "directory-url", env = "DIRECTORY_URL")]
+    #[arg(long = "directory-url", env = "DIRECTORY_URL")]
     pub directory_url: String,
 
-    #[structopt(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    #[arg(long = "directory-token", env = "DIRECTORY_TOKEN")]
     pub directory_token: String,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Params {
-    #[structopt(flatten)]
+    #[command(flatten)]
     common: CommonParams,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: StoreCommand,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 enum StoreCommand {
     Uptime(StoreUptimeParams),
     Commissions(StoreCommissionsParams),
@@ -40,6 +43,9 @@ enum StoreCommand {
     Validators(StoreValidatorsParams),
     ValidatorsBlockRewards(StoreBlockRewardsParams),
     ValidatorsEvents(StoreEventsParams),
+    ValidatorsSandwiches(StoreSandwichesParams),
+    TakeRates(StoreTakeRatesParams),
+    Releases(StoreReleasesParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
@@ -50,7 +56,7 @@ enum StoreCommand {
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let params = Params::from_args();
+    let params = Params::parse();
     let directory = Directory::new(params.common.directory_url, params.common.directory_token)?;
 
     match params.command {
@@ -85,6 +91,11 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::ValidatorsEvents(store_params) => {
             store_events(store_params, &directory).await
         }
+        StoreCommand::ValidatorsSandwiches(store_params) => {
+            store_sandwiches(store_params, &directory).await
+        }
+        StoreCommand::TakeRates(store_params) => store_take_rates(store_params, &directory).await,
+        StoreCommand::Releases(store_params) => store_releases(store_params, &directory).await,
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &directory).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&directory).await,
     }

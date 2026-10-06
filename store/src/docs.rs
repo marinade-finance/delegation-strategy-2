@@ -22,6 +22,8 @@ pub const UPTIMES_DIR: &str = "/validators/uptimes";
 pub const COMMISSIONS_DIR: &str = "/validators/commissions";
 pub const VERSIONS_DIR: &str = "/validators/versions";
 pub const CLUSTER_INFO_DIR: &str = "/validators/cluster-info";
+pub const VALIDATOR_REWARDS_DIR: &str = "/validators/validator-rewards";
+pub const SANDWICHES_DIR: &str = "/validators/sandwiches";
 
 /// The accumulators. A separate parent from the sealed epochs so that `@last`
 /// under `/validators/uptimes/` is always the newest sealed epoch.
@@ -29,6 +31,10 @@ pub const LIVE_UPTIMES: &str = "/validators/live/uptimes";
 pub const LIVE_COMMISSIONS: &str = "/validators/live/commissions";
 pub const LIVE_VERSIONS: &str = "/validators/live/versions";
 pub const LIVE_CLUSTER_INFO: &str = "/validators/live/cluster-info";
+
+/// Documents with no epoch of their own: keyed by what they describe, rewritten
+/// in place.
+pub const RELEASES_PATH: &str = "/validators/releases";
 
 pub const SCORING_DIR: &str = "/scoring";
 
@@ -44,7 +50,10 @@ pub type SnapshotDoc = BTreeMap<String, Validator>;
 
 /// What `store validators` cannot see stays: the snapshot's `version` and
 /// client columns are absent whenever the answering RPC did not report the
-/// node, and the close-epoch derivations are written by close-epoch alone.
+/// node, the vote-state fields whenever its state did not parse, the pending
+/// and direct stakes whenever their accounts were not read, and the data
+/// center whenever whois did not answer for an unchanged address. The
+/// close-epoch derivations are written by close-epoch alone.
 pub fn merge_validator(existing: Option<&Validator>, mut incoming: Validator) -> Validator {
     let Some(old) = existing else {
         return incoming;
@@ -54,9 +63,40 @@ pub fn merge_validator(existing: Option<&Validator>, mut incoming: Validator) ->
         incoming.client_id = old.client_id;
         incoming.client_id_raw = old.client_id_raw.clone();
     }
+    // A resolved answer replaces all eight together: mixing its nulls with the
+    // previous data center would invent a location nothing observed.
+    if !incoming.dc_resolved && incoming.node_ip == old.node_ip && old.has_data_center() {
+        incoming.copy_data_center_from(old);
+    }
+    if incoming.inflation_rewards_commission_bps_is_v4.is_none() {
+        incoming.inflation_rewards_collector = old.inflation_rewards_collector.clone();
+        incoming.block_revenue_collector = old.block_revenue_collector.clone();
+        incoming.inflation_rewards_commission_bps = old.inflation_rewards_commission_bps;
+        incoming.inflation_rewards_commission_bps_is_v4 =
+            old.inflation_rewards_commission_bps_is_v4;
+        incoming.block_revenue_commission_bps = old.block_revenue_commission_bps;
+        incoming.pending_delegator_rewards = old.pending_delegator_rewards;
+        incoming.inflation_rewards_collector_owner = old.inflation_rewards_collector_owner.clone();
+        incoming.inflation_rewards_collector_lamports = old.inflation_rewards_collector_lamports;
+        incoming.inflation_rewards_collector_healthy = old.inflation_rewards_collector_healthy;
+        incoming.block_revenue_collector_owner = old.block_revenue_collector_owner.clone();
+        incoming.block_revenue_collector_lamports = old.block_revenue_collector_lamports;
+        incoming.block_revenue_collector_healthy = old.block_revenue_collector_healthy;
+    }
+    incoming.activating_stake = incoming.activating_stake.or(old.activating_stake);
+    incoming.deactivating_stake = incoming.deactivating_stake.or(old.deactivating_stake);
+    incoming.direct_stake = incoming.direct_stake.or(old.direct_stake);
+    incoming.direct_activating_stake = incoming
+        .direct_activating_stake
+        .or(old.direct_activating_stake);
+    incoming.direct_deactivating_stake = incoming
+        .direct_deactivating_stake
+        .or(old.direct_deactivating_stake);
     incoming.commission_max_observed = old.commission_max_observed;
     incoming.commission_min_observed = old.commission_min_observed;
     incoming.commission_effective = old.commission_effective;
+    incoming.commission_effective_source = old.commission_effective_source.clone();
+    incoming.commission_effective_bps = old.commission_effective_bps;
     incoming.uptime_pct = old.uptime_pct;
     incoming.uptime = old.uptime;
     incoming.downtime = old.downtime;
@@ -223,6 +263,79 @@ pub fn upsert_event(events: &mut Vec<EventEntry>, mut event: EventEntry) {
 pub fn replace_entries<T>(doc: &mut BTreeMap<String, T>, incoming: BTreeMap<String, T>) {
     doc.extend(incoming);
 }
+
+/// One validator's rewards in one epoch, as the take-rates collector sums them
+/// from BigQuery: both sides of every component, in lamports.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ValidatorRewardsEntry {
+    pub validator_rewards: Decimal,
+    pub total_rewards: Decimal,
+    pub inflation_rewards: Decimal,
+    pub mev_rewards: Decimal,
+    pub block_rewards: Decimal,
+    /// `validator_rewards / total_rewards`.
+    pub take_rate: f64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub type ValidatorRewardsDoc = BTreeMap<String, ValidatorRewardsEntry>;
+
+/// A rewrite keeps the moment the rewards were first seen.
+pub fn merge_validator_rewards(doc: &mut ValidatorRewardsDoc, incoming: ValidatorRewardsDoc) {
+    for (vote_account, mut entry) in incoming {
+        if let Some(old) = doc.get(&vote_account) {
+            entry.created_at = old.created_at;
+        }
+        doc.insert(vote_account, entry);
+    }
+}
+
+/// One validator's sandwich figures in one epoch, as solana-sandwich-report
+/// published them. The counts cover the 30-day window the rate is measured
+/// over, not the epoch.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SandwichEntry {
+    pub blocks_produced: u64,
+    pub blocks_with_sandwiches: u64,
+    /// Percent, one decimal.
+    pub sandwich_rate_30d: f64,
+    /// Absent before epoch 820: upstream published only the 30d rate then.
+    pub sandwich_rate_60d: Option<f64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub type SandwichesDoc = BTreeMap<String, SandwichEntry>;
+
+/// A rewrite keeps the moment the figures were first seen.
+pub fn merge_sandwiches(doc: &mut SandwichesDoc, incoming: SandwichesDoc) {
+    for (vote_account, mut entry) in incoming {
+        if let Some(old) = doc.get(&vote_account) {
+            entry.created_at = old.created_at;
+        }
+        doc.insert(vote_account, entry);
+    }
+}
+
+/// One release of a client, filled by three sources that write disjoint
+/// fields: GitHub gives the publish time, the SFDP endpoint and the feature
+/// gate tracker each give a floor.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ReleaseEntry {
+    pub released_at: Option<DateTime<Utc>>,
+    pub release_url: Option<String>,
+    /// First epoch the Solana Foundation Delegation Program required this version.
+    pub sfdp_floor_epoch: Option<u64>,
+    /// First epoch the cluster's feature gates required this version.
+    pub feature_gate_epoch: Option<u64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Keyed by client lineage, then by the version as the client reports it in
+/// gossip.
+pub type ReleasesDoc = BTreeMap<String, BTreeMap<String, ReleaseEntry>>;
 
 /// Writes a document its writer owns outright: creates it, or replaces the
 /// version that is there. The read discards the body it does not need.

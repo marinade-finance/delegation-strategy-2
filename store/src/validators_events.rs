@@ -12,9 +12,9 @@ use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{BTreeMap, HashMap};
 
-#[derive(Debug, structopt::StructOpt)]
+#[derive(Debug, clap::Parser)]
 pub struct StoreEventsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 
@@ -97,6 +97,7 @@ pub fn get_events_with_context(
     let from_epoch = from_epoch.unwrap_or_else(|| {
         warehouse
             .last_cluster_epoch()
+            .saturating_add(1)
             .saturating_sub(DEFAULT_CACHE_EPOCHS)
     });
 

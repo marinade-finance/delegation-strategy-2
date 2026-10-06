@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
 use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use std::collections::HashMap;
@@ -11,7 +12,6 @@ use store::docs::{
 };
 use store::uptime::{store_uptime, write_uptimes, StoreUptimeParams};
 use store::versions::{store_versions, StoreVersionsParams};
-use structopt::StructOpt;
 
 mod common;
 
@@ -50,6 +50,7 @@ fn performance_snapshot(
         cluster_inflation: None,
         validators,
         rewards: None,
+        nodes: Default::default(),
     }
 }
 
@@ -68,7 +69,7 @@ async fn run_store_uptime_in_epoch(
     let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.yaml"));
     std::fs::write(&path, serde_yaml::to_string(&snapshot).expect("yaml")).expect("snapshot file");
     store_uptime(
-        StoreUptimeParams::from_iter([
+        StoreUptimeParams::parse_from([
             "store",
             "--snapshot-file",
             path.to_str().expect("snapshot path"),
@@ -254,6 +255,7 @@ fn snapshot_of(
         cluster_inflation: None,
         validators,
         rewards: None,
+        nodes: Default::default(),
     }
 }
 
@@ -280,7 +282,7 @@ async fn run_store_commissions(
         ),
     );
     store_commissions(
-        StoreCommissionsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreCommissionsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -339,7 +341,7 @@ async fn run_store_versions(
         ),
     );
     store_versions(
-        StoreVersionsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreVersionsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -434,7 +436,7 @@ async fn store_cluster_info_appends_one_sample_per_run() {
     ] {
         let path = write_snapshot(name, &snapshot_of(created_at, performance(false)));
         store_cluster_info(
-            StoreClusterInfoParams::from_iter(["store", "--snapshot-file", &path]),
+            StoreClusterInfoParams::parse_from(["store", "--snapshot-file", &path]),
             &directory,
         )
         .await

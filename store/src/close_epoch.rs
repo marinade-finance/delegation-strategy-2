@@ -6,18 +6,65 @@ use crate::docs::{
     LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, SNAPSHOT_DIR, UPTIMES_DIR,
     VERSIONS_DIR,
 };
-use crate::dto::Validator;
+use crate::dto::{
+    Validator, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+};
 use chrono::{DateTime, Utc};
+use clap::Parser;
+use collect::solana_service::bps_to_percent;
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
-use log::info;
+use log::{info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
-use structopt::StructOpt;
+use std::collections::HashMap;
 
-#[derive(Debug, StructOpt)]
+#[cfg(test)]
+#[path = "close_epoch_test.rs"]
+mod close_epoch_test;
+
+#[derive(Debug, Parser)]
 pub struct CloseEpochParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
+}
+
+/// The inflation commission a vote state carried when it was sampled: in
+/// basis points where the state parsed, else the whole percent it advertised.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SampledCommission {
+    Bps(u16),
+    Percent(u8),
+}
+
+/// `(commission_effective, commission_effective_bps, commission_effective_source)`.
+pub type ResolvedCommission = (Option<i32>, Option<i32>, Option<&'static str>);
+
+/// A reward row still wins where one exists, so pre-1030 epochs reprocess to
+/// the same values.
+pub fn resolve_commission_effective(
+    from_reward_row: Option<u8>,
+    sampled: Option<SampledCommission>,
+) -> ResolvedCommission {
+    if let Some(commission) = from_reward_row {
+        return (
+            Some(i32::from(commission)),
+            None,
+            Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW),
+        );
+    }
+    match sampled {
+        Some(SampledCommission::Bps(bps)) => (
+            Some(i32::from(bps_to_percent(bps))),
+            Some(i32::from(bps)),
+            Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+        ),
+        Some(SampledCommission::Percent(percent)) => (
+            Some(i32::from(percent)),
+            None,
+            Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE),
+        ),
+        None => (None, None, None),
+    }
 }
 
 pub async fn close_epoch(
@@ -68,9 +115,11 @@ pub async fn close_epoch(
         .await?
         .ok_or_else(|| anyhow::anyhow!("{snapshot_path} holds no validators to finalize"))?;
     let mut validators = stored.body;
-    apply_finalized_performance(&mut validators, &snapshot, created_at);
+    let sampled = load_sampled_commission(directory, epoch, &validators).await?;
+    apply_finalized_performance(&mut validators, &snapshot, &sampled, created_at);
     apply_uptimes(&mut validators, &uptimes.body, epoch, &epoch_record);
     apply_observed_commissions(&mut validators, &commissions.body, epoch);
+    warn_on_unresolved_commission(&validators, epoch);
     directory
         .put(
             &snapshot_path,
@@ -115,10 +164,10 @@ pub async fn close_epoch(
     trim_accumulators(directory, epoch).await
 }
 
-/// Drops everything up to and including `epoch` from the four accumulators.
+/// Drops everything up to and including `epoch` from the accumulators.
 ///
 /// Each document is read immediately before its own write: collector-performance
-/// rewrites all four every minute, and a 412 here lands after the epoch document
+/// rewrites all of them every minute, and a 412 here lands after the epoch document
 /// exists, where nothing offers the epoch again.
 async fn trim_accumulators(directory: &Directory, epoch: u64) -> anyhow::Result<()> {
     let uptimes = read_live::<UptimesDoc>(directory, LIVE_UPTIMES).await?;
@@ -228,25 +277,116 @@ async fn build_epoch_record(
     })
 }
 
+/// Agave's order for epoch E: epoch_stakes(E) frozen at the close of E-2, then
+/// the close of E-1, then live. The E-2 and E-1 snapshots are read for it; E is
+/// the one being finalized. An unparsed vote state keeps its row's vintage
+/// through the advertised percent, as agave falls back only on absence.
+async fn load_sampled_commission(
+    directory: &Directory,
+    epoch: u64,
+    current: &SnapshotDoc,
+) -> anyhow::Result<HashMap<String, SampledCommission>> {
+    let mut sampled: HashMap<String, SampledCommission> = Default::default();
+    for vintage in (epoch.saturating_sub(2)..epoch).chain([epoch]) {
+        let fetched;
+        let snapshot = if vintage == epoch {
+            current
+        } else {
+            let Some(stored) = directory
+                .get::<SnapshotDoc>(&epoch_doc_path(SNAPSHOT_DIR, vintage))
+                .await?
+            else {
+                continue;
+            };
+            fetched = stored.body;
+            &fetched
+        };
+        for (vote_account, validator) in snapshot.iter() {
+            if sampled.contains_key(vote_account) {
+                continue;
+            }
+            if let Some(commission) = sampled_commission(validator)? {
+                sampled.insert(vote_account.clone(), commission);
+            }
+        }
+    }
+    Ok(sampled)
+}
+
+fn sampled_commission(validator: &Validator) -> anyhow::Result<Option<SampledCommission>> {
+    Ok(
+        match (
+            validator.inflation_rewards_commission_bps,
+            validator.commission_advertised,
+        ) {
+            (Some(bps), _) => Some(SampledCommission::Bps(u16::try_from(bps)?)),
+            (None, Some(percent)) => Some(SampledCommission::Percent(u8::try_from(percent)?)),
+            (None, None) => None,
+        },
+    )
+}
+
+/// The snapshot's validators take their performance and the rate they were
+/// paid at. A validator the snapshot never listed still takes the sampled rate,
+/// where nothing resolved one yet: a closed epoch is never re-listed.
 fn apply_finalized_performance(
     validators: &mut SnapshotDoc,
     snapshot: &ValidatorsPerformanceSnapshot,
+    sampled: &HashMap<String, SampledCommission>,
     created_at: DateTime<Utc>,
 ) {
-    for (vote_account, performance) in snapshot.validators.iter() {
-        let Some(validator) = validators.get_mut(vote_account) else {
+    let mut from_reward_row = 0;
+    let mut from_vote_state = 0;
+    let mut unresolved = 0;
+    for (vote_account, validator) in validators.iter_mut() {
+        let Some(performance) = snapshot.validators.get(vote_account) else {
+            if validator.commission_effective.is_none() {
+                let (commission, bps, source) =
+                    resolve_commission_effective(None, sampled.get(vote_account).copied());
+                if commission.is_some() {
+                    validator.commission_effective = commission;
+                    validator.commission_effective_bps = bps;
+                    validator.commission_effective_source = source.map(str::to_string);
+                    validator.updated_at = Some(created_at);
+                }
+            }
             continue;
         };
-        validator.commission_effective = snapshot
-            .rewards
-            .as_ref()
-            .and_then(|rewards| rewards.get(vote_account))
-            .and_then(|reward| reward.commission_effective.map(|c| c as i32));
+        let (commission, bps, source) = resolve_commission_effective(
+            snapshot
+                .rewards
+                .as_ref()
+                .and_then(|rewards| rewards.get(vote_account))
+                .and_then(|reward| reward.commission_effective),
+            sampled.get(vote_account).copied(),
+        );
+        match source {
+            Some(COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW) => from_reward_row += 1,
+            Some(_) => from_vote_state += 1,
+            None => unresolved += 1,
+        }
+        validator.commission_effective = commission;
+        validator.commission_effective_bps = bps;
+        validator.commission_effective_source = source.map(str::to_string);
         validator.credits = performance.credits.into();
         validator.leader_slots = performance.leader_slots.into();
         validator.blocks_produced = performance.blocks_produced.into();
         validator.skip_rate = performance.skip_rate;
         validator.updated_at = Some(created_at);
+    }
+    info!(
+        "Effective commission for {} validators: {from_reward_row} from a reward row, {from_vote_state} from sampled vote state, {unresolved} unresolved",
+        snapshot.validators.len()
+    );
+}
+
+fn warn_on_unresolved_commission(validators: &SnapshotDoc, epoch: u64) {
+    let unresolved = validators
+        .values()
+        .filter(|validator| validator.commission_effective.is_none())
+        .count();
+    if unresolved > 0 {
+        warn!("Epoch {epoch} closed with {unresolved} validator records still without commission_effective");
     }
 }
 

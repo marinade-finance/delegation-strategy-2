@@ -49,6 +49,9 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "self_stake": "0",
       "marinade_native_stake": "0",
       "institutional_stake": "0",
+      "direct_stake": null,
+      "direct_activating_stake": null,
+      "direct_deactivating_stake": null,
       "superminority": true,
       "credits": 156411,
       "marinade_score": 0,
@@ -67,6 +70,9 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "self_stake": 0,
           "marinade_native_stake": 0,
           "institutional_stake": 0,
+          "direct_stake": null,
+          "direct_activating_stake": null,
+          "direct_deactivating_stake": null,
           "superminority": true,
           "stake_to_become_superminority": 0,
           "credits": 156411,
@@ -122,7 +128,7 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 }
 ```
 
-## Commissions
+## Commissions (deprecated)
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/commissions | jq
 ```
@@ -133,6 +139,35 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "epoch": 378,
       "commission": 8,
       "created_at": "2022-11-28T15:58:04.038843Z"
+    }
+  ]
+}
+```
+
+## Take rates
+Query parameters, mutually exclusive; without either one the whole stored history is returned:
+- `query_from_epoch` - Lower-bound epoch, inclusive.
+- `query_from_date` - Lower-bound RFC3339 date, resolved to the first epoch ending on/after it.
+
+`epoch_start_at` and `epoch_end_at` are `null` for epochs whose boundaries are not recorded.
+Such an epoch is still returned by both query modes, including the open one.
+
+`realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
+commissions that epoch implied it would. It is `null` where no commission was recorded, and for
+the in-progress epoch, which has paid no inflation rewards to weight them by.
+```bash
+curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
+```
+```json
+{
+  "take_rates": [
+    {
+      "epoch": 378,
+      "epoch_start_at": "2022-11-27T19:45:05.669098Z",
+      "epoch_end_at": "2022-11-29T19:45:05.669098Z",
+      "realized_take_rate": 0.0812,
+      "expected_take_rate": 0.1052,
+      "created_at": "2022-11-30T15:58:04.038843Z"
     }
   ]
 }
@@ -149,6 +184,47 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "epoch": 378,
       "version": "1.13.5",
       "created_at": "2022-11-28T15:58:04.038843Z"
+    }
+  ]
+}
+```
+
+## Releases
+
+Three lists: `releases` (what was published, from the client's GitHub releases), `sfdp_floors` (what
+the Solana Foundation Delegation Program required) and `feature_gate_floors` (what the cluster's
+feature gates required). `client` (a lineage: `agave`, `frankendancer`, `firedancer`, `sig`) and
+`since_epoch` filter all three.
+
+`releases` is ordered by publish time, `order_direction=ASC|DESC` (default `DESC`).
+
+```bash
+curl -sfLS 'localhost:8000/releases?client=agave&since_epoch=1010' | jq
+```
+```json
+{
+  "releases": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.4.0-alpha.4",
+      "available_epoch": null,
+      "released_at": "2026-09-10T19:19:58Z",
+      "release_url": "https://github.com/anza-xyz/agave/releases/tag/v4.4.0-alpha.4",
+      "updated_at": "2026-09-11T12:13:14.576435Z"
+    }
+  ],
+  "sfdp_floors": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.1",
+      "effective_epoch": 1023
+    }
+  ],
+  "feature_gate_floors": [
+    {
+      "client_lineage": "agave",
+      "client_version": "4.2.0",
+      "effective_epoch": 1027
     }
   ]
 }
@@ -214,7 +290,7 @@ curl -sLfS 'http://localhost:8000/reports/scoring' | jq
 }
 ```
 
-## Reports - commission changes
+## Reports - commission changes (deprecated)
 ```bash
 curl -sfLS localhost:8000/reports/commission-changes | jq
 ```

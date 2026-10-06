@@ -4,11 +4,12 @@
 use crate::directory::{Directory, Fetch};
 use crate::docs::{
     epoch_doc_path, scoring_breakdowns_path, BlockRewardsDoc, ClusterInfoDoc, CommissionSample,
-    CommissionsDoc, EpochDoc, EventsDoc, MevDoc, PriorityFeeDoc, ScoringBreakdownsDoc,
-    SealedClusterInfoDoc, SealedCommissionsDoc, SealedUptimesDoc, SealedVersionsDoc, SnapshotDoc,
-    UptimeInterval, UptimesDoc, VersionSample, VersionsDoc, BLOCK_REWARDS_DIR, CLUSTER_INFO_DIR,
-    COMMISSIONS_DIR, EPOCHS_DIR, EVENTS_DIR, LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES,
-    LIVE_VERSIONS, MEV_DIR, PRIORITY_FEE_DIR, SNAPSHOT_DIR, UPTIMES_DIR, VERSIONS_DIR,
+    CommissionsDoc, EpochDoc, EventsDoc, MevDoc, PriorityFeeDoc, ReleasesDoc, SandwichesDoc,
+    ScoringBreakdownsDoc, SealedClusterInfoDoc, SealedCommissionsDoc, SealedUptimesDoc,
+    SealedVersionsDoc, SnapshotDoc, UptimeInterval, UptimesDoc, ValidatorRewardsDoc, VersionSample,
+    VersionsDoc, BLOCK_REWARDS_DIR, CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR, EVENTS_DIR,
+    LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, MEV_DIR, PRIORITY_FEE_DIR,
+    RELEASES_PATH, SANDWICHES_DIR, SNAPSHOT_DIR, UPTIMES_DIR, VALIDATOR_REWARDS_DIR, VERSIONS_DIR,
 };
 use anyhow::Context;
 use log::info;
@@ -31,12 +32,15 @@ pub struct Warehouse {
     pub priority_fees: BTreeMap<u64, PriorityFeeDoc>,
     pub events: BTreeMap<u64, EventsDoc>,
     pub block_rewards: BTreeMap<u64, BlockRewardsDoc>,
+    pub validator_rewards: BTreeMap<u64, ValidatorRewardsDoc>,
+    pub sandwiches: BTreeMap<u64, SandwichesDoc>,
     pub epochs: BTreeMap<u64, EpochDoc>,
     pub uptimes: BTreeMap<u64, SealedUptimesDoc>,
     pub commissions: BTreeMap<u64, SealedCommissionsDoc>,
     pub versions: BTreeMap<u64, SealedVersionsDoc>,
     pub cluster_info: BTreeMap<u64, SealedClusterInfoDoc>,
     pub scoring: BTreeMap<u64, ScoringBreakdownsDoc>,
+    pub releases: ReleasesDoc,
     pub live: Live,
     etags: HashMap<String, String>,
 }
@@ -66,6 +70,14 @@ impl Warehouse {
             &mut w.block_rewards
         })
         .await?;
+        self.warm_kind(directory, VALIDATOR_REWARDS_DIR, window.clone(), |w| {
+            &mut w.validator_rewards
+        })
+        .await?;
+        self.warm_kind(directory, SANDWICHES_DIR, window.clone(), |w| {
+            &mut w.sandwiches
+        })
+        .await?;
         self.warm_kind(directory, EPOCHS_DIR, window.clone(), |w| &mut w.epochs)
             .await?;
         self.warm_kind(directory, UPTIMES_DIR, window.clone(), |w| &mut w.uptimes)
@@ -90,6 +102,8 @@ impl Warehouse {
         self.warm_live(directory, LIVE_VERSIONS, |w| &mut w.live.versions)
             .await?;
         self.warm_live(directory, LIVE_CLUSTER_INFO, |w| &mut w.live.cluster_info)
+            .await?;
+        self.warm_live(directory, RELEASES_PATH, |w| &mut w.releases)
             .await?;
 
         Ok(())
@@ -121,13 +135,18 @@ impl Warehouse {
         last.saturating_sub(epochs.saturating_sub(1))
     }
 
-    /// Every uptime interval of the window: the sealed ones, and the
+    /// The last `epochs` epochs of the streams, open-ended at the top so the
+    /// accumulators' newest samples are in.
+    pub fn window(&self, epochs: u64) -> RangeInclusive<u64> {
+        self.window_start(epochs)..=u64::MAX
+    }
+
+    /// Every uptime interval of the epochs: the sealed ones, and the
     /// accumulator's for the epochs no seal covers yet.
-    pub fn uptime_intervals(&self, epochs: u64) -> Vec<(&String, &UptimeInterval)> {
-        let first = self.window_start(epochs);
+    pub fn uptime_intervals(&self, epochs: RangeInclusive<u64>) -> Vec<(&String, &UptimeInterval)> {
         let mut intervals: Vec<_> = self
             .uptimes
-            .range(first..)
+            .range(epochs.clone())
             .flat_map(|(_, sealed)| sealed.iter())
             .flat_map(|(vote_account, intervals)| {
                 intervals
@@ -138,7 +157,7 @@ impl Warehouse {
 
         for (vote_account, state) in self.live.uptimes.iter() {
             for interval in state.closed.iter().chain([&state.open]) {
-                if interval.epoch >= first && !self.uptimes.contains_key(&interval.epoch) {
+                if epochs.contains(&interval.epoch) && !self.uptimes.contains_key(&interval.epoch) {
                     intervals.push((vote_account, interval));
                 }
             }
@@ -170,11 +189,13 @@ impl Warehouse {
             .collect()
     }
 
-    pub fn commission_changes(&self, epochs: u64) -> Vec<(&String, &CommissionSample)> {
-        let first = self.window_start(epochs);
+    pub fn commission_changes(
+        &self,
+        epochs: RangeInclusive<u64>,
+    ) -> Vec<(&String, &CommissionSample)> {
         let mut changes: Vec<_> = self
             .commissions
-            .range(first..)
+            .range(epochs.clone())
             .flat_map(|(_, sealed)| sealed.iter())
             .flat_map(|(vote_account, changes)| {
                 changes.iter().map(move |change| (vote_account, change))
@@ -183,7 +204,7 @@ impl Warehouse {
 
         for (vote_account, state) in self.live.commissions.iter() {
             for change in state.changes.iter() {
-                if change.epoch >= first && !self.commissions.contains_key(&change.epoch) {
+                if epochs.contains(&change.epoch) && !self.commissions.contains_key(&change.epoch) {
                     changes.push((vote_account, change));
                 }
             }
@@ -192,11 +213,10 @@ impl Warehouse {
         changes
     }
 
-    pub fn version_changes(&self, epochs: u64) -> Vec<(&String, &VersionSample)> {
-        let first = self.window_start(epochs);
+    pub fn version_changes(&self, epochs: RangeInclusive<u64>) -> Vec<(&String, &VersionSample)> {
         let mut changes: Vec<_> = self
             .versions
-            .range(first..)
+            .range(epochs.clone())
             .flat_map(|(_, sealed)| sealed.iter())
             .flat_map(|(vote_account, changes)| {
                 changes.iter().map(move |change| (vote_account, change))
@@ -205,7 +225,7 @@ impl Warehouse {
 
         for (vote_account, state) in self.live.versions.iter() {
             for change in state.changes.iter() {
-                if change.epoch >= first && !self.versions.contains_key(&change.epoch) {
+                if epochs.contains(&change.epoch) && !self.versions.contains_key(&change.epoch) {
                     changes.push((vote_account, change));
                 }
             }

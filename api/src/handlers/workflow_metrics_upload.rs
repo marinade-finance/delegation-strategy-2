@@ -1,9 +1,10 @@
 use crate::metrics;
-use crate::utils::response_error;
+use crate::utils::response::response_error;
 use serde::{Deserialize, Serialize};
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     job_scheduled: Option<bool>,
     job_success: Option<bool>,

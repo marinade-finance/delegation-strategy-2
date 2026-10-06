@@ -1,9 +1,9 @@
 use crate::handlers::{
     cluster_stats, commissions, config, docs, events, global_unstake_hints, glossary, health, jito,
-    jito_mev, list_validators, readiness, reports_commission_changes, reports_scoring,
-    reports_scoring_html, reports_staking, rewards, unstake_hints, uptimes,
-    validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    jito_mev, list_clients, list_providers, list_validators, readiness, releases,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -20,12 +20,16 @@ use utoipa::OpenApi;
     components(
         schemas(cluster_stats::ResponseClusterStats),
         schemas(commissions::ResponseCommissions),
+        schemas(take_rates::ResponseTakeRates),
         schemas(config::ConfigStakes),
         schemas(config::ResponseConfig),
         schemas(config::StakeDelegationAuthorityRecord),
         schemas(global_unstake_hints::ResponseGlobalUnstakeHints),
-        schemas(list_validators::OrderDirection),
-        schemas(list_validators::OrderField),
+        schemas(list_clients::ResponseClients),
+        schemas(list_providers::ResponseProviders),
+        schemas(releases::ResponseReleases),
+        schemas(crate::utils::order::OrderDirection),
+        schemas(crate::utils::order::OrderField),
         schemas(list_validators::ResponseValidators),
         schemas(reports_commission_changes::CommissionChange),
         schemas(reports_commission_changes::ResponseCommissionChanges),
@@ -38,6 +42,7 @@ use utoipa::OpenApi;
         schemas(store::dto::ClientLineageStats),
         schemas(store::dto::ClusterStats),
         schemas(store::dto::CommissionRecord),
+        schemas(store::dto::TakeRateRecord),
         schemas(store::dto::DCConcentrationStats),
         schemas(store::dto::FeatureSetStats),
         schemas(store::dto::GlobalUnstakeHintRecord),
@@ -45,10 +50,21 @@ use utoipa::OpenApi;
         schemas(store::dto::UnstakeHint),
         schemas(store::dto::UptimeRecord),
         schemas(store::dto::IncidentRecord),
+        schemas(store::dto::BlockProductionDetail),
+        schemas(store::dto::VersionStakeShare),
+        schemas(store::dto::GroupIncidentRecord),
+        schemas(store::dto::GroupIncidents),
         schemas(store::dto::EventEpochRecord),
         schemas(store::dto::SettlementRecord),
         schemas(store::dto::PerformanceRecord),
         schemas(store::dto::ValidatorEpochStats),
+        schemas(store::dto::ClientRelease),
+        schemas(store::dto::GroupLocation),
+        schemas(store::dto::GroupShare),
+        schemas(store::dto::ValidatorGroupNode),
+        schemas(store::dto::ValidatorGroupRecord),
+        schemas(store::dto::ValidatorProviderGroupRecord),
+        schemas(store::dto::ValidatorClientGroupRecord),
         schemas(store::dto::ValidatorRecord),
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),
@@ -56,6 +72,9 @@ use utoipa::OpenApi;
         schemas(store::dto::RuggerRecord),
         schemas(store::dto::RugInfo),
         schemas(store::dto::VersionRecord),
+        schemas(store::dto::ReleaseRecord),
+        schemas(store::dto::SfdpFloor),
+        schemas(store::dto::FeatureGateFloor),
         schemas(store::dto::JitoMevRecord),
         schemas(store::dto::JitoRecord),
         schemas(store::dto::ValidatorBlockRewardsRecord),
@@ -74,7 +93,11 @@ use utoipa::OpenApi;
     ),
     paths(
         cluster_stats::handler,
+        list_clients::handler,
+        list_providers::handler,
+        releases::handler,
         commissions::handler,
+        take_rates::handler,
         config::handler,
         docs::handler,
         glossary::handler,
@@ -102,3 +125,110 @@ use utoipa::OpenApi;
     )
 )]
 pub struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::openapi::path::ParameterIn;
+    use utoipa::OpenApi;
+
+    /// A `utoipa::path` without a leading slash still routes correctly but
+    /// produces a spec that strict OpenAPI validators reject, which breaks
+    /// client generators consuming /docs.json.
+    #[test]
+    fn every_documented_path_starts_with_a_slash() {
+        let unslashed: Vec<_> = ApiDoc::openapi()
+            .paths
+            .paths
+            .keys()
+            .filter(|path| !path.starts_with('/'))
+            .cloned()
+            .collect();
+
+        assert!(
+            unslashed.is_empty(),
+            "paths missing leading slash: {unslashed:?}"
+        );
+    }
+
+    /// A `parameter_in` left at its `Path` default documents a query parameter
+    /// as a path segment, which strict OpenAPI validators reject and which
+    /// tells consumers to build the wrong URL.
+    #[test]
+    fn every_path_parameter_has_a_matching_path_segment() {
+        let openapi = ApiDoc::openapi();
+
+        let mut orphans = Vec::new();
+
+        for (path, item) in &openapi.paths.paths {
+            let segments: Vec<&str> = path
+                .split('/')
+                .filter_map(|segment| segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
+                .collect();
+
+            let operations = [
+                &item.get,
+                &item.put,
+                &item.post,
+                &item.delete,
+                &item.options,
+                &item.head,
+                &item.patch,
+                &item.trace,
+            ];
+
+            for parameter in operations
+                .into_iter()
+                .flatten()
+                .flat_map(|operation| operation.parameters.iter().flatten())
+            {
+                if parameter.parameter_in == ParameterIn::Path
+                    && !segments.contains(&parameter.name.as_str())
+                {
+                    orphans.push(format!("{path}:{}", parameter.name));
+                }
+            }
+        }
+
+        assert!(
+            orphans.is_empty(),
+            "path parameters without a matching path segment: {orphans:?}"
+        );
+    }
+
+    #[test]
+    fn unconsumed_commission_endpoints_are_deprecated() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for path in [
+            "/validators/{vote_account}/commissions",
+            "/reports/commission-changes",
+        ] {
+            assert_eq!(
+                spec["paths"][path]["get"]["deprecated"],
+                serde_json::Value::Bool(true),
+                "{path} must be marked deprecated in the spec"
+            );
+        }
+    }
+
+    #[test]
+    fn commission_bps_and_collector_health_fields_are_documented() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for (schema, field) in [
+            ("ValidatorRecord", "commission_effective_bps"),
+            ("ValidatorRecord", "inflation_rewards_collector_healthy"),
+            ("ValidatorRecord", "block_revenue_collector_healthy"),
+            ("ValidatorEpochStats", "inflation_rewards_collector_healthy"),
+            ("ValidatorEpochStats", "block_revenue_collector_healthy"),
+        ] {
+            let description = spec["components"]["schemas"][schema]["properties"][field]
+                ["description"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                !description.is_empty(),
+                "{schema}.{field} must be in the spec with its doc comment"
+            );
+        }
+    }
+}

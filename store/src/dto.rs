@@ -9,6 +9,11 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// `commission_effective` came from the epoch's reward row, the rate the runtime applied.
+pub const COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW: &str = "reward_row";
+/// `commission_effective` came from vote state sampled at the close of E-2, the state agave's `epoch_stakes(E)` applies, since SIMD-0232 removed the rate from reward rows; a change after E-2's last hourly sample is missed.
+pub const COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE: &str = "vote_state";
+
 /// Served instead of null so every consumer has a client name to render.
 pub const UNKNOWN_CLIENT_NAME: &str = "Unknown";
 
@@ -33,8 +38,7 @@ pub fn client_name(client_id: Option<u16>) -> String {
 pub fn client_label(client_id: Option<u16>) -> String {
     classified(client_id)
         .and_then(|client| client.label())
-        .unwrap_or(UNKNOWN_CLIENT_NAME)
-        .to_string()
+        .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string())
 }
 
 pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
@@ -43,6 +47,17 @@ pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
 
 pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
     classified(client_id).and_then(|client| client.lineage().map(str::to_string))
+}
+
+/// Whether the registry places the client, so its vendor, lineage and block engine are known.
+pub fn client_is_classified(client_id: Option<u16>) -> bool {
+    classified(client_id).is_some()
+}
+
+/// The block engine the client runs. `None` for a client running on its own, and for an id the
+/// registry does not know.
+pub fn client_engine(client_id: Option<u16>) -> Option<String> {
+    classified(client_id).and_then(|client| client.engine().map(str::to_string))
 }
 
 pub struct ValidatorJitoMEVInfo {
@@ -133,10 +148,18 @@ pub struct Validator {
     pub dc_city: Option<String>,
     pub dc_asn: Option<i32>,
     pub dc_aso: Option<String>,
+    /// Whether the whois lookup answered at all, which no single `dc_` field
+    /// can express: every field of a resolved answer is independently optional.
+    #[serde(default)]
+    pub dc_resolved: bool,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
+    #[serde(default)]
+    pub commission_effective_source: Option<String>,
+    #[serde(default)]
+    pub commission_effective_bps: Option<i32>,
     pub version: Option<String>,
     pub client_id: Option<i32>,
     pub client_id_raw: Option<String>,
@@ -150,7 +173,17 @@ pub struct Validator {
     pub foundation_stake: Decimal,
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
+    #[serde(default)]
+    pub direct_stake: Option<Decimal>,
+    #[serde(default)]
+    pub direct_activating_stake: Option<Decimal>,
+    #[serde(default)]
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
+    #[serde(default)]
+    pub activating_stake: Option<Decimal>,
+    #[serde(default)]
+    pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
     pub credits: Decimal,
@@ -161,6 +194,55 @@ pub struct Validator {
     pub uptime: Option<Decimal>,
     pub downtime: Option<Decimal>,
     pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub inflation_rewards_collector: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps: Option<i32>,
+    #[serde(default)]
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_commission_bps: Option<i32>,
+    #[serde(default)]
+    pub pending_delegator_rewards: Option<Decimal>,
+    #[serde(default)]
+    pub inflation_rewards_collector_owner: Option<String>,
+    #[serde(default)]
+    pub inflation_rewards_collector_lamports: Option<Decimal>,
+    #[serde(default)]
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    #[serde(default)]
+    pub block_revenue_collector_owner: Option<String>,
+    #[serde(default)]
+    pub block_revenue_collector_lamports: Option<Decimal>,
+    #[serde(default)]
+    pub block_revenue_collector_healthy: Option<bool>,
+}
+
+impl Validator {
+    /// Whether any part of the data center is known.
+    pub fn has_data_center(&self) -> bool {
+        self.dc_coordinates_lat.is_some()
+            || self.dc_coordinates_lon.is_some()
+            || self.dc_continent.is_some()
+            || self.dc_country_iso.is_some()
+            || self.dc_country.is_some()
+            || self.dc_city.is_some()
+            || self.dc_asn.is_some()
+            || self.dc_aso.is_some()
+    }
+
+    pub fn copy_data_center_from(&mut self, other: &Validator) {
+        self.dc_coordinates_lat = other.dc_coordinates_lat;
+        self.dc_coordinates_lon = other.dc_coordinates_lon;
+        self.dc_continent = other.dc_continent.clone();
+        self.dc_country_iso = other.dc_country_iso.clone();
+        self.dc_country = other.dc_country.clone();
+        self.dc_city = other.dc_city.clone();
+        self.dc_asn = other.dc_asn;
+        self.dc_aso = other.dc_aso.clone();
+    }
 }
 
 impl Validator {
@@ -193,11 +275,28 @@ impl Validator {
             dc_city: city,
             dc_asn: asn.map(|asn| asn as i32),
             dc_aso: aso,
+            dc_resolved: v.data_center.is_some(),
 
             commission_max_observed: None,
             commission_min_observed: None,
             commission_advertised: Some(v.performance.commission as i32),
             commission_effective: None,
+            commission_effective_source: None,
+            commission_effective_bps: None,
+            inflation_rewards_collector: v.inflation_rewards_collector.clone(),
+            block_revenue_collector: v.block_revenue_collector.clone(),
+            inflation_rewards_commission_bps: v.inflation_rewards_commission_bps.map(i32::from),
+            inflation_rewards_commission_bps_is_v4: v.inflation_rewards_commission_bps_is_v4,
+            block_revenue_commission_bps: v.block_revenue_commission_bps.map(i32::from),
+            pending_delegator_rewards: v.pending_delegator_rewards.map(Decimal::from),
+            inflation_rewards_collector_owner: v.inflation_rewards_collector_owner.clone(),
+            inflation_rewards_collector_lamports: v
+                .inflation_rewards_collector_lamports
+                .map(Decimal::from),
+            inflation_rewards_collector_healthy: v.inflation_rewards_collector_healthy,
+            block_revenue_collector_owner: v.block_revenue_collector_owner.clone(),
+            block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
+            block_revenue_collector_healthy: v.block_revenue_collector_healthy,
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -211,7 +310,12 @@ impl Validator {
             foundation_stake: v.foundation_stake.into(),
             marinade_native_stake: v.marinade_native_stake.into(),
             institutional_stake: v.institutional_stake.into(),
+            direct_stake: v.direct_stake.map(Decimal::from),
+            direct_activating_stake: v.direct_activating_stake.map(Decimal::from),
+            direct_deactivating_stake: v.direct_deactivating_stake.map(Decimal::from),
             self_stake: v.self_stake.into(),
+            activating_stake: v.activating_stake.map(Decimal::from),
+            deactivating_stake: v.deactivating_stake.map(Decimal::from),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
             credits: v.performance.credits.into(),
@@ -227,15 +331,42 @@ impl Validator {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema, Default)]
 pub struct ValidatorEpochStats {
     pub epoch: u64,
     pub epoch_start_at: Option<DateTime<Utc>>,
     pub epoch_end_at: Option<DateTime<Utc>>,
+    /// The epoch's ceiling and floor across every commission sample and the applied rate. Both fold in `commission_effective`, which is a whole-percent projection rounded up from basis points, so either bound can read up to 1pp above the rate actually charged.
     pub commission_max_observed: Option<u8>,
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
+    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the vote state sampled at the close of epoch E-2, falling back to E-1 and then E as agave does, which is the state the runtime applied to this epoch and what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
+    pub commission_effective_source: Option<String>,
+    /// Inflation commission in basis points as the vote state carried it. Authoritative where the whole-percent fields are a `div_ceil` projection of it. Set on every vote state version: agave synthesizes `commission * 100` on a pre-v4 account, so this is the rate it applies either way — read `inflation_rewards_commission_bps_is_v4` to tell a rate the validator set in basis points from that projection.
+    pub inflation_rewards_commission_bps: Option<i32>,
+    /// Whether `inflation_rewards_commission_bps` came from a v4 vote state, where a validator can set a fraction of a percent, rather than being agave's `commission * 100` projection of a whole-percent rate. Null where nothing was sampled.
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    /// SIMD-0232 account this validator's inflation commission is paid into. Null on a pre-v4 vote state, where agave has no collector to read and credits the vote account itself — null is not "the vote account", it is "no collector recorded". Sampled from live vote state, so it predicts this epoch's payout, which lands in the first block of the next epoch.
+    pub inflation_rewards_collector: Option<String>,
+    /// Whether `inflation_rewards_collector` points somewhere other than the vote account, so a consumer need not diff pubkeys. Null on a pre-v4 vote state. Unlike the block-revenue side this does mean a deliberate redirect: a vote account's own address never changes, and the only way to move this collector is the `UpdateCommissionCollector` instruction.
+    pub inflation_rewards_collector_redirected: Option<bool>,
+    /// How many vote accounts in this epoch name the same `inflation_rewards_collector`, this one included. More than one means the runtime merges their commissions into a single reward row and the per-validator split is not recoverable from the ledger. **Not a relationship between those validators**: SIMD-0232 asks a collector for no signature of its own, so anyone can point a throwaway vote account at somebody else's collector. Never key an identity or an operator grouping on a collector.
+    pub inflation_rewards_collector_shared_count: Option<i64>,
+    /// Whether `inflation_rewards_collector` passes agave's payout check: a system-owned account other than the incinerator. False means the inflation commission is burned instead of paid. Read before the payout, so it is a prediction. Null on a pre-v4 state, on a collector that is the vote account, and on a missing account, which agave creates only when the payout alone covers rent.
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    /// SIMD-0232 account this validator's block revenue is paid into. Null on a pre-v4 vote state, where agave credits the leader identity instead. Read from the vote state that built the leader schedule, so a sample taken now predicts the *next* epoch's block revenue, not this one's.
+    pub block_revenue_collector: Option<String>,
+    /// Whether `block_revenue_collector` still points at the current identity, which is its default. Null on a pre-v4 vote state. False does **not** imply a deliberate redirect: agave stopped re-syncing this field to the identity once SIMD-0232 activated, so changing identity leaves it on the old one.
+    pub block_revenue_collector_is_identity: Option<bool>,
+    /// How many vote accounts in this epoch name the same `block_revenue_collector`, this one included. Carries the same no-consent caveat as `inflation_rewards_collector_shared_count`, but not its attribution loss: block revenue is deposited per block rather than merged into one epoch reward row.
+    pub block_revenue_collector_shared_count: Option<i64>,
+    /// The same check as `inflation_rewards_collector_healthy`, for `block_revenue_collector`. False means the block revenue deposited there is burned.
+    pub block_revenue_collector_healthy: Option<bool>,
+    /// Block-revenue commission in basis points. Inert until SIMD-0123 activates, and 10000 by default on a vote state migrated to v4, which reads as "the validator keeps all of it" rather than as an inflation rate. Null on a pre-v4 vote state.
+    pub block_revenue_commission_bps: Option<i32>,
+    /// Inflation rewards accrued to this vote account and not yet distributed to its delegators. Null on a pre-v4 vote state.
+    pub pending_delegator_rewards: Option<Decimal>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
@@ -265,6 +396,9 @@ pub struct ValidatorEpochStats {
     pub foundation_stake: Decimal,
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
+    pub direct_stake: Option<Decimal>,
+    pub direct_activating_stake: Option<Decimal>,
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
@@ -283,7 +417,7 @@ pub struct ValidatorEpochStats {
     pub rank_apy: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema, Default)]
 pub struct ValidatorRecord {
     pub identity: String,
     pub vote_account: String,
@@ -311,6 +445,34 @@ pub struct ValidatorRecord {
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
+    /// See `ValidatorEpochStats::commission_effective_source`. Projected from the newest closed epoch, alongside `commission_effective` itself.
+    pub commission_effective_source: Option<String>,
+    /// Basis points behind `commission_effective`, from the same closed epoch; null where that epoch's rate came from a reward row or predates bps sampling.
+    pub commission_effective_bps: Option<i32>,
+    /// See `ValidatorEpochStats::inflation_rewards_commission_bps`. Read from the newest epoch sampled, which is the open one, as is every vote-state field below it. It therefore does not pair with `commission_effective` above, which is a closed epoch's rate: a validator that moved its commission this epoch reads two different rates here.
+    pub inflation_rewards_commission_bps: Option<i32>,
+    /// See `ValidatorEpochStats::inflation_rewards_commission_bps_is_v4`.
+    pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector`.
+    pub inflation_rewards_collector: Option<String>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector_redirected`.
+    pub inflation_rewards_collector_redirected: Option<bool>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector_shared_count`.
+    pub inflation_rewards_collector_shared_count: Option<i64>,
+    /// See `ValidatorEpochStats::inflation_rewards_collector_healthy`.
+    pub inflation_rewards_collector_healthy: Option<bool>,
+    /// See `ValidatorEpochStats::block_revenue_collector`.
+    pub block_revenue_collector: Option<String>,
+    /// See `ValidatorEpochStats::block_revenue_collector_is_identity`.
+    pub block_revenue_collector_is_identity: Option<bool>,
+    /// See `ValidatorEpochStats::block_revenue_collector_shared_count`.
+    pub block_revenue_collector_shared_count: Option<i64>,
+    /// See `ValidatorEpochStats::block_revenue_collector_healthy`.
+    pub block_revenue_collector_healthy: Option<bool>,
+    /// See `ValidatorEpochStats::block_revenue_commission_bps`.
+    pub block_revenue_commission_bps: Option<i32>,
+    /// See `ValidatorEpochStats::pending_delegator_rewards`.
+    pub pending_delegator_rewards: Option<Decimal>,
     pub commission_aggregated: Option<i32>,
     /// How many rugs fall in the window described on `rugged_commission`.
     pub rugged_commission_occurrences: u64,
@@ -341,7 +503,12 @@ pub struct ValidatorRecord {
     pub foundation_stake: Decimal,
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
+    pub direct_stake: Option<Decimal>,
+    pub direct_activating_stake: Option<Decimal>,
+    pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
+    pub activating_stake: Option<Decimal>,
+    pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
     pub credits: u64,
     pub score: Option<f64>,
@@ -353,11 +520,20 @@ pub struct ValidatorRecord {
     pub avg_apy: Option<f64>,
     pub unique_delegators: Option<u64>,
     pub avg_take_rate: Option<f64>,
-    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. Null for a validator whose advertised commission is unknown.
+    /// What the validator's current fee settings imply it keeps, as a fraction: its inflation, MEV and block-reward commissions weighted by the cluster reward mix. Forward-looking where `avg_take_rate` measures realized rewards, so two validators on the same fee settings read the same here regardless of size or block-production luck. Taking no commission anywhere floors it at the cluster block share, not at 0, because block rewards go wholly to the producer unless it also shares them through Jito's PriorityFeeDistribution. The inflation commission is the worse of `commission_max_observed` and `commission_advertised`, so a validator that only advertises a low rate early in the epoch reads at the rate it actually charges. Null for a validator whose commission is unknown on both.
     pub expected_take_rate: Option<f64>,
     /// Latest point of the apy-api 14-day rolling staker APY, a fraction like `avg_apy` but MEV-inclusive where `avg_apy` is inflation-only. Null for a validator apy-api has no rewards data for.
     pub net_apy: Option<f64>,
     pub incidents: Vec<IncidentRecord>,
+    /// Node operator from the operators CSV; null for a vote account the file does not list.
+    #[serde(default)]
+    pub operator: Option<String>,
+    /// Stake gained since the epoch the group rows measure their own 7-day delta against, so the two
+    /// reconcile. Null when history does not reach back that far.
+    #[serde(default)]
+    pub stake_delta_7d: Option<Decimal>,
+    #[serde(default)]
+    pub stake_delta_30d: Option<Decimal>,
     #[serde(default)]
     pub verified: bool,
     /// As listed by the validator-bonds `/validators/protected` endpoint, which owns the rule.
@@ -375,13 +551,123 @@ pub struct UptimeRecord {
     pub end_at: DateTime<Utc>,
 }
 
-/// A single downtime incident (one DOWN interval from the uptimes table).
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct IncidentRecord {
-    pub epoch: u64,
-    pub start_at: DateTime<Utc>,
-    pub end_at: DateTime<Utc>,
-    pub downtime_seconds: u64,
+/// One incident on a validator. `incident_type` says which kind, and which fields are present.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+#[serde(tag = "incident_type")]
+pub enum IncidentRecord {
+    /// One DOWN interval of the uptimes stream.
+    Downtime {
+        epoch: u64,
+        start_at: DateTime<Utc>,
+        end_at: DateTime<Utc>,
+        downtime_seconds: u64,
+        /// The epoch's block production, whenever there was any to measure. Breach or not: this
+        /// record exists because the validator went down, and these are the numbers alongside it.
+        #[serde(default)]
+        block_production: Option<BlockProductionDetail>,
+    },
+    /// A closed epoch the validator was up for but produced too few of its leader slots in.
+    BlockProduction {
+        epoch: u64,
+        epoch_start_at: DateTime<Utc>,
+        epoch_end_at: DateTime<Utc>,
+        block_production: BlockProductionDetail,
+    },
+    /// An epoch the validator raised its inflation commission in, to
+    /// [`crate::incidents::COMMISSION_SPIKE_THRESHOLD_PERCENTAGE`] or above.
+    /// Excludes MEV and block-revenue commissions.
+    CommissionSpike {
+        epoch: u64,
+        commission_before: u8,
+        /// 90 or above.
+        commission_after: u8,
+        /// When the raised rate was first sampled.
+        changed_at: DateTime<Utc>,
+        epoch_slot: u64,
+    },
+    /// A run of epochs with a 30-day sandwich rate far above the cluster median. The numbers
+    /// below come from `peak_epoch`.
+    Sandwich {
+        first_epoch: u64,
+        last_epoch: u64,
+        epoch_start_at: DateTime<Utc>,
+        epoch_end_at: DateTime<Utc>,
+        peak_epoch: u64,
+        /// Blocks over the 30-day window the rate is measured on, not over the epoch.
+        blocks_produced: u64,
+        blocks_with_sandwiches: u64,
+        /// Percent, one decimal.
+        sandwich_rate_30d: f64,
+        /// Null before epoch 820: upstream published only the 30d rate then.
+        sandwich_rate_60d: Option<f64>,
+        /// Percent.
+        cluster_median_rate: f64,
+        /// The bar `sandwich_rate_30d` had to clear, in percent.
+        threshold: f64,
+    },
+    /// Measured against adoption in the same lineage, not the floors `/releases` publishes.
+    RunningLateClientVersion {
+        epoch: u64,
+        epoch_start_at: DateTime<Utc>,
+        epoch_end_at: DateTime<Utc>,
+        version: String,
+        /// `agave`, `frankendancer`, `firedancer` or `sig`.
+        client_lineage: String,
+        /// Share of the lineage's stake on a strictly newer version, as a fraction.
+        newer_stake_share: f64,
+        /// Every version above this one, newest first. The shares sum to `newer_stake_share`.
+        newer_version_stake_shares: Vec<VersionStakeShare>,
+    },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct VersionStakeShare {
+    pub version: String,
+    /// Share of the lineage's stake in that epoch, as a fraction.
+    pub share: f64,
+}
+
+/// What a validator produced of its leader slots in one epoch, and the bar it was held to.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct BlockProductionDetail {
+    pub leader_slots: u64,
+    pub blocks_produced: u64,
+    pub missed_slots: u64,
+    /// `missed_slots / leader_slots`, as a fraction.
+    pub skip_rate: f64,
+    /// The epoch's cluster-wide skip rate, over the validators that were evaluable that epoch.
+    pub cluster_skip_rate: f64,
+    /// The bar `skip_rate` had to clear that epoch, as a fraction.
+    pub threshold: f64,
+    /// Whether these numbers count as an incident.
+    /// Affected by query params `min_incident_missed_slots` and `min_incident_leader_slots`.
+    pub counts_as_incident: bool,
+}
+
+impl IncidentRecord {
+    /// The epoch the incident starts in.
+    pub fn epoch(&self) -> u64 {
+        match self {
+            Self::Downtime { epoch, .. }
+            | Self::BlockProduction { epoch, .. }
+            | Self::CommissionSpike { epoch, .. }
+            | Self::RunningLateClientVersion { epoch, .. } => *epoch,
+            Self::Sandwich { first_epoch, .. } => *first_epoch,
+        }
+    }
+
+    /// When the incident started, for ordering: a downtime interval when it went down, a block
+    /// production or sandwich epoch when the epoch began, a commission spike when the raise was
+    /// sampled.
+    pub fn started_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::Downtime { start_at, .. } => *start_at,
+            Self::BlockProduction { epoch_start_at, .. } => *epoch_start_at,
+            Self::CommissionSpike { changed_at, .. } => *changed_at,
+            Self::RunningLateClientVersion { epoch_start_at, .. } => *epoch_start_at,
+            Self::Sandwich { epoch_start_at, .. } => *epoch_start_at,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -439,6 +725,35 @@ pub struct VersionRecord {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ReleaseRecord {
+    /// `agave`, `frankendancer`, `firedancer` or `sig`.
+    pub client_lineage: String,
+    /// As the client reports it in gossip, e.g. `4.2.2` or `0.1106.40201`.
+    pub client_version: String,
+    /// Epoch the release was published in, resolved from `released_at` against the epochs we hold.
+    pub available_epoch: Option<u64>,
+    pub released_at: Option<DateTime<Utc>>,
+    pub release_url: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A version the Solana Foundation Delegation Program required, and the epoch it started requiring it.
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct SfdpFloor {
+    pub client_lineage: String,
+    pub client_version: String,
+    pub effective_epoch: u64,
+}
+
+/// A version the cluster's feature gates required, and the epoch it started requiring it.
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct FeatureGateFloor {
+    pub client_lineage: String,
+    pub client_version: String,
+    pub effective_epoch: u64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct SettlementRecord {
     /// Raw upstream JSON tagged enum, e.g. `"Bidding"` or `{"ProtectedEvent":{...}}`.
     pub reason: String,
@@ -473,6 +788,17 @@ pub struct CommissionRecord {
     pub epoch_end_at: DateTime<Utc>,
     pub epoch_slot: u64,
     pub commission: u8,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct TakeRateRecord {
+    pub epoch: u64,
+    pub epoch_start_at: Option<DateTime<Utc>>,
+    pub epoch_end_at: Option<DateTime<Utc>>,
+    pub realized_take_rate: f64,
+    /// Take rate implied by the epoch's commissions, weighted by the epoch's reward mix.
+    pub expected_take_rate: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -551,6 +877,224 @@ pub struct FeatureSetStats {
     pub feature_set_validator_count: HashMap<String, u64>,
 }
 
+/// Validator stats on the level of a datacenter location.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupLocation {
+    pub country: String,
+    pub city: Option<String>,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+}
+/// The newest release of a client lineage.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ClientRelease {
+    pub version: String,
+    pub released_at: Option<DateTime<Utc>>,
+    pub url: Option<String>,
+}
+
+/// Group can be a hosting provider, validator client or node operator
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorGroupRecord {
+    /// Name of the group or `Unknown`
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+    pub stake_delta_7d: Option<Decimal>,
+    pub stake_delta_30d: Option<Decimal>,
+    pub activating_stake: Option<Decimal>,
+    pub net_apy: Option<f64>,
+    pub take_rate: Option<f64>,
+    pub credits: Option<f64>,
+    pub marinade_score: Option<f64>,
+    pub apy: Option<f64>,
+    pub commission: Option<f64>,
+    pub uptime_pct: Option<f64>,
+    pub expected_take_rate: Option<f64>,
+    pub delegation_relationship_count: Option<u64>,
+    pub incidents: GroupIncidents,
+}
+
+/// The columns every group row carries, whatever the grouping.
+pub trait GroupRow {
+    fn row(&self) -> &ValidatorGroupRecord;
+}
+
+impl GroupRow for ValidatorGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        self
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct GroupShare {
+    pub key: String,
+    pub validator_count: u64,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+}
+
+/// A hosting provider, as `/providers` serves it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorProviderGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    /// Stake-sorted. One hosting organisation commonly announces from several.
+    pub asns: Vec<i32>,
+    /// Stake-sorted
+    pub locations: Vec<GroupLocation>,
+    /// Stake share per client lineage, biggest first.
+    pub client_mix: Vec<GroupShare>,
+    pub superminority_count: u64,
+}
+
+impl GroupRow for ValidatorProviderGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorProviderGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
+/// A client lineage, as the parent rows of `/clients` serve it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorClientGroupRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    pub city_count: u64,
+    pub country_count: u64,
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    pub version_spread: Vec<GroupShare>,
+    /// Block engines paired with this client, from the group's own children.
+    pub block_engines: Vec<String>,
+    /// The vendor slug of each entry in `block_engines`, in the same order. `query_block_engine`
+    /// takes a slug from here.
+    pub block_engine_vendors: Vec<String>,
+    /// Null when the lineage has published no release we know of.
+    pub latest_release: Option<ClientRelease>,
+}
+
+impl GroupRow for ValidatorClientGroupRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorClientGroupRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
+/// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum GroupIncidents {
+    Records(Vec<GroupIncidentRecord>),
+    Count(u64),
+}
+
+impl GroupIncidents {
+    pub fn empty_records() -> Self {
+        Self::Records(Vec::new())
+    }
+
+    pub fn empty_count() -> Self {
+        Self::Count(0)
+    }
+
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Records(records) => records.len() as u64,
+            Self::Count(count) => *count,
+        }
+    }
+
+    pub fn add(&mut self, validator: &str, incidents: &[IncidentRecord]) {
+        match self {
+            Self::Records(records) => records.extend(
+                incidents
+                    .iter()
+                    .map(|incident| GroupIncidentRecord::new(validator, incident)),
+            ),
+            Self::Count(count) => *count += incidents.len() as u64,
+        }
+    }
+
+    /// Members arrive in hash order, so ties break on the member to keep pages stable.
+    pub fn sort(&mut self) {
+        if let Self::Records(records) = self {
+            records.sort_by(|a, b| {
+                a.incident
+                    .started_at()
+                    .cmp(&b.incident.started_at())
+                    .then_with(|| a.validator.cmp(&b.validator))
+            });
+        }
+    }
+}
+
+impl Default for GroupIncidents {
+    fn default() -> Self {
+        Self::empty_records()
+    }
+}
+
+/// A member's incident as its group carries it, `incident_type` and all.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct GroupIncidentRecord {
+    /// Vote account of the member the incident is on.
+    pub validator: String,
+    #[serde(flatten)]
+    pub incident: IncidentRecord,
+}
+
+impl GroupIncidentRecord {
+    pub fn new(validator: &str, incident: &IncidentRecord) -> Self {
+        Self {
+            validator: validator.to_string(),
+            incident: incident.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroups {
+    pub groups: Vec<ValidatorGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorProviderGroups {
+    pub groups: Vec<ValidatorProviderGroupRecord>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
+/// One client — `Agave`, `Frankendancer`, `Firedancer` etc. — with the block engines it runs with.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupNode {
+    pub group: ValidatorClientGroupRecord,
+    pub children: Vec<ValidatorGroupRecord>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
+pub struct ValidatorGroupTree {
+    pub nodes: Vec<ValidatorGroupNode>,
+    pub total_activated_stake: Decimal,
+    pub current_epoch: Option<u64>,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ClusterStats {
     pub block_production_stats: Vec<BlockProductionStats>,
@@ -583,6 +1127,7 @@ pub struct ValidatorAggregatedFlat {
     pub version: String,
     pub client_vendor: String,
     pub client_lineage: String,
+    pub max_inflation_rewards_commission_bps: Option<i32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

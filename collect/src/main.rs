@@ -1,4 +1,7 @@
+use clap::Parser;
 use collect::common::*;
+use collect::releases::{collect_releases_info, ReleasesParams};
+use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
 use collect::validators::*;
 use collect::validators_block_rewards::{collect_validator_block_rewards_info, BlockRewardsParams};
 use collect::validators_events::{collect_validator_events_info, EventsParams};
@@ -6,21 +9,21 @@ use collect::validators_jito::{collect_jito_info, JitoAccountType, JitoParams};
 use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceParams,
 };
+use collect::validators_sandwiches::{collect_validator_sandwiches_info, SandwichesParams};
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 struct Params {
-    #[structopt(flatten)]
+    #[command(flatten)]
     common: CommonParams,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: CollectCommand,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 enum CollectCommand {
     Validators(ValidatorsParams),
     ValidatorsPerformance(ValidatorsPerformanceParams),
@@ -28,6 +31,9 @@ enum CollectCommand {
     JitoPriority(JitoParams),
     ValidatorsBlockRewards(BlockRewardsParams),
     ValidatorsEvents(EventsParams),
+    ValidatorsSandwiches(SandwichesParams),
+    TakeRates(TakeRatesParams),
+    Releases(ReleasesParams),
 }
 
 impl Display for CollectCommand {
@@ -39,6 +45,9 @@ impl Display for CollectCommand {
             CollectCommand::JitoPriority(_) => write!(f, "jito-priority"),
             CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
             CollectCommand::ValidatorsEvents(_) => write!(f, "validators-events"),
+            CollectCommand::ValidatorsSandwiches(_) => write!(f, "validators-sandwiches"),
+            CollectCommand::TakeRates(_) => write!(f, "take-rates"),
+            CollectCommand::Releases(_) => write!(f, "releases"),
         }
     }
 }
@@ -46,7 +55,7 @@ impl Display for CollectCommand {
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let params = Params::from_args();
+    let params = Params::parse();
 
     let command_name = params.command.to_string();
     let result = match params.command {
@@ -71,6 +80,15 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::ValidatorsEvents(events_params) => {
             collect_validator_events_info(params.common, events_params)
+        }
+        CollectCommand::ValidatorsSandwiches(sandwiches_params) => {
+            collect_validator_sandwiches_info(params.common, sandwiches_params)
+        }
+        CollectCommand::TakeRates(take_rates_params) => {
+            collect_take_rates_info(params.common, take_rates_params)
+        }
+        CollectCommand::Releases(releases_params) => {
+            collect_releases_info(params.common, releases_params)
         }
     };
 

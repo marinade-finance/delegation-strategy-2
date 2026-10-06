@@ -1,6 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
-use crate::utils::response_error;
+use crate::utils::response::response_error;
 use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ pub struct QueryParams {
         (status = 200, body = ResponseCommissions)
     )
 )]
+#[deprecated = "No known consumer; scheduled for removal"]
 pub async fn handler(
     vote_account: String,
     query_params: QueryParams,

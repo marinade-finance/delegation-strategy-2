@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
-use collect::validators::{Snapshot, ValidatorSnapshot};
+use collect::validators::Snapshot;
 use collect::validators_performance::{
     ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
 };
@@ -23,7 +24,6 @@ use store::uptime::{store_uptime, StoreUptimeParams};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use store::warehouse::Warehouse;
-use structopt::StructOpt;
 
 mod common;
 
@@ -80,6 +80,7 @@ fn stream_snapshot(
         cluster_inflation: None,
         validators,
         rewards: None,
+        nodes: Default::default(),
     }
 }
 
@@ -91,33 +92,15 @@ async fn seed_validators(directory: &Directory) {
     let snapshot = Snapshot {
         epoch: EPOCH,
         created_at: "2026-08-03T00:00:00Z".into(),
-        validators: vec![ValidatorSnapshot {
-            identity: IDENTITY.into(),
-            vote_account: VOTE_ACCOUNT.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
-            data_center: None,
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: performance(ADVERTISED, false),
-        }],
+        validators: vec![common::validator_snapshot(
+            IDENTITY,
+            VOTE_ACCOUNT,
+            performance(ADVERTISED, false),
+        )],
     };
     let path = write_yaml("close-epoch-validators", &snapshot);
     store_validators(
-        StoreValidatorsParams::from_iter(["store", "--snapshot-file", &path]),
+        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -135,25 +118,25 @@ async fn seed_streams(directory: &Directory) {
         let snapshot = stream_snapshot(created_at, commission, delinquent, transaction_count);
         let path = write_yaml(name, &snapshot);
         store_uptime(
-            StoreUptimeParams::from_iter(["store", "--snapshot-file", &path]),
+            StoreUptimeParams::parse_from(["store", "--snapshot-file", &path]),
             directory,
         )
         .await
         .expect("store uptime");
         store_commissions(
-            StoreCommissionsParams::from_iter(["store", "--snapshot-file", &path]),
+            StoreCommissionsParams::parse_from(["store", "--snapshot-file", &path]),
             directory,
         )
         .await
         .expect("store commissions");
         store_versions(
-            StoreVersionsParams::from_iter(["store", "--snapshot-file", &path]),
+            StoreVersionsParams::parse_from(["store", "--snapshot-file", &path]),
             directory,
         )
         .await
         .expect("store versions");
         store_cluster_info(
-            StoreClusterInfoParams::from_iter(["store", "--snapshot-file", &path]),
+            StoreClusterInfoParams::parse_from(["store", "--snapshot-file", &path]),
             directory,
         )
         .await
@@ -194,10 +177,11 @@ async fn run_close_epoch(directory: &Directory) {
         }),
         validators,
         rewards: Some(rewards),
+        nodes: Default::default(),
     };
     let path = write_yaml("close-epoch-finalized", &snapshot);
     close_epoch(
-        CloseEpochParams::from_iter(["store", "--snapshot-file", &path]),
+        CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
         directory,
     )
     .await
@@ -383,7 +367,7 @@ async fn a_sealed_epoch_is_read_from_its_seal_while_live_still_holds_it() {
     let mut warehouse = Warehouse::default();
     warehouse.warm(&directory, 80).await.expect("warm");
     let counted = warehouse
-        .uptime_intervals(80)
+        .uptime_intervals(warehouse.window(80))
         .into_iter()
         .filter(|(vote_account, interval)| {
             vote_account.as_str() == VOTE_ACCOUNT && interval.epoch == EPOCH

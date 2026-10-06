@@ -1,4 +1,4 @@
-use crate::{context::WrappedContext, metrics, utils::response_error_500};
+use crate::{context::WrappedContext, metrics, utils::response::response_error_500};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::GlobalUnstakeHintRecord;
@@ -10,6 +10,7 @@ pub struct ResponseGlobalUnstakeHints {
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct QueryParams {
     epoch: u64,
 }

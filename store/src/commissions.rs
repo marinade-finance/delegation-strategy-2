@@ -1,14 +1,14 @@
 use crate::directory::{Directory, Doc, Precondition};
 use crate::docs::{CommissionSample, CommissionState, CommissionsDoc, LIVE_COMMISSIONS};
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
 use serde_yaml;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct StoreCommissionsParams {
-    #[structopt(long = "snapshot-file")]
+    #[arg(long = "snapshot-file")]
     snapshot_path: String,
 }
 
