@@ -38,7 +38,6 @@ pub async fn check_jito(
             // the epoch of the data the record was created for: the epoch prior
             // to the epoch when the data collection was executed
             let sql_epoch = Decimal::from(stored_epoch);
-            // the slot index when the data collection was executed (see collect/store)
             let sql_slot_index = Decimal::from(stored_slot_index);
 
             let epoch_data = rpc_client.get_epoch_info()?;
@@ -50,7 +49,6 @@ pub async fn check_jito(
                 sql_epoch + Decimal::one()
             );
 
-            // The lastly stored epoch saved in DB is delayed by 1 epoch compared to the current epoch.
             if current_epoch - Decimal::one() > sql_epoch {
                 info!(
                     "The previous epoch ({}) has surpassed the last recorded {dir} epoch ({sql_epoch}). Initiating data collection for {dir} analysis.",
@@ -59,7 +57,6 @@ pub async fn check_jito(
                 return Ok(true);
             }
 
-            // If the stored slot index in SQL elapses the expected interval timing, we will proceed with the data collection.
             let slots_diff = current_slot_index.saturating_sub(sql_slot_index);
             if slots_diff >= params.execution_interval_slots {
                 info!(

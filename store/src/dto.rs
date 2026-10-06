@@ -221,7 +221,6 @@ pub struct Validator {
 }
 
 impl Validator {
-    /// Whether any part of the data center is known.
     pub fn has_data_center(&self) -> bool {
         self.dc_coordinates_lat.is_some()
             || self.dc_coordinates_lon.is_some()
@@ -645,7 +644,6 @@ pub struct BlockProductionDetail {
 }
 
 impl IncidentRecord {
-    /// The epoch the incident starts in.
     pub fn epoch(&self) -> u64 {
         match self {
             Self::Downtime { epoch, .. }

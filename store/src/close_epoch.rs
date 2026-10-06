@@ -280,8 +280,6 @@ async fn build_epoch_record(
     let transaction_count =
         transactions.iter().max().unwrap_or(&0) - transactions.iter().min().unwrap_or(&0);
 
-    // The epoch starts where the previous one ended; the first epoch ever
-    // collected starts at its first sample.
     let previous = match epoch.checked_sub(1) {
         Some(previous) => {
             directory

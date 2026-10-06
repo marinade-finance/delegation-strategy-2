@@ -29,7 +29,6 @@ pub async fn check_block_rewards(
     let dir = BLOCK_REWARDS_DIR;
     info!("Checking epoch data about epoch in {dir}");
 
-    // in block rewards, we only care about epoch
     match last_epoch(directory, dir).await? {
         Some(sql_epoch) => {
             let current_epoch_data = rpc_client.get_epoch_info()?;
@@ -40,7 +39,6 @@ pub async fn check_block_rewards(
                 "{dir} stores last epoch: {sql_epoch}. On-chain epoch {current_epoch} slot index: {current_slot_index}",
             );
 
-            // The lastly stored epoch saved in DB is delayed by 1 epoch compared to the current epoch
             if current_epoch - 1 > sql_epoch {
                 info!(
                     "The previous epoch ({}) has surpassed the last recorded {dir} epoch ({sql_epoch}). Initiating data collection for {dir} analysis.",
@@ -48,7 +46,6 @@ pub async fn check_block_rewards(
                 );
 
                 return if current_slot_index > params.slot_offset_wait {
-                    // the slot offset wait is overpassed, we can proceed
                     // this is a preliminary check as the real collection may happen only when Google stakes-etl job loaded data to BQ
                     Ok(true)
                 } else {

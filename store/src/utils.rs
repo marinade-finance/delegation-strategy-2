@@ -88,7 +88,6 @@ fn get_apy_calculators(
     let mut result: HashMap<_, _> = Default::default();
 
     for (epoch, epoch_record) in warehouse.epochs.iter() {
-        // The epochs a snapshot never landed for carry no yield to estimate.
         let Some(snapshot) = warehouse.snapshots.get(epoch) else {
             continue;
         };
@@ -244,7 +243,6 @@ pub fn load_validator_incidents(
             .iter()
             .filter(|stats| epochs.contains(&stats.epoch))
         {
-            // No cluster figure, no bar to measure against, so the epoch stays unrecorded.
             let Some(production) = cluster_skip_rates
                 .get(&stats.epoch)
                 .and_then(|cluster_skip_rate| EpochBlockProduction::new(stats, *cluster_skip_rate))
@@ -786,7 +784,6 @@ struct LatestValidatorApyRecord {
     apy: f64,
 }
 
-// `what` names the upstream in the status error; it is the only part of this that differs per caller.
 async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> anyhow::Result<T> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
@@ -816,7 +813,6 @@ pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String
     .collect())
 }
 
-// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
     flag: &str,
@@ -1924,7 +1920,6 @@ impl FlatAccumulator {
         }
 
         self.skip_rate += validator.skip_rate;
-        // A validator with few leader slots is judged no worse than the cluster.
         let leader_slots = validator.leader_slots.to_u64().unwrap_or_default();
         self.grace_skip_rate += match (leader_slots < 200, cluster.weighted_skip_rate) {
             (true, Some(cluster_skip_rate)) => validator.skip_rate.min(cluster_skip_rate),

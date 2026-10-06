@@ -72,7 +72,6 @@ fn backfilled_epochs_reproduce_the_legacy_inflation_estimate() {
         "backfilled epoch moved: {baseline} vs {legacy}"
     );
 
-    // Stage 1 mints 350/400 of the baseline per epoch.
     let stage_1 = rewards[&1001];
     assert!(
         (stage_1 / baseline - 350.0 / 400.0).abs() < 1e-9,

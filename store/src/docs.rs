@@ -380,7 +380,6 @@ pub struct NodeObservation {
 }
 
 impl NodeObservation {
-    /// Whether the node still advertises the same contact and build.
     pub fn same_node(&self, other: &NodeObservation) -> bool {
         self.ip == other.ip
             && self.gossip_port == other.gossip_port

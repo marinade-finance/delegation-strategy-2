@@ -131,7 +131,6 @@ async fn the_warehouse_warms_from_the_documents_and_then_answers_304() {
         Some(&1000)
     );
 
-    // A second warm sees no change and keeps what it holds.
     warehouse
         .warm(&directory, DEFAULT_CACHE_EPOCHS)
         .await
