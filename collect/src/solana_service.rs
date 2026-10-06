@@ -72,8 +72,8 @@ pub const MAX_TOWER_CREDITS_IN_EPOCH: u64 = 16 * SLOTS_IN_EPOCH;
 // Entries before it count tower vote credits, entries after it count reward lamports.
 const EPOCH_CREDITS_MIGRATION_MARKER: Epoch = Epoch::MAX;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CreditsRegime {
+#[derive(Clone, Copy)]
+enum CreditsRegime {
     Tower,
     Migration,
     Alpenglow,
@@ -81,7 +81,6 @@ pub enum CreditsRegime {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EpochCredits {
-    pub regime: CreditsRegime,
     pub tower_credits: Option<u64>,
     pub vote_reward_lamports: Option<u64>,
 }
@@ -154,7 +153,6 @@ pub fn split_epoch_credits(
     }
 
     Some(EpochCredits {
-        regime,
         tower_credits: tower.flatten(),
         vote_reward_lamports: alpenglow.flatten(),
     })
@@ -2062,7 +2060,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&testnet_history(), 1041, None),
             Some(EpochCredits {
-                regime: CreditsRegime::Tower,
                 tower_credits: Some(6707558),
                 vote_reward_lamports: None,
             })
@@ -2074,7 +2071,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&testnet_history(), 1042, None),
             Some(EpochCredits {
-                regime: CreditsRegime::Migration,
                 tower_credits: Some(64638),
                 vote_reward_lamports: Some(290885262341),
             })
@@ -2086,7 +2082,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&testnet_history(), 1043, None),
             Some(EpochCredits {
-                regime: CreditsRegime::Alpenglow,
                 tower_credits: None,
                 vote_reward_lamports: Some(298929716564),
             })
@@ -2099,7 +2094,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&window, 1042, None),
             Some(EpochCredits {
-                regime: CreditsRegime::Migration,
                 tower_credits: None,
                 vote_reward_lamports: Some(290885262341),
             })
@@ -2113,7 +2107,6 @@ mod epoch_credits_tests {
             assert_eq!(
                 split_epoch_credits(&history, epoch, None),
                 Some(EpochCredits {
-                    regime: CreditsRegime::Tower,
                     tower_credits: Some(0),
                     vote_reward_lamports: None,
                 })
@@ -2139,8 +2132,11 @@ mod epoch_credits_tests {
     fn no_marker_without_migration_epoch_is_tower() {
         let history = vec![(1045, 1217502525481, 899173572261)];
         assert_eq!(
-            split_epoch_credits(&history, 1045, None).map(|c| c.regime),
-            Some(CreditsRegime::Tower)
+            split_epoch_credits(&history, 1045, None),
+            Some(EpochCredits {
+                tower_credits: Some(318328953220),
+                vote_reward_lamports: None,
+            })
         );
     }
 
@@ -2153,7 +2149,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&history, 1045, Some(1042)),
             Some(EpochCredits {
-                regime: CreditsRegime::Alpenglow,
                 tower_credits: None,
                 vote_reward_lamports: Some(318328953220),
             })
@@ -2170,7 +2165,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&history, 1042, Some(1042)),
             Some(EpochCredits {
-                regime: CreditsRegime::Migration,
                 tower_credits: Some(30600),
                 vote_reward_lamports: None,
             })
@@ -2183,7 +2177,6 @@ mod epoch_credits_tests {
         assert_eq!(
             split_epoch_credits(&history, 1042, Some(1042)),
             Some(EpochCredits {
-                regime: CreditsRegime::Migration,
                 tower_credits: Some(0),
                 vote_reward_lamports: Some(290885262341),
             })
