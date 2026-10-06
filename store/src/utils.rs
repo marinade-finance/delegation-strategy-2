@@ -242,7 +242,10 @@ async fn get_apy_calculators(
                     supply,
                     inflation,
                     slots_per_year,
-                    ROUND(SUM(validators.credits * validators.activated_stake))::TEXT total_weighted_credits
+                    -- NULL once an epoch has vote rewards: its tower credits cover only part of the epoch, so the credit-based APY comes out too high
+                    CASE WHEN bool_or(validators.vote_reward_lamports IS NOT NULL) THEN NULL
+                        ELSE ROUND(SUM(validators.credits * validators.activated_stake))::TEXT
+                    END total_weighted_credits
                 FROM
                 epochs
                 INNER JOIN validators ON epochs.epoch = validators.epoch
@@ -1288,7 +1291,9 @@ pub async fn load_validators(
                         row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
                         commission_effective,
                     )),
-                    (None, Some(credits)) => Some(c.estimate_yields(credits, commission_effective)),
+                    (None, Some(credits)) => c
+                        .total_weighted_credits
+                        .map(|_| c.estimate_yields(credits, commission_effective)),
                     (None, None) => None,
                 }
             });
