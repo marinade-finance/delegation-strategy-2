@@ -449,6 +449,81 @@ async fn load_ruggers_detects_a_rug_in_epochs_the_backfill_filled() {
 }
 
 #[tokio::test]
+async fn load_ruggers_does_not_flag_an_honest_cut_while_the_applied_rate_lags_it() {
+    let schema = "ds_test_load_ruggers_honest_cut";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // Cut from 100 to 5 at 1100: agave keeps charging 100 for 1100 and 1101, the epoch_stakes vintage.
+    client
+        .execute(
+            "INSERT INTO validators (
+                identity, vote_account, epoch, activated_stake, marinade_stake,
+                marinade_native_stake, superminority, stake_to_become_superminority, credits,
+                leader_slots, blocks_produced, skip_rate, updated_at,
+                commission_advertised, commission_max_observed, commission_min_observed,
+                commission_effective
+            ) VALUES
+                ('identityCutter', 'voteCutter', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 100, 100, 100, 100),
+                ('identityCutter', 'voteCutter', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 100, 100, 100, 100),
+                ('identityCutter', 'voteCutter', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identityCutter', 'voteCutter', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identityCutter', 'voteCutter', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 5),
+                ('identitySpiker', 'voteSpiker', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identitySpiker', 'voteSpiker', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 100, 5, 100),
+                ('identitySpiker', 'voteSpiker', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1097, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1098, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1099, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 20, 20, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1100, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 20, 20, 5, 5),
+                ('identityShortHold', 'voteShortHold', 1101, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 20, 5, 20),
+                ('identityShortHold', 'voteShortHold', 1102, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 20, 5, 20),
+                ('identityShortHold', 'voteShortHold', 1103, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 5, 5, 5, 5)",
+            &[],
+        )
+        .await
+        .unwrap();
+    // Raised to 20 during 1099 and cut back during 1101, so the applied 20 lands on 1101 and 1102.
+    client
+        .execute(
+            "INSERT INTO commissions (vote_account, commission, epoch_slot, epoch, created_at) VALUES
+                ('voteShortHold', 5, 100, 1099, NOW()),
+                ('voteShortHold', 20, 200, 1099, NOW()),
+                ('voteShortHold', 20, 100, 1100, NOW()),
+                ('voteShortHold', 20, 100, 1101, NOW()),
+                ('voteShortHold', 5, 200, 1101, NOW()),
+                ('voteShortHold', 5, 100, 1102, NOW())",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let ruggers = store::utils::load_ruggers(&client).await.unwrap();
+
+    assert!(
+        !ruggers.contains_key("voteCutter"),
+        "the applied 100 matches what the vintage epochs advertised, so the cut is not a rug"
+    );
+    assert!(
+        !ruggers.contains_key("voteShortHold"),
+        "a rate held two epochs is applied two epochs later, so its cut is not a rug"
+    );
+    let spiker = ruggers
+        .get("voteSpiker")
+        .expect("a spike hidden between samples at the vintage epochs is still a rug");
+    assert_eq!(spiker.epochs, vec![1100, 1101]);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn load_ruggers_skips_a_matching_epoch_whose_floor_is_not_yet_known() {
     let schema = "ds_test_load_ruggers_null_floor";
     if skip_without_database(schema) {
@@ -798,6 +873,7 @@ async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
         .unwrap();
 
     // voteDeparted has no open-epoch row, so its record is seeded straight from the closed epoch.
+    // Each closed row's own late sample differs from the stored bps close_epoch resolved at E-2.
     client
         .execute(
             "INSERT INTO validators (
@@ -805,17 +881,18 @@ async fn commission_effective_bps_pairs_with_the_closed_epoch_rate() {
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
                 leader_slots, blocks_produced, skip_rate, updated_at,
                 commission_advertised, commission_max_observed, commission_min_observed,
-                commission_effective, commission_effective_source, inflation_rewards_commission_bps
+                commission_effective, commission_effective_source, commission_effective_bps,
+                inflation_rewards_commission_bps
             ) VALUES
-                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', 650),
-                ('idSampled', 'voteSampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL, NULL, 900),
-                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'reward_row', 650),
-                ('idReward', 'voteReward', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
-                ('idBackfill', 'voteBackfill', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, NULL, 650),
-                ('idBackfill', 'voteBackfill', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, 650),
-                ('idUnsampled', 'voteUnsampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', NULL),
-                ('idUnsampled', 'voteUnsampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL),
-                ('idDeparted', 'voteDeparted', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 9, 9, 9, 'vote_state', 820)",
+                ('idSampled', 'voteSampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', 650, 720),
+                ('idSampled', 'voteSampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, NULL, NULL, NULL, NULL, NULL, 900),
+                ('idReward', 'voteReward', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'reward_row', NULL, 650),
+                ('idReward', 'voteReward', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, 650),
+                ('idBackfill', 'voteBackfill', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, NULL, NULL, 650),
+                ('idBackfill', 'voteBackfill', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, 650),
+                ('idUnsampled', 'voteUnsampled', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, 7, 7, 7, 'vote_state', NULL, NULL),
+                ('idUnsampled', 'voteUnsampled', $2, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 7, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('idDeparted', 'voteDeparted', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 9, 9, 9, 9, 'vote_state', 820, 870)",
             &[&Decimal::from(EPOCH_CLOSED), &Decimal::from(EPOCH_OPEN)],
         )
         .await

@@ -4,7 +4,7 @@ use crate::dto::{
     DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
     ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
     ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+    VersionRecord,
 };
 use crate::incidents::{
     CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
@@ -584,21 +584,33 @@ pub async fn load_versions(
 
     Ok(records)
 }
-// From 1030 on commission_effective is close_epoch's vote-state sample or the 0029 backfill.
+// From 1030 on commission_effective is close_epoch's vote-state sample at the epoch_stakes vintage.
 pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
     let rows = psql_client
         .query(
             "
-            WITH commission_changes AS (
+            WITH sample_floors AS (
+                SELECT vote_account, epoch, MIN(commission) AS commission_min
+                FROM commissions
+                GROUP BY vote_account, epoch
+            ),
+            commission_changes AS (
                 SELECT
-                    vote_account,
-                    epoch,
+                    validators.vote_account,
+                    validators.epoch,
                     commission_effective,
                     commission_min_observed,
-                    LAG(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS prev_commission,
-                    LEAD(commission_effective) OVER(PARTITION BY vote_account ORDER BY epoch) AS next_commission
+                    LAG(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS prev_commission,
+                    LEAD(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS next_commission,
+                    -- Without commission_effective, which at E-2 is itself the lagged rate of E-4
+                    CASE WHEN LAG(validators.epoch, 2) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) = validators.epoch - 2
+                        THEN LAG(LEAST(sample_floors.commission_min, commission_advertised), 2)
+                            OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch)
+                    END AS vintage_floor
                 FROM
                     validators
+                    LEFT JOIN sample_floors
+                        ON sample_floors.vote_account = validators.vote_account AND sample_floors.epoch = validators.epoch
             ),
             filtered_commissions AS (
                 SELECT
@@ -612,7 +624,9 @@ pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String
                     -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
                     commission_min_observed IS NOT NULL
                     AND (
-                        (commission_effective > commission_min_observed AND commission_effective > 10 AND commission_min_observed <= 10)
+                        -- The applied rate is epoch_stakes(E), so a cut it still lags must not read as a rug
+                        (commission_effective > commission_min_observed AND commission_effective > COALESCE(vintage_floor, -1)
+                            AND commission_effective > 10 AND commission_min_observed <= 10)
                         OR
                         (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
                         OR
@@ -683,22 +697,13 @@ pub async fn load_commissions(
             SELECT
                 vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
 				epochs.end_at AS epoch_end,
-				epoch_slot, created_at, NULL::INTEGER AS commission_bps
+				epoch_slot, created_at
             FROM commissions
             LEFT JOIN epochs ON commissions.epoch = epochs.epoch
             CROSS JOIN cluster
             WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
-            UNION
-            SELECT
-                vote_account, commission_effective, validators.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end, 432000, updated_at,
-                CASE WHEN commission_effective_source = $2 THEN inflation_rewards_commission_bps END
-            FROM validators
-            LEFT JOIN epochs ON validators.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC AND commission_effective IS NOT NULL
             ",
-            &[&Decimal::from(epochs), &COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE],
+            &[&Decimal::from(epochs)],
         )
         .await?;
 
@@ -718,7 +723,6 @@ pub async fn load_commissions(
             epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
             commission: row.get::<_, i32>("commission").try_into()?,
             created_at: row.get("created_at"),
-            commission_bps: row.get("commission_bps"),
         })
     }
 
@@ -1039,14 +1043,6 @@ pub fn worst_known_commission(
     commission_max_observed.max(commission_advertised)
 }
 
-// A reward row carries only the whole percent, so the row's sampled bps is not what it applied.
-fn commission_effective_bps(row: &tokio_postgres::Row) -> Option<i32> {
-    match row.get::<_, Option<&str>>("commission_effective_source") {
-        Some(COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE) => row.get("inflation_rewards_commission_bps"),
-        _ => None,
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct VerifiedValidatorsResponse {
     verified_validators: Vec<String>,
@@ -1185,6 +1181,7 @@ pub async fn load_validators(
                 commission_advertised,
                 commission_effective,
                 commission_effective_source,
+                commission_effective_bps,
                 inflation_rewards_commission_bps,
                 inflation_rewards_commission_bps_is_v4,
                 inflation_rewards_collector,
@@ -1367,7 +1364,7 @@ pub async fn load_validators(
                     commission_effective: row.get::<_, Option<i32>>("commission_effective"),
                     commission_effective_source: row
                         .get::<_, Option<String>>("commission_effective_source"),
-                    commission_effective_bps: commission_effective_bps(&row),
+                    commission_effective_bps: row.get::<_, Option<i32>>("commission_effective_bps"),
                     inflation_rewards_commission_bps: row
                         .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
                     inflation_rewards_commission_bps_is_v4: row
@@ -1485,7 +1482,8 @@ pub async fn load_validators(
                 record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
                 record.commission_effective_source =
                     row.get::<_, Option<String>>("commission_effective_source");
-                record.commission_effective_bps = commission_effective_bps(&row);
+                record.commission_effective_bps =
+                    row.get::<_, Option<i32>>("commission_effective_bps");
             }
 
             let rug_info = ruggers.get(&vote_account);

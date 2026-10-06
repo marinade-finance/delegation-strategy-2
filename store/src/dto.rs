@@ -13,10 +13,7 @@ use std::collections::HashMap;
 
 /// `commission_effective` came from the epoch's reward row, the rate the runtime applied.
 pub const COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW: &str = "reward_row";
-/// `commission_effective` came from the vote state this epoch's last snapshot sampled, because
-/// SIMD-0232 removed the rate from the reward rows. Close to the applied rate, but not it: the
-/// runtime reads the state at the epoch's last slot, and a rate changed after the last snapshot or
-/// held back by the anti-rug delay is not in this number.
+/// `commission_effective` came from vote state sampled at the close of E-2, the state agave's `epoch_stakes(E)` applies, since SIMD-0232 removed the rate from reward rows; a change after E-2's last hourly sample is missed.
 pub const COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE: &str = "vote_state";
 
 /// Served instead of null so every consumer has a client name to render.
@@ -309,7 +306,7 @@ pub struct ValidatorEpochStats {
     pub commission_min_observed: Option<u8>,
     pub commission_advertised: Option<u8>,
     pub commission_effective: Option<u8>,
-    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the last rate sampled from vote state during the epoch — the close sample for a validator still voting, the sample from when it left the vote set otherwise — which is what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
+    /// Where `commission_effective` came from: `reward_row` is the rate the runtime told us it applied, `vote_state` is the vote state sampled at the close of epoch E-2, falling back to E-1 and then E as agave does, which is the state the runtime applied to this epoch and what remains since SIMD-0232 removed the rate from the reward rows. Null for an epoch closed before this was recorded, and for a validator with neither source.
     pub commission_effective_source: Option<String>,
     /// Inflation commission in basis points as the vote state carried it. Authoritative where the whole-percent fields are a `div_ceil` projection of it. Set on every vote state version: agave synthesizes `commission * 100` on a pre-v4 account, so this is the rate it applies either way — read `inflation_rewards_commission_bps_is_v4` to tell a rate the validator set in basis points from that projection.
     pub inflation_rewards_commission_bps: Option<i32>,
@@ -768,8 +765,6 @@ pub struct CommissionRecord {
     pub epoch_slot: u64,
     pub commission: u8,
     pub created_at: DateTime<Utc>,
-    /// Basis points behind `commission` on an epoch's applied rate sampled from vote state; null on an advertised sample and on a rate taken from a reward row.
-    pub commission_bps: Option<i32>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

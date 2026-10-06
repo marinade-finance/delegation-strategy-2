@@ -220,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(versions::handler);
 
+    #[allow(deprecated)]
     let route_commissions = warp::path!("validators" / String / "commissions")
         .and(warp::path::end())
         .and(warp::get())
@@ -246,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(config::handler);
 
+    #[allow(deprecated)]
     let route_reports_commission_changes = warp::path!("reports" / "commission-changes")
         .and(warp::path::end())
         .and(warp::get())

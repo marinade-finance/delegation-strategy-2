@@ -28,6 +28,7 @@ pub struct CommissionChange {
         (status = 200, body = ResponseCommissionChanges)
     )
 )]
+#[deprecated = "No known consumer; scheduled for removal"]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching commission changes");
     let mut commissions = context.read().await.cache.get_all_commissions();
