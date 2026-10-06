@@ -24,7 +24,7 @@ use solana_rpc_client_api::config::{
 };
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
-use solana_rpc_client_api::response::RpcVoteAccountStatus;
+use solana_rpc_client_api::response::{RpcVoteAccountInfo, RpcVoteAccountStatus};
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
@@ -93,18 +93,19 @@ fn epoch_credits_delta(entries: &[EpochCreditsEntry], epoch: Epoch) -> Option<Op
 }
 
 pub fn split_epoch_credits(
-    history: &[EpochCreditsEntry],
+    vote_account: &RpcVoteAccountInfo,
     epoch: Epoch,
-    migration_epoch: Option<Epoch>,
+    alpenglow_migration_epoch: Option<Epoch>,
 ) -> Option<EpochCredits> {
+    let history = vote_account.epoch_credits.as_slice();
     let marker = history
         .iter()
         .position(|(record_epoch, _, _)| *record_epoch == EPOCH_CREDITS_MIGRATION_MARKER);
-    let account_migration_epoch = marker
+    let account_alpenglow_migration_epoch = marker
         .and_then(|m| history.get(m + 1))
         .map(|(record_epoch, _, _)| *record_epoch)
-        .or(migration_epoch);
-    let regime = match account_migration_epoch {
+        .or(alpenglow_migration_epoch);
+    let regime = match account_alpenglow_migration_epoch {
         Some(m) if epoch == m => CreditsRegime::Migration,
         Some(m) if epoch > m => CreditsRegime::Alpenglow,
         _ => CreditsRegime::Tower,
@@ -132,6 +133,19 @@ pub fn split_epoch_credits(
                 CreditsRegime::Migration | CreditsRegime::Alpenglow => (None, delta),
             }
         }
+    };
+    // Agave adds an entry only for a reward above 0, so a staked account with older entries earned 0.
+    // `activated_stake` is the stake in the current epoch, so it can differ when `epoch` is a past epoch.
+    let alpenglow = match (regime, alpenglow) {
+        (CreditsRegime::Alpenglow, None)
+            if vote_account.activated_stake > 0
+                && history
+                    .iter()
+                    .any(|(record_epoch, _, _)| *record_epoch < epoch) =>
+        {
+            Some(Some(0))
+        }
+        (_, alpenglow) => alpenglow,
     };
     let epoch_in_window = |entries: &[EpochCreditsEntry]| {
         entries
@@ -2042,6 +2056,19 @@ mod epoch_credits_tests {
 
     const M: u64 = u64::MAX;
 
+    fn vote_account(history: &[EpochCreditsEntry], activated_stake: u64) -> RpcVoteAccountInfo {
+        RpcVoteAccountInfo {
+            vote_pubkey: String::new(),
+            node_pubkey: String::new(),
+            activated_stake,
+            commission: 0,
+            epoch_vote_account: true,
+            epoch_credits: history.to_vec(),
+            last_vote: 0,
+            root_slot: 0,
+        }
+    }
+
     // testnet KmCRTozzcAXvFEH2xakNMV7GeWyftyVFKS32XGV4spW, on-chain vote state at epoch 1047
     fn testnet_history() -> Vec<EpochCreditsEntry> {
         vec![
@@ -2058,7 +2085,7 @@ mod epoch_credits_tests {
     #[test]
     fn tower_epoch_before_marker() {
         assert_eq!(
-            split_epoch_credits(&testnet_history(), 1041, None),
+            split_epoch_credits(&vote_account(&testnet_history(), 1), 1041, None),
             Some(EpochCredits {
                 tower_credits: Some(6707558),
                 vote_reward_lamports: None,
@@ -2069,7 +2096,7 @@ mod epoch_credits_tests {
     #[test]
     fn migration_epoch_keeps_both_halves() {
         assert_eq!(
-            split_epoch_credits(&testnet_history(), 1042, None),
+            split_epoch_credits(&vote_account(&testnet_history(), 1), 1042, None),
             Some(EpochCredits {
                 tower_credits: Some(64638),
                 vote_reward_lamports: Some(290885262341),
@@ -2080,7 +2107,7 @@ mod epoch_credits_tests {
     #[test]
     fn alpenglow_epoch_after_marker() {
         assert_eq!(
-            split_epoch_credits(&testnet_history(), 1043, None),
+            split_epoch_credits(&vote_account(&testnet_history(), 1), 1043, None),
             Some(EpochCredits {
                 tower_credits: None,
                 vote_reward_lamports: Some(298929716564),
@@ -2092,7 +2119,7 @@ mod epoch_credits_tests {
     fn migration_epoch_with_tower_half_out_of_window() {
         let window = testnet_history()[3..].to_vec();
         assert_eq!(
-            split_epoch_credits(&window, 1042, None),
+            split_epoch_credits(&vote_account(&window, 1), 1042, None),
             Some(EpochCredits {
                 tower_credits: None,
                 vote_reward_lamports: Some(290885262341),
@@ -2105,7 +2132,7 @@ mod epoch_credits_tests {
         let history = vec![(1040, 803969051, 797204500), (1042, 810741247, 810676609)];
         for epoch in [1041, 1043] {
             assert_eq!(
-                split_epoch_credits(&history, epoch, None),
+                split_epoch_credits(&vote_account(&history, 1), epoch, None),
                 Some(EpochCredits {
                     tower_credits: Some(0),
                     vote_reward_lamports: None,
@@ -2113,26 +2140,43 @@ mod epoch_credits_tests {
             );
         }
         assert_eq!(
-            split_epoch_credits(&[], 1041, None).map(|c| c.tower_credits),
+            split_epoch_credits(&vote_account(&[], 1), 1041, None).map(|c| c.tower_credits),
             Some(Some(0))
         );
     }
 
     #[test]
-    fn an_alpenglow_epoch_without_votes_is_unknown() {
-        assert_eq!(split_epoch_credits(&testnet_history(), 1045, None), None);
+    fn a_staked_alpenglow_epoch_without_an_entry_earned_zero() {
+        assert_eq!(
+            split_epoch_credits(&vote_account(&testnet_history(), 1), 1045, None),
+            Some(EpochCredits {
+                tower_credits: None,
+                vote_reward_lamports: Some(0),
+            })
+        );
+    }
+
+    #[test]
+    fn an_unstaked_alpenglow_epoch_without_an_entry_is_unknown() {
+        assert_eq!(
+            split_epoch_credits(&vote_account(&testnet_history(), 0), 1045, None),
+            None
+        );
     }
 
     #[test]
     fn epoch_out_of_window() {
-        assert_eq!(split_epoch_credits(&testnet_history(), 1039, None), None);
+        assert_eq!(
+            split_epoch_credits(&vote_account(&testnet_history(), 1), 1039, None),
+            None
+        );
     }
 
     #[test]
     fn no_marker_without_migration_epoch_is_tower() {
         let history = vec![(1045, 1217502525481, 899173572261)];
         assert_eq!(
-            split_epoch_credits(&history, 1045, None),
+            split_epoch_credits(&vote_account(&history, 1), 1045, None),
             Some(EpochCredits {
                 tower_credits: Some(318328953220),
                 vote_reward_lamports: None,
@@ -2147,7 +2191,7 @@ mod epoch_credits_tests {
             (1046, 1531136696154, 1217502525481),
         ];
         assert_eq!(
-            split_epoch_credits(&history, 1045, Some(1042)),
+            split_epoch_credits(&vote_account(&history, 1), 1045, Some(1042)),
             Some(EpochCredits {
                 tower_credits: None,
                 vote_reward_lamports: Some(318328953220),
@@ -2163,7 +2207,7 @@ mod epoch_credits_tests {
             (1042, 1231244005, 1231213405),
         ];
         assert_eq!(
-            split_epoch_credits(&history, 1042, Some(1042)),
+            split_epoch_credits(&vote_account(&history, 1), 1042, Some(1042)),
             Some(EpochCredits {
                 tower_credits: Some(30600),
                 vote_reward_lamports: None,
@@ -2175,7 +2219,7 @@ mod epoch_credits_tests {
     fn migration_epoch_without_marker_above_tower_maximum_is_a_reward() {
         let history = vec![(1042, 291696003588, 810741247)];
         assert_eq!(
-            split_epoch_credits(&history, 1042, Some(1042)),
+            split_epoch_credits(&vote_account(&history, 1), 1042, Some(1042)),
             Some(EpochCredits {
                 tower_credits: Some(0),
                 vote_reward_lamports: Some(290885262341),

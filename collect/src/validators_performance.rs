@@ -222,7 +222,7 @@ pub fn validators_performance(
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
         },
     )?;
-    let migration_epoch = is_alpenglow_active(client)?;
+    let alpenglow_migration_epoch = is_alpenglow_active(client)?;
 
     for vote_account in vote_accounts
         .current
@@ -237,7 +237,7 @@ pub fn validators_performance(
             .unwrap_or((0, 0));
 
         let node = node_info.get(&identity);
-        let credits = split_epoch_credits(&vote_account.epoch_credits, epoch, migration_epoch);
+        let credits = split_epoch_credits(vote_account, epoch, alpenglow_migration_epoch);
         match &credits {
             None => warn!("No credits of epoch {epoch} for vote account {vote_pubkey}"),
             Some(EpochCredits {
