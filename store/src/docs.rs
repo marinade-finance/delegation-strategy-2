@@ -24,6 +24,7 @@ pub const VERSIONS_DIR: &str = "/validators/versions";
 pub const CLUSTER_INFO_DIR: &str = "/validators/cluster-info";
 pub const VALIDATOR_REWARDS_DIR: &str = "/validators/validator-rewards";
 pub const SANDWICHES_DIR: &str = "/validators/sandwiches";
+pub const NODE_OBSERVATIONS_DIR: &str = "/validators/node-observations";
 
 /// The accumulators. A separate parent from the sealed epochs so that `@last`
 /// under `/validators/uptimes/` is always the newest sealed epoch.
@@ -31,10 +32,12 @@ pub const LIVE_UPTIMES: &str = "/validators/live/uptimes";
 pub const LIVE_COMMISSIONS: &str = "/validators/live/commissions";
 pub const LIVE_VERSIONS: &str = "/validators/live/versions";
 pub const LIVE_CLUSTER_INFO: &str = "/validators/live/cluster-info";
+pub const LIVE_NODE_OBSERVATIONS: &str = "/validators/live/node-observations";
 
 /// Documents with no epoch of their own: keyed by what they describe, rewritten
 /// in place.
 pub const RELEASES_PATH: &str = "/validators/releases";
+pub const IP_INFO_PATH: &str = "/validators/ip-info";
 
 pub const SCORING_DIR: &str = "/scoring";
 
@@ -337,6 +340,71 @@ pub struct ReleaseEntry {
 /// gossip.
 pub type ReleasesDoc = BTreeMap<String, BTreeMap<String, ReleaseEntry>>;
 
+/// What whois answered for one address, keyed by the address it describes:
+/// the address is what moves, so the observation log joined against it gives
+/// location history for free.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IpInfoEntry {
+    pub asn: Option<i64>,
+    pub aso: Option<String>,
+    pub continent: Option<String>,
+    pub country_iso: Option<String>,
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub coordinates_lat: Option<f64>,
+    pub coordinates_lon: Option<f64>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+pub type IpInfoDoc = BTreeMap<String, IpInfoEntry>;
+
+/// What a node advertised in gossip. `client_id_raw` renders per answering RPC
+/// rather than per node, so it is carried but never compared.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NodeObservation {
+    pub ip: Option<String>,
+    pub gossip_port: Option<i32>,
+    pub version: Option<String>,
+    pub client_id: Option<i32>,
+    pub client_id_raw: Option<String>,
+    pub feature_set: Option<i64>,
+    pub shred_version: Option<i32>,
+    pub rpc_public: Option<bool>,
+    pub pubsub_public: Option<bool>,
+    pub epoch: u64,
+    pub epoch_slot: u64,
+    pub created_at: DateTime<Utc>,
+    /// Re-stamped by every run that finds the node unchanged, so the
+    /// observation is an interval and not an instant.
+    pub last_seen_at: DateTime<Utc>,
+}
+
+impl NodeObservation {
+    /// Whether the node still advertises the same contact and build.
+    pub fn same_node(&self, other: &NodeObservation) -> bool {
+        self.ip == other.ip
+            && self.gossip_port == other.gossip_port
+            && self.version == other.version
+            && self.client_id == other.client_id
+            && self.feature_set == other.feature_set
+            && self.shred_version == other.shred_version
+            && self.rpc_public == other.rpc_public
+            && self.pubsub_public == other.pubsub_public
+    }
+}
+
+/// `last` outlives a seal so the next run still knows what to compare with.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NodeObservationState {
+    pub last: NodeObservation,
+    #[serde(default)]
+    pub changes: Vec<NodeObservation>,
+}
+
+/// Keyed by identity, not vote account: gossip returns identity natively and
+/// most nodes on the cluster have no vote account at all.
+pub type NodeObservationsDoc = BTreeMap<String, NodeObservationState>;
+
 /// Writes a document its writer owns outright: creates it, or replaces the
 /// version that is there. The read discards the body it does not need.
 pub async fn put_whole<T: Serialize>(
@@ -533,3 +601,4 @@ pub type SealedUptimesDoc = BTreeMap<String, Vec<UptimeInterval>>;
 pub type SealedCommissionsDoc = BTreeMap<String, Vec<CommissionSample>>;
 pub type SealedVersionsDoc = BTreeMap<String, Vec<VersionSample>>;
 pub type SealedClusterInfoDoc = Vec<ClusterInfoSample>;
+pub type SealedNodeObservationsDoc = BTreeMap<String, Vec<NodeObservation>>;

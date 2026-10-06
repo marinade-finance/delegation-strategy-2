@@ -5,7 +5,9 @@ use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use store::commissions::{store_commissions, StoreCommissionsParams};
 use store::directory::Directory;
+use store::ip_info::{store_ip_info, StoreIpInfoParams};
 use store::ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
+use store::node_observations::{store_node_observations, StoreNodeObservationsParams};
 use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{store_take_rates, StoreTakeRatesParams};
 use store::uptime::{store_uptime, StoreUptimeParams};
@@ -39,6 +41,8 @@ enum StoreCommand {
     Uptime(StoreUptimeParams),
     Commissions(StoreCommissionsParams),
     Versions(StoreVersionsParams),
+    NodeObservations(StoreNodeObservationsParams),
+    IpInfo(StoreIpInfoParams),
     ClusterInfo(StoreClusterInfoParams),
     Validators(StoreValidatorsParams),
     ValidatorsBlockRewards(StoreBlockRewardsParams),
@@ -65,6 +69,10 @@ async fn main() -> anyhow::Result<()> {
             store_commissions(store_params, &directory).await
         }
         StoreCommand::Versions(store_params) => store_versions(store_params, &directory).await,
+        StoreCommand::NodeObservations(store_params) => {
+            store_node_observations(store_params, &directory).await
+        }
+        StoreCommand::IpInfo(store_params) => store_ip_info(store_params, &directory).await,
         StoreCommand::ClusterInfo(store_params) => {
             store_cluster_info(store_params, &directory).await
         }

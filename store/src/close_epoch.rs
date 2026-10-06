@@ -1,10 +1,11 @@
 use crate::directory::{Directory, Precondition};
 use crate::docs::{
-    epoch_doc_path, put_whole, ClusterInfoDoc, CommissionsDoc, EpochDoc, SealedClusterInfoDoc,
-    SealedCommissionsDoc, SealedUptimesDoc, SealedVersionsDoc, SnapshotDoc, UptimeInterval,
-    UptimeStatus, UptimesDoc, VersionsDoc, CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR,
-    LIVE_CLUSTER_INFO, LIVE_COMMISSIONS, LIVE_UPTIMES, LIVE_VERSIONS, SNAPSHOT_DIR, UPTIMES_DIR,
-    VERSIONS_DIR,
+    epoch_doc_path, put_whole, ClusterInfoDoc, CommissionsDoc, EpochDoc, NodeObservationsDoc,
+    SealedClusterInfoDoc, SealedCommissionsDoc, SealedNodeObservationsDoc, SealedUptimesDoc,
+    SealedVersionsDoc, SnapshotDoc, UptimeInterval, UptimeStatus, UptimesDoc, VersionsDoc,
+    CLUSTER_INFO_DIR, COMMISSIONS_DIR, EPOCHS_DIR, LIVE_CLUSTER_INFO, LIVE_COMMISSIONS,
+    LIVE_NODE_OBSERVATIONS, LIVE_UPTIMES, LIVE_VERSIONS, NODE_OBSERVATIONS_DIR, SNAPSHOT_DIR,
+    UPTIMES_DIR, VERSIONS_DIR,
 };
 use crate::dto::{
     Validator, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
@@ -99,6 +100,11 @@ pub async fn close_epoch(
     let commissions = read_live::<CommissionsDoc>(directory, LIVE_COMMISSIONS).await?;
     let versions = read_live::<VersionsDoc>(directory, LIVE_VERSIONS).await?;
     let cluster_info = read_live::<ClusterInfoDoc>(directory, LIVE_CLUSTER_INFO).await?;
+    // Written by the quick-changes chain since the other four, so an
+    // environment without it yet still closes.
+    let node_observations = directory
+        .get::<NodeObservationsDoc>(LIVE_NODE_OBSERVATIONS)
+        .await?;
 
     let epoch_record = build_epoch_record(
         directory,
@@ -153,6 +159,14 @@ pub async fn close_epoch(
         seal_cluster_info(&cluster_info.body, epoch),
     )
     .await?;
+    if let Some(node_observations) = &node_observations {
+        seal(
+            directory,
+            &epoch_doc_path(NODE_OBSERVATIONS_DIR, epoch),
+            seal_node_observations(&node_observations.body, epoch),
+        )
+        .await?;
+    }
     info!("Sealed the streams of epoch {epoch}");
 
     // Its presence marks the epoch sealed, so it is written before the trim: a
@@ -194,6 +208,18 @@ async fn trim_accumulators(directory: &Directory, epoch: u64) -> anyhow::Result<
             Precondition::IfMatch(versions.etag),
         )
         .await?;
+    if let Some(node_observations) = directory
+        .get::<NodeObservationsDoc>(LIVE_NODE_OBSERVATIONS)
+        .await?
+    {
+        directory
+            .put(
+                LIVE_NODE_OBSERVATIONS,
+                &trim_node_observations(node_observations.body, epoch),
+                Precondition::IfMatch(node_observations.etag),
+            )
+            .await?;
+    }
     let cluster_info = read_live::<ClusterInfoDoc>(directory, LIVE_CLUSTER_INFO).await?;
     directory
         .put(
@@ -525,6 +551,34 @@ fn trim_versions(mut versions: VersionsDoc, epoch: u64) -> VersionsDoc {
         state.changes.retain(|change| change.epoch > epoch);
     }
     versions
+}
+
+fn seal_node_observations(
+    observations: &NodeObservationsDoc,
+    epoch: u64,
+) -> SealedNodeObservationsDoc {
+    observations
+        .iter()
+        .filter_map(|(identity, state)| {
+            let changes: Vec<_> = state
+                .changes
+                .iter()
+                .filter(|change| change.epoch == epoch)
+                .cloned()
+                .collect();
+            (!changes.is_empty()).then(|| (identity.clone(), changes))
+        })
+        .collect()
+}
+
+fn trim_node_observations(
+    mut observations: NodeObservationsDoc,
+    epoch: u64,
+) -> NodeObservationsDoc {
+    for state in observations.values_mut() {
+        state.changes.retain(|change| change.epoch > epoch);
+    }
+    observations
 }
 
 fn seal_cluster_info(cluster_info: &ClusterInfoDoc, epoch: u64) -> SealedClusterInfoDoc {

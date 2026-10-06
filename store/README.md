@@ -29,6 +29,7 @@ $STORE cluster-info --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 $STORE uptime --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 $STORE versions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 $STORE commissions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+$STORE node-observations --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 # store-epoch-close (writes /validators/epochs/{epoch} last)
 $STORE close-epoch --snapshot-file "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
 
@@ -40,6 +41,9 @@ $STORE releases --snapshot-file "$OUTPUT_DIR"/releases.yaml
 
 $STORE jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
 $STORE jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
+
+# Reads the live node observations and asks whois about the addresses in use.
+$STORE ip-info --whois https://whois.marinade.finance --whois-bearer-token "$WHOIS_BEARER_TOKEN"
 ```
 
 ## Documents
@@ -54,6 +58,7 @@ $STORE jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
 | `/validators/validator-rewards/{epoch}` | `take-rates` | both sides of every reward component per vote account, and the take rate they make |
 | `/validators/sandwiches/{epoch}` | `validators-sandwiches` | the 30-day sandwich figures per vote account |
 | `/validators/epochs/{epoch}` | `close-epoch`, last | the sealed signal: start, end, supply, inflation |
-| `/validators/live/{uptimes,commissions,versions,cluster-info}` | the minute writers | the accumulators, under compare-and-swap |
-| `/validators/{uptimes,commissions,versions,cluster-info}/{epoch}` | `close-epoch` | what the accumulators held when the epoch closed |
+| `/validators/live/{uptimes,commissions,versions,cluster-info,node-observations}` | the minute writers | the accumulators, under compare-and-swap |
+| `/validators/{uptimes,commissions,versions,cluster-info,node-observations}/{epoch}` | `close-epoch` | what the accumulators held when the epoch closed |
 | `/validators/releases` | `releases` | every client release by lineage and version: publish time, SFDP floor, feature-gate floor |
+| `/validators/ip-info` | `ip-info` | what whois answered for every address a node advertised recently |
