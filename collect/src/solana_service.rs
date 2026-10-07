@@ -135,7 +135,7 @@ pub fn split_epoch_credits(
         }
     };
     // Agave adds an entry only for a reward above 0, so a staked account with older entries earned 0.
-    // `activated_stake` is the stake in the current epoch, so it can differ when `epoch` is a past epoch.
+    // `activated_stake` is the stake in the current epoch. `close_epoch` checks the stake of `epoch` again.
     let alpenglow = match (regime, alpenglow) {
         (CreditsRegime::Alpenglow, None)
             if vote_account.activated_stake > 0

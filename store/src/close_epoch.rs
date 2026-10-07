@@ -345,7 +345,8 @@ pub async fn close_epoch(
             commission_effective_bps = u.commission_effective_bps,
             -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
             credits = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.credits ELSE u.credits END,
-            vote_reward_lamports = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
+            -- Also keep the stored reward when the validator had no stake in this epoch
+            vote_reward_lamports = CASE WHEN (u.credits IS NULL AND u.vote_reward_lamports IS NULL) OR validators.activated_stake = 0 THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,

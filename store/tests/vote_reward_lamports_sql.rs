@@ -169,6 +169,37 @@ async fn an_epoch_missing_from_the_window_keeps_the_stored_credits() {
     assert_eq!(vote_reward_lamports, None);
 }
 
+#[tokio::test]
+async fn an_epoch_without_stake_keeps_a_null_reward_at_close() {
+    let schema = "ds_test_vote_reward_lamports_no_stake";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let mut snapshot = validator_snapshot(EPOCH, "identityAlpenglow", VOTE_ACCOUNT);
+    snapshot.validators[0].activated_stake = 0;
+    snapshot.validators[0].performance = ValidatorPerformance {
+        vote_reward_lamports: None,
+        ..alpenglow_performance()
+    };
+    store_snapshot(&mut client, schema, &snapshot).await;
+    // The close run sees the stake of the next epoch, so it reports a reward of 0
+    run_close_epoch(
+        &mut client,
+        schema,
+        ValidatorPerformance {
+            vote_reward_lamports: Some(0),
+            ..alpenglow_performance()
+        },
+    )
+    .await;
+
+    let (credits, vote_reward_lamports) = read_credits(&client).await;
+    assert_eq!(credits, None);
+    assert_eq!(vote_reward_lamports, None);
+}
+
 async fn run_uptime(client: &mut Client, schema: &str, created_at: &str, credits_total: u64) {
     let performance = ValidatorPerformance {
         credits_total: Some(credits_total),
