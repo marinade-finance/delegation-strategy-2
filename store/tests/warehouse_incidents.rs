@@ -333,6 +333,7 @@ fn down(warehouse: &mut Warehouse, vote_account: &str, epoch: u64, start_at: &st
                 end_at: at("2026-12-01T00:01:00Z"),
             },
             closed: Vec::new(),
+            last_credits: None,
         })
         .closed
         .push(interval);
@@ -848,7 +849,7 @@ fn validators_flat_reports_the_window_max_inflation_commission_bps_only_when_eve
             let epoch = EPOCH + offset;
             let mut validator = common::validator(vote_account, epoch);
             validator.activated_stake = Decimal::from(100);
-            validator.credits = Decimal::from(10);
+            validator.credits = Some(Decimal::from(10));
             validator.inflation_rewards_commission_bps = if offset + 1 == epochs {
                 bps_at_last
             } else {

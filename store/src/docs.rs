@@ -54,9 +54,11 @@ pub type SnapshotDoc = BTreeMap<String, Validator>;
 /// What `store validators` cannot see stays: the snapshot's `version` and
 /// client columns are absent whenever the answering RPC did not report the
 /// node, the vote-state fields whenever its state did not parse, the pending
-/// and direct stakes whenever their accounts were not read, and the data
-/// center whenever whois did not answer for an unchanged address. The
-/// close-epoch derivations are written by close-epoch alone.
+/// and direct stakes whenever their accounts were not read, the data center
+/// whenever whois did not answer for an unchanged address, and the credits
+/// and vote reward whenever the epoch fell out of the vote account's
+/// `epochCredits` window. The close-epoch derivations are written by
+/// close-epoch alone.
 pub fn merge_validator(existing: Option<&Validator>, mut incoming: Validator) -> Validator {
     let Some(old) = existing else {
         return incoming;
@@ -85,6 +87,10 @@ pub fn merge_validator(existing: Option<&Validator>, mut incoming: Validator) ->
         incoming.block_revenue_collector_owner = old.block_revenue_collector_owner.clone();
         incoming.block_revenue_collector_lamports = old.block_revenue_collector_lamports;
         incoming.block_revenue_collector_healthy = old.block_revenue_collector_healthy;
+    }
+    if incoming.credits.is_none() && incoming.vote_reward_lamports.is_none() {
+        incoming.credits = old.credits;
+        incoming.vote_reward_lamports = old.vote_reward_lamports;
     }
     incoming.activating_stake = incoming.activating_stake.or(old.activating_stake);
     incoming.deactivating_stake = incoming.deactivating_stake.or(old.deactivating_stake);
@@ -508,6 +514,12 @@ pub struct UptimeState {
     pub open: UptimeInterval,
     #[serde(default)]
     pub closed: Vec<UptimeInterval>,
+    /// The vote account's cumulative `epochCredits` at the newest sample
+    /// that carried one. Under Alpenglow it is what tells a live validator
+    /// from a down one: the vote state records no votes, and its credits grow
+    /// every slot.
+    #[serde(default)]
+    pub last_credits: Option<u64>,
 }
 
 pub type UptimesDoc = BTreeMap<String, UptimeState>;

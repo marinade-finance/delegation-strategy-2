@@ -13,7 +13,9 @@ use crate::dto::{
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::solana_service::bps_to_percent;
-use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
+use collect::validators_performance::{
+    ClusterInflation, ValidatorPerformance, ValidatorsPerformanceSnapshot,
+};
 use log::{info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
@@ -392,7 +394,7 @@ fn apply_finalized_performance(
         validator.commission_effective = commission;
         validator.commission_effective_bps = bps;
         validator.commission_effective_source = source.map(str::to_string);
-        validator.credits = performance.credits.into();
+        apply_finalized_credits(validator, performance);
         validator.leader_slots = performance.leader_slots.into();
         validator.blocks_produced = performance.blocks_produced.into();
         validator.skip_rate = performance.skip_rate;
@@ -402,6 +404,20 @@ fn apply_finalized_performance(
         "Effective commission for {} validators: {from_reward_row} from a reward row, {from_vote_state} from sampled vote state, {unresolved} unresolved",
         snapshot.validators.len()
     );
+}
+
+/// Both unknown means the epoch fell out of the `epochCredits` window, so the
+/// stored values stand. The close run reads the stake of the next epoch, so a
+/// validator unstaked in the closed epoch can report a reward of 0 where it
+/// earned none: its stored reward stands too.
+fn apply_finalized_credits(validator: &mut Validator, performance: &ValidatorPerformance) {
+    if performance.credits.is_none() && performance.vote_reward_lamports.is_none() {
+        return;
+    }
+    validator.credits = performance.credits.map(Decimal::from);
+    if !validator.activated_stake.is_zero() {
+        validator.vote_reward_lamports = performance.vote_reward_lamports.map(Decimal::from);
+    }
 }
 
 fn warn_on_unresolved_commission(validators: &SnapshotDoc, epoch: u64) {

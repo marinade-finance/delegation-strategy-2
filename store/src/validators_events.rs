@@ -115,7 +115,7 @@ pub fn get_events_with_context(
                     blocks_produced: validator.blocks_produced.try_into()?,
                     leader_slots: validator.leader_slots.try_into()?,
                     skip_rate: validator.skip_rate,
-                    credits: validator.credits.try_into()?,
+                    credits: validator.credits.map(u64::try_from).transpose()?,
                 }),
                 uptime_pct: validator.uptime_pct,
                 downtime: validator.downtime.map(u64::try_from).transpose()?,

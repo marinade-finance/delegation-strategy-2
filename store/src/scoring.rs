@@ -73,19 +73,25 @@ fn voters_with_marinade_stake_in_epoch(warehouse: &Warehouse, epoch: u64) -> Has
         .collect()
 }
 
+/// Validators without tower credits, every one after the Alpenglow migration
+/// epoch, are left out rather than read as poor voters.
 fn voters_credits_performance_in_epoch(warehouse: &Warehouse, epoch: u64) -> HashMap<String, f64> {
     log::info!("Loading list of poor voters: {epoch}");
     let Some(snapshot) = warehouse.snapshots.get(&epoch) else {
         return Default::default();
     };
 
-    let total_stake: Decimal = snapshot
-        .values()
-        .map(|validator| validator.activated_stake)
-        .sum();
-    let weighted_credits: Decimal = snapshot
-        .values()
-        .map(|validator| validator.activated_stake * validator.credits)
+    let voters: Vec<(&String, Decimal, Decimal)> = snapshot
+        .iter()
+        .filter_map(|(vote_account, validator)| {
+            let credits = validator.credits?;
+            Some((vote_account, validator.activated_stake, credits))
+        })
+        .collect();
+    let total_stake: Decimal = voters.iter().map(|(_, stake, _)| *stake).sum();
+    let weighted_credits: Decimal = voters
+        .iter()
+        .map(|(_, stake, credits)| stake * credits)
         .sum();
     let stake_weighted_avg_credits = match total_stake.is_zero() {
         true => 0f64,
@@ -94,12 +100,12 @@ fn voters_credits_performance_in_epoch(warehouse: &Warehouse, epoch: u64) -> Has
             .unwrap_or_default(),
     };
 
-    snapshot
-        .iter()
-        .map(|(vote_account, validator)| {
+    voters
+        .into_iter()
+        .map(|(vote_account, _, credits)| {
             let performance = match stake_weighted_avg_credits {
                 0f64 => 0f64,
-                average => validator.credits.to_f64().unwrap_or_default() / average,
+                average => credits.to_f64().unwrap_or_default() / average,
             };
             (vote_account.clone(), performance)
         })

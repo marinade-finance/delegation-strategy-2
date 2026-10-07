@@ -81,22 +81,41 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
     }
 }
 
+fn secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
+    match order_field {
+        // Breaks ties on `credits`, which is null for every group after the Alpenglow migration epoch.
+        OrderField::Credits => |group: &ValidatorGroupRecord| {
+            group
+                .vote_reward_per_stake
+                .and_then(Decimal::from_f64_retain)
+                .into()
+        },
+        _ => |_: &ValidatorGroupRecord| SortKey::Missing,
+    }
+}
+
 pub fn group_column(group: &ValidatorGroupRecord, order_field: OrderField) -> SortKey {
     field_extractor(order_field)(group)
 }
 
-/// Orders two rows on their already-extracted column, then on their name.
+pub fn group_secondary_column(group: &ValidatorGroupRecord, order_field: OrderField) -> SortKey {
+    secondary_field_extractor(order_field)(group)
+}
+
+/// Orders two rows on their already-extracted columns, then on their name.
 pub fn compare_group_rows(
-    (a_column, a_name): (&SortKey, &str),
-    (b_column, b_name): (&SortKey, &str),
+    (a_primary, a_secondary, a_name): (&SortKey, &SortKey, &str),
+    (b_primary, b_secondary, b_name): (&SortKey, &SortKey, &str),
     order_direction: &OrderDirection,
 ) -> Ordering {
-    compare_keys(a_column, b_column, order_direction).then_with(|| {
-        a_name
-            .to_lowercase()
-            .cmp(&b_name.to_lowercase())
-            .then_with(|| a_name.cmp(b_name))
-    })
+    compare_keys(a_primary, b_primary, order_direction)
+        .then_with(|| compare_keys(a_secondary, b_secondary, order_direction))
+        .then_with(|| {
+            a_name
+                .to_lowercase()
+                .cmp(&b_name.to_lowercase())
+                .then_with(|| a_name.cmp(b_name))
+        })
 }
 
 pub fn sort_groups<T: GroupRow>(
@@ -105,20 +124,26 @@ pub fn sort_groups<T: GroupRow>(
     order_direction: &OrderDirection,
 ) -> Vec<T> {
     // Keyed up front: sort_by would otherwise re-extract on both sides of every comparison.
-    let mut keyed: Vec<(SortKey, T)> = groups
+    let mut keyed: Vec<(SortKey, SortKey, T)> = groups
         .into_iter()
-        .map(|group| (group_column(group.row(), order_field), group))
+        .map(|group| {
+            (
+                group_column(group.row(), order_field),
+                group_secondary_column(group.row(), order_field),
+                group,
+            )
+        })
         .collect();
 
-    keyed.sort_by(|(a_column, a), (b_column, b)| {
+    keyed.sort_by(|(a_primary, a_secondary, a), (b_primary, b_secondary, b)| {
         compare_group_rows(
-            (a_column, &a.row().key),
-            (b_column, &b.row().key),
+            (a_primary, a_secondary, &a.row().key),
+            (b_primary, b_secondary, &b.row().key),
             order_direction,
         )
     });
 
-    keyed.into_iter().map(|(_, group)| group).collect()
+    keyed.into_iter().map(|(.., group)| group).collect()
 }
 
 fn filter_groups<T: GroupRow>(groups: Vec<T>, config: &GetGroupsConfig) -> Vec<T> {
@@ -269,6 +294,33 @@ mod tests {
                 .collect(),
             current_epoch: Some(100),
         }
+    }
+
+    #[test]
+    fn credits_order_breaks_ties_on_vote_reward_per_stake() {
+        let with_credits =
+            |key: &str, credits: Option<f64>, rate: Option<f64>| ValidatorGroupRecord {
+                credits,
+                vote_reward_per_stake: rate,
+                ..group(key, 100)
+            };
+        let sorted = sort_groups(
+            vec![
+                with_credits("missing", None, None),
+                with_credits("low", Some(10.0), Some(0.005)),
+                with_credits("migration_low", Some(20.0), Some(0.001)),
+                with_credits("migration_high", Some(20.0), Some(0.009)),
+            ],
+            OrderField::Credits,
+            &OrderDirection::DESC,
+        );
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|group| group.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["migration_high", "migration_low", "low", "missing"]
+        );
     }
 
     fn config() -> GetGroupsConfig {

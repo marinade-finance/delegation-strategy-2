@@ -25,7 +25,7 @@ fn validator(
 ) -> Validator {
     Validator {
         activated_stake: activated_stake.into(),
-        credits: credits.into(),
+        credits: Some(credits.into()),
         leader_slots: 100.into(),
         blocks_produced: 100.into(),
         client_id,

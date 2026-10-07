@@ -36,8 +36,24 @@ fn calculator(slots_per_year: f64) -> InflationApyCalculator {
         duration: 182_400,
         inflation: 0.043,
         slots_per_year,
-        total_weighted_credits: 160_000_000_000_000_000_000_000,
+        total_weighted_credits: Some(160_000_000_000_000_000_000_000),
     }
+}
+
+// testnet 54Rwic4DqGK5NL48HyP65TCKLn6YDN5zaERSJFVQSQJB, epoch 1047, 2% commission
+#[test]
+fn alpenglow_yields_come_from_the_vote_reward() {
+    let alpenglow = InflationApyCalculator {
+        total_weighted_credits: None,
+        ..calculator(BASELINE_SLOTS_PER_YEAR)
+    };
+    let (apr, apy) = alpenglow.yields_from_vote_reward(3_728_113_744_092, 3_343_226_367_743_619, 2);
+
+    let rate_per_epoch = 0.98 * 3_728_113_744_092.0 / 3_343_226_367_743_619.0;
+    let epochs_per_year = SECONDS_IN_YEAR / alpenglow.duration as f64;
+    assert_close(apr, rate_per_epoch * epochs_per_year);
+    assert_close(1.0 + apy, (1.0 + rate_per_epoch).powf(epochs_per_year));
+    assert_eq!(alpenglow.estimate_yields(CREDITS, 2), (0.0, 0.0));
 }
 
 /// Relative, because these quantities span 1e-2 to 1e15 and a fixed epsilon fits neither end.

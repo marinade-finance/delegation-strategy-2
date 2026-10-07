@@ -13,7 +13,7 @@ const VOTE_ACCOUNT: &str = "voteA";
 fn store_validator(warehouse: &mut Warehouse, epoch: u64, activated_stake: u64, credits: u64) {
     let validator = Validator {
         activated_stake: activated_stake.into(),
-        credits: credits.into(),
+        credits: Some(credits.into()),
         leader_slots: 100.into(),
         blocks_produced: 100.into(),
         ..common::validator(VOTE_ACCOUNT, epoch)

@@ -54,17 +54,18 @@ struct InflationApyCalculator {
     duration: u64,
     inflation: f64,
     slots_per_year: f64,
-    total_weighted_credits: u128,
+    // None once the epoch has vote rewards: its tower credits cover only part
+    // of the epoch, so a credit-based APY would come out too high.
+    total_weighted_credits: Option<u128>,
 }
 impl InflationApyCalculator {
     fn estimate_yields(&self, credits: u64, commission: u8) -> (f64, f64) {
-        if self.total_weighted_credits == 0 || self.duration == 0 {
+        let total_weighted_credits = self.total_weighted_credits.unwrap_or(0);
+        if total_weighted_credits == 0 || self.duration == 0 {
             return (0.0, 0.0);
         }
 
-        let commission = commission.clamp(0, 100) as f64 / 100.0;
-        let staker_share = 1.0 - commission;
-        let actual_epochs_per_year = SECONDS_IN_YEAR / self.duration as f64;
+        let staker_share = staker_share(commission);
 
         // Nominal, not measured: it converts annual issuance into what the protocol mints per epoch.
         let nominal_epochs_per_year = self.slots_per_year / SLOTS_IN_EPOCH as f64;
@@ -74,14 +75,41 @@ impl InflationApyCalculator {
 
         let stake_fraction_per_epoch =
             staker_share * cluster_rewards_per_nominal_epoch * credits as f64
-                / self.total_weighted_credits as f64;
+                / total_weighted_credits as f64;
 
+        self.annualize(stake_fraction_per_epoch)
+    }
+
+    // `vote_reward_lamports` is the inflation reward of the whole stake, before commission.
+    fn yields_from_vote_reward(
+        &self,
+        vote_reward_lamports: u64,
+        activated_stake: u64,
+        commission: u8,
+    ) -> (f64, f64) {
+        if activated_stake == 0 || self.duration == 0 {
+            return (0.0, 0.0);
+        }
+
+        let stake_fraction_per_epoch =
+            staker_share(commission) * vote_reward_lamports as f64 / activated_stake as f64;
+
+        self.annualize(stake_fraction_per_epoch)
+    }
+
+    fn annualize(&self, stake_fraction_per_epoch: f64) -> (f64, f64) {
+        let actual_epochs_per_year = SECONDS_IN_YEAR / self.duration as f64;
         let apr = stake_fraction_per_epoch * actual_epochs_per_year;
         let apy = (1.0 + stake_fraction_per_epoch).powf(actual_epochs_per_year) - 1.0;
 
         (apr, apy)
     }
 }
+
+fn staker_share(commission: u8) -> f64 {
+    1.0 - commission.clamp(0, 100) as f64 / 100.0
+}
+
 fn get_apy_calculators(
     warehouse: &Warehouse,
 ) -> anyhow::Result<HashMap<u64, InflationApyCalculator>> {
@@ -91,13 +119,21 @@ fn get_apy_calculators(
         let Some(snapshot) = warehouse.snapshots.get(epoch) else {
             continue;
         };
-        let total_weighted_credits: u128 = snapshot
+        let has_vote_rewards = snapshot
             .values()
-            .map(|validator| {
-                validator.credits.to_u128().unwrap_or_default()
-                    * validator.activated_stake.to_u128().unwrap_or_default()
-            })
-            .sum();
+            .any(|validator| validator.vote_reward_lamports.is_some());
+        let total_weighted_credits: Option<u128> = (!has_vote_rewards).then(|| {
+            snapshot
+                .values()
+                .map(|validator| {
+                    validator
+                        .credits
+                        .and_then(|credits| credits.to_u128())
+                        .unwrap_or_default()
+                        * validator.activated_stake.to_u128().unwrap_or_default()
+                })
+                .sum()
+        });
 
         let calculator = InflationApyCalculator {
             supply: match epoch_record.supply.try_into() {
@@ -874,19 +910,31 @@ pub async fn load_validators(
 
         for (vote_account, validator) in snapshot.iter() {
             let first_epoch = first_epochs.get(vote_account).copied().unwrap_or(epoch);
-            let (apr, apy) = match apy_calculators.get(&epoch) {
-                Some(calculator) => {
-                    let (apr, apy) = calculator.estimate_yields(
-                        validator.credits.try_into()?,
-                        validator
-                            .commission_effective
-                            .map(|commission| commission.clamp(0, 100) as u8)
-                            .unwrap_or(100),
-                    );
-                    (Some(apr), Some(apy))
+            let tower_credits: Option<u64> = validator.credits.map(u64::try_from).transpose()?;
+            let vote_reward_lamports: Option<u64> = validator
+                .vote_reward_lamports
+                .map(u64::try_from)
+                .transpose()?;
+            let commission_effective = validator
+                .commission_effective
+                .map(|commission| commission.clamp(0, 100) as u8)
+                .unwrap_or(100);
+            let calculator = apy_calculators.get(&epoch);
+            // In the migration epoch the reward of the tower credits is left out.
+            let yields = match (calculator, vote_reward_lamports, tower_credits) {
+                (Some(calculator), Some(lamports), _) => Some(calculator.yields_from_vote_reward(
+                    lamports,
+                    u64::try_from(validator.activated_stake)?,
+                    commission_effective,
+                )),
+                (Some(calculator), None, Some(credits))
+                    if calculator.total_weighted_credits.is_some() =>
+                {
+                    Some(calculator.estimate_yields(credits, commission_effective))
                 }
-                None => (None, None),
+                _ => None,
             };
+            let (apr, apy) = yields.unzip();
 
             let dc_full_city = full_city(validator);
             let dc_asn = validator
@@ -991,7 +1039,8 @@ pub async fn load_validators(
                     direct_activating_stake: validator.direct_activating_stake,
                     direct_deactivating_stake: validator.direct_deactivating_stake,
                     superminority: validator.superminority,
-                    credits: validator.credits.try_into().unwrap_or_default(),
+                    credits: tower_credits,
+                    vote_reward_lamports,
                     score: None,
 
                     epoch_stats: Vec::with_capacity(display_epochs as usize),
@@ -1138,7 +1187,8 @@ pub async fn load_validators(
                 direct_deactivating_stake: validator.direct_deactivating_stake,
                 superminority: validator.superminority,
                 stake_to_become_superminority: validator.stake_to_become_superminority,
-                credits: validator.credits.try_into()?,
+                credits: tower_credits,
+                vote_reward_lamports,
                 leader_slots: validator.leader_slots.try_into()?,
                 blocks_produced: validator.blocks_produced.try_into()?,
                 skip_rate: validator.skip_rate,
@@ -1704,7 +1754,12 @@ pub fn is_eligible_validator(validator: &ValidatorRecord, last_epoch: u64) -> bo
             .iter()
             .find(|&epoch_stat| epoch_stat.epoch == epoch)
             .is_some_and(|epoch_stat| {
-                epoch_stat.activated_stake > Decimal::from(0) || epoch_stat.credits > 0
+                // `credits` is null after Alpenglow. `uptime_pct` is `None` for the open epoch.
+                epoch_stat.activated_stake > Decimal::from(0)
+                    || epoch_stat.credits.is_some_and(|credits| credits > 0)
+                    || epoch_stat
+                        .uptime_pct
+                        .is_none_or(|uptime_pct| uptime_pct > 0.0)
             })
     })
 }
@@ -1824,7 +1879,7 @@ pub fn load_validators_aggregated_flat(
             avg_skip_rate: accumulator.skip_rate / accumulator.count as f64,
             avg_grace_skip_rate: accumulator.grace_skip_rate / accumulator.count as f64,
             max_commission: accumulator.max_commission.try_into()?,
-            avg_adjusted_credits: accumulator.adjusted_credits / accumulator.count as f64 / 100f64,
+            avg_adjusted_credits: accumulator.average_adjusted_credits(),
             dc_aso: accumulator.dc_aso.unwrap_or_else(|| "Unknown".to_string()),
             marinade_stake: accumulator.marinade_stake,
             version: last_version,
@@ -1887,6 +1942,7 @@ struct FlatAccumulator {
     max_inflation_rewards_commission_bps: Option<i32>,
     epochs_without_bps: u64,
     adjusted_credits: f64,
+    epochs_with_tower_credits: u64,
     newest_epoch: u64,
     dc_aso: Option<String>,
     marinade_stake: f64,
@@ -1906,7 +1962,13 @@ impl FlatAccumulator {
         }
         self.count += 1;
         self.stake += stake;
-        if validator.credits > Decimal::ZERO {
+        let earned = validator
+            .credits
+            .is_some_and(|credits| credits > Decimal::ZERO)
+            || validator
+                .vote_reward_lamports
+                .is_some_and(|lamports| lamports > Decimal::ZERO);
+        if earned {
             self.epochs_with_credits += 1;
         }
 
@@ -1940,13 +2002,25 @@ impl FlatAccumulator {
             }
             None => self.epochs_without_bps += 1,
         }
-        self.adjusted_credits +=
-            validator.credits.to_f64().unwrap_or_default() * 0f64.max((100 - commission) as f64);
+        if let Some(credits) = validator.credits {
+            self.epochs_with_tower_credits += 1;
+            self.adjusted_credits +=
+                credits.to_f64().unwrap_or_default() * 0f64.max((100 - commission) as f64);
+        }
 
         if epoch >= self.newest_epoch {
             self.newest_epoch = epoch;
             self.dc_aso = validator.dc_aso.clone();
             self.marinade_stake = to_sol(validator.marinade_stake);
+        }
+    }
+
+    /// Over the epochs with tower credits only, so 0 once the window is all
+    /// past the Alpenglow migration.
+    fn average_adjusted_credits(&self) -> f64 {
+        match self.epochs_with_tower_credits {
+            0 => 0f64,
+            epochs => self.adjusted_credits / epochs as f64 / 100f64,
         }
     }
 

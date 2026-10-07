@@ -32,7 +32,7 @@ fn validator(activated_stake: u64) -> Validator {
         feature_set: Some(123),
         shred_version: Some(456),
         activated_stake: activated_stake.into(),
-        credits: 100.into(),
+        credits: Some(100.into()),
         leader_slots: 100.into(),
         blocks_produced: 90.into(),
         skip_rate: 0.1,
