@@ -79,16 +79,18 @@ async fn net_apy_history_scope_covers_the_cached_window() {
 
     assert_eq!(
         load_last_closed_epoch(&client).await.unwrap(),
-        Some(LAST_EPOCH - 1),
+        Some((
+            LAST_EPOCH - 1,
+            epoch_start(LAST_EPOCH - 1) + Duration::days(2)
+        )),
         "the open epoch has no epochs row"
     );
 
-    let (mut vote_accounts, first_start_at) = load_net_apy_history_scope(&client, 3).await.unwrap();
-    vote_accounts.sort();
+    let (vote_accounts, first_start_at) = load_net_apy_history_scope(&client, 3).await.unwrap();
     assert_eq!(
         vote_accounts,
         vec!["voteEdge".to_string(), "voteOpen".to_string()],
-        "each validator of the window once, and none from before it"
+        "each validator of the window once, sorted, and none from before it"
     );
     assert_eq!(first_start_at, Some(epoch_start(LAST_EPOCH - 2)));
 

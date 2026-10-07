@@ -1103,7 +1103,7 @@ pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String
     .collect())
 }
 
-// The window `latest/all` applies, so the newest history point is the value `/providers` serves.
+// The window `latest/all` applies, so history and `/providers` share one method.
 const NET_APY_WINDOW_S: u64 = 14 * 24 * 3600;
 // apy-api's MAX_BATCH_VALIDATORS.
 const NET_APY_BATCH_SIZE: usize = 150;
@@ -1119,10 +1119,6 @@ pub async fn load_validator_net_apy_history(
     vote_accounts: &[String],
     from_unix: i64,
 ) -> anyhow::Result<HashMap<String, Vec<(i64, f64)>>> {
-    let mut vote_accounts = vote_accounts.to_vec();
-    vote_accounts.sort();
-    vote_accounts.dedup();
-
     let mut series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
     for chunk in vote_accounts.chunks(NET_APY_BATCH_SIZE) {
         let url = format!(
@@ -1156,14 +1152,22 @@ pub async fn load_validator_net_apy_history(
     Ok(series)
 }
 
-pub async fn load_last_closed_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
+pub async fn load_last_closed_epoch(
+    psql_client: &Client,
+) -> anyhow::Result<Option<(u64, DateTime<Utc>)>> {
     let row = psql_client
-        .query_one("SELECT MAX(epoch) AS epoch FROM epochs", &[])
+        .query_opt(
+            "SELECT epoch, end_at FROM epochs ORDER BY epoch DESC LIMIT 1",
+            &[],
+        )
         .await?;
-    Ok(row
-        .get::<_, Option<Decimal>>("epoch")
-        .map(u64::try_from)
-        .transpose()?)
+    row.map(|row| {
+        Ok((
+            row.get::<_, Decimal>("epoch").try_into()?,
+            row.get("end_at"),
+        ))
+    })
+    .transpose()
 }
 
 // Not read off the validators cache, so the history loads on a cold start before that step has run.
@@ -1175,7 +1179,8 @@ pub async fn load_net_apy_history_scope(
     let vote_accounts = psql_client
         .query(
             "SELECT DISTINCT vote_account FROM validators
-             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC",
+             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+             ORDER BY vote_account",
             &[&epochs],
         )
         .await?

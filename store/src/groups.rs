@@ -236,13 +236,7 @@ impl ProviderAndClientBreakdowns {
             .map(|(key, tally)| GroupShare {
                 key,
                 validator_count: tally.validator_count,
-                stake_share: if group_stake.is_zero() {
-                    0.0
-                } else {
-                    (tally.total_stake / group_stake)
-                        .to_f64()
-                        .unwrap_or_default()
-                },
+                stake_share: stake_share(tally.total_stake, group_stake),
                 total_stake: tally.total_stake,
             })
             .collect();
@@ -345,6 +339,14 @@ impl StakeWeighted {
 
     fn mean(&self) -> Option<f64> {
         (self.weight > 0.0).then(|| self.weighted / self.weight)
+    }
+}
+
+fn stake_share(stake: Decimal, total_stake: Decimal) -> f64 {
+    if total_stake.is_zero() {
+        0.0
+    } else {
+        (stake / total_stake).to_f64().unwrap_or_default()
     }
 }
 
@@ -479,13 +481,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             key: self.name().unwrap_or_else(|| UNKNOWN_GROUP.to_string()),
             validator_count: self.validator_count,
             total_stake: self.total_stake,
-            stake_share: if total_activated_stake.is_zero() {
-                0.0
-            } else {
-                (self.total_stake / total_activated_stake)
-                    .to_f64()
-                    .unwrap_or_default()
-            },
+            stake_share: stake_share(self.total_stake, total_activated_stake),
             stake_delta_7d: delta(ctx.baseline_7d),
             stake_delta_30d: delta(ctx.baseline_30d),
             net_apy: self.net_apy.mean(),
@@ -921,7 +917,7 @@ struct HistoryAccumulator {
     epochs: HashMap<u64, HistoryPoint>,
 }
 
-fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
+pub fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
     series
         .iter()
         .filter(|(time, _)| (time - epoch_end_at).abs() <= NET_APY_EPOCH_END_TOLERANCE_S)
@@ -963,10 +959,11 @@ pub fn aggregate_history(
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
             for (kind, groups) in KINDS.iter().zip(accumulators.iter_mut()) {
-                let Some(name) = group_key(validator, stats, *kind) else {
+                let name = group_key(validator, stats, *kind);
+                let (Some(key), Some(name)) = (folded(&name), name) else {
                     continue;
                 };
-                let group = groups.entry(name.to_lowercase()).or_default();
+                let group = groups.entry(key).or_default();
                 *group.spellings.entry(name).or_default() += stats.activated_stake;
                 let point = group.epochs.entry(stats.epoch).or_default();
                 point.total_stake += stats.activated_stake;
@@ -993,13 +990,7 @@ pub fn aggregate_history(
                                 epoch: *epoch,
                                 epoch_start_at: stats.epoch_start_at,
                                 epoch_end_at: stats.epoch_end_at,
-                                stake_share: if cluster_stake.is_zero() {
-                                    0.0
-                                } else {
-                                    (point.total_stake / cluster_stake)
-                                        .to_f64()
-                                        .unwrap_or_default()
-                                },
+                                stake_share: stake_share(point.total_stake, cluster_stake),
                                 total_stake: point.total_stake,
                                 validator_count: point.validator_count,
                                 net_apy: point.net_apy.mean(),
@@ -2670,12 +2661,14 @@ mod tests {
         let validators = validators(vec![
             Member::new("rated", last_two_epochs(300, AGAVE, Some("Hetzner"))),
             Member::new("unrated", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+            Member::new("nan", last_two_epochs(100, AGAVE, Some("Hetzner"))),
             Member::new("small", last_two_epochs(100, AGAVE, Some("Latitude"))),
             Member::new("big", last_two_epochs(300, AGAVE, Some("Latitude"))),
         ]);
         let end = epoch_end_unix(&validators, PREVIOUS_EPOCH);
         let take_rates = HashMap::from([
             (("rated".to_string(), PREVIOUS_EPOCH), 0.1),
+            (("nan".to_string(), PREVIOUS_EPOCH), f64::NAN),
             (("small".to_string(), PREVIOUS_EPOCH), 0.2),
             (("big".to_string(), PREVIOUS_EPOCH), 0.0),
         ]);
@@ -2690,7 +2683,7 @@ mod tests {
         assert_eq!(
             (hetzner.take_rate, hetzner.net_apy),
             (Some(0.1), Some(0.07)),
-            "a member with no rate leaves the weight instead of counting as zero"
+            "a member with no or a non-finite rate leaves the weight instead of counting as zero"
         );
         let latitude = point(&history.providers["latitude"], PREVIOUS_EPOCH);
         assert!((latitude.take_rate.unwrap() - 0.05).abs() < 1e-12);

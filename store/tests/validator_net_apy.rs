@@ -118,7 +118,7 @@ fn series_body(validators: &[String], series: impl Fn(&str) -> String) -> String
 }
 
 fn vote_accounts(count: usize) -> Vec<String> {
-    (0..count).rev().map(|i| format!("vote{i:03}")).collect()
+    (0..count).map(|i| format!("vote{i:03}")).collect()
 }
 
 #[tokio::test]
@@ -167,11 +167,10 @@ async fn history_is_fetched_in_chunks_and_merged() {
         assert!(validators.len() <= 150, "{} validators", validators.len());
         requested.extend(validators);
     }
-    let mut expected = vote_accounts(151);
-    expected.sort();
     assert_eq!(
-        requested, expected,
-        "each validator is asked for once, sorted"
+        requested,
+        vote_accounts(151),
+        "each validator is asked for once, in the order given"
     );
 }
 

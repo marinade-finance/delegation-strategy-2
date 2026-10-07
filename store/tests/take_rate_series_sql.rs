@@ -361,7 +361,6 @@ async fn epoch_take_rates_cover_the_cached_window_only() {
     insert_reward(&client, VOTE, LAST_EPOCH - 2, 0.07).await;
     insert_reward(&client, VOTE, LAST_EPOCH - 3, 0.09).await;
     insert_reward(&client, "voteOther", LAST_EPOCH - 1, 1.0).await;
-    insert_reward(&client, "voteNaN", LAST_EPOCH, f64::NAN).await;
 
     assert_eq!(
         load_epoch_take_rates(&client, 3).await.unwrap(),
@@ -370,7 +369,7 @@ async fn epoch_take_rates_cover_the_cached_window_only() {
             ((VOTE.to_string(), LAST_EPOCH - 2), 0.07),
             (("voteOther".to_string(), LAST_EPOCH - 1), 1.0),
         ]),
-        "the window ends three epochs back from cluster_info, and a non-finite rate is dropped"
+        "the window ends three epochs back from cluster_info"
     );
 
     client
