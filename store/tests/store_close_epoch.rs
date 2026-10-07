@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::slot_params::baseline_slots_per_year;
-use collect::validators::Snapshot;
+use collect::validators::{Snapshot, ValidatorSnapshot};
 use collect::validators_performance::{
     ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
 };
@@ -21,6 +21,7 @@ use store::docs::{
 };
 use store::ls_open_epochs::open_epochs;
 use store::uptime::{store_uptime, StoreUptimeParams};
+use store::utils::{load_validators, ValidatorOverlays};
 use store::validators::{store_validators, StoreValidatorsParams};
 use store::versions::{store_versions, StoreVersionsParams};
 use store::warehouse::Warehouse;
@@ -81,14 +82,18 @@ fn at(moment: &str) -> DateTime<Utc> {
 }
 
 async fn seed_validators(directory: &Directory) {
+    seed_validator(
+        directory,
+        common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, performance(ADVERTISED, false)),
+    )
+    .await;
+}
+
+async fn seed_validator(directory: &Directory, validator: ValidatorSnapshot) {
     let snapshot = Snapshot {
         epoch: EPOCH,
         created_at: "2026-08-03T00:00:00Z".into(),
-        validators: vec![common::validator_snapshot(
-            IDENTITY,
-            VOTE_ACCOUNT,
-            performance(ADVERTISED, false),
-        )],
+        validators: vec![validator],
     };
     let path = common::write_yaml("close-epoch-validators", &snapshot);
     store_validators(
@@ -138,9 +143,8 @@ async fn seed_streams(directory: &Directory) {
 }
 
 async fn run_close_epoch(directory: &Directory) {
-    let mut validators = HashMap::new();
-    validators.insert(
-        VOTE_ACCOUNT.to_string(),
+    run_close_epoch_with(
+        directory,
         ValidatorPerformance {
             credits: Some(4242),
             leader_slots: 200,
@@ -148,7 +152,13 @@ async fn run_close_epoch(directory: &Directory) {
             skip_rate: 0.1,
             ..performance(9, false)
         },
-    );
+    )
+    .await;
+}
+
+async fn run_close_epoch_with(directory: &Directory, performance: ValidatorPerformance) {
+    let mut validators = HashMap::new();
+    validators.insert(VOTE_ACCOUNT.to_string(), performance);
     let mut rewards = HashMap::new();
     rewards.insert(
         VOTE_ACCOUNT.to_string(),
@@ -412,4 +422,102 @@ async fn a_rerun_of_a_sealed_epoch_trims_without_resealing() {
         intervals,
         "a rerun left the sealed intervals alone"
     );
+}
+
+fn alpenglow_performance(vote_reward_lamports: Option<u64>) -> ValidatorPerformance {
+    ValidatorPerformance {
+        credits: None,
+        vote_reward_lamports,
+        last_vote: Some(0),
+        ..performance(ADVERTISED, false)
+    }
+}
+
+async fn finalized(directory: &Directory) -> (Option<Decimal>, Option<Decimal>) {
+    let validators: SnapshotDoc = directory
+        .get(&epoch_doc_path(SNAPSHOT_DIR, EPOCH))
+        .await
+        .expect("get snapshot")
+        .expect("snapshot document")
+        .body;
+    let validator = &validators[VOTE_ACCOUNT];
+    (validator.credits, validator.vote_reward_lamports)
+}
+
+/// After the migration epoch the vote account counts reward lamports where it
+/// counted tower credits: the epoch keeps no credits, and its yield comes from
+/// the reward against the stake, net of the effective commission.
+#[tokio::test]
+async fn an_alpenglow_epoch_keeps_its_reward_and_no_credits_through_the_close() {
+    let Some(store) = common::directory_store("close-epoch-alpenglow").await else {
+        return;
+    };
+    let directory = store.client();
+
+    seed_validator(
+        &directory,
+        common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, alpenglow_performance(Some(2))),
+    )
+    .await;
+    seed_streams(&directory).await;
+    run_close_epoch_with(&directory, alpenglow_performance(Some(3))).await;
+    assert_eq!(finalized(&directory).await, (None, Some(Decimal::from(3))));
+
+    let mut warehouse = Warehouse::default();
+    warehouse.warm(&directory, 80).await.expect("warm");
+    let validators = load_validators(&warehouse, 1, 1, &ValidatorOverlays::default())
+        .await
+        .expect("load validators");
+    let record = &validators[VOTE_ACCOUNT];
+    assert_eq!(record.credits, None);
+    assert_eq!(record.vote_reward_lamports, Some(3));
+    let stats = &record.epoch_stats[0];
+    assert_eq!((stats.credits, stats.vote_reward_lamports), (None, Some(3)));
+
+    let rate_per_epoch = (1.0 - EFFECTIVE as f64 / 100.0) * 3.0 / 100.0;
+    let epochs_per_year = 31556925.9936 / 60.0;
+    let apr = stats.apr.expect("apr from the vote reward");
+    assert!(
+        (apr - rate_per_epoch * epochs_per_year).abs() < 1e-9,
+        "{apr} is the reward per staked lamport, annualised"
+    );
+}
+
+/// Neither number read means the epoch fell out of the epochCredits window by
+/// the time the close ran: the credits the open epoch stored stand.
+#[tokio::test]
+async fn a_close_that_reads_no_credits_keeps_the_stored_ones() {
+    let Some(store) = common::directory_store("close-epoch-out-of-window").await else {
+        return;
+    };
+    let directory = store.client();
+
+    seed_validators(&directory).await;
+    seed_streams(&directory).await;
+    run_close_epoch_with(&directory, alpenglow_performance(None)).await;
+
+    assert_eq!(finalized(&directory).await, (Some(Decimal::from(10)), None));
+}
+
+/// The close reads stake one epoch late, so an account staked only from the
+/// next epoch on reports a reward of 0 for an epoch it earned nothing in.
+#[tokio::test]
+async fn an_unstaked_epoch_keeps_no_reward_through_the_close() {
+    let Some(store) = common::directory_store("close-epoch-unstaked").await else {
+        return;
+    };
+    let directory = store.client();
+
+    seed_validator(
+        &directory,
+        ValidatorSnapshot {
+            activated_stake: 0,
+            ..common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, alpenglow_performance(None))
+        },
+    )
+    .await;
+    seed_streams(&directory).await;
+    run_close_epoch_with(&directory, alpenglow_performance(Some(0))).await;
+
+    assert_eq!(finalized(&directory).await, (None, None));
 }

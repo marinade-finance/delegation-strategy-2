@@ -646,3 +646,70 @@ async fn a_snapshot_for_a_closed_epoch_is_skipped() {
         "the closed epoch's document must stay as close-epoch left it"
     );
 }
+
+fn snapshot_with_credits(credits: Option<u64>, vote_reward_lamports: Option<u64>) -> Snapshot {
+    Snapshot {
+        epoch: EPOCH,
+        created_at: "2026-07-31T00:00:00Z".into(),
+        validators: vec![common::validator_snapshot(
+            IDENTITY,
+            VOTE_ACCOUNT,
+            collect::validators_performance::ValidatorPerformance {
+                credits,
+                vote_reward_lamports,
+                ..common::validator_performance()
+            },
+        )],
+    }
+}
+
+async fn stored_credits(directory: &Directory) -> (Option<Decimal>, Option<Decimal>) {
+    let validator = stored(directory, EPOCH).await.expect("stored validator");
+    (validator.credits, validator.vote_reward_lamports)
+}
+
+// A run that read neither number found the epoch outside the vote account's
+// epochCredits window: what the epoch holds stands. A run that read either
+// replaces both, so a tower reading never leaves a stale reward beside it.
+#[tokio::test]
+async fn a_run_without_credits_or_reward_keeps_what_the_epoch_holds() {
+    let Some(store_handle) = common::directory_store("merge-credits").await else {
+        return;
+    };
+    let directory = store_handle.client();
+
+    store(
+        &directory,
+        "merge-credits-0",
+        &snapshot_with_credits(None, Some(7)),
+    )
+    .await;
+    assert_eq!(
+        stored_credits(&directory).await,
+        (None, Some(Decimal::from(7)))
+    );
+
+    store(
+        &directory,
+        "merge-credits-1",
+        &snapshot_with_credits(None, None),
+    )
+    .await;
+    assert_eq!(
+        stored_credits(&directory).await,
+        (None, Some(Decimal::from(7))),
+        "an epoch out of the window keeps the stored reward"
+    );
+
+    store(
+        &directory,
+        "merge-credits-2",
+        &snapshot_with_credits(Some(10), None),
+    )
+    .await;
+    assert_eq!(
+        stored_credits(&directory).await,
+        (Some(Decimal::from(10)), None),
+        "a run that read the credits replaces both"
+    );
+}
