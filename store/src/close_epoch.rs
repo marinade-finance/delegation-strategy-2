@@ -1,4 +1,6 @@
-use crate::dto::{COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE};
+use crate::dto::{
+    CreditsColumns, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
+};
 use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -259,7 +261,7 @@ struct ValidatorUpdateRecord {
     commission_effective: Option<i32>,
     commission_effective_source: Option<&'static str>,
     commission_effective_bps: Option<i32>,
-    credits: Decimal,
+    credits: CreditsColumns,
     leader_slots: Decimal,
     blocks_produced: Decimal,
     skip_rate: f64,
@@ -309,7 +311,7 @@ pub async fn close_epoch(
                 commission_effective,
                 commission_effective_source,
                 commission_effective_bps,
-                credits: v.credits.into(),
+                credits: CreditsColumns::from_performance(v),
                 leader_slots: v.leader_slots.into(),
                 blocks_produced: v.blocks_produced.into(),
                 skip_rate: v.skip_rate,
@@ -341,7 +343,10 @@ pub async fn close_epoch(
             commission_effective = u.commission_effective,
             commission_effective_source = u.commission_effective_source,
             commission_effective_bps = u.commission_effective_bps,
-            credits = u.credits,
+            -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
+            credits = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.credits ELSE u.credits END,
+            -- Also keep the stored reward when the validator had no stake in this epoch
+            vote_reward_lamports = CASE WHEN (u.credits IS NULL AND u.vote_reward_lamports IS NULL) OR validators.activated_stake = 0 THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -358,7 +363,8 @@ pub async fn close_epoch(
                 leader_slots,
                 blocks_produced,
                 skip_rate,
-                updated_at
+                updated_at,
+                vote_reward_lamports
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -370,11 +376,12 @@ pub async fn close_epoch(
                 &v.commission_effective,
                 &v.commission_effective_source,
                 &v.commission_effective_bps,
-                &v.credits,
+                &v.credits.credits,
                 &v.leader_slots,
                 &v.blocks_produced,
                 &v.skip_rate,
                 &v.updated_at,
+                &v.credits.vote_reward_lamports,
             ];
             query.add(
                 &mut params,
@@ -388,6 +395,7 @@ pub async fn close_epoch(
                     (7, "NUMERIC".into()),                  // blocks_produced
                     (8, "DOUBLE PRECISION".into()),         // skip_rate
                     (9, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
+                    (10, "NUMERIC".into()),                 // vote_reward_lamports
                 ]),
             );
             updated_identities.insert(v.vote_account.clone());

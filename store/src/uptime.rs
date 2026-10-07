@@ -1,7 +1,7 @@
 use crate::utils::*;
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
-use collect::validators_performance::ValidatorsPerformanceSnapshot;
+use collect::validators_performance::{ValidatorPerformance, ValidatorsPerformanceSnapshot};
 use log::{debug, info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
@@ -18,8 +18,22 @@ pub struct StoreUptimeParams {
 static UP: &str = "UP";
 static DOWN: &str = "DOWN";
 
-fn status_from_delinquency(delinquent: bool) -> &'static str {
-    if delinquent {
+// lastVote is 0 when the vote state has no votes, which SIMD-0357 makes the case under Alpenglow.
+// Alpenglow credits of a live validator grow every slot.
+fn is_down(performance: &ValidatorPerformance, last_credits: Option<Decimal>) -> bool {
+    if performance.last_vote.is_some_and(|last_vote| last_vote > 0) {
+        return performance.delinquent;
+    }
+    match (performance.credits_total, last_credits) {
+        (Some(credits_total), Some(last_credits)) => Decimal::from(credits_total) <= last_credits,
+        // No earlier snapshot to compare with. The next snapshot compares.
+        (Some(_), None) => false,
+        (None, _) => performance.delinquent,
+    }
+}
+
+fn status_from_down(down: bool) -> &'static str {
+    if down {
         DOWN
     } else {
         UP
@@ -41,11 +55,11 @@ pub async fn store_uptime(
         .checked_add_signed(Duration::minutes(1))
         .unwrap();
     let status_max_delay_to_extend = Duration::minutes(5);
-    let mut records_extensions: HashMap<i64, DateTime<Utc>> = Default::default();
+    let mut records_extensions: HashMap<i64, (DateTime<Utc>, Option<Decimal>)> = Default::default();
 
     info!("Loaded the snapshot");
 
-    for row in psql_client
+    let latest_rows = psql_client
         .query(
             "
         SELECT DISTINCT ON (vote_account)
@@ -54,14 +68,39 @@ pub async fn store_uptime(
             status,
             epoch,
             start_at,
-            end_at
+            end_at,
+            last_credits
         FROM uptimes
         ORDER BY vote_account, end_at DESC
     ",
             &[],
         )
-        .await?
-    {
+        .await?;
+    let last_credits: HashMap<&str, Decimal> = latest_rows
+        .iter()
+        .filter_map(|row| {
+            row.get::<_, Option<Decimal>>("last_credits")
+                .map(|credits| (row.get("vote_account"), credits))
+        })
+        .collect();
+    let statuses: HashMap<&str, (bool, Option<Decimal>)> = snapshot
+        .validators
+        .iter()
+        .map(|(vote_account, performance)| {
+            (
+                vote_account.as_str(),
+                (
+                    is_down(
+                        performance,
+                        last_credits.get(vote_account.as_str()).copied(),
+                    ),
+                    performance.credits_total.map(Decimal::from),
+                ),
+            )
+        })
+        .collect();
+
+    for row in latest_rows.iter() {
         let id: i64 = row.get("id");
         let vote_account: &str = row.get("vote_account");
         let status: &str = row.get("status");
@@ -72,14 +111,14 @@ pub async fn store_uptime(
             .checked_add_signed(status_max_delay_to_extend)
             .unwrap();
 
-        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
-            let status_from_snapshot = status_from_delinquency(validator_snapshot.delinquent);
+        if let Some(&(down, credits_total)) = statuses.get(vote_account) {
+            let status_from_snapshot = status_from_down(down);
             if latest_end_extension_at > snapshot_created_at {
                 if status == status_from_snapshot && epoch == snapshot_epoch {
                     validators_with_extended_status.insert(vote_account.to_string());
-                    records_extensions.insert(id, default_status_end_at);
+                    records_extensions.insert(id, (default_status_end_at, credits_total));
                 } else {
-                    records_extensions.insert(id, snapshot_created_at);
+                    records_extensions.insert(id, (snapshot_created_at, credits_total));
                 }
             }
         }
@@ -89,16 +128,21 @@ pub async fn store_uptime(
 
     let mut query = UpdateQueryCombiner::new(
         "uptimes".to_string(),
-        "end_at = u.end_at".to_string(),
-        "u(id, end_at)".to_string(),
+        "end_at = u.end_at, last_credits = COALESCE(u.last_credits, uptimes.last_credits)"
+            .to_string(),
+        "u(id, end_at, last_credits)".to_string(),
         "uptimes.id = u.id".to_string(),
     );
 
-    for (id, status_end_at) in records_extensions.iter() {
-        let mut params: Vec<&(dyn ToSql + Sync)> = vec![id, status_end_at];
+    for (id, (status_end_at, credits_total)) in records_extensions.iter() {
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![id, status_end_at, credits_total];
         query.add(
             &mut params,
-            HashMap::from_iter([(0, "BIGINT".into()), (1, "TIMESTAMP WITH TIME ZONE".into())]),
+            HashMap::from_iter([
+                (0, "BIGINT".into()),
+                (1, "TIMESTAMP WITH TIME ZONE".into()),
+                (2, "NUMERIC".into()),
+            ]),
         );
     }
     query.execute(psql_client).await?;
@@ -106,18 +150,19 @@ pub async fn store_uptime(
 
     let mut query = InsertQueryCombiner::new(
         "uptimes".to_string(),
-        "vote_account, status, epoch, start_at, end_at".to_string(),
+        "vote_account, status, epoch, start_at, end_at, last_credits".to_string(),
     );
 
-    for (vote_account, snapshot) in snapshot.validators.iter() {
-        if !validators_with_extended_status.contains(vote_account) {
-            if snapshot.delinquent {
+    for (vote_account, (down, credits_total)) in statuses.iter() {
+        if !validators_with_extended_status.contains(*vote_account) {
+            if *down {
                 let mut params: Vec<&(dyn ToSql + Sync)> = vec![
                     vote_account,
                     &DOWN,
                     &snapshot_epoch,
                     &snapshot_created_at,
                     &default_status_end_at,
+                    credits_total,
                 ];
                 query.add(&mut params);
                 warn!("Validator {vote_account} is now DOWN");
@@ -128,6 +173,7 @@ pub async fn store_uptime(
                     &snapshot_epoch,
                     &snapshot_created_at,
                     &default_status_end_at,
+                    credits_total,
                 ];
                 query.add(&mut params);
                 info!("Validator {vote_account} is now UP");
@@ -138,4 +184,78 @@ pub async fn store_uptime(
     info!("Stored {} changed uptimes", insertions.unwrap_or(0));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn performance(
+        delinquent: bool,
+        last_vote: Option<u64>,
+        credits_total: Option<u64>,
+    ) -> ValidatorPerformance {
+        ValidatorPerformance {
+            commission: 0,
+            version: None,
+            client_id: None,
+            client_id_raw: None,
+            feature_set: None,
+            shred_version: None,
+            credits: None,
+            vote_reward_lamports: None,
+            last_vote,
+            credits_total,
+            leader_slots: 0,
+            blocks_produced: 0,
+            skip_rate: 0.0,
+            delinquent,
+        }
+    }
+
+    #[test]
+    fn a_voting_validator_keeps_the_rpc_delinquency() {
+        assert!(is_down(
+            &performance(true, Some(446897992), Some(10)),
+            Some(Decimal::from(5))
+        ));
+        assert!(!is_down(
+            &performance(false, Some(446897992), Some(10)),
+            Some(Decimal::from(10))
+        ));
+    }
+
+    #[test]
+    fn without_votes_growing_credits_is_up() {
+        assert!(!is_down(
+            &performance(true, Some(0), Some(11)),
+            Some(Decimal::from(10))
+        ));
+        assert!(!is_down(
+            &performance(true, None, Some(11)),
+            Some(Decimal::from(10))
+        ));
+    }
+
+    #[test]
+    fn without_votes_flat_credits_is_down() {
+        assert!(is_down(
+            &performance(false, Some(0), Some(10)),
+            Some(Decimal::from(10))
+        ));
+    }
+
+    #[test]
+    fn without_votes_and_no_previous_credits_is_up() {
+        assert!(!is_down(&performance(true, Some(0), Some(10)), None));
+        assert!(!is_down(&performance(false, Some(0), Some(10)), None));
+    }
+
+    #[test]
+    fn without_votes_and_no_credits_keeps_the_rpc_delinquency() {
+        assert!(is_down(
+            &performance(true, Some(0), None),
+            Some(Decimal::from(10))
+        ));
+    }
 }

@@ -94,7 +94,7 @@ async fn voters_credits_performance_in_epoch(
                 credits,
                 coalesce(credits / stake_weighted_avg_credits, 0)::double precision AS credits_performance
             FROM validators LEFT JOIN stats ON 1 = 1
-            WHERE epoch = $1",
+            WHERE epoch = $1 AND credits IS NOT NULL",
             &[&Decimal::from(epoch)],
         )
         .await?

@@ -105,6 +105,21 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
 }
 ```
 
+### Credits after Alpenglow
+
+Alpenglow replaces tower vote credits with vote rewards in lamports. The API gives each value its own field.
+
+| Field | Before Alpenglow | Migration epoch | After the migration epoch |
+|---|---|---|---|
+| `credits` | tower vote credits | tower credits before the migration | `null` |
+| `vote_reward_lamports` | `null` | vote rewards after the migration | vote rewards |
+
+`credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
+
+`apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
+
+`order_field=Credits` sorts on `credits`, then on the vote reward per lamport of stake. `/clients` and `/providers` use `vote_reward_per_stake` as the second key. This field is the stake-weighted mean of the same ratio.
+
 ## Uptimes
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/uptimes | jq

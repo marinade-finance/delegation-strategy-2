@@ -350,6 +350,7 @@ struct Accumulator<B> {
     net_apy: StakeWeighted,
     take_rate: StakeWeighted,
     credits: StakeWeighted,
+    vote_reward_per_stake: StakeWeighted,
     marinade_score: StakeWeighted,
     apy: StakeWeighted,
     commission: StakeWeighted,
@@ -370,6 +371,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: Default::default(),
             take_rate: Default::default(),
             credits: Default::default(),
+            vote_reward_per_stake: Default::default(),
             marinade_score: Default::default(),
             apy: Default::default(),
             commission: Default::default(),
@@ -418,7 +420,14 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
 
         self.net_apy.add(validator.net_apy, weight);
         self.take_rate.add(validator.avg_take_rate, weight);
-        self.credits.add(Some(validator.credits as f64), weight);
+        self.credits
+            .add(validator.credits.map(|credits| credits as f64), weight);
+        self.vote_reward_per_stake.add(
+            validator
+                .vote_reward_per_stake()
+                .and_then(|rate| rate.to_f64()),
+            weight,
+        );
         self.marinade_score.add(validator.score, weight);
         self.apy.add(validator.avg_apy, weight);
         // Left out when unknown on both sides, where the per-validator column reads the worst case.
@@ -473,6 +482,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             net_apy: self.net_apy.mean(),
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
+            vote_reward_per_stake: self.vote_reward_per_stake.mean(),
             marinade_score: self.marinade_score.mean(),
             apy: self.apy.mean(),
             commission: self.commission.mean(),
@@ -539,7 +549,10 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         stake_delta_30d: validator.stake_delta_30d,
         net_apy: finite(validator.net_apy),
         take_rate: finite(validator.avg_take_rate),
-        credits: Some(validator.credits as f64),
+        credits: validator.credits.map(|credits| credits as f64),
+        vote_reward_per_stake: validator
+            .vote_reward_per_stake()
+            .and_then(|rate| rate.to_f64()),
         marinade_score: finite(validator.score),
         apy: finite(validator.avg_apy),
         commission: worst_known_commission(
@@ -1070,7 +1083,7 @@ mod tests {
                         epoch_stats,
                         net_apy: member.net_apy,
                         avg_take_rate: member.take_rate,
-                        credits: member.credits,
+                        credits: Some(member.credits),
                         score: member.marinade_score,
                         avg_apy: member.apy,
                         commission_max_observed: member.commission_max_observed,
@@ -1678,7 +1691,7 @@ mod tests {
 
     #[test]
     fn a_member_that_dropped_out_of_the_eligible_set_shows_as_a_loss() {
-        let validators = validators(vec![
+        let mut validators = validators(vec![
             Member::new(
                 "stayed",
                 epochs_spanning_both_windows(300, 300, 300, AGAVE, AGAVE),
@@ -1694,6 +1707,7 @@ mod tests {
                 ],
             ),
         ]);
+        set_closed_epoch_uptime(&mut validators, "left", 0.0);
 
         let groups = aggregate_groups(&validators, GroupKind::ClientLabel);
         let agave = group(&groups, "Agave");
@@ -1751,10 +1765,11 @@ mod tests {
     fn a_validator_the_list_does_not_serve_counts_nowhere() {
         // Present in the last epoch but neither voting nor staked: `/validators` drops it.
         let idle = Member::new("idle", last_two_epochs(0, FRANKENDANCER, Some("Latitude")));
-        let validators = validators(vec![
+        let mut validators = validators(vec![
             Member::new("live", last_two_epochs(700, AGAVE, Some("Hetzner"))),
             idle,
         ]);
+        set_closed_epoch_uptime(&mut validators, "idle", 0.0);
 
         let all = aggregate_all(&validators, &Default::default());
         assert_eq!(
@@ -1778,8 +1793,38 @@ mod tests {
             Member::new("staked", last_two_epochs(700, AGAVE, Some("Hetzner"))),
         ]);
         for stats in validators.get_mut("voting").unwrap().epoch_stats.iter_mut() {
-            stats.credits = 1;
+            stats.credits = Some(1);
         }
+
+        assert_eq!(
+            group(&aggregate_provider_rows(&validators), "Hetzner").validator_count,
+            2
+        );
+    }
+
+    // `close_epoch` sets `uptime_pct` on the closed epoch, the open one keeps NULL
+    fn set_closed_epoch_uptime(
+        validators: &mut HashMap<String, ValidatorRecord>,
+        name: &str,
+        uptime_pct: f64,
+    ) {
+        let stats = &mut validators.get_mut(name).unwrap().epoch_stats;
+        let closed = stats
+            .iter_mut()
+            .find(|s| s.epoch == PREVIOUS_EPOCH)
+            .unwrap();
+        closed.uptime_pct = Some(uptime_pct);
+    }
+
+    #[test]
+    fn a_validator_with_no_stake_but_uptime_still_counts() {
+        let mut validators = validators(vec![
+            Member::new("up", last_two_epochs(0, AGAVE, Some("Hetzner"))),
+            Member::new("down", last_two_epochs(0, AGAVE, Some("Hetzner"))),
+            Member::new("staked", last_two_epochs(700, AGAVE, Some("Hetzner"))),
+        ]);
+        set_closed_epoch_uptime(&mut validators, "up", 0.98);
+        set_closed_epoch_uptime(&mut validators, "down", 0.0);
 
         assert_eq!(
             group(&aggregate_provider_rows(&validators), "Hetzner").validator_count,

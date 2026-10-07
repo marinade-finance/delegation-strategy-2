@@ -99,7 +99,9 @@ pub async fn store_validators(
             self_stake = u.self_stake,
             superminority = u.superminority,
             stake_to_become_superminority = u.stake_to_become_superminority,
-            credits = u.credits,
+            -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
+            credits = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.credits ELSE u.credits END,
+            vote_reward_lamports = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
             leader_slots = u.leader_slots,
             blocks_produced = u.blocks_produced,
             skip_rate = u.skip_rate,
@@ -188,7 +190,8 @@ pub async fn store_validators(
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_owner,
                 block_revenue_collector_lamports,
-                block_revenue_collector_healthy
+                block_revenue_collector_healthy,
+                vote_reward_lamports
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -223,7 +226,7 @@ pub async fn store_validators(
                     &v.self_stake,
                     &v.superminority,
                     &v.stake_to_become_superminority,
-                    &v.credits,
+                    &v.credits.credits,
                     &v.leader_slots,
                     &v.blocks_produced,
                     &v.skip_rate,
@@ -254,6 +257,7 @@ pub async fn store_validators(
                     &v.block_revenue_collector_owner,
                     &v.block_revenue_collector_lamports,
                     &v.block_revenue_collector_healthy,
+                    &v.credits.vote_reward_lamports,
                 ];
                 query.add(
                     &mut params,
@@ -302,6 +306,7 @@ pub async fn store_validators(
                         (53, "TEXT".into()), // block_revenue_collector_owner
                         (54, "NUMERIC".into()), // block_revenue_collector_lamports
                         (55, "BOOL".into()), // block_revenue_collector_healthy
+                        (56, "NUMERIC".into()), // vote_reward_lamports
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -387,7 +392,8 @@ pub async fn store_validators(
         inflation_rewards_collector_healthy,
         block_revenue_collector_owner,
         block_revenue_collector_lamports,
-        block_revenue_collector_healthy
+        block_revenue_collector_healthy,
+        vote_reward_lamports
         "
             .to_string(),
         );
@@ -425,7 +431,7 @@ pub async fn store_validators(
                 &v.self_stake,
                 &v.superminority,
                 &v.stake_to_become_superminority,
-                &v.credits,
+                &v.credits.credits,
                 &v.leader_slots,
                 &v.blocks_produced,
                 &v.skip_rate,
@@ -458,6 +464,7 @@ pub async fn store_validators(
                 &v.block_revenue_collector_owner,
                 &v.block_revenue_collector_lamports,
                 &v.block_revenue_collector_healthy,
+                &v.credits.vote_reward_lamports,
             ];
             query.add(&mut params);
             if !v.dc_resolved {
