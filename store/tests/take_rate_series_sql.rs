@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::take_rates::{get_take_rate_series, load_epoch_reward_mix};
+use store::take_rates::{get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates};
 use store::utils::RewardMixShares;
 use tokio_postgres::Client;
 
@@ -333,6 +333,44 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     assert!(
         !mix.contains_key(&2004),
         "an in-progress epoch has only accruing block rewards, which would weight out every commission"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn epoch_take_rates_cover_the_cached_window_only() {
+    let schema = "ds_test_epoch_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW())",
+            &[&Decimal::from(LAST_EPOCH)],
+        )
+        .await
+        .unwrap();
+    insert_reward(&client, VOTE, LAST_EPOCH, 0.05).await;
+    insert_reward(&client, VOTE, LAST_EPOCH - 2, 0.07).await;
+    insert_reward(&client, VOTE, LAST_EPOCH - 3, 0.09).await;
+    insert_reward(&client, "voteOther", LAST_EPOCH - 1, 1.0).await;
+    insert_reward(&client, "voteNaN", LAST_EPOCH, f64::NAN).await;
+
+    assert_eq!(
+        load_epoch_take_rates(&client, 3).await.unwrap(),
+        HashMap::from([
+            ((VOTE.to_string(), LAST_EPOCH), 0.05),
+            ((VOTE.to_string(), LAST_EPOCH - 2), 0.07),
+            (("voteOther".to_string(), LAST_EPOCH - 1), 1.0),
+        ]),
+        "the window ends three epochs back from cluster_info, and a non-finite rate is dropped"
     );
 
     client

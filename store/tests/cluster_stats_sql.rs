@@ -240,6 +240,140 @@ async fn client_diversity_merges_the_ids_a_vendor_ships_across_lineages() {
 }
 
 #[tokio::test]
+async fn client_lineage_splits_id_12_by_the_version_it_reports() {
+    let schema = "ds_test_client_lineage_id_12_version";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for (vote_account, client_id, stake, version) in [
+        ("voteFrankenBamOld", 12, 100, Some("0.1204.40300")),
+        ("voteFireBam", 12, 200, Some("26.9.4")),
+        ("voteFireBamNoVersion", 12, 400, None),
+        ("voteFrankenBam", 14, 800, Some("0.1300.40300")),
+        ("voteFiredancer", 5, 1600, Some("0.1204.40300")),
+    ] {
+        insert_validator(
+            &client,
+            vote_account,
+            LAST_EPOCH,
+            stake,
+            10,
+            Some(client_id),
+        )
+        .await;
+        client
+            .execute(
+                "UPDATE validators SET version = $1 WHERE vote_account = $2",
+                &[&version, &vote_account],
+            )
+            .await
+            .unwrap();
+    }
+
+    let lineage = load_client_lineage_stats(&client, 1).await.unwrap();
+    let stats = lineage
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(stats.total_activated_stake, 3100);
+    assert_eq!(
+        stats.lineage_stake.get("frankendancer"),
+        Some(&900),
+        "id 12 on a 0.x version joins id 14 on the frankendancer lineage"
+    );
+    assert_eq!(stats.lineage_validator_count.get("frankendancer"), Some(&2));
+    assert_eq!(
+        stats.lineage_stake.get("firedancer"),
+        Some(&2200),
+        "id 12 on a newer or no version is firedancer, and id 5 ignores the version"
+    );
+    assert_eq!(stats.lineage_validator_count.get("firedancer"), Some(&3));
+
+    let diversity = load_client_diversity_stats(&client, 1).await.unwrap();
+    let stats = diversity
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(
+        stats.client_stake.get("bam"),
+        Some(&1500),
+        "the vendor does not depend on the version"
+    );
+    assert_eq!(stats.client_validator_count.get("bam"), Some(&4));
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn validators_flat_reads_the_lineage_of_id_12_off_the_same_versions_row() {
+    let schema = "ds_test_validators_flat_id_12_version";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for epoch in (LAST_EPOCH - EPOCHS + 1)..=LAST_EPOCH {
+        insert_validator(&client, "voteFrankenBam", epoch, 100, 10, None).await;
+        insert_validator(&client, "voteFireBam", epoch, 100, 10, None).await;
+    }
+    insert_version(
+        &client,
+        "voteFrankenBam",
+        990,
+        "2026-01-01T00:00:00Z",
+        Some("0.1204.40300"),
+        Some(12),
+    )
+    .await;
+    insert_version(
+        &client,
+        "voteFrankenBam",
+        1001,
+        "2026-03-01T00:00:00Z",
+        Some("26.9.4"),
+        Some(12),
+    )
+    .await;
+    insert_version(
+        &client,
+        "voteFireBam",
+        990,
+        "2026-01-01T00:00:00Z",
+        Some("26.9.4"),
+        Some(12),
+    )
+    .await;
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    let lineage = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|validator| validator.vote_account == vote_account)
+            .unwrap_or_else(|| panic!("{vote_account} must be in the window"))
+            .client_lineage
+            .clone()
+    };
+    assert_eq!(
+        lineage("voteFrankenBam"),
+        "frankendancer",
+        "the version above last_epoch must not reclassify the bounded client row"
+    );
+    assert_eq!(lineage("voteFireBam"), "firedancer");
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn client_diversity_classifies_a_validator_from_its_raw_rendering_alone() {
     let schema = "ds_test_client_diversity_raw";
     if skip_without_database(schema) {

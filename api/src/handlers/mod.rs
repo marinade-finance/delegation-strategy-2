@@ -1,4 +1,5 @@
 pub mod admin_score_upload;
+pub mod client_history;
 pub mod cluster_stats;
 pub mod commissions;
 pub mod config;
@@ -12,6 +13,7 @@ pub mod jito_mev;
 pub mod list_clients;
 pub mod list_providers;
 pub mod list_validators;
+pub mod provider_history;
 pub mod readiness;
 pub mod releases;
 pub mod reports_commission_changes;

@@ -264,12 +264,13 @@ async fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored()
         .unwrap();
     client
         .execute(
-            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_id, client_id_raw)
-             VALUES ($1, 1, $2, NOW(), NULL, NULL),
-                    ($1, 1, $2, NOW(), NULL, 'Raiku2'),
-                    ($1, 1, $2, NOW(), NULL, 'Agave'),
-                    ($1, 1, $2, NOW(), NULL, 'Unknown(12)'),
-                    ($1, 1, $2, NOW(), 12, 'FireBAM')",
+            "INSERT INTO versions (vote_account, epoch_slot, epoch, created_at, client_id, client_id_raw, version)
+             VALUES ($1, 1, $2, NOW(), NULL, NULL, NULL),
+                    ($1, 1, $2, NOW(), NULL, 'Raiku2', NULL),
+                    ($1, 1, $2, NOW(), NULL, 'Agave', NULL),
+                    ($1, 1, $2, NOW(), NULL, 'Unknown(12)', NULL),
+                    ($1, 1, $2, NOW(), 12, 'FireBAM', NULL),
+                    ($1, 1, $2, NOW(), 12, 'FireBAM', '0.1204.40300')",
             &[&VOTE_ACCOUNT, &Decimal::from(EPOCH)],
         )
         .await
@@ -309,9 +310,9 @@ async fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored()
             Some(raw.to_string()),
             stored.or(Some(12)),
             "FireBAM".to_string(),
-            "Frankendancer + JitoBAM".to_string(),
+            "Firedancer + JitoBAM".to_string(),
             Some("bam".to_string()),
-            Some("frankendancer".to_string()),
+            Some("firedancer".to_string()),
         )
     };
     assert_eq!(
@@ -327,11 +328,20 @@ async fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored()
                 Some("agave".to_string()),
             ),
             firebam("FireBAM", Some(12)),
+            (
+                Some("FireBAM".to_string()),
+                Some(12),
+                "FireBAM".to_string(),
+                "Frankendancer + JitoBAM".to_string(),
+                Some("bam".to_string()),
+                Some("frankendancer".to_string()),
+            ),
             unknown(Some("Raiku2")),
             firebam("Unknown(12)", None),
         ],
         "a registry name or an Unknown(N) rendering classifies even with no stored id; \
-         a client the registry does not know stays Unknown with its raw rendering intact"
+         a client the registry does not know stays Unknown with its raw rendering intact; \
+         id 12 on a 0.x version is Frankendancer"
     );
 
     client
@@ -362,12 +372,13 @@ async fn load_validators_classifies_the_record_and_its_epoch_stats() {
             "INSERT INTO validators (
                 identity, vote_account, epoch, activated_stake, marinade_stake,
                 marinade_native_stake, superminority, stake_to_become_superminority, credits,
-                leader_slots, blocks_produced, skip_rate, updated_at, client_id, client_id_raw
+                leader_slots, blocks_produced, skip_rate, updated_at, client_id, client_id_raw, version
             ) VALUES
-                ('identityRegistered', 'voteRegistered', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 12, 'FireBAM'),
-                ('identityRawOnly', 'voteRawOnly', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'JitoLabs'),
-                ('identityReported', 'voteReported', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'Raiku2'),
-                ('identityNoClient', 'voteNoClient', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL)",
+                ('identityRegistered', 'voteRegistered', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 12, 'FireBAM', '26.9.4'),
+                ('identityFrankenBam', 'voteFrankenBam', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), 12, 'FireBAM', '0.1204.40300'),
+                ('identityRawOnly', 'voteRawOnly', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'JitoLabs', NULL),
+                ('identityReported', 'voteReported', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, 'Raiku2', NULL),
+                ('identityNoClient', 'voteNoClient', $1, 100, 0, 0, false, 0, 0, 0, 0, 0, NOW(), NULL, NULL, NULL)",
             &[&Decimal::from(EPOCH)],
         )
         .await
@@ -413,6 +424,15 @@ async fn load_validators_classifies_the_record_and_its_epoch_stats() {
     for (vote_account, expected) in [
         (
             "voteRegistered",
+            (
+                "FireBAM",
+                "Firedancer + JitoBAM",
+                Some("bam"),
+                Some("firedancer"),
+            ),
+        ),
+        (
+            "voteFrankenBam",
             (
                 "FireBAM",
                 "Frankendancer + JitoBAM",

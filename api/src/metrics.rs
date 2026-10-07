@@ -36,6 +36,16 @@ lazy_static! {
         "How many times /providers endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_PROVIDER_HISTORY: IntCounter = register_int_counter!(
+        "ds_request_count_provider_history",
+        "How many times /providers/history endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_CLIENT_HISTORY: IntCounter = register_int_counter!(
+        "ds_request_count_client_history",
+        "How many times /clients/history endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN: IntCounter = register_int_counter!(
         "ds_request_count_validator_score_breakdown",
         "How many times /validators/score-breakdown endpoint was requested"

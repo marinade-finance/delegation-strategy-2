@@ -214,6 +214,42 @@ pub async fn load_epoch_reward_mix(
     Ok(mix)
 }
 
+// Same window anchor as `load_validators`, so every cached epoch row can find its rate.
+pub async fn load_epoch_take_rates(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<HashMap<(String, u64), f64>> {
+    let rows = psql_client
+        .query(
+            &format!(
+                "
+        SELECT vote_account, epoch, take_rate
+        FROM {VALIDATORS_REWARDS_TABLE}
+        WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+        "
+            ),
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+
+    let mut take_rates = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let take_rate: f64 = row.get("take_rate");
+        if !take_rate.is_finite() {
+            continue;
+        }
+        take_rates.insert(
+            (
+                row.get("vote_account"),
+                row.get::<_, Decimal>("epoch").try_into()?,
+            ),
+            take_rate,
+        );
+    }
+
+    Ok(take_rates)
+}
+
 pub async fn get_take_rate_series(
     psql_client: &Client,
     vote_account: &str,
