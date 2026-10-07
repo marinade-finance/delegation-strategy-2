@@ -1,69 +1,83 @@
-// Each tests/*.rs is its own crate and pulls in this whole module, so helpers only some of them need read as dead there.
 #![allow(dead_code)]
 
-use clap::Parser;
-use collect::slot_params::baseline_slots_per_year;
-use collect::validators::{Snapshot, ValidatorSnapshot};
-use collect::validators_performance::{
-    ClusterInflation, ValidatorPerformance, ValidatorRewards, ValidatorsPerformanceSnapshot,
-};
-use rust_decimal::Decimal;
-use std::collections::HashMap;
-use store::close_epoch::{close_epoch, CloseEpochParams};
-use store::validators::{store_validators, StoreValidatorsParams};
-use tokio_postgres::{Client, NoTls};
+use collect::validators::ValidatorSnapshot;
+use collect::validators_performance::ValidatorPerformance;
+use store::dto::Validator;
+use testcontainers::core::wait::HttpWaitStrategy;
+use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
-pub const POSTGRES_URL_ENV: &str = "DS_TEST_POSTGRES_URL";
-
-pub async fn migrated_client(schema: &str) -> Option<Client> {
-    let url = std::env::var(POSTGRES_URL_ENV).ok()?;
-
-    let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            panic!("postgres connection error: {err}");
-        }
-    });
-
-    client
-        .batch_execute(&format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE;
-             CREATE SCHEMA {schema};
-             SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-
-    let migrations_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../migrations");
-    let mut migrations: Vec<_> = std::fs::read_dir(migrations_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
-        .collect();
-    migrations.sort();
-    for migration in migrations {
-        let sql = std::fs::read_to_string(&migration).unwrap();
-        client
-            .batch_execute(&sql)
-            .await
-            .unwrap_or_else(|err| panic!("migration {} failed: {err}", migration.display()));
+/// A snapshot entry with nothing set but its identity: every fold-level test
+/// sets the handful of fields it is about.
+pub fn validator(vote_account: &str, epoch: u64) -> Validator {
+    Validator {
+        identity: format!("identity-{vote_account}"),
+        vote_account: vote_account.to_string(),
+        epoch: epoch.into(),
+        info_name: None,
+        info_url: None,
+        info_keybase: None,
+        info_icon_url: None,
+        node_ip: None,
+        dc_coordinates_lat: None,
+        dc_coordinates_lon: None,
+        dc_continent: None,
+        dc_country_iso: None,
+        dc_country: None,
+        dc_city: None,
+        dc_asn: None,
+        dc_aso: None,
+        dc_resolved: false,
+        commission_max_observed: None,
+        commission_min_observed: None,
+        commission_advertised: None,
+        commission_effective: None,
+        commission_effective_source: None,
+        commission_effective_bps: None,
+        version: None,
+        client_id: None,
+        client_id_raw: None,
+        feature_set: None,
+        shred_version: None,
+        gossip_port: None,
+        rpc_public: None,
+        pubsub_public: None,
+        activated_stake: 0.into(),
+        marinade_stake: 0.into(),
+        foundation_stake: 0.into(),
+        marinade_native_stake: 0.into(),
+        institutional_stake: 0.into(),
+        direct_stake: None,
+        direct_activating_stake: None,
+        direct_deactivating_stake: None,
+        self_stake: 0.into(),
+        activating_stake: None,
+        deactivating_stake: None,
+        superminority: false,
+        stake_to_become_superminority: 0.into(),
+        credits: Some(0.into()),
+        vote_reward_lamports: None,
+        leader_slots: 0.into(),
+        blocks_produced: 0.into(),
+        skip_rate: 0f64,
+        uptime_pct: None,
+        uptime: None,
+        downtime: None,
+        updated_at: None,
+        inflation_rewards_collector: None,
+        block_revenue_collector: None,
+        inflation_rewards_commission_bps: None,
+        inflation_rewards_commission_bps_is_v4: None,
+        block_revenue_commission_bps: None,
+        pending_delegator_rewards: None,
+        inflation_rewards_collector_owner: None,
+        inflation_rewards_collector_lamports: None,
+        inflation_rewards_collector_healthy: None,
+        block_revenue_collector_owner: None,
+        block_revenue_collector_lamports: None,
+        block_revenue_collector_healthy: None,
     }
-
-    Some(client)
-}
-
-pub fn skip_without_database(schema: &str) -> bool {
-    if std::env::var(POSTGRES_URL_ENV).is_ok() {
-        return false;
-    }
-    eprintln!("skipping {schema}: {POSTGRES_URL_ENV} is not set");
-    true
-}
-
-pub fn write_yaml(name: &str, contents: &str) -> String {
-    let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
-    std::fs::write(&path, contents).unwrap();
-    path.to_str().unwrap().to_string()
 }
 
 pub fn validator_performance() -> ValidatorPerformance {
@@ -85,106 +99,151 @@ pub fn validator_performance() -> ValidatorPerformance {
     }
 }
 
-// One validator carrying only what the columns under test are read against; every caller overrides the field its own assertions turn on.
-pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Snapshot {
-    Snapshot {
-        epoch,
-        created_at: "2026-07-31T00:00:00Z".into(),
-        validators: vec![ValidatorSnapshot {
-            identity: identity.into(),
-            vote_account: vote_account.into(),
-            node_ip: None,
-            gossip_port: None,
-            rpc_public: None,
-            pubsub_public: None,
-            info_name: None,
-            info_url: None,
-            info_details: None,
-            info_keybase: None,
-            info_icon_url: None,
-            data_center: None,
-            activated_stake: 100,
-            foundation_stake: 0,
-            self_stake: 0,
-            marinade_stake: 0,
-            marinade_native_stake: 0,
-            institutional_stake: 0,
-            activating_stake: None,
-            deactivating_stake: None,
-            direct_stake: None,
-            direct_activating_stake: None,
-            direct_deactivating_stake: None,
-            superminority: false,
-            stake_to_become_superminority: 0,
-            performance: validator_performance(),
-            inflation_rewards_collector: None,
-            block_revenue_collector: None,
-            inflation_rewards_commission_bps: None,
-            inflation_rewards_commission_bps_is_v4: None,
-            block_revenue_commission_bps: None,
-            pending_delegator_rewards: None,
-            inflation_rewards_collector_owner: None,
-            inflation_rewards_collector_lamports: None,
-            inflation_rewards_collector_healthy: None,
-            block_revenue_collector_owner: None,
-            block_revenue_collector_lamports: None,
-            block_revenue_collector_healthy: None,
-        }],
+/// Fixtures are written under one directory and removed by the test that wrote
+/// them, so the name carries a counter: two tests naming the same snapshot run
+/// in parallel threads and would otherwise delete each other's file.
+pub fn write_yaml<T: serde::Serialize>(name: &str, snapshot: &T) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{nth}.yaml"));
+    std::fs::write(&path, serde_yaml::to_string(snapshot).expect("yaml")).expect("snapshot file");
+    path.to_str().expect("snapshot path").to_string()
+}
+
+/// One collected validator carrying only what the fields under test are read
+/// against; every caller overrides the field its own assertions turn on.
+pub fn validator_snapshot(
+    identity: &str,
+    vote_account: &str,
+    performance: ValidatorPerformance,
+) -> ValidatorSnapshot {
+    ValidatorSnapshot {
+        identity: identity.into(),
+        vote_account: vote_account.into(),
+        node_ip: None,
+        gossip_port: None,
+        rpc_public: None,
+        pubsub_public: None,
+        info_name: None,
+        info_url: None,
+        info_details: None,
+        info_keybase: None,
+        info_icon_url: None,
+        data_center: None,
+        activated_stake: 100,
+        foundation_stake: 0,
+        self_stake: 0,
+        marinade_stake: 0,
+        marinade_native_stake: 0,
+        institutional_stake: 0,
+        activating_stake: None,
+        deactivating_stake: None,
+        direct_stake: None,
+        direct_activating_stake: None,
+        direct_deactivating_stake: None,
+        superminority: false,
+        stake_to_become_superminority: 0,
+        performance,
+        inflation_rewards_collector: None,
+        block_revenue_collector: None,
+        inflation_rewards_commission_bps: None,
+        inflation_rewards_commission_bps_is_v4: None,
+        block_revenue_commission_bps: None,
+        pending_delegator_rewards: None,
+        inflation_rewards_collector_owner: None,
+        inflation_rewards_collector_lamports: None,
+        inflation_rewards_collector_healthy: None,
+        block_revenue_collector_owner: None,
+        block_revenue_collector_lamports: None,
+        block_revenue_collector_healthy: None,
     }
 }
 
-pub async fn store_snapshot(client: &mut Client, name: &str, snapshot: &Snapshot) {
-    let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
-    store_validators(
-        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
-        client,
-    )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+/// One marinade-directory container per test, on its in-memory backend, torn
+/// down when the handle drops. The mem backend answers the same six-call
+/// contract a GCS/S3 bucket does, which is all the client speaks to.
+pub const DIRECTORY_IMAGE: &str = "marinade-directory:test";
+const JWT_SECRET: &str = "delegation-strategy-test-secret-at-least-32b";
+const DIRECTORY_PORT: u16 = 3000;
+
+pub struct DirectoryStore {
+    _container: ContainerAsync<GenericImage>,
+    pub url: String,
+    pub token: String,
 }
 
-pub fn performance_snapshot(
-    epoch: u64,
-    validators: HashMap<String, ValidatorPerformance>,
-    rewards: HashMap<String, ValidatorRewards>,
-) -> ValidatorsPerformanceSnapshot {
-    ValidatorsPerformanceSnapshot {
-        epoch,
-        epoch_slot: 432_000,
-        transaction_count: 0,
-        created_at: "2026-09-16T23:00:00Z".into(),
-        slots_per_year: baseline_slots_per_year(),
-        cluster_inflation: Some(ClusterInflation {
-            sol_total_supply: 0,
-            inflation: 0f64,
-            inflation_taper: 0f64,
-        }),
-        validators,
-        nodes: Default::default(),
-        rewards: Some(rewards),
+impl DirectoryStore {
+    pub fn client(&self) -> store::directory::Directory {
+        store::directory::Directory::new(self.url.clone(), self.token.clone())
+            .expect("directory client")
     }
 }
 
-pub async fn run_close_epoch(
-    client: &mut Client,
-    name: &str,
-    snapshot: &ValidatorsPerformanceSnapshot,
-) {
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, $1, 0, NOW()), (432000, $1, 0, NOW())",
-            &[&Decimal::from(snapshot.epoch)],
-        )
+/// `None`, with the reason on stderr, where docker cannot run.
+pub async fn directory_store(test: &str) -> Option<DirectoryStore> {
+    if !docker_available() {
+        eprintln!("skipping {test}: docker is not available");
+        return None;
+    }
+
+    let container = GenericImage::new("marinade-directory", "test")
+        .with_exposed_port(DIRECTORY_PORT.tcp())
+        .with_wait_for(WaitFor::http(
+            HttpWaitStrategy::new("/ready")
+                .with_port(DIRECTORY_PORT.tcp())
+                .with_expected_status_code(200u16),
+        ))
+        .with_env_var("MEM_BUCKET", test)
+        .with_env_var("JWT_SECRET", JWT_SECRET)
+        .with_env_var("PORT", DIRECTORY_PORT.to_string())
+        .with_env_var("METRICS_PORT", "0")
+        .start()
         .await
-        .unwrap();
-    let path = write_yaml(name, &serde_yaml::to_string(snapshot).unwrap());
-    close_epoch(
-        CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
-        client,
+        .expect("start marinade-directory");
+
+    let port = container
+        .get_host_port_ipv4(DIRECTORY_PORT.tcp())
+        .await
+        .expect("mapped port");
+
+    Some(DirectoryStore {
+        url: format!("http://localhost:{port}"),
+        token: mint_token(),
+        _container: container,
+    })
+}
+
+fn docker_available() -> bool {
+    std::process::Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn mint_token() -> String {
+    #[derive(serde::Serialize)]
+    struct Claims {
+        sub: String,
+        grants: Vec<String>,
+        exp: u64,
+    }
+
+    let claims = Claims {
+        sub: "delegation-strategy-test".to_string(),
+        // The leading slash is required: `validators/**` matches nothing.
+        grants: vec![
+            "/validators/**:rw".to_string(),
+            "/scoring/**:rw".to_string(),
+        ],
+        exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as u64,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()),
     )
-    .await
-    .unwrap();
-    std::fs::remove_file(path).unwrap();
+    .expect("mint token")
 }

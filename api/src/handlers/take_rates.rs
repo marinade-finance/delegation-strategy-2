@@ -6,7 +6,6 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::TakeRateRecord;
 use store::take_rates::get_take_rate_series;
-use tokio_postgres::Client;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -23,17 +22,11 @@ pub struct QueryParams {
     query_from_date: Option<DateTime<Utc>>,
 }
 
-impl QueryParams {
-    async fn resolve_from_epoch(&self, psql: &Client) -> Result<Option<u64>, (StatusCode, String)> {
-        resolve_from_epoch(psql, self.query_from_epoch, self.query_from_date).await
-    }
-}
-
 #[utoipa::path(
     get,
     tag = "Validators",
     operation_id = "List take rate history",
-    description = "Take rate per epoch for a validator. Returns the whole stored history unless bounded by a query parameter. `epoch_start_at` and `epoch_end_at` are null for epochs whose boundaries are not recorded.",
+    description = "Take rate per epoch for a validator over the served range, which is the last 90 epochs, unless bounded by a query parameter. `epoch_start_at` and `epoch_end_at` are null for epochs whose boundaries are not recorded.",
     path = "/validators/{vote_account}/take-rates",
     params(
         ("vote_account" = String, Path, description = "Vote account or identity of the validator"),
@@ -68,27 +61,23 @@ pub async fn handler(
     };
 
     let context_guard = context.read().await;
-    let psql_client = &context_guard.psql_client;
+    let warehouse = context_guard.warehouse.clone();
+    let warehouse = warehouse.read().await;
 
-    let from_epoch = match query_params.resolve_from_epoch(psql_client).await {
+    let from_epoch = match resolve_from_epoch(
+        &warehouse,
+        query_params.query_from_epoch,
+        query_params.query_from_date,
+    ) {
         Ok(from_epoch) => from_epoch,
         Err((status, message)) => return Ok(response_error(status, message)),
     };
 
     let reward_mix = context_guard.cache.get_epoch_reward_mix();
+    let take_rates = get_take_rate_series(&warehouse, vote_key, from_epoch, reward_mix);
 
-    Ok(
-        match get_take_rate_series(psql_client, vote_key, from_epoch, reward_mix).await {
-            Ok(take_rates) => {
-                warp::reply::with_status(json(&ResponseTakeRates { take_rates }), StatusCode::OK)
-            }
-            Err(err) => {
-                error!("Failed to fetch take rates for {vote_account}: {err}");
-                response_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch records!".into(),
-                )
-            }
-        },
-    )
+    Ok(warp::reply::with_status(
+        json(&ResponseTakeRates { take_rates }),
+        StatusCode::OK,
+    ))
 }

@@ -405,14 +405,6 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 curl -sLfS 'http://localhost:9000/metrics'
 ```
 
-### Admin - Score upload
-```bash
-curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=COMMISSION_ADJUSTED_CREDITS,GRACE_SKIP_RATE,DC_CONCENTRATION&component_weights=10,1,2&ui_id=fw3' -X POST \
-  -H 'Content-Type: multipart/form-data' \
-  -H 'Authorization: foo' \
-  --form 'scores_csv=@./scores.csv'
-```
-
 ### Admin - Metrics upload
 ```bash
 curl -sLfS 'http://localhost:8000/admin/metrics?job_scheduled=true' -X POST

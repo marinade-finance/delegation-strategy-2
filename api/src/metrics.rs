@@ -81,11 +81,6 @@ lazy_static! {
         "How many times /uptimes endpoint was requested"
     )
     .unwrap();
-    pub static ref REQUEST_ADMIN_SCORE_UPLOAD: IntCounter = register_int_counter!(
-        "ds_request_count_admin_score_upload",
-        "How many times /admin/scores endpoint was requested"
-    )
-    .unwrap();
     pub static ref JOB_COUNT_SCHEDULED: IntCounter =
         register_int_counter!("ds_job_count_scheduled", "How many jobs were scheduled").unwrap();
     pub static ref JOB_COUNT_SUCCESS: IntCounter =

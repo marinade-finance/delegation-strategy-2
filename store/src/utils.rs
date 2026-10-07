@@ -1,31 +1,33 @@
+use crate::docs::{SnapshotDoc, UptimeStatus, VersionSample};
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
-    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
-    ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord,
+    Validator, ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
+    ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use crate::incidents::{
-    CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
+    CommissionRaise, DowntimeInterval, EpochBlockProduction, ValidatorIncidents,
     COMMISSION_SPIKE_THRESHOLD_PERCENTAGE,
 };
 use crate::validators_jito::get_last_jito_info;
+use crate::validators_sandwiches::load_validator_sandwiches;
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
-use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeInclusive,
     time::Duration,
 };
-use tokio::join;
-use tokio::sync::Semaphore;
-use tokio_postgres::{types::ToSql, Client, GenericClient};
+
+#[cfg(test)]
+#[path = "utils_test.rs"]
+mod utils_test;
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
@@ -33,16 +35,9 @@ pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
 pub use collect::slot_params::SLOTS_IN_EPOCH;
-const SCORING_SCRAPER_WORKERS: usize = 10;
 /// Timeout for outbound HTTP calls to sibling services (scoring, validator-bonds). Without it a
 /// hung upstream would stall the whole cache-warmer loop, freezing every cache type's refresh.
 const HTTP_TIMEOUT_S: u64 = 60;
-
-pub struct InsertQueryCombiner<'a> {
-    pub insertions: u64,
-    statement: String,
-    params: Vec<&'a (dyn ToSql + Sync)>,
-}
 
 pub fn to_fixed(a: f64, decimals: i32) -> u64 {
     (a * 10f64.powi(decimals)).round() as u64
@@ -54,114 +49,13 @@ pub fn to_fixed_for_sort(a: f64) -> Option<u64> {
     (scaled >= 0.0 && scaled < u64::MAX as f64).then_some(scaled as u64)
 }
 
-impl<'a> InsertQueryCombiner<'a> {
-    pub fn new(table_name: String, columns: String) -> Self {
-        Self {
-            insertions: 0,
-            statement: format!("INSERT INTO {table_name} ({columns}) VALUES").to_string(),
-            params: vec![],
-        }
-    }
-
-    pub fn add(&mut self, values: &mut Vec<&'a (dyn ToSql + Sync)>) {
-        let separator = if self.insertions == 0 { " " } else { "," };
-        let mut query_end = "(".to_string();
-        for i in 0..values.len() {
-            if i > 0 {
-                query_end.push(',');
-            }
-            query_end.push_str(&format!("${}", i + 1 + self.params.len()));
-        }
-        query_end.push(')');
-
-        self.params.append(values);
-        self.statement.push_str(&format!("{separator}{query_end}"));
-        self.insertions += 1;
-    }
-
-    pub async fn execute(&self, client: &mut Client) -> anyhow::Result<Option<u64>> {
-        self.execute_in(&*client).await
-    }
-
-    pub async fn execute_in(&self, client: &impl GenericClient) -> anyhow::Result<Option<u64>> {
-        if self.insertions == 0 {
-            return Ok(None);
-        }
-
-        // println!("{}", self.statement);
-        // println!("{:?}", self.params);
-
-        Ok(Some(client.execute(&self.statement, &self.params).await?))
-    }
-}
-
-pub struct UpdateQueryCombiner<'a> {
-    pub updates: u64,
-    statement: String,
-    values_names: String,
-    where_condition: String,
-    params: Vec<&'a (dyn ToSql + Sync)>,
-}
-
-impl<'a> UpdateQueryCombiner<'a> {
-    pub fn new(
-        table_name: String,
-        updates: String,
-        values_names: String,
-        where_condition: String,
-    ) -> Self {
-        Self {
-            updates: 0,
-            statement: format!("UPDATE {table_name} SET {updates} FROM (VALUES").to_string(),
-            values_names,
-            where_condition,
-            params: vec![],
-        }
-    }
-
-    pub fn add(&mut self, values: &mut Vec<&'a (dyn ToSql + Sync)>, types: HashMap<usize, String>) {
-        let separator = if self.updates == 0 { " " } else { "," };
-        let mut query_end = "(".to_string();
-        for i in 0..values.len() {
-            if i > 0 {
-                query_end.push(',');
-            }
-            query_end.push_str(&format!("${}", i + 1 + self.params.len()));
-            if let Some(t) = types.get(&i) {
-                query_end.push_str(&format!("::{t}"));
-            };
-        }
-        query_end.push(')');
-
-        self.params.append(values);
-        self.statement.push_str(&format!("{separator}{query_end}"));
-        self.updates += 1;
-    }
-
-    pub async fn execute(&mut self, client: &mut Client) -> anyhow::Result<Option<u64>> {
-        if self.updates == 0 {
-            return Ok(None);
-        }
-
-        self.statement.push_str(&format!(
-            ") AS {} WHERE {}",
-            self.values_names, self.where_condition
-        ));
-
-        // println!("{}", self.statement);
-        // println!("{:?}", self.params);
-
-        Ok(Some(client.execute(&self.statement, &self.params).await?))
-    }
-}
-
-#[derive(Debug)]
 struct InflationApyCalculator {
     supply: u64,
     duration: u64,
     inflation: f64,
     slots_per_year: f64,
-    // None in an Alpenglow epoch after the migration epoch
+    // None once the epoch has vote rewards: its tower credits cover only part
+    // of the epoch, so a credit-based APY would come out too high.
     total_weighted_credits: Option<u128>,
 }
 impl InflationApyCalculator {
@@ -215,54 +109,55 @@ impl InflationApyCalculator {
 fn staker_share(commission: u8) -> f64 {
     1.0 - commission.clamp(0, 100) as f64 / 100.0
 }
-impl TryFrom<&tokio_postgres::Row> for InflationApyCalculator {
-    type Error = anyhow::Error;
 
-    fn try_from(row: &tokio_postgres::Row) -> anyhow::Result<Self> {
-        Ok(Self {
-            supply: row.try_get::<_, Decimal>("supply")?.try_into()?,
-            duration: row.try_get::<_, i32>("duration")?.try_into()?,
-            inflation: row.try_get("inflation")?,
-            slots_per_year: row.try_get("slots_per_year")?,
-            total_weighted_credits: row
-                .try_get::<_, Option<String>>("total_weighted_credits")?
-                .map(|total| total.parse())
-                .transpose()?,
-        })
-    }
-}
-async fn get_apy_calculators(
-    psql_client: &Client,
+fn get_apy_calculators(
+    warehouse: &Warehouse,
 ) -> anyhow::Result<HashMap<u64, InflationApyCalculator>> {
-    let apy_info_rows = psql_client
-        .query(
-            "SELECT
-                    epochs.epoch,
-                    (EXTRACT('epoch' FROM end_at) - EXTRACT('epoch' FROM start_at))::INTEGER AS duration,
-                    supply,
-                    inflation,
-                    slots_per_year,
-                    -- NULL once an epoch has vote rewards: its tower credits cover only part of the epoch, so the credit-based APY comes out too high
-                    CASE WHEN bool_or(validators.vote_reward_lamports IS NOT NULL) THEN NULL
-                        ELSE ROUND(SUM(validators.credits * validators.activated_stake))::TEXT
-                    END total_weighted_credits
-                FROM
-                epochs
-                INNER JOIN validators ON epochs.epoch = validators.epoch
-                GROUP BY epochs.epoch",
-            &[],
-        )
-        .await?;
-
     let mut result: HashMap<_, _> = Default::default();
-    for row in apy_info_rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        match InflationApyCalculator::try_from(&row) {
-            Ok(calculator) => {
-                result.insert(epoch, calculator);
-            }
-            Err(err) => log::warn!("Skipping APY calculator for epoch {epoch}: {err:#}"),
-        }
+
+    for (epoch, epoch_record) in warehouse.epochs.iter() {
+        let Some(snapshot) = warehouse.snapshots.get(epoch) else {
+            continue;
+        };
+        let has_vote_rewards = snapshot
+            .values()
+            .any(|validator| validator.vote_reward_lamports.is_some());
+        let total_weighted_credits: Option<u128> = (!has_vote_rewards).then(|| {
+            snapshot
+                .values()
+                .map(|validator| {
+                    validator
+                        .credits
+                        .and_then(|credits| credits.to_u128())
+                        .unwrap_or_default()
+                        * validator.activated_stake.to_u128().unwrap_or_default()
+                })
+                .sum()
+        });
+
+        let calculator = InflationApyCalculator {
+            supply: match epoch_record.supply.try_into() {
+                Ok(supply) => supply,
+                Err(err) => {
+                    log::warn!("Skipping APY calculator for epoch {epoch}: supply: {err:#}");
+                    continue;
+                }
+            },
+            duration: match (epoch_record.end_at - epoch_record.start_at)
+                .num_seconds()
+                .try_into()
+            {
+                Ok(duration) => duration,
+                Err(err) => {
+                    log::warn!("Skipping APY calculator for epoch {epoch}: duration: {err:#}");
+                    continue;
+                }
+            },
+            inflation: epoch_record.inflation,
+            slots_per_year: epoch_record.slots_per_year,
+            total_weighted_credits,
+        };
+        result.insert(*epoch, calculator);
     }
 
     Ok(result)
@@ -273,68 +168,56 @@ async fn get_apy_calculators(
 const DEFAULT_JITO_COMMISSION_EPOCHS: u64 = 10;
 
 /// Every raise over the bar per vote account. Reads one epoch further back than the window: a raise
-/// in its first epoch needs the rate it moved from, and `commissions` carries a row per vote account
-/// per epoch even where nothing changed. A validator that never raised is left out, so the caller
-/// does not mint a cache entry for every vote account the table ever saw.
-async fn load_commission_raises(
-    psql_client: &Client,
-    from_epoch: u64,
-    last_epoch: u64,
+/// in its first epoch needs the rate it moved from, and the commission stream carries a sample per
+/// vote account per epoch even where nothing changed. A validator that never raised is left out, so
+/// the caller does not mint a cache entry for every vote account the stream ever saw.
+fn load_commission_raises(
+    warehouse: &Warehouse,
+    epochs: RangeInclusive<u64>,
 ) -> anyhow::Result<HashMap<String, Vec<CommissionRaise>>> {
-    let rows = psql_client
-        .query(
-            "
-            SELECT
-                vote_account,
-                epoch,
-                epoch_slot,
-                commission,
-                created_at
-            FROM commissions
-            WHERE epoch >= $1::NUMERIC
-              AND epoch <= $2::NUMERIC
-            ORDER BY vote_account, epoch ASC, epoch_slot ASC, created_at ASC",
-            &[
-                &Decimal::from(from_epoch.saturating_sub(1)),
-                &Decimal::from(last_epoch),
-            ],
+    let (from_epoch, last_epoch) = (*epochs.start(), *epochs.end());
+    let mut samples = warehouse.commission_changes(from_epoch.saturating_sub(1)..=last_epoch);
+    samples.sort_by_key(|(vote_account, change)| {
+        (
+            *vote_account,
+            change.epoch,
+            change.epoch_slot,
+            change.created_at,
         )
-        .await?;
+    });
 
-    // Count commission raise incidents from SQL response
     let mut raises: HashMap<String, Vec<CommissionRaise>> = Default::default();
-    let mut previous: Option<(String, u8)> = None;
-    // Vote account, epoch and index of the raise whose peak later rows of the same epoch still lift.
-    let mut peak: Option<(String, u64, usize)> = None;
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let commission: u8 = row.get::<_, i32>("commission").try_into()?;
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+    let mut previous: Option<(&String, u8)> = None;
+    // Vote account, epoch and index of the raise whose peak later samples of the same epoch still lift.
+    let mut peak: Option<(&String, u64, usize)> = None;
+    for (vote_account, change) in samples {
+        let commission: u8 = change.commission.try_into()?;
+        let epoch = change.epoch;
 
         // The epoch under the window is read for its rate alone: a raise there sits before it.
-        let crossed = previous.as_ref().is_some_and(|(before_account, before)| {
-            *before_account == vote_account
-                && *before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
+        let crossed = previous.is_some_and(|(before_account, before)| {
+            before_account == vote_account
+                && before < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
                 && commission >= COMMISSION_SPIKE_THRESHOLD_PERCENTAGE
                 && epoch >= from_epoch
         });
 
         if crossed {
-            let commission_before = previous.as_ref().map_or(0, |(_, before)| *before);
+            let commission_before = previous.map_or(0, |(_, before)| before);
             let raised = raises.entry(vote_account.clone()).or_default();
             raised.push(CommissionRaise {
                 epoch,
-                epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
-                changed_at: row.get("created_at"),
+                epoch_slot: change.epoch_slot,
+                changed_at: change.created_at,
                 commission_before,
                 commission_after: commission,
             });
-            peak = Some((vote_account.clone(), epoch, raised.len() - 1));
+            peak = Some((vote_account, epoch, raised.len() - 1));
         } else if commission < COMMISSION_SPIKE_THRESHOLD_PERCENTAGE {
             peak = None;
-        } else if let Some((peak_account, peak_epoch, index)) = &peak {
-            if *peak_account == vote_account && *peak_epoch == epoch {
-                if let Some(raise) = raises.get_mut(peak_account).and_then(|r| r.get_mut(*index)) {
+        } else if let Some((peak_account, peak_epoch, index)) = peak {
+            if peak_account == vote_account && peak_epoch == epoch {
+                if let Some(raise) = raises.get_mut(peak_account).and_then(|r| r.get_mut(index)) {
                     raise.commission_after = raise.commission_after.max(commission);
                 }
             } else {
@@ -348,126 +231,54 @@ async fn load_commission_raises(
     Ok(raises)
 }
 
-/// Keyed by vote account. An epoch with no `epochs` row is the one still running: it has no start
-/// or end to report, so it stays out.
-async fn load_validator_sandwiches(
-    psql_client: &Client,
-    from_epoch: u64,
-    last_epoch: u64,
-) -> anyhow::Result<HashMap<String, Vec<EpochSandwiches>>> {
-    let rows = psql_client
-        .query(
-            "
-            SELECT
-                validators_sandwiches.vote_account,
-                validators_sandwiches.epoch,
-                blocks_produced,
-                blocks_with_sandwiches,
-                sandwich_rate_30d,
-                sandwich_rate_60d,
-                epochs.start_at,
-                epochs.end_at
-            FROM validators_sandwiches
-            INNER JOIN epochs ON epochs.epoch = validators_sandwiches.epoch
-            WHERE validators_sandwiches.epoch >= $1::NUMERIC
-              AND validators_sandwiches.epoch <= $2::NUMERIC
-            ORDER BY validators_sandwiches.epoch ASC",
-            &[&Decimal::from(from_epoch), &Decimal::from(last_epoch)],
-        )
-        .await?;
-
-    let mut loaded: Vec<(String, EpochSandwiches)> = Vec::with_capacity(rows.len());
-    for row in rows {
-        loaded.push((
-            row.get("vote_account"),
-            EpochSandwiches {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                epoch_start_at: row.get("start_at"),
-                epoch_end_at: row.get("end_at"),
-                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-                blocks_with_sandwiches: row
-                    .get::<_, Decimal>("blocks_with_sandwiches")
-                    .try_into()?,
-                sandwich_rate_30d: row.get("sandwich_rate_30d"),
-                sandwich_rate_60d: row.get("sandwich_rate_60d"),
-                cluster_median_rate: 0.0,
-            },
-        ));
-    }
-
-    let medians = crate::incidents::cluster_sandwich_medians(loaded.iter().map(|(_, epoch)| epoch));
-    let mut sandwiches: HashMap<String, Vec<EpochSandwiches>> = Default::default();
-    for (vote_account, mut epoch) in loaded {
-        epoch.cluster_median_rate = medians.get(&epoch.epoch).copied().unwrap_or(0.0);
-        sandwiches.entry(vote_account).or_default().push(epoch);
-    }
-
-    Ok(sandwiches)
-}
-
-pub async fn load_validator_incidents(
-    psql_client: &Client,
-    from_epoch: u64,
-    last_epoch: u64,
+/// The raw material of every incident kind, per vote account, over `epochs`.
+/// The block production and client version kinds are read off the same
+/// epoch stats the incidents are handed back for, so the cluster figure and
+/// the validator it judges come from one snapshot.
+pub fn load_validator_incidents(
+    warehouse: &Warehouse,
+    epochs: RangeInclusive<u64>,
     records: &HashMap<String, ValidatorRecord>,
 ) -> anyhow::Result<ValidatorIncidents> {
-    let rows = psql_client
-        .query(
-            "
-            SELECT
-                vote_account,
-                uptimes.epoch,
-                start_at,
-                end_at,
-                EXTRACT('epoch' FROM (end_at - start_at))::BIGINT AS downtime_seconds
-            FROM uptimes
-            WHERE status = 'DOWN'
-              AND uptimes.epoch >= $1::NUMERIC
-              AND uptimes.epoch <= $2::NUMERIC
-            ORDER BY start_at ASC",
-            &[&Decimal::from(from_epoch), &Decimal::from(last_epoch)],
-        )
-        .await?;
-
     let mut incidents = ValidatorIncidents::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
+
+    let mut downtimes: Vec<(&String, &crate::docs::UptimeInterval)> = warehouse
+        .uptime_intervals(epochs.clone())
+        .into_iter()
+        .filter(|(_, interval)| interval.status == UptimeStatus::Down)
+        .collect();
+    downtimes.sort_by_key(|(_, interval)| interval.start_at);
+    for (vote_account, interval) in downtimes {
         incidents
-            .records(&vote_account)
+            .records(vote_account)
             .downtimes
             .push(DowntimeInterval {
-                epoch: row.get::<_, Decimal>("epoch").try_into()?,
-                start_at: row.get("start_at"),
-                end_at: row.get("end_at"),
-                downtime_seconds: row.get::<_, i64>("downtime_seconds").try_into()?,
+                epoch: interval.epoch,
+                start_at: interval.start_at,
+                end_at: interval.end_at,
+                downtime_seconds: (interval.end_at - interval.start_at)
+                    .num_seconds()
+                    .try_into()?,
             });
     }
 
-    for (vote_account, raises) in
-        load_commission_raises(psql_client, from_epoch, last_epoch).await?
-    {
+    for (vote_account, raises) in load_commission_raises(warehouse, epochs.clone())? {
         incidents.records(&vote_account).commission_raises = raises;
     }
 
-    for (vote_account, epochs) in
-        load_validator_sandwiches(psql_client, from_epoch, last_epoch).await?
-    {
-        incidents.records(&vote_account).sandwiches = epochs;
+    for (vote_account, sandwiches) in load_validator_sandwiches(warehouse, epochs.clone()) {
+        incidents.records(&vote_account).sandwiches = sandwiches;
     }
 
-    // Read off the same epoch stats the incidents are handed back for, so the cluster figure and
-    // the validator it judges come from one snapshot.
     let cluster_skip_rates = crate::incidents::cluster_skip_rates(records.values());
     let newer_stake_shares = crate::incidents::newer_stake_shares(records.values());
 
     for (vote_account, record) in records {
-        // Same window the query above read.
         for stats in record
             .epoch_stats
             .iter()
-            .filter(|stats| (from_epoch..=last_epoch).contains(&stats.epoch))
+            .filter(|stats| epochs.contains(&stats.epoch))
         {
-            // No cluster figure, no bar to measure against, so the epoch stays unrecorded.
             let Some(production) = cluster_skip_rates
                 .get(&stats.epoch)
                 .and_then(|cluster_skip_rate| EpochBlockProduction::new(stats, *cluster_skip_rate))
@@ -482,7 +293,7 @@ pub async fn load_validator_incidents(
 
         let late_patch = crate::incidents::running_late_client_version_incidents(
             crate::incidents::epochs_running_late_client_version(record, &newer_stake_shares),
-            from_epoch..=last_epoch,
+            epochs.clone(),
         );
         if !late_patch.is_empty() {
             incidents.records(vote_account).running_late_client_versions = late_patch;
@@ -492,238 +303,175 @@ pub async fn load_validator_incidents(
     Ok(incidents)
 }
 
-pub async fn load_uptimes(
-    psql_client: &Client,
+pub fn load_uptimes(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<UptimeRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (
-                SELECT MAX(epoch) AS last_epoch
-                FROM cluster_info
-            )
-            SELECT
-                vote_account,
-                status,
-                uptimes.epoch,
-                epochs.start_at AS epoch_start,
-                epochs.end_at AS epoch_end,
-                uptimes.start_at,
-                uptimes.end_at
-            FROM uptimes
-            LEFT JOIN epochs ON uptimes.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE uptimes.epoch > cluster.last_epoch - $1::NUMERIC",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
+    let mut records: HashMap<String, Vec<UptimeRecord>> = Default::default();
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let uptimes = records
+    for (vote_account, interval) in warehouse.uptime_intervals(warehouse.window(epochs)) {
+        let epoch_record = warehouse.epochs.get(&interval.epoch);
+        records
             .entry(vote_account.clone())
-            .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> =
-            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-        uptimes.push(UptimeRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
-            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
-            status: row.get("status"),
-            start_at: row.get("start_at"),
-            end_at: row.get("end_at"),
-        })
+            .or_default()
+            .push(UptimeRecord {
+                epoch: interval.epoch,
+                epoch_start_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at),
+                epoch_end_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.end_at),
+                status: interval.status.to_string(),
+                start_at: interval.start_at,
+                end_at: interval.end_at,
+            });
     }
 
     Ok(records)
 }
 
-pub async fn load_versions(
-    psql_client: &Client,
+pub fn load_versions(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<VersionRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account, version, client_id, client_id_raw, feature_set, shred_version, epoch, created_at
-            FROM versions, cluster WHERE epoch > cluster.last_epoch - $1::NUMERIC",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
+    let mut records: HashMap<String, Vec<VersionRecord>> = Default::default();
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let client_id_raw: Option<String> = row.get("client_id_raw");
+    for (vote_account, change) in warehouse.version_changes(warehouse.window(epochs)) {
         let client_id = effective_client_id(
-            row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
-            client_id_raw.as_deref(),
+            change.client_id.map(|id| id as u16),
+            change.client_id_raw.as_deref(),
         );
-        let versions = records
+        records
             .entry(vote_account.clone())
-            .or_insert(Default::default());
-        versions.push(VersionRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            version: row.get("version"),
-            client_id,
-            client_name: client_name(client_id),
-            client_label: client_label(client_id),
-            client_vendor: client_vendor(client_id),
-            client_lineage: client_lineage(client_id),
-            client_id_raw,
-            feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
-            shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
-            created_at: row.get("created_at"),
-        })
+            .or_default()
+            .push(VersionRecord {
+                epoch: change.epoch,
+                version: change.version.clone(),
+                client_id,
+                client_name: client_name(client_id),
+                client_label: client_label(client_id),
+                client_vendor: client_vendor(client_id),
+                client_lineage: client_lineage(client_id),
+                client_id_raw: change.client_id_raw.clone(),
+                feature_set: change.feature_set.map(|set| set as u32),
+                shred_version: change.shred_version.map(|version| version as u16),
+                created_at: change.created_at,
+            });
     }
 
     Ok(records)
 }
-// From 1030 on commission_effective is close_epoch's vote-state sample at the epoch_stakes vintage.
-pub async fn load_ruggers(psql_client: &Client) -> anyhow::Result<HashMap<String, RuggerRecord>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH sample_floors AS (
-                SELECT vote_account, epoch, MIN(commission) AS commission_min
-                FROM commissions
-                GROUP BY vote_account, epoch
-            ),
-            commission_changes AS (
-                SELECT
-                    validators.vote_account,
-                    validators.epoch,
-                    commission_effective,
-                    commission_min_observed,
-                    LAG(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS prev_commission,
-                    LEAD(commission_effective) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) AS next_commission,
-                    -- Without commission_effective, which at E-2 is itself the lagged rate of E-4
-                    CASE WHEN LAG(validators.epoch, 2) OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch) = validators.epoch - 2
-                        THEN LAG(LEAST(sample_floors.commission_min, commission_advertised), 2)
-                            OVER(PARTITION BY validators.vote_account ORDER BY validators.epoch)
-                    END AS vintage_floor
-                FROM
-                    validators
-                    LEFT JOIN sample_floors
-                        ON sample_floors.vote_account = validators.vote_account AND sample_floors.epoch = validators.epoch
-            ),
-            filtered_commissions AS (
-                SELECT
-                    vote_account,
-                    epoch,
-                    commission_effective,
-                    commission_min_observed
-                FROM
-                    commission_changes
-                WHERE
-                    -- Gates all three: a NULL floor in ARRAY_AGG panics the Vec<i32> decode
-                    commission_min_observed IS NOT NULL
-                    AND (
-                        -- The applied rate is epoch_stakes(E), so a cut it still lags must not read as a rug
-                        (commission_effective > commission_min_observed AND commission_effective > COALESCE(vintage_floor, -1)
-                            AND commission_effective > 10 AND commission_min_observed <= 10)
-                        OR
-                        (prev_commission > 10 AND commission_effective <= 10 AND next_commission > 10)
-                        OR
-                        (prev_commission <= 10 AND commission_effective > 10 AND next_commission <= 10)
-                    )
-            )
-            SELECT
-                vote_account,
-                COUNT(*) AS events_count,
-                ARRAY_AGG(epoch ORDER BY epoch) AS epochs,
-                ARRAY_AGG(commission_effective ORDER BY epoch) AS commission_observed_values,
-                ARRAY_AGG(commission_min_observed ORDER BY epoch) AS commission_min_observed_values
-            FROM
-                filtered_commissions
-            GROUP BY
-                vote_account
-            HAVING
-                COUNT(*) > 1
-            ORDER BY
-                events_count DESC;
-            ",
-            &[],
-        )
-        .await?;
+
+/// One epoch of a validator's commission as the rug rule reads it.
+struct CommissionPoint {
+    epoch: u64,
+    effective: Option<i32>,
+    min_observed: Option<i32>,
+    /// The lowest rate the validator carried into the epoch it was paid at:
+    /// the smaller of E-2's sample floor and advertised rate, where the
+    /// validator has a record at exactly E-2. From 1030 on
+    /// `commission_effective` is close-epoch's vote-state sample at the
+    /// epoch_stakes vintage, so a cut it still lags must not read as a rug.
+    vintage_floor: Option<i32>,
+}
+
+/// A rug is a rise above the validator's own floor to over 10%, a dip to 10%
+/// or under between two epochs over it, or a spike over 10% between two
+/// epochs at or under it. Every rule needs the epoch's observed floor.
+pub fn load_ruggers(warehouse: &Warehouse) -> HashMap<String, RuggerRecord> {
+    let mut sample_floors: HashMap<(&String, u64), i32> = Default::default();
+    for (vote_account, change) in warehouse.commission_changes(0..=u64::MAX) {
+        let floor = sample_floors
+            .entry((vote_account, change.epoch))
+            .or_insert(change.commission);
+        *floor = (*floor).min(change.commission);
+    }
+
+    let mut series: HashMap<&String, Vec<CommissionPoint>> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.iter() {
+        for (vote_account, validator) in snapshot.iter() {
+            let vintage_floor = epoch.checked_sub(2).and_then(|vintage| {
+                let carried = warehouse.snapshots.get(&vintage)?.get(vote_account)?;
+                [
+                    sample_floors.get(&(vote_account, vintage)).copied(),
+                    carried.commission_advertised,
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+            });
+            series
+                .entry(vote_account)
+                .or_default()
+                .push(CommissionPoint {
+                    epoch: *epoch,
+                    effective: validator.commission_effective,
+                    min_observed: validator.commission_min_observed,
+                    vintage_floor,
+                });
+        }
+    }
 
     let mut records: HashMap<String, RuggerRecord> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let occurrences: u64 = row.get::<_, i64>("events_count").try_into()?;
-        let epochs: Vec<u64> = row
-            .get::<_, Vec<Decimal>>("epochs")
-            .into_iter()
-            .map(|val| val.to_u64().unwrap_or_default())
-            .collect();
-        let observed_commissions: Vec<u64> = row
-            .get::<_, Vec<i32>>("commission_observed_values")
-            .into_iter()
-            .map(|val| val as u64)
-            .collect();
-        let min_commissions: Vec<u64> = row
-            .get::<_, Vec<i32>>("commission_min_observed_values")
-            .into_iter()
-            .map(|val| val as u64)
-            .collect();
+    for (vote_account, mut epochs) in series {
+        epochs.sort_by_key(|point| point.epoch);
 
+        let mut rugs: Vec<(u64, i32, i32)> = Default::default();
+        for (index, point) in epochs.iter().enumerate() {
+            let previous = index.checked_sub(1).and_then(|i| epochs[i].effective);
+            let next = epochs.get(index + 1).and_then(|point| point.effective);
+            let (Some(effective), Some(min_observed)) = (point.effective, point.min_observed)
+            else {
+                continue;
+            };
+            let above_its_own_floor = effective > min_observed
+                && effective > point.vintage_floor.unwrap_or(-1)
+                && effective > 10
+                && min_observed <= 10;
+            let dipped =
+                previous.is_some_and(|p| p > 10) && effective <= 10 && next.is_some_and(|n| n > 10);
+            let spiked = previous.is_some_and(|p| p <= 10)
+                && effective > 10
+                && next.is_some_and(|n| n <= 10);
+            if above_its_own_floor || dipped || spiked {
+                rugs.push((point.epoch, effective, min_observed));
+            }
+        }
+
+        if rugs.len() <= 1 {
+            continue;
+        }
         records.insert(
-            vote_account,
+            vote_account.clone(),
             RuggerRecord {
-                epochs,
-                occurrences,
-                observed_commissions,
-                min_commissions,
+                epochs: rugs.iter().map(|(epoch, _, _)| *epoch).collect(),
+                occurrences: rugs.len() as u64,
+                observed_commissions: rugs.iter().map(|(_, e, _)| *e as u64).collect(),
+                min_commissions: rugs.iter().map(|(_, _, m)| *m as u64).collect(),
                 created_at: Utc::now(),
             },
         );
     }
-    Ok(records)
+
+    records
 }
 
-pub async fn load_commissions(
-    psql_client: &Client,
+pub fn load_commissions(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<HashMap<String, Vec<CommissionRecord>>> {
-    let rows = psql_client
-        .query(
-            "
-            WITH cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info)
-            SELECT
-                vote_account, commission, commissions.epoch, epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end,
-				epoch_slot, created_at
-            FROM commissions
-            LEFT JOIN epochs ON commissions.epoch = epochs.epoch
-            CROSS JOIN cluster
-            WHERE commissions.epoch > cluster.last_epoch - $1::NUMERIC
-            ",
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
+    let mut records: HashMap<String, Vec<CommissionRecord>> = Default::default();
 
-    let mut records: HashMap<_, Vec<_>> = Default::default();
-    for row in rows {
-        let vote_account: String = row.get("vote_account");
-        let commissions = records
+    for (vote_account, change) in warehouse.commission_changes(warehouse.window(epochs)) {
+        let epoch_record = warehouse.epochs.get(&change.epoch);
+        records
             .entry(vote_account.clone())
-            .or_insert(Default::default());
-        let epoch_start_at: Option<DateTime<Utc>> =
-            row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-        let epoch_end_at: Option<DateTime<Utc>> = row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-        commissions.push(CommissionRecord {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            epoch_end_at: epoch_end_at.unwrap_or(Utc::now()),
-            epoch_start_at: epoch_start_at.unwrap_or(Utc::now()),
-            epoch_slot: row.get::<_, Decimal>("epoch_slot").try_into()?,
-            commission: row.get::<_, i32>("commission").try_into()?,
-            created_at: row.get("created_at"),
-        })
+            .or_default()
+            .push(CommissionRecord {
+                epoch: change.epoch,
+                epoch_start_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at),
+                epoch_end_at: epoch_record.map_or_else(Utc::now, |epoch| epoch.end_at),
+                epoch_slot: change.epoch_slot,
+                commission: change.commission.try_into()?,
+                created_at: change.created_at,
+            });
     }
 
     Ok(records)
@@ -1072,7 +820,6 @@ struct LatestValidatorApyRecord {
     apy: f64,
 }
 
-// `what` names the upstream in the status error; it is the only part of this that differs per caller.
 async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, what: &str) -> anyhow::Result<T> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
@@ -1102,7 +849,6 @@ pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String
     .collect())
 }
 
-// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
     flag: &str,
@@ -1128,294 +874,171 @@ pub struct ValidatorOverlays {
 }
 
 pub async fn load_validators(
-    psql_client: &Client,
-    scoring_url: String,
+    warehouse: &Warehouse,
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let ruggers = load_ruggers(psql_client).await?;
-    let apy_calculators = get_apy_calculators(psql_client).await?;
-    let concentrations = load_dc_concentration_stats(psql_client, 1)
-        .await?
-        .first()
-        .cloned();
+    let last_epoch = warehouse.last_epoch();
+    if warehouse.snapshots.is_empty() {
+        return Ok(Default::default());
+    }
+    let ruggers = load_ruggers(warehouse);
+    let apy_calculators = get_apy_calculators(warehouse)?;
+    let concentrations = load_dc_concentration_stats(warehouse, 1)?.first().cloned();
 
-    log::info!("Querying validators...");
-    let rows = psql_client
-        .query(
-            "
-            WITH
-                validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
-                cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
-            SELECT
-                validators.identity,
-                validators.vote_account,
-                validators.epoch,
-                epochs.start_at AS epoch_start,
-				epochs.end_at AS epoch_end,
-                COALESCE(epochs_dates.starting_epoch, 0) AS starting_epoch,
-                epochs_dates.start_at AS starting_epoch_date,
-                info_name,
-                info_url,
-                info_keybase,
-                info_icon_url,
-                node_ip,
-                dc_coordinates_lat,
-                dc_coordinates_lon,
-                dc_continent,
-                dc_country_iso,
-                dc_country,
-                dc_city,
-                dc_asn,
-                dc_aso,
-                CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city,
+    let mut first_epochs: HashMap<&String, u64> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.iter() {
+        for vote_account in snapshot.keys() {
+            let first_epoch = first_epochs.entry(vote_account).or_insert(*epoch);
+            *first_epoch = (*first_epoch).min(*epoch);
+        }
+    }
 
-                commission_max_observed,
-                commission_min_observed,
-                commission_advertised,
-                commission_effective,
-                commission_effective_source,
-                commission_effective_bps,
-                inflation_rewards_commission_bps,
-                inflation_rewards_commission_bps_is_v4,
-                inflation_rewards_collector,
-                block_revenue_collector,
-                block_revenue_commission_bps,
-                pending_delegator_rewards,
-                inflation_rewards_collector_healthy,
-                block_revenue_collector_healthy,
-                -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
-                CASE WHEN inflation_rewards_collector IS NOT NULL
-                     THEN inflation_rewards_collector <> validators.vote_account END AS inflation_rewards_collector_redirected,
-                -- Against the identity, its default: SIMD-0232 stopped agave re-syncing the two
-                CASE WHEN block_revenue_collector IS NOT NULL
-                     THEN block_revenue_collector = validators.identity END AS block_revenue_collector_is_identity,
-                -- Partitioning on a null collector would pool every pre-v4 validator into one count
-                CASE WHEN inflation_rewards_collector IS NOT NULL
-                     THEN COUNT(*) OVER (PARTITION BY validators.epoch, inflation_rewards_collector) END AS inflation_rewards_collector_shared_count,
-                CASE WHEN block_revenue_collector IS NOT NULL
-                     THEN COUNT(*) OVER (PARTITION BY validators.epoch, block_revenue_collector) END AS block_revenue_collector_shared_count,
-                version,
-                mev.mev_commission AS mev_commission_bps,
-                jpf.validator_commission AS priority_commission_bps,
-                client_id,
-                client_id_raw,
-                feature_set,
-                shred_version,
-                gossip_port,
-                rpc_public,
-                pubsub_public,
-                activated_stake,
-                marinade_stake,
-                foundation_stake,
-                marinade_native_stake,
-                institutional_stake,
-                direct_stake,
-                direct_activating_stake,
-                direct_deactivating_stake,
-                self_stake,
-                activating_stake,
-                deactivating_stake,
-                superminority,
-                stake_to_become_superminority,
-                credits,
-                vote_reward_lamports,
-                leader_slots,
-                blocks_produced,
-                skip_rate,
-                uptime_pct,
-                uptime,
-                downtime,
+    log::info!("Aggregating validator records...");
+    let mut records: HashMap<String, ValidatorRecord> = Default::default();
+    let mut seeding_epochs: HashMap<&String, u64> = Default::default();
+    let mut projected_node_metadata: HashSet<&String> = Default::default();
+    let window_start = warehouse.window_start(display_epochs);
 
-                validators_aggregated.first_epoch AS first_epoch
-            FROM validators
-                LEFT JOIN cluster ON 1 = 1
-                LEFT JOIN validators_aggregated ON validators_aggregated.vote_account = validators.vote_account
-                LEFT JOIN epochs_dates ON validators.vote_account = epochs_dates.vote_account
-                LEFT JOIN epochs ON epochs.epoch = validators.epoch
-                LEFT JOIN (
-                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, mev_commission
-                    FROM mev ORDER BY vote_account, epoch, created_at DESC
-                ) mev ON mev.vote_account = validators.vote_account AND mev.epoch = validators.epoch
-                LEFT JOIN (
-                    SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
-                    FROM jito_priority_fee ORDER BY vote_account, epoch, created_at DESC
-                ) jpf ON jpf.vote_account = validators.vote_account AND jpf.epoch = validators.epoch
-            WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY epoch DESC",
-            &[&Decimal::from(display_epochs)],
-        )
-        .await?;
+    for (epoch, snapshot) in warehouse.snapshots.range(window_start..).rev() {
+        let epoch = *epoch;
+        let epoch_record = warehouse.epochs.get(&epoch);
+        let mev = warehouse.mev.get(&epoch);
+        let priority_fees = warehouse.priority_fees.get(&epoch);
+        let collectors = SharedCollectors::of(snapshot);
 
-    let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
-        log::info!("Aggregating validator records...");
-        let mut records: HashMap<_, _> = Default::default();
-        let mut seeding_epochs: HashMap<String, u64> = Default::default();
-        let mut projected_node_metadata: HashSet<String> = Default::default();
-        for row in rows {
-            let vote_account: String = row.get("vote_account");
-            let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
-            let starting_epoch_date: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
-            let mut epoch_start_at: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("epoch_start");
-            let epoch_end_at: Option<DateTime<Utc>> =
-                row.get::<_, Option<DateTime<Utc>>>("epoch_end");
-            let first_epoch: u64 = row.get::<_, Decimal>("first_epoch").try_into().unwrap();
-            let starting_epoch: u64 = row.get::<_, Decimal>("starting_epoch").try_into().unwrap();
-
-            let vote_reward_lamports: Option<u64> = row
-                .get::<_, Option<Decimal>>("vote_reward_lamports")
-                .map(|lamports| lamports.try_into().unwrap());
-            let tower_credits: Option<u64> = row
-                .get::<_, Option<Decimal>>("credits")
-                .map(|credits| credits.try_into().unwrap());
-            let commission_effective: u8 = row
-                .get::<_, Option<i32>>("commission_effective")
-                .map(|n| n.try_into().unwrap())
+        for (vote_account, validator) in snapshot.iter() {
+            let first_epoch = first_epochs.get(vote_account).copied().unwrap_or(epoch);
+            let tower_credits: Option<u64> = validator.credits.map(u64::try_from).transpose()?;
+            let vote_reward_lamports: Option<u64> = validator
+                .vote_reward_lamports
+                .map(u64::try_from)
+                .transpose()?;
+            let commission_effective = validator
+                .commission_effective
+                .map(|commission| commission.clamp(0, 100) as u8)
                 .unwrap_or(100);
-            let yields = apy_calculators.get(&epoch).and_then(|c| {
-                // In the migration epoch this leaves out the reward of the tower credits
-                match (vote_reward_lamports, tower_credits) {
-                    (Some(lamports), _) => Some(c.yields_from_vote_reward(
-                        lamports,
-                        row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
-                        commission_effective,
-                    )),
-                    (None, Some(credits)) => c
-                        .total_weighted_credits
-                        .map(|_| c.estimate_yields(credits, commission_effective)),
-                    (None, None) => None,
+            let calculator = apy_calculators.get(&epoch);
+            // In the migration epoch the reward of the tower credits is left out.
+            let yields = match (calculator, vote_reward_lamports, tower_credits) {
+                (Some(calculator), Some(lamports), _) => Some(calculator.yields_from_vote_reward(
+                    lamports,
+                    u64::try_from(validator.activated_stake)?,
+                    commission_effective,
+                )),
+                (Some(calculator), None, Some(credits))
+                    if calculator.total_weighted_credits.is_some() =>
+                {
+                    Some(calculator.estimate_yields(credits, commission_effective))
                 }
-            });
+                _ => None,
+            };
             let (apr, apy) = yields.unzip();
 
-            let dc_full_city = row
-                .get::<_, Option<String>>("dc_full_city")
+            let dc_full_city = full_city(validator);
+            let dc_asn = validator
+                .dc_asn
+                .map(|asn| asn.to_string())
                 .unwrap_or("Unknown".into());
-            let dc_asn = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map(|dc_asn| dc_asn.to_string())
-                .unwrap_or("Unknown".into());
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".into());
-            let dc_country = row
-                .get::<_, Option<String>>("dc_country")
-                .unwrap_or("Unknown".into());
+            let dc_aso = validator.dc_aso.clone().unwrap_or("Unknown".into());
+            let dc_country = validator.dc_country.clone().unwrap_or("Unknown".into());
 
-            let dcc_full_city = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).cloned());
-            let dcc_asn = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).cloned());
-            let dcc_aso = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).cloned());
-            let dcc_country = concentrations
-                .as_ref()
-                .and_then(|c| c.dc_concentration_by_country.get(&dc_country).cloned());
-
-            let version: Option<String> = row.get("version");
-            let stored_client_id = row.get::<_, Option<i32>>("client_id").map(|n| n as u16);
-            let client_id_raw: Option<String> = row.get("client_id_raw");
-            let client_id = effective_client_id(stored_client_id, client_id_raw.as_deref());
-            let feature_set = row.get::<_, Option<i64>>("feature_set").map(|n| n as u32);
-            let shred_version = row.get::<_, Option<i32>>("shred_version").map(|n| n as u16);
-            let rpc_public: Option<bool> = row.get("rpc_public");
-            let pubsub_public: Option<bool> = row.get("pubsub_public");
-            let gossip_port = row.get::<_, Option<i32>>("gossip_port").map(|n| n as u16);
+            let client_id = effective_client_id(
+                validator.client_id.map(|id| id as u16),
+                validator.client_id_raw.as_deref(),
+            );
+            let collector_fields = collectors.fields_of(validator);
 
             let record = records
                 .entry(vote_account.clone())
                 .or_insert_with(|| ValidatorRecord {
-                    identity: row.get("identity"),
-                    start_epoch: starting_epoch,
-                    start_date: starting_epoch_date,
+                    identity: validator.identity.clone(),
+                    // Without the epoch's own record there is no date to start from.
+                    start_epoch: match warehouse.epochs.contains_key(&first_epoch) {
+                        true => first_epoch,
+                        false => 0,
+                    },
+                    start_date: warehouse
+                        .epochs
+                        .get(&first_epoch)
+                        .map(|epoch| epoch.start_at),
                     vote_account: vote_account.clone(),
-                    info_name: row.get("info_name"),
-                    info_url: row.get("info_url"),
-                    info_keybase: row.get("info_keybase"),
-                    info_icon_url: row.get("info_icon_url"),
-                    node_ip: row.get("node_ip"),
-                    dc_coordinates_lat: row.get("dc_coordinates_lat"),
-                    dc_coordinates_lon: row.get("dc_coordinates_lon"),
-                    dc_continent: row.get("dc_continent"),
-                    dc_country_iso: row.get("dc_country_iso"),
-                    dc_country: row.get("dc_country"),
-                    dc_city: row.get("dc_city"),
-                    dc_full_city: row.get("dc_full_city"),
-                    dc_asn: row.get("dc_asn"),
-                    dc_aso: row.get("dc_aso"),
-                    dcc_full_city,
-                    dcc_asn,
-                    dcc_aso,
-                    dcc_country,
-                    commission_max_observed: row.get::<_, Option<i32>>("commission_max_observed"),
-                    commission_min_observed: row.get::<_, Option<i32>>("commission_min_observed"),
-                    commission_advertised: row.get::<_, Option<i32>>("commission_advertised"),
-                    commission_effective: row.get::<_, Option<i32>>("commission_effective"),
-                    commission_effective_source: row
-                        .get::<_, Option<String>>("commission_effective_source"),
-                    commission_effective_bps: row.get::<_, Option<i32>>("commission_effective_bps"),
-                    inflation_rewards_commission_bps: row
-                        .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
-                    inflation_rewards_commission_bps_is_v4: row
-                        .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4"),
-                    inflation_rewards_collector: row
-                        .get::<_, Option<String>>("inflation_rewards_collector"),
-                    inflation_rewards_collector_redirected: row
-                        .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
-                    inflation_rewards_collector_shared_count: row
-                        .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
-                    inflation_rewards_collector_healthy: row
-                        .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
-                    block_revenue_collector: row
-                        .get::<_, Option<String>>("block_revenue_collector"),
-                    block_revenue_collector_is_identity: row
-                        .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
-                    block_revenue_collector_shared_count: row
-                        .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
-                    block_revenue_collector_healthy: row
-                        .get::<_, Option<bool>>("block_revenue_collector_healthy"),
-                    block_revenue_commission_bps: row
-                        .get::<_, Option<i32>>("block_revenue_commission_bps"),
-                    pending_delegator_rewards: row
-                        .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                    info_name: validator.info_name.clone(),
+                    info_url: validator.info_url.clone(),
+                    info_keybase: validator.info_keybase.clone(),
+                    info_icon_url: validator.info_icon_url.clone(),
+                    node_ip: validator.node_ip.clone(),
+                    dc_coordinates_lat: validator.dc_coordinates_lat,
+                    dc_coordinates_lon: validator.dc_coordinates_lon,
+                    dc_continent: validator.dc_continent.clone(),
+                    dc_country_iso: validator.dc_country_iso.clone(),
+                    dc_country: validator.dc_country.clone(),
+                    dc_city: validator.dc_city.clone(),
+                    dc_full_city: Some(dc_full_city.clone()),
+                    dc_asn: validator.dc_asn,
+                    dc_aso: validator.dc_aso.clone(),
+                    dcc_full_city: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_city.get(&dc_full_city).copied()),
+                    dcc_asn: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_asn.get(&dc_asn).copied()),
+                    dcc_aso: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_aso.get(&dc_aso).copied()),
+                    dcc_country: concentrations
+                        .as_ref()
+                        .and_then(|c| c.dc_concentration_by_country.get(&dc_country).copied()),
+                    commission_max_observed: validator.commission_max_observed,
+                    commission_min_observed: validator.commission_min_observed,
+                    commission_advertised: validator.commission_advertised,
+                    commission_effective: validator.commission_effective,
+                    commission_effective_source: validator.commission_effective_source.clone(),
+                    commission_effective_bps: validator.commission_effective_bps,
+                    inflation_rewards_commission_bps: validator.inflation_rewards_commission_bps,
+                    inflation_rewards_commission_bps_is_v4: validator
+                        .inflation_rewards_commission_bps_is_v4,
+                    inflation_rewards_collector: validator.inflation_rewards_collector.clone(),
+                    inflation_rewards_collector_redirected: collector_fields
+                        .inflation_rewards_collector_redirected,
+                    inflation_rewards_collector_shared_count: collector_fields
+                        .inflation_rewards_collector_shared_count,
+                    inflation_rewards_collector_healthy: validator
+                        .inflation_rewards_collector_healthy,
+                    block_revenue_collector: validator.block_revenue_collector.clone(),
+                    block_revenue_collector_is_identity: collector_fields
+                        .block_revenue_collector_is_identity,
+                    block_revenue_collector_shared_count: collector_fields
+                        .block_revenue_collector_shared_count,
+                    block_revenue_collector_healthy: validator.block_revenue_collector_healthy,
+                    block_revenue_commission_bps: validator.block_revenue_commission_bps,
+                    pending_delegator_rewards: validator.pending_delegator_rewards,
                     commission_aggregated: None,
-                    version: version.clone(),
+                    version: validator.version.clone(),
                     client_id,
                     client_name: client_name(client_id),
                     client_label: client_label(client_id),
                     client_vendor: client_vendor(client_id),
                     client_lineage: client_lineage(client_id),
-                    client_id_raw: client_id_raw.clone(),
-                    feature_set,
-                    shred_version,
-                    gossip_port,
-                    rpc_public,
-                    pubsub_public,
-                    activated_stake: row.get::<_, Decimal>("activated_stake"),
-                    marinade_stake: row.get::<_, Decimal>("marinade_stake"),
-                    foundation_stake: row.get::<_, Decimal>("foundation_stake"),
-                    self_stake: row.get::<_, Decimal>("self_stake"),
-                    marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
-                    institutional_stake: row.get::<_, Decimal>("institutional_stake"),
-                    activating_stake: row.get::<_, Option<Decimal>>("activating_stake"),
-                    deactivating_stake: row.get::<_, Option<Decimal>>("deactivating_stake"),
-                    direct_stake: row.get::<_, Option<Decimal>>("direct_stake"),
-                    direct_activating_stake: row
-                        .get::<_, Option<Decimal>>("direct_activating_stake"),
-                    direct_deactivating_stake: row
-                        .get::<_, Option<Decimal>>("direct_deactivating_stake"),
-                    superminority: row.get("superminority"),
+                    client_id_raw: validator.client_id_raw.clone(),
+                    feature_set: validator.feature_set.map(|set| set as u32),
+                    shred_version: validator.shred_version.map(|version| version as u16),
+                    gossip_port: validator.gossip_port.map(|port| port as u16),
+                    rpc_public: validator.rpc_public,
+                    pubsub_public: validator.pubsub_public,
+                    activated_stake: validator.activated_stake,
+                    marinade_stake: validator.marinade_stake,
+                    foundation_stake: validator.foundation_stake,
+                    self_stake: validator.self_stake,
+                    marinade_native_stake: validator.marinade_native_stake,
+                    institutional_stake: validator.institutional_stake,
+                    activating_stake: validator.activating_stake,
+                    deactivating_stake: validator.deactivating_stake,
+                    direct_stake: validator.direct_stake,
+                    direct_activating_stake: validator.direct_activating_stake,
+                    direct_deactivating_stake: validator.direct_deactivating_stake,
+                    superminority: validator.superminority,
                     credits: tower_credits,
                     vote_reward_lamports,
                     score: None,
@@ -1444,153 +1067,134 @@ pub async fn load_validators(
                     rugged_commission_occurrences: 0,
                 });
 
-            // Rows are newest-first, so project all node metadata from the first usable row.
-            let has_node_metadata = rpc_public.is_some()
-                || pubsub_public.is_some()
-                || gossip_port.is_some()
-                || version.is_some()
-                || stored_client_id.is_some()
-                || client_id_raw.is_some()
-                || feature_set.is_some()
-                || shred_version.is_some();
+            // Epochs run newest-first, so the node metadata is projected from
+            // the first epoch that reported any, under the identity the
+            // record was seeded with.
+            let has_node_metadata = validator.rpc_public.is_some()
+                || validator.pubsub_public.is_some()
+                || validator.gossip_port.is_some()
+                || validator.version.is_some()
+                || validator.client_id.is_some()
+                || validator.client_id_raw.is_some()
+                || validator.feature_set.is_some()
+                || validator.shred_version.is_some();
             if has_node_metadata
-                && row.get::<_, &str>("identity") == record.identity
-                && !projected_node_metadata.contains(&vote_account)
+                && validator.identity == record.identity
+                && !projected_node_metadata.contains(vote_account)
             {
-                record.version = version.clone();
+                record.version = validator.version.clone();
                 record.client_id = client_id;
                 record.client_name = client_name(client_id);
                 record.client_label = client_label(client_id);
                 record.client_vendor = client_vendor(client_id);
                 record.client_lineage = client_lineage(client_id);
-                record.client_id_raw = client_id_raw.clone();
-                record.feature_set = feature_set;
-                record.shred_version = shred_version;
-                record.gossip_port = gossip_port;
-                record.rpc_public = rpc_public;
-                record.pubsub_public = pubsub_public;
-                projected_node_metadata.insert(vote_account.clone());
+                record.client_id_raw = validator.client_id_raw.clone();
+                record.feature_set = validator.feature_set.map(|set| set as u32);
+                record.shred_version = validator.shred_version.map(|version| version as u16);
+                record.gossip_port = validator.gossip_port.map(|port| port as u16);
+                record.rpc_public = validator.rpc_public;
+                record.pubsub_public = validator.pubsub_public;
+                projected_node_metadata.insert(vote_account);
             }
 
-            let seeding_epoch = *seeding_epochs.entry(vote_account.clone()).or_insert(epoch);
-            // Gating all three on max_observed keeps them from one row; stopping one epoch below the record's own is what makes that row the newest closed epoch rather than whichever older row still happens to have the column. commission_advertised deliberately stays on the open epoch that seeded the record.
+            // Gating all three on max_observed keeps them from one epoch; stopping one epoch below
+            // the record's own is what makes that epoch the newest closed one rather than whichever
+            // older epoch still happens to carry the field. commission_advertised deliberately stays
+            // on the open epoch that seeded the record.
+            let seeding_epoch = *seeding_epochs.entry(vote_account).or_insert(epoch);
             if record.commission_max_observed.is_none() && epoch + 1 >= seeding_epoch {
-                record.commission_max_observed =
-                    row.get::<_, Option<i32>>("commission_max_observed");
-                record.commission_min_observed =
-                    row.get::<_, Option<i32>>("commission_min_observed");
-                record.commission_effective = row.get::<_, Option<i32>>("commission_effective");
-                record.commission_effective_source =
-                    row.get::<_, Option<String>>("commission_effective_source");
-                record.commission_effective_bps =
-                    row.get::<_, Option<i32>>("commission_effective_bps");
+                record.commission_max_observed = validator.commission_max_observed;
+                record.commission_min_observed = validator.commission_min_observed;
+                record.commission_effective = validator.commission_effective;
+                record.commission_effective_source = validator.commission_effective_source.clone();
+                record.commission_effective_bps = validator.commission_effective_bps;
             }
 
-            let rug_info = ruggers.get(&vote_account);
-            if let Some(rugger_info) = rug_info {
+            if let Some(rugger) = ruggers.get(vote_account) {
                 record.rugged_commission = true;
-                record.rugged_commission_occurrences = rugger_info.occurrences;
-                record.rugged_commission_info = rugger_info
+                record.rugged_commission_occurrences = rugger.occurrences;
+                record.rugged_commission_info = rugger
                     .epochs
                     .iter()
                     .enumerate()
                     .map(|(index, &epoch)| RugInfo {
                         epoch,
-                        after: rugger_info.observed_commissions[index],
-                        before: rugger_info.min_commissions[index],
+                        after: rugger.observed_commissions[index],
+                        before: rugger.min_commissions[index],
                     })
                     .collect()
             }
             if last_epoch == epoch {
                 record.has_last_epoch_stats = true;
             }
-            if epoch_start_at.is_none() {
-                epoch_start_at = Some(Utc::now());
-            }
+
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
-                epoch_start_at,
-                epoch_end_at,
-                commission_max_observed: row
-                    .get::<_, Option<i32>>("commission_max_observed")
-                    .map(|n| n.try_into().unwrap()),
-                commission_min_observed: row
-                    .get::<_, Option<i32>>("commission_min_observed")
-                    .map(|n| n.try_into().unwrap()),
-                commission_advertised: row
-                    .get::<_, Option<i32>>("commission_advertised")
-                    .map(|n| n.try_into().unwrap()),
-                commission_effective: row
-                    .get::<_, Option<i32>>("commission_effective")
-                    .map(|n| n.try_into().unwrap()),
-                commission_effective_source: row
-                    .get::<_, Option<String>>("commission_effective_source"),
-                inflation_rewards_commission_bps: row
-                    .get::<_, Option<i32>>("inflation_rewards_commission_bps"),
-                inflation_rewards_commission_bps_is_v4: row
-                    .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4"),
-                inflation_rewards_collector: row
-                    .get::<_, Option<String>>("inflation_rewards_collector"),
-                inflation_rewards_collector_redirected: row
-                    .get::<_, Option<bool>>("inflation_rewards_collector_redirected"),
-                inflation_rewards_collector_shared_count: row
-                    .get::<_, Option<i64>>("inflation_rewards_collector_shared_count"),
-                inflation_rewards_collector_healthy: row
-                    .get::<_, Option<bool>>("inflation_rewards_collector_healthy"),
-                block_revenue_collector: row.get::<_, Option<String>>("block_revenue_collector"),
-                block_revenue_collector_is_identity: row
-                    .get::<_, Option<bool>>("block_revenue_collector_is_identity"),
-                block_revenue_collector_shared_count: row
-                    .get::<_, Option<i64>>("block_revenue_collector_shared_count"),
-                block_revenue_collector_healthy: row
-                    .get::<_, Option<bool>>("block_revenue_collector_healthy"),
-                block_revenue_commission_bps: row
-                    .get::<_, Option<i32>>("block_revenue_commission_bps"),
-                pending_delegator_rewards: row
-                    .get::<_, Option<Decimal>>("pending_delegator_rewards"),
-                version,
-                mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
-                priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
-                dc_asn: row.get::<_, Option<i32>>("dc_asn"),
-                dc_aso: row.get::<_, Option<String>>("dc_aso"),
-                dc_city: row.get::<_, Option<String>>("dc_city"),
-                dc_country: row.get::<_, Option<String>>("dc_country"),
+                epoch_start_at: Some(epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at)),
+                epoch_end_at: epoch_record.map(|epoch| epoch.end_at),
+                commission_max_observed: to_commission(validator.commission_max_observed)?,
+                commission_min_observed: to_commission(validator.commission_min_observed)?,
+                commission_advertised: to_commission(validator.commission_advertised)?,
+                commission_effective: to_commission(validator.commission_effective)?,
+                commission_effective_source: validator.commission_effective_source.clone(),
+                inflation_rewards_commission_bps: validator.inflation_rewards_commission_bps,
+                inflation_rewards_commission_bps_is_v4: validator
+                    .inflation_rewards_commission_bps_is_v4,
+                inflation_rewards_collector: validator.inflation_rewards_collector.clone(),
+                inflation_rewards_collector_redirected: collector_fields
+                    .inflation_rewards_collector_redirected,
+                inflation_rewards_collector_shared_count: collector_fields
+                    .inflation_rewards_collector_shared_count,
+                inflation_rewards_collector_healthy: validator.inflation_rewards_collector_healthy,
+                block_revenue_collector: validator.block_revenue_collector.clone(),
+                block_revenue_collector_is_identity: collector_fields
+                    .block_revenue_collector_is_identity,
+                block_revenue_collector_shared_count: collector_fields
+                    .block_revenue_collector_shared_count,
+                block_revenue_collector_healthy: validator.block_revenue_collector_healthy,
+                block_revenue_commission_bps: validator.block_revenue_commission_bps,
+                pending_delegator_rewards: validator.pending_delegator_rewards,
+                version: validator.version.clone(),
+                mev_commission_bps: mev
+                    .and_then(|mev| mev.get(vote_account))
+                    .map(|entry| entry.mev_commission),
+                priority_commission_bps: priority_fees
+                    .and_then(|fees| fees.get(vote_account))
+                    .map(|entry| entry.priority_commission),
+                dc_asn: validator.dc_asn,
+                dc_aso: validator.dc_aso.clone(),
+                dc_city: validator.dc_city.clone(),
+                dc_country: validator.dc_country.clone(),
                 client_id,
                 client_name: client_name(client_id),
                 client_label: client_label(client_id),
                 client_vendor: client_vendor(client_id),
                 client_lineage: client_lineage(client_id),
-                client_id_raw,
-                feature_set,
-                shred_version,
-                gossip_port,
-                rpc_public,
-                pubsub_public,
-                activated_stake: row.get::<_, Decimal>("activated_stake"),
-                marinade_stake: row.get::<_, Decimal>("marinade_stake"),
-                foundation_stake: row.get::<_, Decimal>("foundation_stake"),
-                self_stake: row.get::<_, Decimal>("self_stake"),
-                marinade_native_stake: row.get::<_, Decimal>("marinade_native_stake"),
-                institutional_stake: row.get::<_, Decimal>("institutional_stake"),
-                direct_stake: row.get::<_, Option<Decimal>>("direct_stake"),
-                direct_activating_stake: row.get::<_, Option<Decimal>>("direct_activating_stake"),
-                direct_deactivating_stake: row
-                    .get::<_, Option<Decimal>>("direct_deactivating_stake"),
-                superminority: row.get("superminority"),
-                stake_to_become_superminority: row
-                    .get::<_, Decimal>("stake_to_become_superminority"),
+                client_id_raw: validator.client_id_raw.clone(),
+                feature_set: validator.feature_set.map(|set| set as u32),
+                shred_version: validator.shred_version.map(|version| version as u16),
+                gossip_port: validator.gossip_port.map(|port| port as u16),
+                rpc_public: validator.rpc_public,
+                pubsub_public: validator.pubsub_public,
+                activated_stake: validator.activated_stake,
+                marinade_stake: validator.marinade_stake,
+                foundation_stake: validator.foundation_stake,
+                self_stake: validator.self_stake,
+                marinade_native_stake: validator.marinade_native_stake,
+                institutional_stake: validator.institutional_stake,
+                direct_stake: validator.direct_stake,
+                direct_activating_stake: validator.direct_activating_stake,
+                direct_deactivating_stake: validator.direct_deactivating_stake,
+                superminority: validator.superminority,
+                stake_to_become_superminority: validator.stake_to_become_superminority,
                 credits: tower_credits,
                 vote_reward_lamports,
-                leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
-                blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
-                skip_rate: row.get("skip_rate"),
-                uptime_pct: row.get("uptime_pct"),
-                uptime: row
-                    .get::<_, Option<Decimal>>("uptime")
-                    .map(|n| n.try_into().unwrap()),
-                downtime: row
-                    .get::<_, Option<Decimal>>("downtime")
-                    .map(|n| n.try_into().unwrap()),
+                leader_slots: validator.leader_slots.try_into()?,
+                blocks_produced: validator.blocks_produced.try_into()?,
+                skip_rate: validator.skip_rate,
+                uptime_pct: validator.uptime_pct,
+                uptime: validator.uptime.map(u64::try_from).transpose()?,
+                downtime: validator.downtime.map(u64::try_from).transpose()?,
                 apr,
                 apy,
                 score: None,
@@ -1599,17 +1203,13 @@ pub async fn load_validators(
                 rank_activated_stake: None,
             });
         }
+    }
 
-        records
-    })
-    .await?;
-
-    let last_epoch = get_last_epoch(psql_client).await?.unwrap_or(0);
     let mut first_epoch = last_epoch - display_epochs.min(last_epoch) + 1;
     let mut epochs_range = first_epoch..=last_epoch;
 
     log::info!("Updating with scores...");
-    update_validators_with_scores(scoring_url, &mut records, epochs_range.clone()).await?;
+    update_validators_with_scores(warehouse, &mut records, epochs_range.clone());
 
     first_epoch = last_epoch - computing_epochs.min(last_epoch) + 1;
     epochs_range = first_epoch..=last_epoch;
@@ -1659,7 +1259,7 @@ pub async fn load_validators(
     let mut mev_commissions: HashMap<String, i32> = Default::default();
     let mut priority_commissions: HashMap<String, i32> = Default::default();
     // get_last_jito_info keys on (vote_account, epoch): the two distribution accounts resolve their last epoch separately, splitting one validator across two records.
-    for jito in get_last_jito_info(psql_client, DEFAULT_JITO_COMMISSION_EPOCHS).await? {
+    for jito in get_last_jito_info(warehouse, DEFAULT_JITO_COMMISSION_EPOCHS)? {
         if let Some(bps) = jito.mev_commission_bps {
             mev_commissions.insert(jito.vote_account.clone(), bps);
         }
@@ -1691,240 +1291,159 @@ pub async fn load_validators(
     Ok(records)
 }
 
-pub async fn update_validators_with_scores(
-    scoring_url: String,
+/// The SIMD-0232 collector fields that are derived against the epoch rather
+/// than read off the validator: whether a collector was moved, and how many
+/// vote accounts name the same one.
+#[derive(Default)]
+struct CollectorFields {
+    inflation_rewards_collector_redirected: Option<bool>,
+    inflation_rewards_collector_shared_count: Option<i64>,
+    block_revenue_collector_is_identity: Option<bool>,
+    block_revenue_collector_shared_count: Option<i64>,
+}
+
+/// How many vote accounts of one epoch name each collector. A pre-v4 vote
+/// state names none, and is counted nowhere rather than pooled under null.
+struct SharedCollectors<'a> {
+    inflation_rewards: HashMap<&'a String, i64>,
+    block_revenue: HashMap<&'a String, i64>,
+}
+
+impl<'a> SharedCollectors<'a> {
+    fn of(snapshot: &'a SnapshotDoc) -> Self {
+        let mut inflation_rewards: HashMap<&String, i64> = Default::default();
+        let mut block_revenue: HashMap<&String, i64> = Default::default();
+        for validator in snapshot.values() {
+            if let Some(collector) = &validator.inflation_rewards_collector {
+                *inflation_rewards.entry(collector).or_default() += 1;
+            }
+            if let Some(collector) = &validator.block_revenue_collector {
+                *block_revenue.entry(collector).or_default() += 1;
+            }
+        }
+        Self {
+            inflation_rewards,
+            block_revenue,
+        }
+    }
+
+    fn fields_of(&self, validator: &Validator) -> CollectorFields {
+        CollectorFields {
+            // Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect.
+            inflation_rewards_collector_redirected: validator
+                .inflation_rewards_collector
+                .as_ref()
+                .map(|collector| *collector != validator.vote_account),
+            inflation_rewards_collector_shared_count: validator
+                .inflation_rewards_collector
+                .as_ref()
+                .map(|collector| self.inflation_rewards.get(collector).copied().unwrap_or(0)),
+            // Against the identity, its default: SIMD-0232 stopped agave re-syncing the two.
+            block_revenue_collector_is_identity: validator
+                .block_revenue_collector
+                .as_ref()
+                .map(|collector| *collector == validator.identity),
+            block_revenue_collector_shared_count: validator
+                .block_revenue_collector
+                .as_ref()
+                .map(|collector| self.block_revenue.get(collector).copied().unwrap_or(0)),
+        }
+    }
+}
+
+/// Unknown parts are empty, and the key exists either way.
+pub fn full_city(validator: &Validator) -> String {
+    format!(
+        "{}/{}/{}",
+        validator.dc_continent.clone().unwrap_or_default(),
+        validator.dc_country.clone().unwrap_or_default(),
+        validator.dc_city.clone().unwrap_or_default()
+    )
+}
+
+fn to_commission(commission: Option<i32>) -> anyhow::Result<Option<u8>> {
+    Ok(commission.map(u8::try_from).transpose()?)
+}
+
+pub fn update_validators_with_scores(
+    warehouse: &Warehouse,
     validators: &mut HashMap<String, ValidatorRecord>,
     epochs_range: RangeInclusive<u64>,
-) -> anyhow::Result<()> {
+) {
     log::info!("Updating validator score with epochs range: {epochs_range:?}");
-    let scores_per_epoch = load_scores_in_epochs(&scoring_url, epochs_range).await?;
+    let scores_per_epoch = load_scores_in_epochs(warehouse, epochs_range);
 
-    let latest_epoch_with_score = match scores_per_epoch.keys().max() {
-        Some(epoch) => epoch,
-        _ => return Ok(()),
+    let Some(latest_epoch_with_score) = scores_per_epoch.keys().max() else {
+        return;
     };
+    let latest_scores = &scores_per_epoch[latest_epoch_with_score];
 
-    let latest_scores = scores_per_epoch.get(latest_epoch_with_score).unwrap();
-
-    for (_, validator) in validators.iter_mut() {
+    for validator in validators.values_mut() {
         for epoch_record in validator.epoch_stats.iter_mut() {
             if let Some(scores) = scores_per_epoch.get(&epoch_record.epoch) {
-                epoch_record.score = scores.get(&validator.vote_account).cloned();
+                epoch_record.score = scores.get(&validator.vote_account).copied();
             }
         }
 
-        validator.score = latest_scores.get(&validator.vote_account).cloned();
+        validator.score = latest_scores.get(&validator.vote_account).copied();
     }
-
-    Ok(())
 }
 
-pub async fn load_scores_in_epochs(
-    scoring_url: &String,
+pub fn load_scores_in_epochs(
+    warehouse: &Warehouse,
     epochs: RangeInclusive<u64>,
-) -> anyhow::Result<HashMap<u64, HashMap<String, f64>>> {
+) -> HashMap<u64, HashMap<String, f64>> {
     log::info!("Loading scores for epochs: {epochs:?}");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, HashMap<String, f64>)>();
-
-    let handle = tokio::spawn(async move {
-        let mut result: HashMap<u64, HashMap<String, f64>> = Default::default();
-        while let Some((epoch, epoch_scores)) = rx.recv().await {
-            result.insert(epoch, epoch_scores);
-        }
-        result
-    });
-
-    let permits = Arc::new(Semaphore::new(SCORING_SCRAPER_WORKERS));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
-        .build()?;
-    for epoch in epochs {
-        let url = format!("{scoring_url}/api/v1/scores/breakdowns?epoch={epoch}");
-        let tx = tx.clone();
-        let client = client.clone();
-        let permit = permits.clone().acquire_owned().await?;
-        tokio::spawn(async move {
-            log::info!("Fetching scores from {url}...");
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(scores) = resp.json::<Vec<ValidatorScoreV2Record>>().await {
-                        let mut epoch_scores: HashMap<String, f64> = Default::default();
-                        for score in scores {
-                            epoch_scores.insert(score.vote_account.clone(), score.score);
-                        }
-                        tx.send((epoch, epoch_scores)).unwrap();
-                    }
-                }
-                Ok(resp) => {
-                    log::error!(
-                        "Failed to load scores for epoch {}: {}",
-                        epoch,
-                        resp.status()
-                    );
-                }
-                Err(e) => {
-                    log::error!("Error fetching scores for epoch {epoch}: {e}");
-                }
-            }
-            drop(permit);
-        });
-    }
-
-    drop(tx);
-
-    let (result,) = join!(handle);
-    Ok(result?)
+    warehouse
+        .scoring
+        .range(epochs)
+        .map(|(epoch, breakdowns)| {
+            let scores = breakdowns
+                .scores
+                .iter()
+                .map(|score| (score.vote_account.clone(), score.score))
+                .collect();
+            (*epoch, scores)
+        })
+        .collect()
 }
 
-pub async fn load_last_scoring_run(
-    psql_client: &Client,
-) -> anyhow::Result<Option<ScoringRunRecord>> {
-    log::info!("Querying scoring run...");
-    let result = psql_client
-        .query_opt(
-            "
-            SELECT
-                scoring_run_id::numeric,
-                created_at,
-                epoch,
-                components,
-                component_weights,
-                ui_id
-            FROM scoring_runs
-            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scoring_runs)",
-            &[],
-        )
-        .await?;
-
-    let scoring_run = match result {
-        Some(scoring_run) => scoring_run,
-        _ => {
-            log::warn!("No scoring run was found!");
-            return Ok(None);
-        }
+pub fn load_last_scoring_run(warehouse: &Warehouse) -> Option<ScoringRunRecord> {
+    let Some((_, breakdowns)) = warehouse.scoring.iter().next_back() else {
+        log::warn!("No scoring run was found!");
+        return None;
     };
 
-    Ok(Some(ScoringRunRecord {
-        scoring_run_id: scoring_run.get("scoring_run_id"),
-        created_at: scoring_run.get("created_at"),
-        epoch: scoring_run.get("epoch"),
-        components: scoring_run.get("components"),
-        component_weights: scoring_run.get("component_weights"),
-        ui_id: scoring_run.get("ui_id"),
-    }))
+    Some(breakdowns.scoring_run())
 }
 
-pub async fn load_scores(
-    psql_client: &Client,
+pub fn load_scores(
+    warehouse: &Warehouse,
     scoring_run_id: Decimal,
-) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
-    log::info!("Querying scores...");
-    let rows = psql_client
-        .query(
-            "
-            SELECT vote_account,
-                score,
-                rank,
-                vemnde_votes,
-                msol_votes,
-                ui_hints,
-                component_scores,
-                component_ranks,
-                component_values,
-                eligible_stake_algo,
-                eligible_stake_vemnde,
-                eligible_stake_msol,
-                target_stake_algo,
-                target_stake_vemnde,
-                target_stake_msol,
-                scores.scoring_run_id,
-                scoring_runs.created_at AS created_at
-            FROM scores
-            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
-            WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
-            &[&scoring_run_id],
-        )
-        .await?;
-
-    let records: HashMap<_, _> = {
-        log::info!("Aggregating scores records...");
-        let mut records: HashMap<_, _> = Default::default();
-        for row in rows {
-            let vote_account: String = row.get("vote_account");
-
-            records
-                .entry(vote_account.clone())
-                .or_insert_with(|| ValidatorScoreRecord {
-                    vote_account: vote_account.clone(),
-                    score: row.get("score"),
-                    rank: row.get("rank"),
-                    vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
-                    msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
-                    ui_hints: row.get("ui_hints"),
-                    component_scores: row.get("component_scores"),
-                    component_ranks: row.get("component_ranks"),
-                    component_values: row.get("component_values"),
-                    eligible_stake_algo: row.get("eligible_stake_algo"),
-                    eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
-                    eligible_stake_msol: row.get("eligible_stake_msol"),
-                    target_stake_algo: row
-                        .get::<_, Decimal>("target_stake_algo")
-                        .try_into()
-                        .unwrap(),
-                    target_stake_vemnde: row
-                        .get::<_, Decimal>("target_stake_vemnde")
-                        .try_into()
-                        .unwrap(),
-                    target_stake_msol: row
-                        .get::<_, Decimal>("target_stake_msol")
-                        .try_into()
-                        .unwrap(),
-                    scoring_run_id: row.get("scoring_run_id"),
-                    created_at: row.get::<_, DateTime<Utc>>("created_at"),
-                });
-        }
-
-        records
-    };
-    log::info!("Records prepared...");
-    Ok(records)
+) -> HashMap<String, ValidatorScoreRecord> {
+    warehouse
+        .scoring
+        .values()
+        .find(|breakdowns| Decimal::from(breakdowns.scoring_run_id) == scoring_run_id)
+        .map(|breakdowns| {
+            breakdowns
+                .scores
+                .iter()
+                .map(|score| (score.vote_account.clone(), score.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Whether the table holds any row at all, regardless of epoch — `load_validators` filters by the latest `cluster_info` epoch and cannot answer this.
-pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
-    let row = psql_client
-        .query_one("SELECT EXISTS(SELECT 1 FROM validators) AS has_rows", &[])
-        .await?;
-
-    Ok(row.get("has_rows"))
+pub fn get_last_epoch(warehouse: &Warehouse) -> Option<u64> {
+    Some(warehouse.last_epoch())
 }
 
-pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
-    let row = psql_client
-        .query_opt(
-            "SELECT COALESCE(MAX(epoch), 0) AS last_epoch FROM validators",
-            &[],
-        )
-        .await?;
-
-    Ok(row.map(|row| {
-        row.get::<_, Decimal>("last_epoch")
-            .try_into()
-            .unwrap_or_default()
-    }))
-}
-
-pub async fn load_dc_concentration_stats(
-    psql_client: &Client,
+pub fn load_dc_concentration_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<DCConcentrationStats>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-
     let mut stats: Vec<_> = Default::default();
 
     let map_stake_to_concentration =
@@ -1935,50 +1454,29 @@ pub async fn load_dc_concentration_stats(
                 .collect()
         };
 
-    for epoch in (first_epoch..=last_epoch).rev() {
-        let mut dc_stake_by_aso: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_asn: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_city: HashMap<_, _> = Default::default();
-        let mut dc_stake_by_country: HashMap<_, _> = Default::default();
+    for epoch in warehouse.epochs_window(epochs) {
+        let mut dc_stake_by_aso: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_asn: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_city: HashMap<String, u64> = Default::default();
+        let mut dc_stake_by_country: HashMap<String, u64> = Default::default();
         let mut total_active_stake = 0;
 
-        let rows = psql_client
-            .query(
-                "SELECT
-                    activated_stake,
-                    dc_aso,
-                    dc_asn,
-                    dc_country,
-                    CONCAT(dc_continent, '/', dc_country, '/', dc_city) dc_full_city
-                FROM validators WHERE epoch = $1",
-                &[&Decimal::from(epoch)],
-            )
-            .await?;
-
-        for row in rows.iter() {
-            let activated_stake: u64 = row.get::<_, Decimal>("activated_stake").try_into()?;
-            let dc_aso = row
-                .get::<_, Option<String>>("dc_aso")
-                .unwrap_or("Unknown".to_string());
-            let dc_asn: String = row
-                .get::<_, Option<i32>>("dc_asn")
-                .map_or("Unknown".to_string(), |dc_asn| dc_asn.to_string());
-            let dc_city: String = row
-                .get::<_, Option<String>>("dc_full_city")
-                .unwrap_or("Unknown".to_string());
-            let dc_country: String = row
-                .get::<_, Option<String>>("dc_country")
+        for validator in snapshot_of(warehouse, epoch) {
+            let activated_stake: u64 = validator.activated_stake.try_into()?;
+            let dc_aso = validator.dc_aso.clone().unwrap_or("Unknown".to_string());
+            let dc_asn = validator
+                .dc_asn
+                .map_or("Unknown".to_string(), |asn| asn.to_string());
+            let dc_country = validator
+                .dc_country
+                .clone()
                 .unwrap_or("Unknown".to_string());
 
             total_active_stake += activated_stake;
-            *(dc_stake_by_aso.entry(dc_aso).or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_asn.entry(dc_asn).or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_city
-                .entry(dc_city)
-                .or_insert(Default::default())) += activated_stake;
-            *(dc_stake_by_country
-                .entry(dc_country)
-                .or_insert(Default::default())) += activated_stake;
+            *dc_stake_by_aso.entry(dc_aso).or_default() += activated_stake;
+            *dc_stake_by_asn.entry(dc_asn).or_default() += activated_stake;
+            *dc_stake_by_city.entry(full_city(validator)).or_default() += activated_stake;
+            *dc_stake_by_country.entry(dc_country).or_default() += activated_stake;
         }
 
         stats.push(DCConcentrationStats {
@@ -2010,38 +1508,32 @@ pub async fn load_dc_concentration_stats(
     Ok(stats)
 }
 
-pub async fn load_block_production_stats(
-    psql_client: &Client,
+pub fn load_block_production_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<BlockProductionStats>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
+    let last_epoch = warehouse.last_epoch();
     let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
 
     let mut stats: Vec<_> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.range(first_epoch..).rev() {
+        let blocks_produced: u64 = snapshot
+            .values()
+            .map(|validator| u64::try_from(validator.blocks_produced).unwrap_or_default())
+            .sum();
+        let leader_slots: u64 = snapshot
+            .values()
+            .map(|validator| u64::try_from(validator.leader_slots).unwrap_or_default())
+            .sum();
 
-    let rows = psql_client
-            .query(
-                "SELECT
-	                epoch,
-                    COALESCE(SUM(blocks_produced), 0) blocks_produced,
-                    COALESCE(SUM(leader_slots), 0) leader_slots,
-                    COALESCE(1 - COALESCE(SUM(blocks_produced), 0) / NULLIF(SUM(leader_slots), 0), 1)::DOUBLE PRECISION avg_skip_rate
-                FROM validators
-                WHERE epoch >= $1
-                GROUP BY epoch ORDER BY epoch DESC",
-                &[&Decimal::from(first_epoch)],
-            )
-            .await?;
-
-    for row in rows {
         stats.push(BlockProductionStats {
-            epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-            avg_skip_rate: row.get("avg_skip_rate"),
+            epoch: *epoch,
+            blocks_produced,
+            leader_slots,
+            avg_skip_rate: match leader_slots {
+                0 => 1f64,
+                _ => 1f64 - blocks_produced as f64 / leader_slots as f64,
+            },
         })
     }
 
@@ -2056,58 +1548,32 @@ struct StakeDistribution {
     count_by: HashMap<String, u64>,
 }
 
-// column_expr is interpolated into SQL; call only with compile-time literals
-async fn load_stake_distribution(
-    psql_client: &Client,
+fn snapshot_of(warehouse: &Warehouse, epoch: u64) -> impl Iterator<Item = &Validator> {
+    warehouse
+        .snapshots
+        .get(&epoch)
+        .into_iter()
+        .flat_map(|snapshot| snapshot.values())
+}
+
+fn load_stake_distribution(
+    warehouse: &Warehouse,
     epochs: u64,
-    column_expr: &str,
+    grouping_key: fn(&Validator) -> String,
 ) -> anyhow::Result<Vec<StakeDistribution>> {
-    let last_epoch = match get_last_epoch(psql_client).await? {
-        Some(last_epoch) => last_epoch,
-        _ => return Ok(Default::default()),
-    };
-    let first_epoch = last_epoch - epochs.min(last_epoch) + 1;
-
-    let rows = psql_client
-        .query(
-            &format!(
-                "SELECT
-                    epoch,
-                    {column_expr} AS grouping_key,
-                    SUM(activated_stake) AS stake,
-                    COUNT(*) AS validator_count
-                FROM validators WHERE epoch BETWEEN $1 AND $2
-                GROUP BY epoch, grouping_key"
-            ),
-            &[&Decimal::from(first_epoch), &Decimal::from(last_epoch)],
-        )
-        .await?;
-
-    let mut rows_by_epoch: HashMap<u64, Vec<tokio_postgres::Row>> = Default::default();
-    for row in rows {
-        rows_by_epoch
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .push(row);
-    }
-
     let mut distributions: Vec<StakeDistribution> = Default::default();
 
-    // Callers pair these per-epoch series with load_dc_concentration_stats, so an epoch with no
-    // validator rows must still yield an entry instead of being dropped by the SQL grouping.
-    for epoch in (first_epoch..=last_epoch).rev() {
+    for epoch in warehouse.epochs_window(epochs) {
         let mut stake_by: HashMap<String, u64> = Default::default();
         let mut count_by: HashMap<String, u64> = Default::default();
         let mut total_stake: u64 = 0;
-        for row in rows_by_epoch.remove(&epoch).unwrap_or_default().iter() {
-            let grouping_key: String = row.get("grouping_key");
-            let stake: u64 = row.get::<_, Decimal>("stake").try_into()?;
+
+        for validator in snapshot_of(warehouse, epoch) {
+            let key = grouping_key(validator);
+            let stake: u64 = validator.activated_stake.try_into()?;
             total_stake += stake;
-            stake_by.insert(grouping_key.clone(), stake);
-            count_by.insert(
-                grouping_key,
-                row.get::<_, i64>("validator_count").try_into()?,
-            );
+            *stake_by.entry(key.clone()).or_default() += stake;
+            *count_by.entry(key).or_default() += 1;
         }
 
         let share_by: HashMap<String, f64> = stake_by
@@ -2135,16 +1601,23 @@ async fn load_stake_distribution(
     Ok(distributions)
 }
 
-// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
-const CLIENT_ID_GROUPING: &str = "COALESCE(client_id::TEXT, client_id_raw, '')";
 const UNKNOWN_CLIENT_GROUP: &str = "unknown";
+
+// Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
+fn client_id_group(validator: &Validator) -> String {
+    validator
+        .client_id
+        .map(|id| id.to_string())
+        .or_else(|| validator.client_id_raw.clone())
+        .unwrap_or_default()
+}
 
 fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
     map(effective_client_id(key.parse().ok(), Some(key)))
         .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
 }
 
-// SQL groups one row per client id, but several ids share a vendor.
+// One entry per client id, but several ids share a vendor.
 fn fold_distribution(
     distributions: &[StakeDistribution],
     map: fn(Option<u16>) -> Option<String>,
@@ -2208,32 +1681,31 @@ fn client_lineage_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientLineage
         .collect()
 }
 
-pub async fn load_client_diversity_stats(
-    psql_client: &Client,
+pub fn load_client_diversity_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientDiversityStats>> {
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(client_diversity_stats(&by_client_id))
 }
 
-pub async fn load_client_lineage_stats(
-    psql_client: &Client,
+pub fn load_client_lineage_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<ClientLineageStats>> {
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(client_lineage_stats(&by_client_id))
 }
 
-pub async fn load_feature_set_stats(
-    psql_client: &Client,
+pub fn load_feature_set_stats(
+    warehouse: &Warehouse,
     epochs: u64,
 ) -> anyhow::Result<Vec<FeatureSetStats>> {
-    Ok(load_stake_distribution(
-        psql_client,
-        epochs,
-        "COALESCE(feature_set::TEXT, 'unknown')",
-    )
-    .await?
+    Ok(load_stake_distribution(warehouse, epochs, |validator| {
+        validator
+            .feature_set
+            .map_or_else(|| UNKNOWN_CLIENT_GROUP.to_string(), |set| set.to_string())
+    })?
     .into_iter()
     .map(|distribution| FeatureSetStats {
         epoch: distribution.epoch,
@@ -2245,15 +1717,14 @@ pub async fn load_feature_set_stats(
     .collect())
 }
 
-pub async fn load_cluster_stats(psql_client: &Client, epochs: u64) -> anyhow::Result<ClusterStats> {
-    // Vendor and lineage are two folds of one per-client-id distribution, not two queries.
-    let by_client_id = load_stake_distribution(psql_client, epochs, CLIENT_ID_GROUPING).await?;
+pub fn load_cluster_stats(warehouse: &Warehouse, epochs: u64) -> anyhow::Result<ClusterStats> {
+    let by_client_id = load_stake_distribution(warehouse, epochs, client_id_group)?;
     Ok(ClusterStats {
-        block_production_stats: load_block_production_stats(psql_client, epochs).await?,
-        dc_concentration_stats: load_dc_concentration_stats(psql_client, epochs).await?,
+        block_production_stats: load_block_production_stats(warehouse, epochs)?,
+        dc_concentration_stats: load_dc_concentration_stats(warehouse, epochs)?,
         client_diversity_stats: client_diversity_stats(&by_client_id),
         client_lineage_stats: client_lineage_stats(&by_client_id),
-        feature_set_stats: load_feature_set_stats(psql_client, epochs).await?,
+        feature_set_stats: load_feature_set_stats(warehouse, epochs)?,
     })
 }
 
@@ -2344,452 +1815,247 @@ pub fn aggregate_validators(validators: &[ValidatorRecord]) -> Vec<ValidatorsAgg
     agg
 }
 
-pub async fn load_validators_aggregated_flat(
-    psql_client: &Client,
+/// What ds-sam scores from: one row per validator, averaged over the window.
+pub fn load_validators_aggregated_flat(
+    warehouse: &Warehouse,
     last_epoch: u64,
     epochs: u64,
 ) -> anyhow::Result<Vec<ValidatorAggregatedFlat>> {
     let epochs = epochs.max(1);
-    // last_version is deliberately left unbounded while the client columns are bounded to $2:
-    // adding the bound changes what historical scoring runs see, so it needs a ds-sam side check.
-    let rows = psql_client
-            .query(
-                "with
-                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
-                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
-                select
-                    validators.vote_account,
-                    min(activated_stake / 1e9)::double precision AS minimum_stake,
-                    avg(activated_stake / 1e9)::double precision AS avg_stake,
-                    coalesce(avg(dc_concentration), 0)::double precision AS avg_dc_concentration,
-                    coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
-                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
-                    max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
-                    case when bool_and(inflation_rewards_commission_bps is not null) then max(inflation_rewards_commission_bps) end AS max_inflation_rewards_commission_bps,
-                    (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,
-                    coalesce((array_agg(validators.dc_aso ORDER BY validators.epoch DESC))[1], 'Unknown') dc_aso,
-                    coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
-                    coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
-                    (array_agg(agg_versions.last_client_id))[1] AS last_client_id,
-                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw
-                FROM
-                    validators
-                    LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
-                    LEFT JOIN cluster_skip_rate ON cluster_skip_rate.epoch = validators.epoch
-                    LEFT JOIN agg_versions ON validators.vote_account = agg_versions.vote_account
-                WHERE
-                validators.epoch BETWEEN $1 AND $2
-                GROUP BY validators.vote_account
-                HAVING COUNT(*) = $3 AND COUNT(*) FILTER (WHERE credits > 0 OR vote_reward_lamports > 0) >= 7
-                ORDER BY avg_adjusted_credits DESC;
-            ",
-                &[&Decimal::from(last_epoch - u64::min(last_epoch, epochs - 1)), &Decimal::from(last_epoch), &i64::try_from(epochs).unwrap()],
-            )
-            .await?; // and vote_account not in ('3Z1N2Fkfha4ThNiRwN8RnU6U8dkFJ92DH2TFyLWJf8cj','2Dwg3x37yN4q8SyrrwDaRPGQTp14atcwMPewe3Y8FDoL','GkBrxrDjmx2kfTMUZJgYWAbar9fEpYJW7TgLatrZSjhN','5fdEXhCBKC7FRRsH64asZCSiwgNXRozxmzb1cFzfrtWM','7y4wStv8XxUkuBgwNkidfxdy1V6TMYr4UjaTDwcS3MUr','C33g1CBgcc47XFcrYksA3CEkBKaitKuhs9yD7LLtW98K','964w4qykexipZ7aCur1BEeJtexTMa1ehMUc9tCcxm9J3','Gj63nResvnBrKLw4GyyfWFpTudwQWDe9bExkE9Z1LvB1','9uygnf8zm2A88bS4tjqiYUPKAUuSWkJGeHxKLTndrs6v','A465fkGZut4A7FncUvzbCzGD8QE98yn2Lm8grr93c9dV','13zyX9jfGy1RvM28LcdqfLwR4VSowXx6whAL6AcFERCk','AUgLtpPVz6zL4iVCXZwi3cifLERdvnHsuVhNKzqmW45i','4R2eqfCDqN3UesKPW4kSTZVd55955V4awbof4vBuWibY','97AgcJPr1KGkwhq7tSD2LDMADreeCpGoFcX6hWjEuQpi','dVcK6ZibNvBiiwqxadXEGheznJFsWY9SHiMb8afTQns','C9pfCHG1zx5fTtmbsFwLG6yFoztyUVXoCmirUcCe2dt7','5hVPfoTZcfZTcyondKxjuVczaFap9pBGYBSPKXg9Jrg5','DXv73X82WCjVMsqDszK3z764tTJMU3nPXyCU3UktudBG','FvoZJRfV8LWMbkMeiswKzMHSZ2qvU8KVsEkUaW6MdN8m','6EftrAURp1rwpmy7Jeqem4kwWYeSnKmgYWKbdX5gEBHQ','HCZJjvZbaKaPTE96jz64HnBZTnXHBFv3pugqsBE5Z1D9','9fDyXmKS8Qgf9TNsRoDw8q2FJJL5J8LN7Y52sddigqyi','BHGHrKBJ9z6oE4Rjd7rBTsy9GLiFcTeDbkTkC5YmT5JG','CQCvXh6fDejoKVeMKXWirksnwCnhrLzb6XkyrBoQJzX5','Agsu9fcnH3rKBix59mktDRqJhjR8aStgLDd9njaddcdr','AUYVsW5ZGwPMAiFJUuAYPtCB9Xp5CVA1osJyAasj8CLe','FKCcfoLt2pq7boiNqRGucVq5LE1K5Dt4HALCx2WbEQkv','DHasctf9Gs2hRY2QzSoRiLuJnuEkRcGHSrh2JUxthxwa','467Bg8FwFFq5jqebWPnMQtdDRjpmHUqvCWBW1zYVMzHg','JCHsvHwF6TgeM1fapxgAkhVKDU5QtPox3bfCR5sjWirP','72i2i4D7ehg7k3rKUNZLFiHqvhVFv1UvdCQbiNTFudJa','G4RU9qUt7tG8M8E4L4ZfXtdnwPTcPpaWwLEvSxtdRNHF','JB8zjnRE6FeT8N6Yq2182vj69kKHGdeKJ7kBAhHKuHRq','Amhxcj1nt4BhnmTfy3ncqaoLzVr94QEfGMYY9Lqkg9en','783PrbTTsMojSJWv64ZCFnQ7mYoDj4oqdsAGXf22XVQs','FrWFgD5vfjJkKiCY4WeKBk65X4C7sDhi2X1DVMFCPfJ5','BeNvYv2pd3MRJBBSGiMPSRVYcafKAXocNNp79GoaHfoP','ZBfLjZjz48oS3ArtnjmPn4Fc1bd2VbKeBnxeCSrKE9S','DzhGmMUzpyQ5ruk5rRCfekTZMyvPXBXHtnn6aNnt94x4','8cUmk4UHZXFBXZJBnWnXd48iTSRMYikQ1QYbJddBfAxu','85qJ2DWmav9YgKLLdo6mrVAVLLKRH3fDuWPyiViA362n','5xk3gjstftRwZRqQdme4vTuZonpkgs2wsm734M68Bq1Y','7iC1Uu6QBqNG6oaBimnPgLmtoantH7Nc3RD7SoLHgVET','8sqpHTT3B8kLto6Vb98bNP93MVuRuPKdcUAwZaP6xuYs','4QMtvpJ2cFLWAa363dZsr46aBeDAnEsF66jomv4eVqu4','4rxFGSzXiTXuF9GveXbMr4fJAPPnQVjHmpEZbWV8jz9m','HC1NSDR9cbBeQ8V1XJ62VNceUAbjGdnCcH7f5wVFVZw3','Bm3rPaD62YWXJxvpW5viF9jUVdMmd7Q2HYA6eTbDhxxW','DeNodee9LR1WPokmRqidmAQEq8UbBqNCv6QfFTvU6k69','9xMyJXgxBABzV5bmiCuw4xZ8acao2xgvhC1G1yknW1Zj','9DYSMwSwMbQcckH1Zi7EQ3E6ipJKkChqRVJCQjF5FCWp','DqxQuDD9BZERufL2gTCipHhAqj7Bb2zoAEKfvHuXWNUL','FfE7rncxyYJvsqFu3Kn323sJpjBXkfMNXwd4d8kdURk9','9HvcpT4vGkgDU3TUXuJFtC5DPjMt5jb8MXFFTNTg9Mim','CrZEDyNQfbxakxdFYzMc8dtrYq4XDoRZ51xBa12skDpJ','D7wuZ935mznAM6hRJJQBpWcBWyvVgUK96pPDZT2uZq5g','9c5bpzVRbfsYY2fannb4hyX5CJUPg3BfH2cL6sR7kJM4','CnYYmAhuFcyocBbXxoVzPnu37a5ctpLaSr8ja1NGKNZ7','ESF3vCij1t6K437j7tzDyKspPeuMnYoEtooFN9Suzico','GHRvDXj9BfACkJ9CoLWbpi2UkMVti9DwXJGsaFT9XDcD','5HMtU9ngrq7vhQn4qPxFHzaVJRjbnT2VQxTTPdfwvbUL','3HSgNsx9rQsAFZrL7k2BAUuL8HpCjhgfxXjrPBK9cnjD','5GKFk6ptwtYTUVXZwofK3tgCJXRiQBfY6yS9w8dgZaSS','CZw1sSfjZbCccsk2kTjbFeVSgfzEgV1JxHEsEW69Qce9','6XimUrvgbdoAuavV9WGgSYdYKSw6ghajLGeQgZMG9aZU','13fUogQP3K8jAWgSW5gji5NyqHFprwoW3xVRs9MpLqdp','5KF6gMG6f5GCr4V6BXKzdroHxeXK68oKrLQdiujGsj9m','EAZpeduar1WoSCyR8W4YhurN3FfVmuKwdPx4ruy58VU8','4GhsFrzqekca4FiZQdwqbstzcEXsredqpemF9FdRQBqZ','BCFLyTNSoxQbVrTogK8n7ft1oYAgHYEdzafVfGgqz9WN','DREVB8Ce8nLp9Ha5m66sduRcjJtHeQo8B9BkYxjC4Zx3','A8XYMkTzKNceJT7BKtRwGrg5KGgaXcjyoAYuthrjfKUi','2e6hcXeqPMwskDfQXKuwVuHiFByEwaiG9ohgapNBk6qU','53gnaHMxDzGTZ9A58S4jbc1qzhYT4X51thUD4MdSBiyo','2kQZfvm5tqcBhXnscT3xe5SbCDttkipxgy1wCqhzqL2a','6vJGsbs5jYKEdQGUfMEYN4Nenwscgza1dBXB3WJraFyH','CGWR68eEdSDoj5LUn2MGKBgxRC3By64DCBFHCoHdSV21','DDmp7zGUzKhXsZhnUynohWrrKyWFf9gSJcGacihRRHuU','7yvrrixKhYrxMJHjzsPDz8tSAajLL3oD2arAsgeMdK9N','9DsSqMHnrSXkyHtG8sN4zPhjrsRUgfP9vBQ6hFEpEwM','5HedSkUKfYmusiV7rAppuHbz7fp8JmUoLLJjJqCQLS5j','725My2yzg5ZUpQtpEtivLT7JmRes2gGxF3KeGCbYACDe','9Mi8M1JnRmtcYpB42DxYPVmYy2safgdYFmeHmMgkW8TG','2jevuBmk1TrXA36bRZ4bhdJGPzGqcCDoVzRcyYtxzKHY','CHUF69YeA3gZv484izYuhKk1EjaJYjv1pNoJJ6QeFDQc','8b3JPQtHbw8MBJQNwUDVXC6xfaL26UNx6WA3GShGy5Vw','HHFqy4NJteQJScyoAsjwYjS8wCuV1AjNv4veoeKVACRi','DMYn88X6PkHAc2y5zDWm5jGZ2Tk2CyBUe8K1U2obF8jc','C31ocJKVAi8wxCvyAMjXte2fY9zECV2fKrn786F4WZ4N','6g6jypXGeavZPVkWSu4Ny5bfhTMLFnuSepfGMQkQpWV1','D6AkdRCEAvE8Rjh4AKDSCXZ5BaiKpp79da6XtUJotGq5','3Le35iTn2KXRfomruXiDLcMd4BVLKYVgQ7yssmrFJZXx','9TTpcbiTDUQH9goeRvhAhk4X3ahtZ6XttCjRyH8Pu7MP','7yXM5mUSAtBuh2TcCABvSJa3LouZ8wcLps5zTEMiwxvj','LSV1yYBUsxwY8y7AgL2RcJDVJjnwxfeShxaXm7Edrwr','FQY5UU6THEhRNZRg7YXfYGQhJi45TLXrHg76EsXJmESc','9TUJdBxnHvAapYoq8cVFgh1bMbTh6GYfY4etDqWVKXAT','FSH9xke8FBpx6YxEEzNXVWgjmT3G5SN9HpipmCSVamV','CFtrZKxqGfXSuZrM5G64prTfNM8GqWQFQa3GXq4tdzx2','BifNttkf51HzsPgUf2keDdVBL64YvnAVQGF3fkNDfB56','4e1B3jra6oS7nK5wLn9mPMtX1skUJsEvmhV9MscA6UA4','DZJWKjtj1fCJDWTYL1HvF9rLrxRRKKp6GQgyujEzqc22','3YKcH4c8eoAKkghQeGavg9HZ13fSe77RWM3QoFTCV2Gv','7r4qcfiaWaZ8i9zW2YjqgRLEpGGE7L5hfW8ncpF1HdTs','8aGU18Nxn99AEWEQNrBYy1ZsJBhiHVFrcqYqHQPNhmEv','5TFdzjKE6LnkhQArxWjt26yVCXskPo3fUXE8F351Cfn7','DpodNd2DWRLbNJVuV1R33xW2PkBJyRTFU5aZGmQrVtMi','Dpy1qt9MhoRD5YpmzfM9iBw2LuRvP1nZAa9La77nAHW5','8kcrp8M2c5LGYThHQxVgsp7BGfGjHZ9fLHa6YN3YpFNa','BgjQPDdsHeD9XXs7pYyHsmvKdkLR1A4SBNYs3mLmPUCD','9EzbogBnGi8hVeLXEyFu2xUo6qi5JdEELs4y3cQXQW33','9uASGafRPWpvpfXeuwcA3TzMUuP5BoHfQWtcdGMyYR9x','7aE66BtyfPELpp6hnb6qb3PjQzmzMqXRMKx9EU7tHak6','6JjWRGRM94G2cpnsqDD3KL8p4ravnFSpJP778V6M9LUS','AeHBkLDeWtMHqrM4uwuewwWKtyKd5aBZAygxZJ3MCjRp','6c2FJC1NfzNvivapAzPW8vj9TW63dpHCVh7zzehwnNLH','D7ZCDE1PHe8duMjNpxwHrYbrRzcnsS7p4nD2daLzWwtr','DaNexGpPeQChZTPZAn1BGmd4ASQpHE4hLDv7V4iAe2oA','8HciLEx6hGdb8mxaCx7ExFBxkcgdkpt43FhiJdvPA6XZ','ouLzBTp7vqzT1mhjtg1TpYHwACJpeB5akRC1zDVdg1N','AQB1eoovP55TyjkecjCPTvfXBEzS1JH1sxWguBo1gu9d','J9Go27V87fCdJtjMxmFJu48ctrHzFoe6xQpA6Ecq4Wkw','Fu4wz4US6dV6GzZrv9NnF18KeT47tdbDKRd7pA6DiyS4','CwEsA6kkUZHnuCK2HC1WVpriBpZWFJSKW9xxrdednm6J','5bjKPhoQDcpPVeMhu83SEtXqXA9vw62k7KhL9zpsK31b','2ikGwX24ATJQHPtWpHupEAJvAyp63niaFL5R2sGXwfnd','GAerry2FZncXgLJXohjgGmC3W4JKLDFxwhGz4beTgDeP','8sNLx7RinHfPWeoYE1N4dixtNACvgiUrj9Ty81p7iMhb','9EMmPd6zKqTnpj74rgmkTjkYAsZSZ42jBWcqu6iaoGTR','3v6FfdWMT2bcoQQ9hN4F2syu7qhRHzNuCPPQqV12hsw2','BYNXBFkB89FoRCJ4VxFE9Tfde3anECjZjasTP8qSYQUi','3iD36QhXqWzx5b4HHhkRAyUcbEgCaC42hi1GcBePNsp2','8hpaVczvUK24kogYWxV6s3hajDAbaHb6KGZsVRLDoksi','J61sYWwTT3Kfkjy3gJ1ViRwtfXVp7Bi89DLqvCp5WDgC','A9hwhEeQ7hNm8rPbRX7ZDAZRjTVrUCjgDEDD4Tt8rmT7','9b9F4xYHMenZfbD8pSLm45oJfoFYPQ9RVWPXSEmJQzVn','DawVi7TKkWS81ZKyGTmxLAabL1w5gcw8FhGgbHeGJGnj','5ycsa9WVK6zFcUR13m3yijxbevZehZeCbuSocSawsweW','4qS6unxhpNh6fp2rRU3nnyMZEYyZ4hUbjnP7iEN7Jx1w','BxTUwfMiokzimVDLDupGfVPmWXfLSGVpkGr9TUmetn6b','8J4xNmyAQskmPuyywPf1arig4X8hfza2xKBkKwz8E2gU','6zDrZWRXQ7GWi1W2fBTzSs59PSa2uj2k8w2qkc451rqG','74ibS6YRDBF3jMf3bxiLY1i3ohFhJySQwyeeMWaRsAk2','HTpinijYNYPe2UhfwoX7fHKC9j44QEJoVmStCmfvYZxA','76sb4FZPwewvxtST5tJMp9N43jj4hDC5DQ7bv8kBi1rA','FKyoehgzXD6KVSQoHJuTteXGCrChYe65k98wMckr9MN8','4qSZsB9QjXr97HzhzPd1zuvB8z7tqqDuM1xbxB5PcPFh','1M5USfamd1N4i1z6UZeECrWeu2VfrxjYMBSXThu6TqB','7LCnWqQGpNCiUvBLznYG9Q6Zo7mcLkhAHA7YBjbg8SET','AU4yDLbrnLzcjk2pnxvXwNeKJsj9CiUDRXWQbeSbk6Y9','AeSLUUNmADEM2xzfmWbRhfwomvJW3f3Rd1AdicXf27Gb','4RyNsFHDccFEEnbYJAFt2cNufFduh8Se8eKTqXDVr82h','5enTTfG63W4JUzCpwioeLte7827NrYXUgGr6z7Rm7xf5','8usnMxy6YunbfrjHDHPfRcpLWXigcSvrpVohv3F2v24H','J4ooR8AV8o5Ez2qN8ghQhR7YKhqRY5WEHfE8dTR2Yo6a','HFY5f6PF6cRyVAvVG1xV9X15q87qoZ1o6GDcyBzHSEnX')
+    let first_epoch = last_epoch - u64::min(last_epoch, epochs - 1);
+
+    let mut accumulators: HashMap<&String, FlatAccumulator> = Default::default();
+    for (epoch, snapshot) in warehouse.snapshots.range(first_epoch..=last_epoch) {
+        let cluster = ClusterEpoch::of(snapshot);
+        for (vote_account, validator) in snapshot.iter() {
+            accumulators
+                .entry(vote_account)
+                .or_default()
+                .add(*epoch, validator, &cluster);
+        }
+    }
+
+    // The client columns are bounded to this call's window; last_version is not,
+    // and sees every change the warehouse holds, which is the warm window rather
+    // than all of history. Tightening it to the call's window changes what
+    // historical scoring runs see, so it needs a ds-sam side check.
+    let versions = version_changes_by_validator(warehouse);
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
-    for row in rows.iter() {
-        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
-        let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
-        let last_client_id = effective_client_id(
-            row.get::<_, Option<i32>>("last_client_id")
-                .map(|n| n as u16),
-            last_client_id_raw.as_deref(),
-        );
+    for (vote_account, accumulator) in accumulators {
+        if accumulator.count != epochs || accumulator.epochs_with_credits < 7 {
+            continue;
+        }
+        let changes = versions.get(vote_account);
+        let last_version = changes
+            .and_then(|changes| {
+                changes
+                    .iter()
+                    .rev()
+                    .find_map(|change| change.version.clone())
+            })
+            .unwrap_or_else(|| "0.0.0".to_string());
+        // The shared filter plus the position tiebreak make both aggregates read one change.
+        let last_client = changes.and_then(|changes| {
+            changes.iter().rev().find(|change| {
+                (change.client_id.is_some() || change.client_id_raw.is_some())
+                    && change.epoch <= last_epoch
+            })
+        });
+        let last_client_id = last_client.and_then(|change| {
+            effective_client_id(
+                change.client_id.map(|id| id as u16),
+                change.client_id_raw.as_deref(),
+            )
+        });
+
+        let max_inflation_rewards_commission_bps =
+            accumulator.max_inflation_rewards_commission_bps();
         validators.push(ValidatorAggregatedFlat {
-            vote_account: row.get("vote_account"),
-            minimum_stake: row.get("minimum_stake"),
-            avg_stake: row.get("avg_stake"),
-            avg_dc_concentration: row.get("avg_dc_concentration"),
-            avg_skip_rate: row.get("avg_skip_rate"),
-            avg_grace_skip_rate: row.get("avg_grace_skip_rate"),
-            max_commission: row.get::<_, i32>("max_commission").try_into()?,
-            avg_adjusted_credits: row.get("avg_adjusted_credits"),
-            dc_aso: row.get("dc_aso"),
-            marinade_stake: row.get("marinade_stake"),
-            version: row.get("last_version"),
+            vote_account: vote_account.clone(),
+            minimum_stake: accumulator.minimum_stake,
+            avg_stake: accumulator.stake / accumulator.count as f64,
+            avg_dc_concentration: accumulator.average_dc_concentration(),
+            avg_skip_rate: accumulator.skip_rate / accumulator.count as f64,
+            avg_grace_skip_rate: accumulator.grace_skip_rate / accumulator.count as f64,
+            max_commission: accumulator.max_commission.try_into()?,
+            avg_adjusted_credits: accumulator.average_adjusted_credits(),
+            dc_aso: accumulator.dc_aso.unwrap_or_else(|| "Unknown".to_string()),
+            marinade_stake: accumulator.marinade_stake,
+            version: last_version,
             client_vendor: client_vendor(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
             client_lineage: client_lineage(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
-            max_inflation_rewards_commission_bps: row.get("max_inflation_rewards_commission_bps"),
+            max_inflation_rewards_commission_bps,
         });
     }
+
+    validators.sort_by(|a, b| b.avg_adjusted_credits.total_cmp(&a.avg_adjusted_credits));
 
     Ok(validators)
 }
 
-fn map_to_ordered_component_values(
-    components: &Vec<&str>,
-    row: &ValidatorScoringCsvRow,
-) -> Vec<Option<String>> {
-    components
-        .iter()
-        .map(|component| match *component {
-            "COMMISSION_ADJUSTED_CREDITS" => Some(row.avg_adjusted_credits.to_string()),
-            "GRACE_SKIP_RATE" => Some(row.avg_grace_skip_rate.to_string()),
-            "DC_CONCENTRATION" => Some(row.avg_dc_concentration.to_string()),
-            _ => None,
-        })
-        .collect()
+struct ClusterEpoch {
+    weighted_skip_rate: Option<f64>,
+    concentration_by_aso: HashMap<String, f64>,
 }
 
-pub async fn store_scoring(
-    psql_client: &mut Client,
-    epoch: i32,
-    ui_id: String,
-    components: Vec<&str>,
-    component_weights: Vec<f64>,
-    scores: Vec<ValidatorScoringCsvRow>,
-) -> anyhow::Result<()> {
-    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
-    let tx = psql_client.transaction().await?;
+impl ClusterEpoch {
+    fn of(snapshot: &SnapshotDoc) -> Self {
+        let mut stake = 0f64;
+        let mut weighted_skip_rate = 0f64;
+        let mut stake_by_aso: HashMap<String, f64> = Default::default();
 
-    let scoring_run_result = tx
-        .query_one(
-            "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
-            VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
-            &[&epoch, &components, &component_weights, &ui_id],
-        )
-        .await?;
-
-    let scoring_run_id: i64 = scoring_run_result.get("scoring_run_id");
-
-    log::info!("Stored scoring run: {scoring_run_id}");
-
-    let component_scores_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.normalized_adjusted_credits,
-                    row.normalized_grace_skip_rate,
-                    row.normalized_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_ranks_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.rank_adjusted_credits,
-                    row.rank_grace_skip_rate,
-                    row.rank_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_values_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                map_to_ordered_component_values(&components, row),
-            )
-        })
-        .collect();
-
-    let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                if row.ui_hints.is_empty() {
-                    Default::default()
-                } else {
-                    row.ui_hints.split(",").collect()
-                },
-            )
-        })
-        .collect();
-
-    for chunk in scores.chunks(500) {
-        let mut query = InsertQueryCombiner::new(
-            "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, component_values, vemnde_votes, msol_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_vemnde, eligible_stake_msol, target_stake_algo, target_stake_vemnde, target_stake_msol, scoring_run_id".to_string(),
-        );
-        for row in chunk {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &row.vote_account,
-                &row.score,
-                component_scores_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_ranks_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_values_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                &row.vemnde_votes,
-                &row.msol_votes,
-                &row.rank,
-                ui_hints_parsed.get(&row.vote_account).unwrap(),
-                &row.eligible_stake_algo,
-                &row.eligible_stake_vemnde,
-                &row.eligible_stake_msol,
-                &row.target_stake_algo,
-                &row.target_stake_vemnde,
-                &row.target_stake_msol,
-                &scoring_run_id,
-            ];
-            query.add(&mut params);
+        for validator in snapshot.values() {
+            let activated_stake = validator.activated_stake.to_f64().unwrap_or_default();
+            stake += activated_stake;
+            weighted_skip_rate += validator.skip_rate * activated_stake;
+            if let Some(aso) = validator.dc_aso.clone() {
+                *stake_by_aso.entry(aso).or_default() += activated_stake;
+            }
         }
-        query.execute_in(&tx).await?;
+
+        Self {
+            weighted_skip_rate: (stake > 0f64).then(|| weighted_skip_rate / stake),
+            concentration_by_aso: stake_by_aso
+                .into_iter()
+                .map(|(aso, aso_stake)| (aso, aso_stake / stake))
+                .collect(),
+        }
     }
-
-    tx.commit().await?;
-
-    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Default)]
+struct FlatAccumulator {
+    count: u64,
+    epochs_with_credits: u64,
+    minimum_stake: f64,
+    stake: f64,
+    dc_concentration: f64,
+    epochs_with_aso: u64,
+    skip_rate: f64,
+    grace_skip_rate: f64,
+    max_commission: i32,
+    /// `None` once any epoch of the window carried no basis points: a
+    /// maximum over a partial series would understate the rate.
+    max_inflation_rewards_commission_bps: Option<i32>,
+    epochs_without_bps: u64,
+    adjusted_credits: f64,
+    epochs_with_tower_credits: u64,
+    newest_epoch: u64,
+    dc_aso: Option<String>,
+    marinade_stake: f64,
+}
 
-    #[test]
-    fn to_fixed_for_sort_scales_usable_values() {
-        assert_eq!(to_fixed_for_sort(0.0), Some(0));
-        assert_eq!(to_fixed_for_sort(0.05), Some(500));
-        assert_eq!(to_fixed_for_sort(1.0), Some(10_000));
+impl FlatAccumulator {
+    fn max_inflation_rewards_commission_bps(&self) -> Option<i32> {
+        (self.epochs_without_bps == 0)
+            .then_some(self.max_inflation_rewards_commission_bps)
+            .flatten()
     }
 
-    #[test]
-    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_zero() {
-        assert_eq!(to_fixed_for_sort(-0.01), None);
-        assert_eq!(to_fixed_for_sort(f64::NAN), None);
-        assert_eq!(to_fixed_for_sort(f64::NEG_INFINITY), None);
-    }
+    fn add(&mut self, epoch: u64, validator: &Validator, cluster: &ClusterEpoch) {
+        let stake = to_sol(validator.activated_stake);
+        if self.count == 0 || stake < self.minimum_stake {
+            self.minimum_stake = stake;
+        }
+        self.count += 1;
+        self.stake += stake;
+        let earned = validator
+            .credits
+            .is_some_and(|credits| credits > Decimal::ZERO)
+            || validator
+                .vote_reward_lamports
+                .is_some_and(|lamports| lamports > Decimal::ZERO);
+        if earned {
+            self.epochs_with_credits += 1;
+        }
 
-    #[test]
-    fn to_fixed_for_sort_rejects_values_that_would_saturate_to_max() {
-        assert_eq!(to_fixed_for_sort(f64::INFINITY), None);
-        assert_eq!(to_fixed_for_sort(f64::MAX), None);
-        assert_eq!(to_fixed_for_sort(1e30), None);
-    }
+        if let Some(concentration) = validator
+            .dc_aso
+            .as_ref()
+            .and_then(|aso| cluster.concentration_by_aso.get(aso))
+        {
+            self.dc_concentration += concentration;
+            self.epochs_with_aso += 1;
+        }
 
-    const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
-    const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
+        self.skip_rate += validator.skip_rate;
+        let leader_slots = validator.leader_slots.to_u64().unwrap_or_default();
+        self.grace_skip_rate += match (leader_slots < 200, cluster.weighted_skip_rate) {
+            (true, Some(cluster_skip_rate)) => validator.skip_rate.min(cluster_skip_rate),
+            _ => validator.skip_rate,
+        };
 
-    const CREDITS: u64 = 400_000;
+        let commission = validator
+            .commission_effective
+            .or(validator.commission_advertised)
+            .unwrap_or(100);
+        self.max_commission = self.max_commission.max(commission);
+        match validator.inflation_rewards_commission_bps {
+            Some(bps) => {
+                self.max_inflation_rewards_commission_bps = Some(
+                    self.max_inflation_rewards_commission_bps
+                        .map_or(bps, |max| max.max(bps)),
+                )
+            }
+            None => self.epochs_without_bps += 1,
+        }
+        if let Some(credits) = validator.credits {
+            self.epochs_with_tower_credits += 1;
+            self.adjusted_credits +=
+                credits.to_f64().unwrap_or_default() * 0f64.max((100 - commission) as f64);
+        }
 
-    /// Mainnet-scale: 600M SOL supply, ~400k credits per validator, ~400M SOL staked cluster-wide.
-    fn calculator(slots_per_year: f64) -> InflationApyCalculator {
-        InflationApyCalculator {
-            supply: 600_000_000_000_000_000,
-            duration: 182_400,
-            inflation: 0.043,
-            slots_per_year,
-            total_weighted_credits: Some(160_000_000_000_000_000_000_000),
+        if epoch >= self.newest_epoch {
+            self.newest_epoch = epoch;
+            self.dc_aso = validator.dc_aso.clone();
+            self.marinade_stake = to_sol(validator.marinade_stake);
         }
     }
 
-    // testnet 54Rwic4DqGK5NL48HyP65TCKLn6YDN5zaERSJFVQSQJB, epoch 1047, 2% commission
-    #[test]
-    fn alpenglow_yields_come_from_the_vote_reward() {
-        let alpenglow = InflationApyCalculator {
-            total_weighted_credits: None,
-            ..calculator(BASELINE_SLOTS_PER_YEAR)
-        };
-        let (apr, apy) =
-            alpenglow.yields_from_vote_reward(3_728_113_744_092, 3_343_226_367_743_619, 2);
-
-        let rate_per_epoch = 0.98 * 3_728_113_744_092.0 / 3_343_226_367_743_619.0;
-        let epochs_per_year = SECONDS_IN_YEAR / alpenglow.duration as f64;
-        assert_close(apr, rate_per_epoch * epochs_per_year);
-        assert_close(1.0 + apy, (1.0 + rate_per_epoch).powf(epochs_per_year));
-        assert_eq!(alpenglow.estimate_yields(CREDITS, 2), (0.0, 0.0));
+    /// Over the epochs with tower credits only, so 0 once the window is all
+    /// past the Alpenglow migration.
+    fn average_adjusted_credits(&self) -> f64 {
+        match self.epochs_with_tower_credits {
+            0 => 0f64,
+            epochs => self.adjusted_credits / epochs as f64 / 100f64,
+        }
     }
 
-    /// Relative, because these quantities span 1e-2 to 1e15 and a fixed epsilon fits neither end.
-    fn assert_close(left: f64, right: f64) {
-        assert!(
-            (left - right).abs() / right.abs() < 1e-12,
-            "{left} != {right}"
-        );
+    fn average_dc_concentration(&self) -> f64 {
+        match self.epochs_with_aso {
+            0 => 0f64,
+            epochs => self.dc_concentration / epochs as f64,
+        }
+    }
+}
+
+fn to_sol(lamports: Decimal) -> f64 {
+    (lamports / Decimal::from(1_000_000_000u64))
+        .to_f64()
+        .unwrap_or_default()
+}
+
+/// Every version change held, oldest first, so the last one is the newest.
+fn version_changes_by_validator(warehouse: &Warehouse) -> HashMap<&String, Vec<&VersionSample>> {
+    let mut changes: HashMap<&String, Vec<&VersionSample>> = Default::default();
+
+    for sealed in warehouse.versions.values() {
+        for (vote_account, sealed) in sealed.iter() {
+            changes.entry(vote_account).or_default().extend(sealed);
+        }
+    }
+    for (vote_account, state) in warehouse.live.versions.iter() {
+        changes
+            .entry(vote_account)
+            .or_default()
+            .extend(state.changes.iter());
+    }
+    for changes in changes.values_mut() {
+        changes.sort_by_key(|change| change.created_at);
     }
 
-    fn rate_per_epoch(calculator: &InflationApyCalculator) -> f64 {
-        let (apr, _) = calculator.estimate_yields(CREDITS, 5);
-        apr / (SECONDS_IN_YEAR / calculator.duration as f64)
-    }
-
-    #[test]
-    fn per_epoch_issuance_tracks_the_protocol_slot_time() {
-        let baseline = calculator(BASELINE_SLOTS_PER_YEAR);
-        let stage_1 = calculator(SLOTS_PER_YEAR_350MS);
-        let (_, apy_baseline) = baseline.estimate_yields(CREDITS, 5);
-        let (_, apy_350) = stage_1.estimate_yields(CREDITS, 5);
-
-        // Guards the fixture: an implausible one overflows to inf, where every ratio below matches.
-        assert!((0.03..0.12).contains(&apy_baseline), "{apy_baseline}");
-
-        // Shorter slots mint proportionally less per epoch, so the rate scales by exactly 350/400.
-        assert_close(
-            rate_per_epoch(&stage_1) / rate_per_epoch(&baseline),
-            350.0 / 400.0,
-        );
-
-        let epochs_per_year = SECONDS_IN_YEAR / stage_1.duration as f64;
-        assert_close(
-            1.0 + apy_350,
-            (1.0 + rate_per_epoch(&stage_1)).powf(epochs_per_year),
-        );
-        assert!(apy_350 < apy_baseline);
-    }
-
-    #[test]
-    fn measured_epoch_length_does_not_move_per_epoch_issuance() {
-        let short = InflationApyCalculator {
-            duration: 151_200,
-            ..calculator(BASELINE_SLOTS_PER_YEAR)
-        };
-        let long = InflationApyCalculator {
-            duration: 182_400,
-            ..calculator(BASELINE_SLOTS_PER_YEAR)
-        };
-
-        // Only the compounding exponent may depend on the measured epoch, never the minted amount.
-        assert_close(rate_per_epoch(&short), rate_per_epoch(&long));
-    }
-
-    // Roughly mainnet's mix at epoch 1015, so the numbers below read against something real.
-    const MIX: RewardMixShares = RewardMixShares {
-        inflation: 0.90,
-        mev: 0.044,
-        block: 0.056,
-    };
-
-    fn approx(actual: Option<f64>, expected: f64) {
-        let actual = actual.expect("expected a rate");
-        assert!(
-            (actual - expected).abs() < 1e-12,
-            "expected {expected}, got {actual}"
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_floors_at_the_block_share_for_a_zero_fee_validator() {
-        // HelixNode's shape: 0% inflation, 0% MEV, no priority-fee account. It measures ~5.6%.
-        approx(expected_take_rate(MIX, Some(0), Some(0), None), MIX.block);
-    }
-
-    #[test]
-    fn expected_take_rate_reaches_one_when_every_component_is_fully_taken() {
-        approx(
-            expected_take_rate(MIX, Some(100), Some(10_000), Some(10_000)),
-            1.0,
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_weights_each_commission_by_its_component() {
-        approx(
-            expected_take_rate(MIX, Some(5), Some(1_000), None),
-            0.05 * MIX.inflation + 0.1 * MIX.mev + MIX.block,
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_drops_below_the_floor_when_block_rewards_are_shared() {
-        // The two validators on Jito's PriorityFeeDistribution at 0 bps keep none of their priority fees.
-        approx(expected_take_rate(MIX, Some(0), Some(0), Some(0)), 0.0);
-    }
-
-    #[test]
-    fn expected_take_rate_renormalizes_when_the_validator_earns_no_mev() {
-        // Without Jito there is no MEV to take a cut of, so the MEV weight must leave the denominator
-        // rather than count as a 0% commission and dilute the rate.
-        let no_jito = expected_take_rate(MIX, Some(10), None, None);
-        approx(
-            no_jito,
-            (0.1 * MIX.inflation + MIX.block) / (MIX.inflation + MIX.block),
-        );
-
-        let diluted = 0.1 * MIX.inflation + MIX.block;
-        assert!(
-            no_jito.unwrap() > diluted,
-            "renormalizing must read higher than crediting a 0% MEV commission"
-        );
-    }
-
-    #[test]
-    fn expected_take_rate_is_unknown_without_an_inflation_commission() {
-        // Inflation rewards are earned by every validator, so a missing commission cannot renormalize away the way a missing MEV one does.
-        assert_eq!(expected_take_rate(MIX, None, Some(0), Some(0)), None);
-    }
-
-    #[test]
-    fn expected_take_rate_needs_at_least_one_component_to_weigh() {
-        let empty = RewardMixShares {
-            inflation: 0.0,
-            mev: 0.0,
-            block: 0.0,
-        };
-        assert_eq!(expected_take_rate(empty, Some(5), Some(1_000), None), None);
-    }
-
-    #[test]
-    fn expected_take_rate_is_unknown_for_a_mix_that_has_paid_only_block_rewards() {
-        // The in-progress epoch's shape: inflation and MEV pay at the boundary, block rewards accrue.
-        let accruing = RewardMixShares {
-            inflation: 0.0,
-            mev: 0.0,
-            block: 1.0,
-        };
-        assert_eq!(
-            expected_take_rate(accruing, Some(5), None, None),
-            None,
-            "weighting a 5% validator by a pure block mix would read it at 100%"
-        );
-    }
-
-    #[test]
-    fn worst_known_commission_prefers_an_observed_ceiling_over_a_lower_advertised_rate() {
-        // Majestysol's shape: advertises 0 early in the epoch, observed at 100 when rewards are paid.
-        assert_eq!(worst_known_commission(Some(100), Some(0)), Some(100));
-    }
-
-    #[test]
-    fn worst_known_commission_takes_a_rise_without_waiting_for_the_epoch_to_close() {
-        assert_eq!(worst_known_commission(Some(5), Some(10)), Some(10));
-    }
-
-    #[test]
-    fn worst_known_commission_accepts_either_side_alone() {
-        assert_eq!(worst_known_commission(None, Some(5)), Some(5));
-        assert_eq!(worst_known_commission(Some(7), None), Some(7));
-    }
-
-    #[test]
-    fn worst_known_commission_is_unknown_only_when_neither_side_is_known() {
-        assert_eq!(worst_known_commission(None, None), None);
-    }
-
-    #[test]
-    fn expected_take_rate_does_not_read_at_the_floor_for_a_commission_gamer() {
-        let gamer = worst_known_commission(Some(100), Some(0));
-        let genuinely_free = worst_known_commission(Some(0), Some(0));
-        approx(
-            expected_take_rate(MIX, gamer, Some(0), None),
-            MIX.inflation + MIX.block,
-        );
-        approx(
-            expected_take_rate(MIX, genuinely_free, Some(0), None),
-            MIX.block,
-        );
-        assert_ne!(
-            expected_take_rate(MIX, gamer, Some(0), None),
-            expected_take_rate(MIX, genuinely_free, Some(0), None),
-            "trusting the advertised rate is what used to tie these two together"
-        );
-    }
+    changes
 }

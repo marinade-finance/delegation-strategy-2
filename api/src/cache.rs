@@ -334,8 +334,31 @@ fn resolve_net_apy(
     last
 }
 
+/// Refreshes every document the steps fold over. One conditional GET per
+/// document: a sealed epoch answers 304 and costs the rate-limit floor.
+pub async fn refresh_documents(context: &WrappedContext) -> anyhow::Result<()> {
+    let refresh_timer = Instant::now();
+    let (directory, warehouse) = {
+        let ctx = context.read().await;
+        (ctx.directory.clone(), ctx.warehouse.clone())
+    };
+
+    warehouse
+        .write()
+        .await
+        .warm(&directory, DEFAULT_CACHE_EPOCHS)
+        .await?;
+
+    info!(
+        "Refreshed the documents in {} ms",
+        refresh_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading validators from DB");
+    info!("Loading validators from the documents");
     let warmup_timer = Instant::now();
 
     let cached = context.read().await.cache.per_epoch.clone();
@@ -349,10 +372,11 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .unwrap_or_default();
 
     // Scoped so the guard is released before the awaits below, not held to the end of the call.
-    let (scoring_url, bonds_url, apy_url, last_flags, last_net_apy) = {
+    let (directory, warehouse, bonds_url, apy_url, last_flags, last_net_apy) = {
         let ctx = context.read().await;
         (
-            ctx.scoring_url.clone(),
+            ctx.directory.clone(),
+            ctx.warehouse.clone(),
             ctx.validator_bonds_api_url.clone(),
             ctx.apy_api_url.clone(),
             ctx.cache.bond_flags.clone(),
@@ -380,41 +404,29 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         protected: bond_flags.protected.vote_accounts.clone(),
     };
 
-    let mut validators = store::utils::load_validators(
-        &context.read().await.psql_client,
-        scoring_url,
-        DEFAULT_CACHE_EPOCHS,
-        DEFAULT_COMPUTING_EPOCHS,
-        &overlays,
-    )
-    .await?;
+    let (mut validators, validator_incidents, releases) = {
+        let warehouse = warehouse.read().await;
+        let validators = store::utils::load_validators(
+            &warehouse,
+            DEFAULT_CACHE_EPOCHS,
+            DEFAULT_COMPUTING_EPOCHS,
+            &overlays,
+        )
+        .await?;
 
-    // The DB, not the cache, tells a fresh environment from lost data: a cold cache is empty either way.
-    if validators.is_empty() {
-        let has_rows = store::utils::has_validators(&context.read().await.psql_client).await?;
-        anyhow::ensure!(
-            !has_rows,
-            "validators table has rows but none loaded, keeping the cache untouched"
-        );
-        warn!("No validators in DB, caching an empty set");
-    }
+        // The window ends at the newest epoch the validator records report, which is the same epoch
+        // the API measures its incident window back from. `cluster_info` can be an epoch ahead or
+        // behind it.
+        let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
+        let validator_incidents = store::utils::load_validator_incidents(
+            &warehouse,
+            (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS)..=last_epoch,
+            &validators,
+        )?;
 
-    // The window ends at the newest epoch the validator records report, which is the same epoch the
-    // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.
-    let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
-    let validator_incidents = store::utils::load_validator_incidents(
-        &context.read().await.psql_client,
-        (last_epoch + 1).saturating_sub(DEFAULT_CACHE_EPOCHS),
-        last_epoch,
-        &validators,
-    )
-    .await?;
-
-    let releases = {
-        let psql_client = &context.read().await.psql_client;
-        let mut latest = ClientReleases::default();
-        for release in store::releases::load_releases(psql_client, None, None).await? {
-            latest
+        let mut releases = ClientReleases::default();
+        for release in store::releases::load_releases(&warehouse, None, None) {
+            releases
                 .entry(release.client_lineage.to_lowercase())
                 .or_insert(ClientRelease {
                     version: release.client_version,
@@ -422,13 +434,24 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
                     url: release.release_url,
                 });
         }
-        latest
+
+        (validators, validator_incidents, releases)
     };
+
+    // A cold cache is empty either way; only the store tells a fresh environment from lost data.
+    if validators.is_empty() {
+        let has_snapshots = store::warehouse::has_validators(&directory).await?;
+        anyhow::ensure!(
+            !has_snapshots,
+            "snapshots are stored but none loaded, keeping the cache untouched"
+        );
+        warn!("No validators in the store, caching an empty set");
+    }
 
     // Off the executor thread: walks every cached epoch of every validator.
     let (validators, validator_incidents, validator_groups) =
         tokio::task::spawn_blocking(move || {
-            // Initialize incidents with default filters that query params in `/validators` can override
+            // The default filters; the query params of `/validators` override them per request.
             let filters = IncidentFilters {
                 types: Some(DEFAULT_INCIDENT_TYPES.to_vec()),
                 ..IncidentFilters::default()
@@ -469,11 +492,11 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
     Ok(())
 }
 pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading commissions from DB");
+    info!("Loading commissions from the documents");
     let warmup_timer = Instant::now();
+    let warehouse = context.read().await.warehouse.clone();
     let commissions =
-        store::utils::load_commissions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
-            .await?;
+        store::utils::load_commissions(&*warehouse.read().await, DEFAULT_CACHE_EPOCHS)?;
 
     let commissions_len = commissions.len();
     context.write().await.cache.commissions = commissions;
@@ -485,11 +508,10 @@ pub async fn warm_commissions_cache(context: &WrappedContext) -> anyhow::Result<
     Ok(())
 }
 pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading versions from DB");
+    info!("Loading versions from the documents");
     let warmup_timer = Instant::now();
-    let versions =
-        store::utils::load_versions(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
-            .await?;
+    let warehouse = context.read().await.warehouse.clone();
+    let versions = store::utils::load_versions(&*warehouse.read().await, DEFAULT_CACHE_EPOCHS)?;
 
     let versions_len = versions.len();
     context.write().await.cache.versions = versions;
@@ -501,10 +523,10 @@ pub async fn warm_versions_cache(context: &WrappedContext) -> anyhow::Result<()>
     Ok(())
 }
 pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading uptimes from DB");
+    info!("Loading uptimes from the documents");
     let warmup_timer = Instant::now();
-    let uptimes =
-        store::utils::load_uptimes(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS).await?;
+    let warehouse = context.read().await.warehouse.clone();
+    let uptimes = store::utils::load_uptimes(&*warehouse.read().await, DEFAULT_CACHE_EPOCHS)?;
 
     let uptimes_len = uptimes.len();
     context.write().await.cache.uptimes = uptimes;
@@ -516,11 +538,11 @@ pub async fn warm_uptimes_cache(context: &WrappedContext) -> anyhow::Result<()> 
     Ok(())
 }
 pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading cluster_stats from DB");
+    info!("Loading cluster_stats from the documents");
     let warmup_timer = Instant::now();
+    let warehouse = context.read().await.warehouse.clone();
     let cluster_stats =
-        store::utils::load_cluster_stats(&context.read().await.psql_client, DEFAULT_CACHE_EPOCHS)
-            .await?;
+        store::utils::load_cluster_stats(&*warehouse.read().await, DEFAULT_CACHE_EPOCHS)?;
 
     context.write().await.cache.cluster_stats = Some(cluster_stats);
     info!(
@@ -531,10 +553,10 @@ pub async fn warm_cluster_stats_cache(context: &WrappedContext) -> anyhow::Resul
     Ok(())
 }
 pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading epoch reward mix from DB");
+    info!("Loading epoch reward mix from the documents");
     let warmup_timer = Instant::now();
-    let epoch_reward_mix =
-        store::take_rates::load_epoch_reward_mix(&context.read().await.psql_client).await?;
+    let warehouse = context.read().await.warehouse.clone();
+    let epoch_reward_mix = store::take_rates::load_epoch_reward_mix(&*warehouse.read().await);
 
     let epochs_len = epoch_reward_mix.len();
     context.write().await.cache.epoch_reward_mix = epoch_reward_mix;
@@ -546,11 +568,13 @@ pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Re
     Ok(())
 }
 pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
-    info!("Loading scores from DB");
+    info!("Loading scores from the documents");
     let warmup_timer = Instant::now();
 
-    let last_scoring_run =
-        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+    let warehouse = context.read().await.warehouse.clone();
+    let warehouse = warehouse.read().await;
+
+    let last_scoring_run = store::utils::load_last_scoring_run(&warehouse);
     let scoring_run_id = last_scoring_run.as_ref().map(|run| run.scoring_run_id);
     let cached_scoring_run_id = context
         .read()
@@ -561,27 +585,18 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
         .as_ref()
         .map(|run| run.scoring_run_id);
 
-    // The id is a max over the whole table, so a run backfilling an older epoch bumps it too.
     if scoring_run_id.is_some() && scoring_run_id == cached_scoring_run_id {
         info!("Scoring run unchanged, keeping the cached scores");
         return Ok(());
     }
 
     let scores = match &last_scoring_run {
-        Some(scoring_run) => {
-            store::utils::load_scores(
-                &context.read().await.psql_client,
-                scoring_run.scoring_run_id,
-            )
-            .await?
-        }
+        Some(scoring_run) => store::utils::load_scores(&warehouse, scoring_run.scoring_run_id),
         None => Default::default(),
     };
-    let multi_run_scores =
-        store::scoring::load_all_scores(&context.read().await.psql_client).await?;
-
-    let multi_run_scoring_runs =
-        store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
+    let multi_run_scores = store::scoring::load_all_scores(&warehouse);
+    let multi_run_scoring_runs = store::scoring::load_scoring_runs(&warehouse);
+    drop(warehouse);
 
     let scores_len = scores.len();
     let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
@@ -649,7 +664,7 @@ const COMMISSION_SOURCE_ADVERTISED: &str = "advertised";
 /// A `commission_effective_source` this build does not know, folded in rather than labelled with itself.
 const COMMISSION_SOURCE_UNKNOWN: &str = "unknown";
 
-/// The label set is closed so that every series can be reset on every refresh; a free-text column value would otherwise mint a series nothing ever zeroes again.
+/// The label set is closed so that every series can be reset on every refresh; a free-text value would otherwise mint a series nothing ever zeroes again.
 const COMMISSION_SOURCES: [&str; 5] = [
     store::dto::COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW,
     store::dto::COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
@@ -759,7 +774,10 @@ pub fn spawn_cache_warmer(context: WrappedContext, ready: ReadyFlag) {
 
             loop {
                 info!("Warming up the cache");
-                warm_pending(&context, &steps, &mut pending).await;
+                match refresh_documents(&context).await {
+                    Ok(()) => warm_pending(&context, &steps, &mut pending).await,
+                    Err(err) => error!("Failed to refresh the documents: {err}"),
+                }
 
                 // Fast retry only while cold and only for missing steps: a warm pod must not amplify load.
                 if !ready.is_ready() {

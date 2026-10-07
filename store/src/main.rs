@@ -1,31 +1,30 @@
 use clap::Parser;
-use cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use collect::validators_jito::JitoAccountType;
-use commissions::{store_commissions, StoreCommissionsParams};
 use env_logger::Env;
-use ip_info::{store_ip_info, StoreIpInfoParams};
-use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
-use node_observations::{store_node_observations, StoreNodeObservationsParams};
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
 use store::close_epoch::{close_epoch, CloseEpochParams};
+use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
+use store::commissions::{store_commissions, StoreCommissionsParams};
+use store::directory::Directory;
+use store::ip_info::{store_ip_info, StoreIpInfoParams};
+use store::ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
+use store::node_observations::{store_node_observations, StoreNodeObservationsParams};
 use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{store_take_rates, StoreTakeRatesParams};
+use store::uptime::{store_uptime, StoreUptimeParams};
+use store::validators::{store_validators, StoreValidatorsParams};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
+use store::validators_jito::{store_jito, StoreJitoParams};
 use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
-use uptime::{store_uptime, StoreUptimeParams};
-use validators::{store_validators, StoreValidatorsParams};
-use validators_jito::{store_jito, StoreJitoParams};
-use versions::{store_versions, StoreVersionsParams};
+use store::versions::{store_versions, StoreVersionsParams};
 
 #[derive(Debug, Parser)]
 pub struct CommonParams {
-    #[arg(long = "postgres-url")]
-    postgres_url: String,
+    #[arg(long = "directory-url", env = "DIRECTORY_URL")]
+    pub directory_url: String,
 
-    #[arg(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
-    pub postgres_ssl_root_cert: String,
+    #[arg(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    pub directory_token: String,
 }
 
 #[derive(Debug, Parser)]
@@ -57,62 +56,31 @@ enum StoreCommand {
     LsOpenEpochs(LsOpenEpochsParams),
 }
 
-pub mod cluster_info;
-pub mod commissions;
-pub mod dto;
-pub mod incidents;
-pub mod ip_info;
-pub mod ls_open_epochs;
-pub mod node_observations;
-pub mod operators;
-pub mod stake_deltas;
-pub mod uptime;
-pub mod utils;
-pub mod validators;
-pub mod validators_jito;
-pub mod versions;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let params = Params::parse();
-
-    let mut builder = SslConnector::builder(SslMethod::tls())?;
-    builder.set_ca_file(&params.common.postgres_ssl_root_cert)?;
-    let connector = MakeTlsConnector::new(builder.build());
-
-    let (mut psql_client, psql_conn) =
-        tokio_postgres::connect(&params.common.postgres_url, connector).await?;
-    tokio::spawn(async move {
-        if let Err(err) = psql_conn.await {
-            log::error!("Connection error: {err}");
-            std::process::exit(1);
-        }
-    });
+    let directory = Directory::new(params.common.directory_url, params.common.directory_token)?;
 
     match params.command {
-        StoreCommand::Uptime(store_params) => store_uptime(store_params, &mut psql_client).await,
+        StoreCommand::Uptime(store_params) => store_uptime(store_params, &directory).await,
         StoreCommand::Commissions(store_params) => {
-            store_commissions(store_params, &mut psql_client).await
+            store_commissions(store_params, &directory).await
         }
-        StoreCommand::Versions(store_params) => {
-            store_versions(store_params, &mut psql_client).await
-        }
+        StoreCommand::Versions(store_params) => store_versions(store_params, &directory).await,
         StoreCommand::NodeObservations(store_params) => {
-            store_node_observations(store_params, &mut psql_client).await
+            store_node_observations(store_params, &directory).await
         }
-        StoreCommand::IpInfo(store_params) => store_ip_info(store_params, &mut psql_client).await,
+        StoreCommand::IpInfo(store_params) => store_ip_info(store_params, &directory).await,
         StoreCommand::ClusterInfo(store_params) => {
-            store_cluster_info(store_params, &mut psql_client).await
+            store_cluster_info(store_params, &directory).await
         }
-        StoreCommand::Validators(store_params) => {
-            store_validators(store_params, &mut psql_client).await
-        }
+        StoreCommand::Validators(store_params) => store_validators(store_params, &directory).await,
         StoreCommand::JitoMev(store_params) => {
             store_jito(
                 store_params,
-                &mut psql_client,
+                &directory,
                 JitoAccountType::MevTipDistribution,
             )
             .await
@@ -120,27 +88,23 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::JitoPriority(store_params) => {
             store_jito(
                 store_params,
-                &mut psql_client,
+                &directory,
                 JitoAccountType::PriorityFeeDistribution,
             )
             .await
         }
         StoreCommand::ValidatorsBlockRewards(store_params) => {
-            store_block_rewards(store_params, &mut psql_client).await
+            store_block_rewards(store_params, &directory).await
         }
         StoreCommand::ValidatorsEvents(store_params) => {
-            store_events(store_params, &mut psql_client).await
+            store_events(store_params, &directory).await
         }
         StoreCommand::ValidatorsSandwiches(store_params) => {
-            store_sandwiches(store_params, &mut psql_client).await
+            store_sandwiches(store_params, &directory).await
         }
-        StoreCommand::TakeRates(store_params) => {
-            store_take_rates(store_params, &mut psql_client).await
-        }
-        StoreCommand::Releases(store_params) => {
-            store_releases(store_params, &mut psql_client).await
-        }
-        StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
-        StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
+        StoreCommand::TakeRates(store_params) => store_take_rates(store_params, &directory).await,
+        StoreCommand::Releases(store_params) => store_releases(store_params, &directory).await,
+        StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &directory).await,
+        StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&directory).await,
     }
 }

@@ -33,12 +33,12 @@ pub async fn handler(
     log::info!("Query flat validators {query_params:?}");
 
     let epochs = query_params.epochs.unwrap_or(DEFAULT_EPOCHS);
+    let warehouse = context.read().await.warehouse.clone();
     let validators = store::utils::load_validators_aggregated_flat(
-        &context.read().await.psql_client,
+        &*warehouse.read().await,
         query_params.last_epoch,
         epochs,
-    )
-    .await;
+    );
 
     let validators = match validators {
         Ok(validators) => validators,

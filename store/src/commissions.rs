@@ -1,13 +1,10 @@
-use crate::utils::*;
+use crate::directory::{Directory, Doc, Precondition};
+use crate::docs::{CommissionSample, CommissionState, CommissionsDoc, LIVE_COMMISSIONS};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
-use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
-use tokio_postgres::types::ToSql;
-use tokio_postgres::Client;
 
 #[derive(Debug, Parser)]
 pub struct StoreCommissionsParams {
@@ -17,71 +14,79 @@ pub struct StoreCommissionsParams {
 
 pub async fn store_commissions(
     params: StoreCommissionsParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing commission...");
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: ValidatorsPerformanceSnapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_epoch_slot: Decimal = snapshot.epoch_slot.into();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
 
     info!("Loaded the snapshot");
 
-    let mut skipped_vote_accounts: HashSet<String> = Default::default();
+    let stored = directory.get::<CommissionsDoc>(LIVE_COMMISSIONS).await?;
+    write_commissions(directory, stored, &snapshot).await
+}
 
-    for row in psql_client
-        .query(
-            "
-        SELECT DISTINCT ON (vote_account)
-            vote_account,
-            commission,
-            epoch
-        FROM commissions
-        ORDER BY vote_account, created_at DESC
-    ",
-            &[],
-        )
-        .await?
-    {
-        let vote_account: &str = row.get("vote_account");
-        let commission: i32 = row.get("commission");
-        let epoch: Decimal = row.get("epoch");
+pub async fn write_commissions(
+    directory: &Directory,
+    stored: Option<Doc<CommissionsDoc>>,
+    snapshot: &ValidatorsPerformanceSnapshot,
+) -> anyhow::Result<()> {
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let (mut commissions, precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (CommissionsDoc::new(), Precondition::Create),
+    };
 
-        if let Some(validator_snapshot) = snapshot.validators.get(vote_account) {
-            if epoch == snapshot_epoch && commission == validator_snapshot.commission as i32 {
-                skipped_vote_accounts.insert(vote_account.to_string());
-            }
-        }
-    }
+    let changes = apply_commission_samples(&mut commissions, snapshot, created_at);
 
-    let mut query = InsertQueryCombiner::new(
-        "commissions".to_string(),
-        "vote_account, commission, epoch_slot, epoch, created_at".to_string(),
-    );
+    // No retry on a conflict: the cron is the retry.
+    directory
+        .put(LIVE_COMMISSIONS, &commissions, precondition)
+        .await?;
 
-    let commissions: HashMap<_, _> = snapshot
-        .validators
-        .iter()
-        .map(|(i, v)| (i.clone(), v.commission as i32))
-        .collect();
-
-    for (vote_account, commission) in commissions.iter() {
-        if !skipped_vote_accounts.contains(vote_account) {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                vote_account,
-                commission,
-                &snapshot_epoch_slot,
-                &snapshot_epoch,
-                &snapshot_created_at,
-            ];
-            query.add(&mut params);
-        }
-    }
-    let insertions = query.execute(psql_client).await?;
-
-    info!("Stored {} commission changes", insertions.unwrap_or(0));
+    info!("Stored {changes} commission changes");
 
     Ok(())
+}
+
+/// Records a change when the commission differs from the last one seen, and
+/// once per epoch so every epoch carries the commission it started at.
+pub fn apply_commission_samples(
+    commissions: &mut CommissionsDoc,
+    snapshot: &ValidatorsPerformanceSnapshot,
+    created_at: DateTime<Utc>,
+) -> usize {
+    let mut changes = 0;
+
+    for (vote_account, validator) in snapshot.validators.iter() {
+        let sample = CommissionSample {
+            epoch: snapshot.epoch,
+            epoch_slot: snapshot.epoch_slot,
+            commission: validator.commission as i32,
+            created_at,
+        };
+
+        match commissions.get_mut(vote_account) {
+            Some(state) => {
+                if state.last.epoch == sample.epoch && state.last.commission == sample.commission {
+                    continue;
+                }
+                state.changes.push(sample.clone());
+                state.last = sample;
+            }
+            None => {
+                commissions.insert(
+                    vote_account.clone(),
+                    CommissionState {
+                        last: sample.clone(),
+                        changes: vec![sample],
+                    },
+                );
+            }
+        }
+        changes += 1;
+    }
+
+    changes
 }

@@ -42,7 +42,8 @@ fn filter_and_sort_stakes(records: &mut Vec<StakingChange>) {
 
 async fn get_planned_stakes(context: WrappedContext) -> anyhow::Result<Vec<StakingChange>> {
     let mut records = Vec::new();
-    let last_epoch = match get_last_epoch(&context.read().await.psql_client).await? {
+    let warehouse = context.read().await.warehouse.clone();
+    let last_epoch = match get_last_epoch(&*warehouse.read().await) {
         Some(last_epoch) => last_epoch,
         _ => return Ok(Default::default()),
     };

@@ -1,8 +1,13 @@
 pub mod close_epoch;
+pub mod cluster_info;
+pub mod commissions;
+pub mod directory;
+pub mod docs;
 pub mod dto;
 pub mod groups;
 pub mod incidents;
 pub mod ip_info;
+pub mod ls_open_epochs;
 pub mod node_observations;
 pub mod operators;
 pub mod releases;
@@ -18,3 +23,4 @@ pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_sandwiches;
 pub mod versions;
+pub mod warehouse;

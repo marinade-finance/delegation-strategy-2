@@ -1,5 +1,11 @@
+use crate::directory::Directory;
+use crate::docs::{
+    epoch_doc_path, merge_into, merge_validator_rewards, ValidatorRewardsDoc,
+    ValidatorRewardsEntry, VALIDATOR_REWARDS_DIR,
+};
 use crate::dto::TakeRateRecord;
 use crate::utils::{expected_take_rate, worst_known_commission, RewardMixShares};
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::take_rates::ValidatorRewardsSnapshot;
@@ -7,9 +13,6 @@ use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{BTreeMap, HashMap};
-use tokio_postgres::Client;
-
-pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
 
 const SUPPORTED_DATA_VERSION: u16 = 1;
 
@@ -19,22 +22,9 @@ pub struct StoreTakeRatesParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-
-struct ValidatorRewardsRow {
-    vote_account: String,
-    epoch: Decimal,
-    validator_rewards: Decimal,
-    total_rewards: Decimal,
-    inflation_rewards: Decimal,
-    mev_rewards: Decimal,
-    block_rewards: Decimal,
-    take_rate: f64,
-}
-
 pub async fn store_take_rates(
     params: StoreTakeRatesParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing take rates snapshot...");
 
@@ -50,159 +40,61 @@ pub async fn store_take_rates(
         snapshot.version
     );
 
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
     info!(
         "Loaded the snapshot from epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
-        snapshot.from_epoch,
-        snapshot_created_at,
-        snapshot.loaded_at_epoch,
-        snapshot.loaded_at_slot_index
+        snapshot.from_epoch, created_at, snapshot.loaded_at_epoch, snapshot.loaded_at_slot_index
     );
 
-    // The BigQuery query already emits one row per (vote_account, epoch); dedup defensively so a
-    // single upsert statement can never touch the same conflict target twice.
-    let rows: BTreeMap<(String, u64), ValidatorRewardsRow> = snapshot
-        .rewards
-        .iter()
-        .filter(|r| r.total_rewards > 0)
-        .map(|r| {
-            let key = (r.vote_account.clone(), r.epoch);
-            let take_rate = r.validator_rewards as f64 / r.total_rewards as f64;
-            (
-                key,
-                ValidatorRewardsRow {
-                    vote_account: r.vote_account.clone(),
-                    epoch: Decimal::from(r.epoch),
-                    validator_rewards: Decimal::from(r.validator_rewards),
-                    total_rewards: Decimal::from(r.total_rewards),
-                    inflation_rewards: Decimal::from(r.inflation_rewards),
-                    mev_rewards: Decimal::from(r.mev_rewards),
-                    block_rewards: Decimal::from(r.block_rewards),
-                    take_rate,
-                },
-            )
-        })
-        .collect();
-
-    info!(
-        "Processing snapshot loaded take rate records {}",
-        rows.len()
-    );
-
-    let records: Vec<_> = rows.values().collect();
-    let mut total_upserted = 0;
-
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
-        let epochs: Vec<&Decimal> = chunk.iter().map(|r| &r.epoch).collect();
-        let validator_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.validator_rewards).collect();
-        let total_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.total_rewards).collect();
-        let inflation_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.inflation_rewards).collect();
-        let mev_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.mev_rewards).collect();
-        let block_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.block_rewards).collect();
-        let take_rates: Vec<f64> = chunk.iter().map(|r| r.take_rate).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        let query = format!(
-            "INSERT INTO {VALIDATORS_REWARDS_TABLE} (
-            vote_account,
-            epoch,
-            validator_rewards,
-            total_rewards,
-            inflation_rewards,
-            mev_rewards,
-            block_rewards,
-            take_rate,
-            created_at,
-            updated_at
-        )
-        SELECT * FROM UNNEST(
-            $1::TEXT[],
-            $2::NUMERIC[],
-            $3::NUMERIC[],
-            $4::NUMERIC[],
-            $5::NUMERIC[],
-            $6::NUMERIC[],
-            $7::NUMERIC[],
-            $8::DOUBLE PRECISION[],
-            $9::TIMESTAMP WITH TIME ZONE[],
-            $10::TIMESTAMP WITH TIME ZONE[]
-        )
-        ON CONFLICT (vote_account, epoch)
-        DO UPDATE SET
-            validator_rewards = EXCLUDED.validator_rewards,
-            total_rewards = EXCLUDED.total_rewards,
-            inflation_rewards = EXCLUDED.inflation_rewards,
-            mev_rewards = EXCLUDED.mev_rewards,
-            block_rewards = EXCLUDED.block_rewards,
-            take_rate = EXCLUDED.take_rate,
-            updated_at = EXCLUDED.updated_at"
+    // One snapshot reaches back over several epochs; each has its own
+    // document. A validator that earned nothing has no rate to store.
+    let mut rewards_by_epoch: BTreeMap<u64, ValidatorRewardsDoc> = Default::default();
+    for rewards in snapshot.rewards.iter().filter(|r| r.total_rewards > 0) {
+        rewards_by_epoch.entry(rewards.epoch).or_default().insert(
+            rewards.vote_account.clone(),
+            ValidatorRewardsEntry {
+                validator_rewards: Decimal::from(rewards.validator_rewards),
+                total_rewards: Decimal::from(rewards.total_rewards),
+                inflation_rewards: Decimal::from(rewards.inflation_rewards),
+                mev_rewards: Decimal::from(rewards.mev_rewards),
+                block_rewards: Decimal::from(rewards.block_rewards),
+                take_rate: rewards.validator_rewards as f64 / rewards.total_rewards as f64,
+                created_at,
+                updated_at: created_at,
+            },
         );
-
-        let rows_affected = psql_client
-            .execute(
-                &query,
-                &[
-                    &vote_accounts,
-                    &epochs,
-                    &validator_rewards,
-                    &total_rewards,
-                    &inflation_rewards,
-                    &mev_rewards,
-                    &block_rewards,
-                    &take_rates,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
-
-        total_upserted += rows_affected;
-
-        info!("Upserted {rows_affected} take rate records in this chunk");
     }
 
-    info!("Stored take rates snapshot: {total_upserted} total records upserted");
+    let mut total = 0;
+    for (epoch, rewards) in rewards_by_epoch {
+        let path = epoch_doc_path(VALIDATOR_REWARDS_DIR, epoch);
+        total += rewards.len();
+        merge_into(directory, &path, rewards, merge_validator_rewards).await?;
+        info!("Stored take rate records at {path}");
+    }
+
+    info!("Stored take rates snapshot: {total} total records");
 
     Ok(())
 }
 
-/// Cluster reward mix per epoch. Epochs that paid no inflation are absent: the in-progress one has
-/// only accruing block rewards, and nothing else pays out before the epoch closes.
-pub async fn load_epoch_reward_mix(
-    psql_client: &Client,
-) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT
-            epoch,
-            SUM(inflation_rewards) AS inflation,
-            SUM(mev_rewards) AS mev,
-            SUM(block_rewards) AS block
-        FROM {VALIDATORS_REWARDS_TABLE}
-        GROUP BY epoch
-        HAVING SUM(inflation_rewards) > 0
-        "
-            ),
-            &[],
-        )
-        .await?;
-
-    let mut mix = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        let inflation: Decimal = row.get("inflation");
-        let mev: Decimal = row.get("mev");
-        let block: Decimal = row.get("block");
+/// Cluster reward mix per epoch. Epochs that paid no inflation are absent: the
+/// in-progress one has only accruing block rewards, and nothing else pays out
+/// before the epoch closes.
+pub fn load_epoch_reward_mix(warehouse: &Warehouse) -> HashMap<u64, RewardMixShares> {
+    let mut mix = HashMap::with_capacity(warehouse.validator_rewards.len());
+    for (epoch, rewards) in warehouse.validator_rewards.iter() {
+        let inflation: Decimal = rewards.values().map(|r| r.inflation_rewards).sum();
+        let mev: Decimal = rewards.values().map(|r| r.mev_rewards).sum();
+        let block: Decimal = rewards.values().map(|r| r.block_rewards).sum();
+        if inflation <= Decimal::ZERO {
+            continue;
+        }
 
         let total = (inflation + mev + block).to_f64().unwrap_or_default();
-
         mix.insert(
-            epoch,
+            *epoch,
             RewardMixShares {
                 inflation: inflation.to_f64().unwrap_or_default() / total,
                 mev: mev.to_f64().unwrap_or_default() / total,
@@ -211,71 +103,59 @@ pub async fn load_epoch_reward_mix(
         );
     }
 
-    Ok(mix)
+    mix
 }
 
-pub async fn get_take_rate_series(
-    psql_client: &Client,
+/// One validator's take rate per epoch, oldest first, over the epochs the
+/// warehouse holds. `epoch_start_at` and `epoch_end_at` are null where the
+/// epoch is not sealed yet.
+pub fn get_take_rate_series(
+    warehouse: &Warehouse,
     vote_account: &str,
     from_epoch: Option<u64>,
     reward_mix: &HashMap<u64, RewardMixShares>,
-) -> anyhow::Result<Vec<TakeRateRecord>> {
-    let from_epoch = from_epoch.map(Decimal::from);
-    let query = format!(
-        "
-        SELECT
-            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate AS realized_take_rate, created_at,
-            epochs.start_at AS epoch_start, epochs.end_at AS epoch_end,
-            validators.commission_max_observed, validators.commission_advertised,
-            mev.mev_commission AS mev_commission_bps,
-            jpf.validator_commission AS priority_commission_bps
-        FROM {VALIDATORS_REWARDS_TABLE}
-        LEFT JOIN epochs ON {VALIDATORS_REWARDS_TABLE}.epoch = epochs.epoch
-        LEFT JOIN validators
-            ON validators.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
-            AND validators.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        -- Both filters stay inside the subqueries; moved to the join they scan every validator's snapshots.
-        LEFT JOIN (
-            SELECT DISTINCT ON (epoch) epoch, mev_commission
-            FROM mev WHERE vote_account = $1 ORDER BY epoch, created_at DESC
-        ) mev ON mev.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        LEFT JOIN (
-            SELECT DISTINCT ON (epoch) epoch, validator_commission
-            FROM jito_priority_fee WHERE vote_account = $1 ORDER BY epoch, created_at DESC
-        ) jpf ON jpf.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        WHERE {VALIDATORS_REWARDS_TABLE}.vote_account = $1
-          AND ($2::NUMERIC IS NULL OR {VALIDATORS_REWARDS_TABLE}.epoch >= $2::NUMERIC)
-        ORDER BY {VALIDATORS_REWARDS_TABLE}.epoch ASC
-        "
-    );
-    let rows = psql_client
-        .query(&query, &[&vote_account, &from_epoch])
-        .await?;
+) -> Vec<TakeRateRecord> {
+    let from_epoch = from_epoch.unwrap_or_default();
+    let mut records = Vec::new();
+    for (epoch, rewards) in warehouse.validator_rewards.range(from_epoch..) {
+        let Some(entry) = rewards.get(vote_account) else {
+            continue;
+        };
+        let epoch_record = warehouse.epochs.get(epoch);
+        let validator = warehouse
+            .snapshots
+            .get(epoch)
+            .and_then(|snapshot| snapshot.get(vote_account));
+        let mev_commission_bps = warehouse
+            .mev
+            .get(epoch)
+            .and_then(|mev| mev.get(vote_account))
+            .map(|mev| mev.mev_commission);
+        let priority_commission_bps = warehouse
+            .priority_fees
+            .get(epoch)
+            .and_then(|fees| fees.get(vote_account))
+            .map(|fees| fees.priority_commission);
 
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        // Null where `epochs` has no row: `store close-epoch` has not run for it yet, or a
-        // `--from-epoch` backfill reached past the stored epoch history.
         records.push(TakeRateRecord {
-            epoch,
-            epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
-            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
-            realized_take_rate: row.get("realized_take_rate"),
-            expected_take_rate: reward_mix.get(&epoch).and_then(|shares| {
+            epoch: *epoch,
+            epoch_start_at: epoch_record.map(|record| record.start_at),
+            epoch_end_at: epoch_record.map(|record| record.end_at),
+            realized_take_rate: entry.take_rate,
+            expected_take_rate: reward_mix.get(epoch).and_then(|shares| {
                 expected_take_rate(
                     *shares,
                     worst_known_commission(
-                        row.get::<_, Option<i32>>("commission_max_observed"),
-                        row.get::<_, Option<i32>>("commission_advertised"),
+                        validator.and_then(|v| v.commission_max_observed),
+                        validator.and_then(|v| v.commission_advertised),
                     ),
-                    row.get::<_, Option<i32>>("mev_commission_bps"),
-                    row.get::<_, Option<i32>>("priority_commission_bps"),
+                    mev_commission_bps,
+                    priority_commission_bps,
                 )
             }),
-            created_at: row.get("created_at"),
-        })
+            created_at: entry.created_at,
+        });
     }
 
-    Ok(records)
+    records
 }

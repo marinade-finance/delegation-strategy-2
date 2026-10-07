@@ -1,10 +1,18 @@
-use chrono::{DateTime, Utc};
+use crate::directory::{Directory, Precondition};
+use crate::docs::{
+    IpInfoDoc, IpInfoEntry, NodeObservationsDoc, IP_INFO_PATH, LIVE_NODE_OBSERVATIONS,
+};
+use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
 use collect::whois_service::{BearerToken, IpInfo, WhoisClient};
 use log::{info, warn};
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
-use tokio_postgres::Client;
+
+#[cfg(test)]
+#[path = "ip_info_test.rs"]
+mod ip_info_test;
 
 #[derive(Debug, Parser)]
 pub struct StoreIpInfoParams {
@@ -22,23 +30,24 @@ pub struct StoreIpInfoParams {
         help = "How many already known IPs to re-fetch per run, oldest first.",
         default_value = "21"
     )]
-    refresh_limit: i64,
+    refresh_limit: usize,
 
     #[arg(
         long = "in-use-days",
         help = "How recently an IP must have been observed to be worth re-fetching.",
         default_value = "7"
     )]
-    in_use_days: i32,
+    in_use_days: i64,
 }
 
-// Small because each entry costs a whois round trip: the point is to commit progress often, not to
-// batch the writes.
-const UPSERT_CHUNK_SIZE: usize = 50;
+/// Small because each entry costs a whois round trip: the point is to write
+/// progress often, not to batch the writes.
+const WRITE_CHUNK_SIZE: usize = 50;
 
-// gossip carries whatever a node advertises, and parse_socket_addr does not validate it, so the
-// column can hold a hostname or an unroutable address that whois can only answer nothing about.
-fn is_worth_looking_up(ip: &str) -> bool {
+/// gossip carries whatever a node advertises, and parse_socket_addr does not
+/// validate it, so the field can hold a hostname or an unroutable address that
+/// whois can only answer nothing about.
+pub fn is_worth_looking_up(ip: &str) -> bool {
     match ip.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => {
             !v4.is_private()
@@ -59,158 +68,93 @@ fn is_worth_looking_up(ip: &str) -> bool {
     }
 }
 
-// Bounded by the same in-use window as the refresh: without it a first run faces every address the
-// cluster has ever advertised, which is unbounded in history and mostly no longer reachable.
-pub async fn select_unknown_ips(
-    psql_client: &Client,
-    in_use_days: i32,
-) -> anyhow::Result<Vec<String>> {
-    // NOT EXISTS rather than NOT IN: a single NULL on the right of NOT IN would discard every row.
-    Ok(psql_client
-        .query(
-            "
-        SELECT DISTINCT o.ip
-        FROM node_observations o
-        WHERE o.ip IS NOT NULL
-          AND o.last_seen_at > now() - make_interval(days => $1)
-          AND NOT EXISTS (SELECT 1 FROM ip_info i WHERE i.ip = o.ip)
-    ",
-            &[&in_use_days],
-        )
-        .await?
-        .iter()
-        .map(|row| row.get("ip"))
-        .filter(|ip: &String| is_worth_looking_up(ip))
-        .collect())
+/// Every address a node advertised and was seen on after `since`: the one it
+/// advertises now, and the ones it moved away from recently enough.
+pub fn ips_in_use(observations: &NodeObservationsDoc, since: DateTime<Utc>) -> HashSet<String> {
+    observations
+        .values()
+        .flat_map(|state| state.changes.iter().chain([&state.last]))
+        .filter(|observation| observation.last_seen_at > since)
+        .filter_map(|observation| observation.ip.clone())
+        .collect()
 }
 
-pub async fn select_stale_ips(
-    psql_client: &Client,
-    refresh_limit: i64,
-    in_use_days: i32,
-) -> anyhow::Result<Vec<String>> {
-    // last_seen_at, not created_at: the latter only moves when a node changes, so a node that sits
-    // still for longer than the window would drop out of the rotation precisely for being stable.
-    Ok(psql_client
-        .query(
-            "
-        SELECT i.ip
-        FROM ip_info i
-        WHERE EXISTS (
-            SELECT 1
-            FROM node_observations o
-            WHERE o.ip = i.ip AND o.last_seen_at > now() - make_interval(days => $2)
-        )
-        ORDER BY i.fetched_at ASC
-        LIMIT $1
-    ",
-            &[&refresh_limit, &in_use_days],
-        )
-        .await?
+/// Bounded by the same in-use window as the refresh: without it a first run
+/// faces every address the cluster has ever advertised, which is unbounded in
+/// history and mostly no longer reachable.
+pub fn select_unknown_ips(in_use: &HashSet<String>, info: &IpInfoDoc) -> Vec<String> {
+    let mut unknown: Vec<String> = in_use
         .iter()
-        .map(|row| row.get("ip"))
-        .collect())
+        .filter(|ip| !info.contains_key(*ip))
+        .filter(|ip| is_worth_looking_up(ip))
+        .cloned()
+        .collect();
+    unknown.sort();
+    unknown
 }
 
-pub async fn upsert_ip_info(
-    psql_client: &Client,
+/// The known addresses still in use, oldest answer first. In use by when a
+/// node was last seen on it, not by when the node changed: a node that sits
+/// still for longer than the window would drop out of the rotation precisely
+/// for being stable.
+pub fn select_stale_ips(
+    in_use: &HashSet<String>,
+    info: &IpInfoDoc,
+    refresh_limit: usize,
+) -> Vec<String> {
+    let mut stale: Vec<(&String, &IpInfoEntry)> =
+        info.iter().filter(|(ip, _)| in_use.contains(*ip)).collect();
+    stale.sort_by_key(|(ip, entry)| (entry.fetched_at, (*ip).clone()));
+    stale
+        .into_iter()
+        .take(refresh_limit)
+        .map(|(ip, _)| ip.clone())
+        .collect()
+}
+
+pub fn apply_fetched(
+    info: &mut IpInfoDoc,
     fetched: &[(String, IpInfo)],
     fetched_at: DateTime<Utc>,
-) -> anyhow::Result<u64> {
-    if fetched.is_empty() {
-        return Ok(0);
+) {
+    for (ip, answer) in fetched {
+        info.insert(
+            ip.clone(),
+            IpInfoEntry {
+                asn: answer.asn.map(i64::from),
+                aso: answer.aso.clone(),
+                continent: answer.continent.clone(),
+                country_iso: answer.country_iso.clone(),
+                country: answer.country.clone(),
+                city: answer.city.clone(),
+                coordinates_lat: answer.coordinates.as_ref().map(|c| c.lat),
+                coordinates_lon: answer.coordinates.as_ref().map(|c| c.lon),
+                fetched_at,
+            },
+        );
     }
-
-    let ips: Vec<&str> = fetched.iter().map(|(ip, _)| ip.as_str()).collect();
-    let asns: Vec<Option<i64>> = fetched
-        .iter()
-        .map(|(_, info)| info.asn.map(|asn| asn as i64))
-        .collect();
-    let asos: Vec<Option<&str>> = fetched
-        .iter()
-        .map(|(_, info)| info.aso.as_deref())
-        .collect();
-    let continents: Vec<Option<&str>> = fetched
-        .iter()
-        .map(|(_, info)| info.continent.as_deref())
-        .collect();
-    let country_isos: Vec<Option<&str>> = fetched
-        .iter()
-        .map(|(_, info)| info.country_iso.as_deref())
-        .collect();
-    let countries: Vec<Option<&str>> = fetched
-        .iter()
-        .map(|(_, info)| info.country.as_deref())
-        .collect();
-    let cities: Vec<Option<&str>> = fetched
-        .iter()
-        .map(|(_, info)| info.city.as_deref())
-        .collect();
-    let lats: Vec<Option<f64>> = fetched
-        .iter()
-        .map(|(_, info)| info.coordinates.as_ref().map(|c| c.lat))
-        .collect();
-    let lons: Vec<Option<f64>> = fetched
-        .iter()
-        .map(|(_, info)| info.coordinates.as_ref().map(|c| c.lon))
-        .collect();
-    let fetched_ats: Vec<DateTime<Utc>> = vec![fetched_at; fetched.len()];
-
-    Ok(psql_client
-        .execute(
-            "
-        INSERT INTO ip_info (
-            ip, asn, aso, continent, country_iso, country, city,
-            coordinates_lat, coordinates_lon, fetched_at
-        )
-        SELECT * FROM UNNEST(
-            $1::TEXT[],
-            $2::BIGINT[],
-            $3::TEXT[],
-            $4::TEXT[],
-            $5::TEXT[],
-            $6::TEXT[],
-            $7::TEXT[],
-            $8::DOUBLE PRECISION[],
-            $9::DOUBLE PRECISION[],
-            $10::TIMESTAMP WITH TIME ZONE[]
-        )
-        ON CONFLICT (ip)
-        DO UPDATE SET
-            asn = EXCLUDED.asn,
-            aso = EXCLUDED.aso,
-            continent = EXCLUDED.continent,
-            country_iso = EXCLUDED.country_iso,
-            country = EXCLUDED.country,
-            city = EXCLUDED.city,
-            coordinates_lat = EXCLUDED.coordinates_lat,
-            coordinates_lon = EXCLUDED.coordinates_lon,
-            fetched_at = EXCLUDED.fetched_at
-    ",
-            &[
-                &ips,
-                &asns,
-                &asos,
-                &continents,
-                &country_isos,
-                &countries,
-                &cities,
-                &lats,
-                &lons,
-                &fetched_ats,
-            ],
-        )
-        .await?)
 }
 
-pub async fn store_ip_info(
-    params: StoreIpInfoParams,
-    psql_client: &mut Client,
-) -> anyhow::Result<()> {
+pub async fn store_ip_info(params: StoreIpInfoParams, directory: &Directory) -> anyhow::Result<()> {
     info!("Storing IP info...");
 
-    let unknown = select_unknown_ips(psql_client, params.in_use_days).await?;
-    let stale = select_stale_ips(psql_client, params.refresh_limit, params.in_use_days).await?;
+    let observations = directory
+        .get::<NodeObservationsDoc>(LIVE_NODE_OBSERVATIONS)
+        .await?
+        .map(|doc| doc.body)
+        .unwrap_or_default();
+    let stored = directory.get::<IpInfoDoc>(IP_INFO_PATH).await?;
+    let (mut info, mut precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (IpInfoDoc::new(), Precondition::Create),
+    };
+
+    let in_use = ips_in_use(
+        &observations,
+        Utc::now() - Duration::days(params.in_use_days),
+    );
+    let unknown = select_unknown_ips(&in_use, &info);
+    let stale = select_stale_ips(&in_use, &info, params.refresh_limit);
     info!(
         "{} IPs never looked up, {} due for a refresh",
         unknown.len(),
@@ -224,66 +168,42 @@ pub async fn store_ip_info(
     }
 
     let whois_client = Arc::new(WhoisClient::new(params.whois, params.whois_bearer_token)?);
-    let mut upserted = 0;
-    // Committed per chunk: a run killed part-way through keeps the lookups it already paid for,
-    // instead of discarding the whole batch and starting over next time.
-    for chunk in ips.chunks(UPSERT_CHUNK_SIZE) {
+    let mut written = 0;
+    // Written per chunk: a run killed part-way through keeps the lookups it
+    // already paid for, instead of discarding the whole batch and starting
+    // over next time.
+    for chunk in ips.chunks(WRITE_CHUNK_SIZE) {
         let chunk = chunk.to_vec();
         let whois_client = whois_client.clone();
-        // WhoisClient is a blocking reqwest client and this binary runs on tokio, so the chunk goes
-        // to a blocking thread rather than each call fighting the runtime.
-        let fetched = tokio::task::spawn_blocking(move || {
-            let mut fetched = Vec::with_capacity(chunk.len());
-            for ip in chunk {
-                match whois_client.get_ip_info(&ip) {
-                    Ok(info) => fetched.push((ip, info)),
-                    // Left unstored on purpose: no row means select_unknown_ips offers it again next run.
-                    Err(err) => warn!("Couldn't fetch info about IP {ip}: {err}"),
-                }
-            }
-            fetched
-        })
-        .await?;
+        // WhoisClient is a blocking reqwest client and this binary runs on
+        // tokio, so the chunk goes to a blocking thread rather than each call
+        // fighting the runtime.
+        let fetched =
+            tokio::task::spawn_blocking(move || fetch_ip_info(&whois_client, chunk)).await?;
+        if fetched.is_empty() {
+            continue;
+        }
 
-        upserted += upsert_ip_info(psql_client, &fetched, Utc::now()).await?;
+        apply_fetched(&mut info, &fetched, Utc::now());
+        let etag = directory.put(IP_INFO_PATH, &info, precondition).await?;
+        precondition = Precondition::IfMatch(etag);
+        written += fetched.len();
     }
 
-    info!("Stored info about {upserted} IPs");
+    info!("Stored info about {written} IPs");
 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn routable_addresses_are_looked_up() {
-        assert!(is_worth_looking_up("1.1.1.1"));
-        assert!(is_worth_looking_up("8.8.8.8"));
-        assert!(is_worth_looking_up("2606:4700:4700::1111"));
+/// An address whois could not answer for is left unstored on purpose: with no
+/// entry, `select_unknown_ips` offers it again next run.
+fn fetch_ip_info(whois_client: &WhoisClient, ips: Vec<String>) -> Vec<(String, IpInfo)> {
+    let mut fetched = Vec::with_capacity(ips.len());
+    for ip in ips {
+        match whois_client.get_ip_info(&ip) {
+            Ok(answer) => fetched.push((ip, answer)),
+            Err(err) => warn!("Couldn't fetch info about IP {ip}: {err}"),
+        }
     }
-
-    #[test]
-    fn unroutable_addresses_are_skipped() {
-        assert!(!is_worth_looking_up("127.0.0.1"));
-        assert!(!is_worth_looking_up("10.0.0.1"));
-        assert!(!is_worth_looking_up("172.16.0.1"));
-        assert!(!is_worth_looking_up("192.168.1.1"));
-        assert!(!is_worth_looking_up("169.254.0.1"));
-        assert!(!is_worth_looking_up("0.0.0.0"));
-        assert!(!is_worth_looking_up("255.255.255.255"));
-        assert!(!is_worth_looking_up("::1"));
-        assert!(!is_worth_looking_up("::"));
-        assert!(!is_worth_looking_up("fc00::1"));
-        assert!(!is_worth_looking_up("fe80::1"));
-        assert!(!is_worth_looking_up("ff02::1"));
-    }
-
-    // parse_socket_addr splits on the last colon without validating, so the column can hold this.
-    #[test]
-    fn a_non_address_is_skipped_rather_than_sent_to_whois() {
-        assert!(!is_worth_looking_up("some-host.example.com"));
-        assert!(!is_worth_looking_up(""));
-    }
+    fetched
 }

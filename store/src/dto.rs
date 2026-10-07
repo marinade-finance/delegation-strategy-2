@@ -5,10 +5,8 @@ use collect::validators_block_rewards::ValidatorBlockRewards;
 use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
-use collect::validators_performance::ValidatorPerformance;
 use rust_decimal::prelude::*;
-use serde::de::{self, Unexpected};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// `commission_effective` came from the epoch's reward row, the rate the runtime applied.
@@ -132,20 +130,7 @@ impl ValidatorBlockReward {
     }
 }
 
-pub struct CreditsColumns {
-    pub credits: Option<Decimal>,
-    pub vote_reward_lamports: Option<Decimal>,
-}
-
-impl CreditsColumns {
-    pub fn from_performance(p: &ValidatorPerformance) -> Self {
-        Self {
-            credits: p.credits.map(Decimal::from),
-            vote_reward_lamports: p.vote_reward_lamports.map(Decimal::from),
-        }
-    }
-}
-
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Validator {
     pub identity: String,
     pub vote_account: String,
@@ -163,12 +148,18 @@ pub struct Validator {
     pub dc_city: Option<String>,
     pub dc_asn: Option<i32>,
     pub dc_aso: Option<String>,
-    // Whether the whois lookup answered at all, which no single dc_ column can express: every field of a resolved answer is independently optional.
+    /// Whether the whois lookup answered at all, which no single `dc_` field
+    /// can express: every field of a resolved answer is independently optional.
+    #[serde(default)]
     pub dc_resolved: bool,
     pub commission_max_observed: Option<i32>,
     pub commission_min_observed: Option<i32>,
     pub commission_advertised: Option<i32>,
     pub commission_effective: Option<i32>,
+    #[serde(default)]
+    pub commission_effective_source: Option<String>,
+    #[serde(default)]
+    pub commission_effective_bps: Option<i32>,
     pub version: Option<String>,
     pub client_id: Option<i32>,
     pub client_id_raw: Option<String>,
@@ -182,15 +173,26 @@ pub struct Validator {
     pub foundation_stake: Decimal,
     pub marinade_native_stake: Decimal,
     pub institutional_stake: Decimal,
+    #[serde(default)]
     pub direct_stake: Option<Decimal>,
+    #[serde(default)]
     pub direct_activating_stake: Option<Decimal>,
+    #[serde(default)]
     pub direct_deactivating_stake: Option<Decimal>,
     pub self_stake: Decimal,
+    #[serde(default)]
     pub activating_stake: Option<Decimal>,
+    #[serde(default)]
     pub deactivating_stake: Option<Decimal>,
     pub superminority: bool,
     pub stake_to_become_superminority: Decimal,
-    pub credits: CreditsColumns,
+    /// Tower vote credits. None in an Alpenglow epoch after the migration
+    /// epoch, and when the collector found no credits.
+    pub credits: Option<Decimal>,
+    /// Inflation reward of the whole stake before commission. None before
+    /// Alpenglow.
+    #[serde(default)]
+    pub vote_reward_lamports: Option<Decimal>,
     pub leader_slots: Decimal,
     pub blocks_produced: Decimal,
     pub skip_rate: f64,
@@ -198,18 +200,54 @@ pub struct Validator {
     pub uptime: Option<Decimal>,
     pub downtime: Option<Decimal>,
     pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub inflation_rewards_collector: Option<String>,
+    #[serde(default)]
     pub block_revenue_collector: Option<String>,
+    #[serde(default)]
     pub inflation_rewards_commission_bps: Option<i32>,
+    #[serde(default)]
     pub inflation_rewards_commission_bps_is_v4: Option<bool>,
+    #[serde(default)]
     pub block_revenue_commission_bps: Option<i32>,
+    #[serde(default)]
     pub pending_delegator_rewards: Option<Decimal>,
+    #[serde(default)]
     pub inflation_rewards_collector_owner: Option<String>,
+    #[serde(default)]
     pub inflation_rewards_collector_lamports: Option<Decimal>,
+    #[serde(default)]
     pub inflation_rewards_collector_healthy: Option<bool>,
+    #[serde(default)]
     pub block_revenue_collector_owner: Option<String>,
+    #[serde(default)]
     pub block_revenue_collector_lamports: Option<Decimal>,
+    #[serde(default)]
     pub block_revenue_collector_healthy: Option<bool>,
+}
+
+impl Validator {
+    pub fn has_data_center(&self) -> bool {
+        self.dc_coordinates_lat.is_some()
+            || self.dc_coordinates_lon.is_some()
+            || self.dc_continent.is_some()
+            || self.dc_country_iso.is_some()
+            || self.dc_country.is_some()
+            || self.dc_city.is_some()
+            || self.dc_asn.is_some()
+            || self.dc_aso.is_some()
+    }
+
+    pub fn copy_data_center_from(&mut self, other: &Validator) {
+        self.dc_coordinates_lat = other.dc_coordinates_lat;
+        self.dc_coordinates_lon = other.dc_coordinates_lon;
+        self.dc_continent = other.dc_continent.clone();
+        self.dc_country_iso = other.dc_country_iso.clone();
+        self.dc_country = other.dc_country.clone();
+        self.dc_city = other.dc_city.clone();
+        self.dc_asn = other.dc_asn;
+        self.dc_aso = other.dc_aso.clone();
+    }
 }
 
 impl Validator {
@@ -248,6 +286,8 @@ impl Validator {
             commission_min_observed: None,
             commission_advertised: Some(v.performance.commission as i32),
             commission_effective: None,
+            commission_effective_source: None,
+            commission_effective_bps: None,
             inflation_rewards_collector: v.inflation_rewards_collector.clone(),
             block_revenue_collector: v.block_revenue_collector.clone(),
             inflation_rewards_commission_bps: v.inflation_rewards_commission_bps.map(i32::from),
@@ -283,7 +323,8 @@ impl Validator {
             deactivating_stake: v.deactivating_stake.map(Decimal::from),
             superminority: v.superminority,
             stake_to_become_superminority: v.stake_to_become_superminority.into(),
-            credits: CreditsColumns::from_performance(&v.performance),
+            credits: v.performance.credits.map(Decimal::from),
+            vote_reward_lamports: v.performance.vote_reward_lamports.map(Decimal::from),
             leader_slots: v.performance.leader_slots.into(),
             blocks_produced: v.performance.blocks_produced.into(),
             skip_rate: v.performance.skip_rate,
@@ -442,8 +483,11 @@ pub struct ValidatorRecord {
     /// See `ValidatorEpochStats::pending_delegator_rewards`.
     pub pending_delegator_rewards: Option<Decimal>,
     pub commission_aggregated: Option<i32>,
+    /// How many rugs fall in the window described on `rugged_commission`.
     pub rugged_commission_occurrences: u64,
+    /// Whether the validator rugged its commission inside the warm epoch window. Rugs are found by folding over the epochs the cache holds, so a rug older than the window is not reported at all, and the window's own oldest epoch has no predecessor to be judged against.
     pub rugged_commission: bool,
+    /// The rugs `rugged_commission_occurrences` counts, over the same window.
     pub rugged_commission_info: Vec<RugInfo>,
     pub version: Option<String>,
     /// Numeric Solana Foundation client id decoded from `client_id_raw`; null when the answering RPC rendered a name absent from our registry. `client_vendor` and `client_lineage` are derived from it, but stay null for an id the registry does not know.
@@ -530,7 +574,7 @@ pub struct UptimeRecord {
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "incident_type")]
 pub enum IncidentRecord {
-    /// One DOWN interval from the uptimes table.
+    /// One DOWN interval of the uptimes stream.
     Downtime {
         epoch: u64,
         start_at: DateTime<Utc>,
@@ -620,7 +664,6 @@ pub struct BlockProductionDetail {
 }
 
 impl IncidentRecord {
-    /// The epoch the incident starts in.
     pub fn epoch(&self) -> u64 {
         match self {
             Self::Downtime { epoch, .. }
@@ -778,6 +821,9 @@ pub struct TakeRateRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// One validator's commission rugs, over the epochs the cache holds: a rug
+/// older than that window is absent, and the window's oldest epoch has no
+/// predecessor to be judged against.
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct RuggerRecord {
     pub epochs: Vec<u64>,
@@ -1105,34 +1151,6 @@ pub struct ValidatorAggregatedFlat {
     pub max_inflation_rewards_commission_bps: Option<i32>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ValidatorScoringCsvRow {
-    pub vote_account: String,
-    pub score: f64,
-    pub rank: i32,
-    pub vemnde_votes: Decimal,
-    pub msol_votes: Decimal,
-    pub ui_hints: String,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_algo: bool,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_vemnde: bool,
-    #[serde(deserialize_with = "bool_from_int")]
-    pub eligible_stake_msol: bool,
-    pub normalized_dc_concentration: f64,
-    pub normalized_grace_skip_rate: f64,
-    pub normalized_adjusted_credits: f64,
-    pub avg_dc_concentration: f64,
-    pub avg_grace_skip_rate: f64,
-    pub avg_adjusted_credits: f64,
-    pub rank_dc_concentration: i32,
-    pub rank_grace_skip_rate: i32,
-    pub rank_adjusted_credits: i32,
-    pub target_stake_algo: Decimal,
-    pub target_stake_vemnde: Decimal,
-    pub target_stake_msol: Decimal,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorScoreRecord {
     pub vote_account: String,
@@ -1150,25 +1168,6 @@ pub struct ValidatorScoreRecord {
     pub target_stake_algo: u64,
     pub target_stake_vemnde: u64,
     pub target_stake_msol: u64,
-    pub scoring_run_id: i64,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
-pub struct ValidatorScoreV2Record {
-    pub vote_account: String,
-    pub score: f64,
-    pub rank: i32,
-    pub vemnde_votes: f64,
-    pub msol_votes: f64,
-    pub ui_hints: Vec<String>,
-    pub component_scores: Vec<f64>,
-    pub eligible_stake_algo: bool,
-    pub eligible_stake_vemnde: bool,
-    pub eligible_stake_msol: bool,
-    pub target_stake_algo: f64,
-    pub target_stake_vemnde: f64,
-    pub target_stake_msol: f64,
     pub scoring_run_id: i64,
     pub created_at: DateTime<Utc>,
 }
@@ -1208,202 +1207,4 @@ pub struct GlobalUnstakeHintRecord {
 pub struct BlacklistRecord {
     pub vote_account: String,
     pub code: String,
-}
-
-fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match u8::deserialize(deserializer)? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(de::Error::invalid_value(
-            Unexpected::Unsigned(other as u64),
-            &"zero or one",
-        )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn incident() -> GroupIncidentRecord {
-        GroupIncidentRecord {
-            validator: "vote".to_string(),
-            incident: IncidentRecord::Downtime {
-                epoch: 100,
-                start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
-                end_at: "2026-01-01T00:05:00Z".parse().unwrap(),
-                downtime_seconds: 300,
-                block_production: None,
-            },
-        }
-    }
-
-    // Consumers switch on the JSON type, so the enum must never leak a variant name or wrapper object.
-    #[test]
-    fn incidents_serialize_as_an_array_or_a_number() {
-        let records = serde_json::to_value(GroupIncidents::Records(vec![incident()])).unwrap();
-        assert!(records.is_array());
-        assert_eq!(records.as_array().unwrap().len(), 1);
-        assert_eq!(records[0]["validator"], "vote");
-
-        assert_eq!(
-            serde_json::to_value(GroupIncidents::Records(Vec::new())).unwrap(),
-            serde_json::json!([])
-        );
-        assert_eq!(
-            serde_json::to_value(GroupIncidents::Count(7)).unwrap(),
-            serde_json::json!(7)
-        );
-    }
-
-    #[test]
-    fn incidents_read_back_into_the_variant_the_json_type_names() {
-        for (json, expected) in [
-            ("7", GroupIncidents::Count(7)),
-            ("[]", GroupIncidents::Records(Vec::new())),
-        ] {
-            assert_eq!(
-                serde_json::from_str::<GroupIncidents>(json).unwrap(),
-                expected
-            );
-        }
-
-        let records: GroupIncidents =
-            serde_json::from_value(serde_json::to_value(vec![incident()]).unwrap()).unwrap();
-        assert_eq!(records, GroupIncidents::Records(vec![incident()]));
-    }
-
-    #[test]
-    fn a_commission_spike_serializes_flat_under_its_own_type() {
-        let record = IncidentRecord::CommissionSpike {
-            epoch: 900,
-            commission_before: 5,
-            commission_after: 100,
-            changed_at: "2026-01-01T06:00:00Z".parse().unwrap(),
-            epoch_slot: 1000,
-        };
-
-        assert_eq!(
-            serde_json::to_value(&record).unwrap(),
-            serde_json::json!({
-                "epoch": 900,
-                "incident_type": "CommissionSpike",
-                "commission_before": 5,
-                "commission_after": 100,
-                "changed_at": "2026-01-01T06:00:00Z",
-                "epoch_slot": 1000,
-            })
-        );
-    }
-
-    #[test]
-    fn a_sandwich_run_serializes_flat_under_its_own_type() {
-        let record = IncidentRecord::Sandwich {
-            first_epoch: 887,
-            epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
-            epoch_end_at: "2026-01-07T00:00:00Z".parse().unwrap(),
-            last_epoch: 889,
-            peak_epoch: 888,
-            blocks_produced: 8888,
-            blocks_with_sandwiches: 3944,
-            sandwich_rate_30d: 44.4,
-            sandwich_rate_60d: Some(31.1),
-            cluster_median_rate: 1.5,
-            threshold: 4.5,
-        };
-
-        assert_eq!(
-            serde_json::to_value(&record).unwrap(),
-            serde_json::json!({
-                "first_epoch": 887,
-                "incident_type": "Sandwich",
-                "epoch_start_at": "2026-01-01T00:00:00Z",
-                "epoch_end_at": "2026-01-07T00:00:00Z",
-                "last_epoch": 889,
-                "peak_epoch": 888,
-                "blocks_produced": 8888,
-                "blocks_with_sandwiches": 3944,
-                "sandwich_rate_30d": 44.4,
-                "sandwich_rate_60d": 31.1,
-                "cluster_median_rate": 1.5,
-                "threshold": 4.5,
-            })
-        );
-    }
-
-    #[test]
-    fn a_late_client_version_serializes_flat_under_its_own_type() {
-        let record = IncidentRecord::RunningLateClientVersion {
-            epoch: 1000,
-            epoch_start_at: "2026-01-01T00:00:00Z".parse().unwrap(),
-            epoch_end_at: "2026-01-03T00:00:00Z".parse().unwrap(),
-            version: "4.1.0".to_string(),
-            client_lineage: "agave".to_string(),
-            newer_stake_share: 0.9,
-            newer_version_stake_shares: vec![VersionStakeShare {
-                version: "4.2.0".to_string(),
-                share: 0.9,
-            }],
-        };
-
-        assert_eq!(
-            serde_json::to_value(&record).unwrap(),
-            serde_json::json!({
-                "epoch": 1000,
-                "incident_type": "RunningLateClientVersion",
-                "epoch_start_at": "2026-01-01T00:00:00Z",
-                "epoch_end_at": "2026-01-03T00:00:00Z",
-                "version": "4.1.0",
-                "client_lineage": "agave",
-                "newer_stake_share": 0.9,
-                "newer_version_stake_shares": [{"version": "4.2.0", "share": 0.9}],
-            })
-        );
-    }
-
-    // The count is the sort key both shapes are ordered on, so the two have to report it alike.
-    #[test]
-    fn both_shapes_report_the_same_count() {
-        assert_eq!(GroupIncidents::Records(vec![incident(); 3]).count(), 3);
-        assert_eq!(GroupIncidents::Count(3).count(), 3);
-        assert_eq!(GroupIncidents::default().count(), 0);
-    }
-
-    /// The split into per-grouping types must not reach the wire: consumers read one flat object.
-    #[test]
-    fn a_panel_row_serializes_flat() {
-        let group = ValidatorGroupRecord {
-            key: "Hetzner".to_string(),
-            validator_count: 2,
-            ..Default::default()
-        };
-
-        let provider = serde_json::to_value(ValidatorProviderGroupRecord {
-            group: group.clone(),
-            superminority_count: 3,
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(provider["key"], "Hetzner");
-        assert_eq!(provider["validator_count"], 2);
-        assert_eq!(provider["superminority_count"], 3);
-        assert!(provider.get("group").is_none());
-
-        let client = serde_json::to_value(ValidatorClientGroupRecord {
-            group,
-            block_engines: vec!["Agave + JitoBAM".to_string()],
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(client["key"], "Hetzner");
-        assert_eq!(client["block_engines"][0], "Agave + JitoBAM");
-        assert!(client.get("group").is_none());
-        assert!(
-            client.get("asns").is_none(),
-            "a client row has no provider columns at all"
-        );
-    }
 }

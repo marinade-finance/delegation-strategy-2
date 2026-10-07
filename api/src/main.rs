@@ -3,18 +3,15 @@
 
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, cluster_stats, commissions, config, docs, events, global_unstake_hints,
-    glossary, health, jito, jito_mev, list_clients, list_providers, list_validators, readiness,
-    releases, reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking,
-    rewards, take_rates, unstake_hints, uptimes, validator_score_breakdown,
-    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
-    versions, workflow_metrics_upload,
+    cluster_stats, commissions, config, docs, events, global_unstake_hints, glossary, health, jito,
+    jito_mev, list_clients, list_providers, list_validators, readiness, releases,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
 use log::{error, info};
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -29,14 +26,11 @@ pub mod utils;
 
 #[derive(Debug, Parser)]
 pub struct Params {
-    #[arg(long = "postgres-url")]
-    postgres_url: String,
+    #[arg(long = "directory-url", env = "DIRECTORY_URL")]
+    pub directory_url: String,
 
-    #[arg(long = "postgres-ssl-root-cert", env = "PG_SSLROOTCERT")]
-    pub postgres_ssl_root_cert: String,
-
-    #[arg(long = "scoring-url")]
-    scoring_url: String,
+    #[arg(long = "directory-token", env = "DIRECTORY_TOKEN")]
+    pub directory_token: String,
 
     #[arg(
         long = "validator-bonds-api-url",
@@ -58,6 +52,13 @@ pub struct Params {
     #[arg(long = "blacklist-path")]
     blacklist_path: String,
 
+    #[arg(
+        long = "blacklist-url",
+        env = "BLACKLIST_URL",
+        default_value = "https://raw.githubusercontent.com/marinade-finance/ds-sam-pipeline/main/blacklist.csv"
+    )]
+    blacklist_url: String,
+
     #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
@@ -72,23 +73,40 @@ async fn main() -> anyhow::Result<()> {
 
     let params = Params::parse();
 
-    let mut builder = SslConnector::builder(SslMethod::tls())?;
-    builder.set_ca_file(&params.postgres_ssl_root_cert)?;
-    let connector = MakeTlsConnector::new(builder.build());
+    // Bounded so a hung upstream can stall neither startup nor a refresh.
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
 
-    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
-    tokio::spawn(async move {
-        if let Err(err) = psql_conn.await {
-            error!("PSQL Connection error: {err}");
-            std::process::exit(1);
-        }
-    });
+    // Scoring against a missing blacklist would blacklist nobody, so a failed
+    // first fetch aborts startup.
+    fetch_blacklist(&http_client, &params.blacklist_url, &params.blacklist_path)
+        .await
+        .map_err(|err| anyhow::anyhow!("Initial blacklist fetch failed: {err}"))?;
+    {
+        let client = http_client.clone();
+        let url = params.blacklist_url.clone();
+        let path = params.blacklist_path.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                if let Err(err) = fetch_blacklist(&client, &url, &path).await {
+                    error!("Blacklist refresh failed (keeping previous copy): {err}");
+                }
+            }
+        });
+    }
+
+    let directory = store::directory::Directory::new(
+        params.directory_url.clone(),
+        params.directory_token.clone(),
+    )?;
 
     let context = Arc::new(RwLock::new(Context::new(
-        psql_client,
+        directory,
         params.glossary_path,
         params.blacklist_path,
-        params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
     )?));
@@ -307,15 +325,6 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(global_unstake_hints::handler);
 
-    let route_admin_upload_score = warp::path!("admin" / "scores")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_admin_auth(params.admin_auth_token.clone()))
-        .and(warp::query::<admin_score_upload::QueryParams>())
-        .and(warp::multipart::form().max_length(5_000_000))
-        .and(with_context(context.clone()))
-        .and_then(admin_score_upload::handler);
-
     let route_workflow_metrics_upload = warp::path!("admin" / "metrics")
         .and(warp::path::end())
         .and(warp::post())
@@ -354,7 +363,6 @@ async fn main() -> anyhow::Result<()> {
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
         .or(route_reports_commission_changes)
-        .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
         .with(cors);
 
@@ -362,6 +370,40 @@ async fn main() -> anyhow::Result<()> {
 
     warp::serve(routes).run(([0, 0, 0, 0], params.port)).await;
 
+    Ok(())
+}
+
+// A valid blacklist is far above this floor; a body below it is empty, HTML or
+// truncated and must not overwrite the last good copy.
+const MIN_BLACKLIST_ROWS: usize = 50;
+
+// Validated before the temp + rename, so a 200 carrying a bad payload leaves the
+// previous file untouched and a reader never sees a half file.
+async fn fetch_blacklist(client: &reqwest::Client, url: &str, path: &str) -> anyhow::Result<()> {
+    let body = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    let mut lines = body.lines();
+    if lines.next() != Some("vote_account,code") {
+        anyhow::bail!("blacklist header missing/invalid (expected 'vote_account,code')");
+    }
+    let rows = lines.filter(|l| !l.trim().is_empty()).count();
+    if rows < MIN_BLACKLIST_ROWS {
+        anyhow::bail!("blacklist has only {rows} rows (minimum {MIN_BLACKLIST_ROWS})");
+    }
+
+    let tmp = format!("{path}.tmp");
+    tokio::fs::write(&tmp, body.as_bytes()).await?;
+    tokio::fs::rename(&tmp, path).await?;
+    info!(
+        "Fetched blacklist from {url} -> {path} ({} bytes, {rows} rows)",
+        body.len()
+    );
     Ok(())
 }
 

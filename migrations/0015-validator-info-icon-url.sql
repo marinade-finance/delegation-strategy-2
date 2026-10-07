@@ -1,1 +1,0 @@
-ALTER TABLE validators ADD COLUMN info_icon_url TEXT DEFAULT NULL;

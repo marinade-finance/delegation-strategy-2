@@ -1,56 +1,64 @@
 # store CLI
 
-Storing YAML data files collected by [collect process](../collect) into PostgreSQL database.
+Storing YAML data files collected by [collect process](../collect) as documents
+in [marinade-directory](../DEVELOPMENT.md).
 
 ## Development
 
-See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for the local store setup, which also
+exports `DIRECTORY_URL` and `DIRECTORY_TOKEN`.
 
 ```bash
-export DB='delegation-strategy'
-export POSTGRES_URL="postgresql://${DB}:${DB}@localhost:5432/${DB}"
-
 cargo run --bin store -- \
-  --postgres-ssl-root-cert /tmp/postgres-root-cert.pem --postgres-url $POSTGRES_URL
+  --directory-url "$DIRECTORY_URL" --directory-token "$DIRECTORY_TOKEN" \
   <<SUBCOMMAND>> --snapshot-file <<FILE-PATH>>
 ```
 
 Example:
 
 ```bash
-export DB='delegation-strategy'
-export POSTGRES_URL="postgresql://${DB}:${DB}@localhost:5432/${DB}"
-export PG_SSLROOTCERT='/tmp/postgres-root-cert.pem'
-
 OUTPUT_DIR=/tmp/collect-output
 mkdir -p $OUTPUT_DIR
+STORE="cargo run --bin store -- --directory-url $DIRECTORY_URL --directory-token $DIRECTORY_TOKEN"
 
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  validators --snapshot-file "$OUTPUT_DIR"/validators.yaml
+$STORE validators --snapshot-file "$OUTPUT_DIR"/validators.yaml
 
 # store-cluster-info
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  cluster-info --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+$STORE cluster-info --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
 # store-quick-changes
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  uptime --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  versions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  commissions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
-# store-epoch-close (table: epochs)
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  close-epoch --snapshot-file "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
+$STORE uptime --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+$STORE versions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+$STORE commissions --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+$STORE node-observations --snapshot-file "$OUTPUT_DIR"/snapshot-performance.yaml
+# store-epoch-close (writes /validators/epochs/{epoch} last)
+$STORE close-epoch --snapshot-file "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
 
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  validators-block-rewards --snapshot-file "$OUTPUT_DIR"/validators-block-rewards.yaml
+$STORE validators-block-rewards --snapshot-file "$OUTPUT_DIR"/validators-block-rewards.yaml
+$STORE validators-events --snapshot-file "$OUTPUT_DIR"/validators-events.yaml
+$STORE validators-sandwiches --snapshot-file "$OUTPUT_DIR"/validators-sandwiches.yaml
+$STORE take-rates --snapshot-file "$OUTPUT_DIR"/take-rates.yaml
+$STORE releases --snapshot-file "$OUTPUT_DIR"/releases.yaml
 
+$STORE jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
+$STORE jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
 
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  releases --snapshot-file "$OUTPUT_DIR"/releases.yaml
-
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
-cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
+# Reads the live node observations and asks whois about the addresses in use.
+$STORE ip-info --whois https://whois.marinade.finance --whois-bearer-token "$WHOIS_BEARER_TOKEN"
 ```
+
+## Documents
+
+| path | written by | holds |
+|---|---|---|
+| `/validators/snapshot/{epoch}` | `validators`, `close-epoch` | the per-epoch validator records |
+| `/validators/mev/{epoch}` | `jito-mev` | the latest MEV observation per vote account |
+| `/validators/priority-fee/{epoch}` | `jito-priority` | the latest priority-fee observation |
+| `/validators/events/{epoch}` | `validators-events` | PSR settlements per vote account |
+| `/validators/block-rewards/{epoch}` | `validators-block-rewards` | block rewards per identity and vote account |
+| `/validators/validator-rewards/{epoch}` | `take-rates` | both sides of every reward component per vote account, and the take rate they make |
+| `/validators/sandwiches/{epoch}` | `validators-sandwiches` | the 30-day sandwich figures per vote account |
+| `/validators/epochs/{epoch}` | `close-epoch`, last | the sealed signal: start, end, supply, inflation |
+| `/validators/live/{uptimes,commissions,versions,cluster-info,node-observations}` | the minute writers | the accumulators, under compare-and-swap |
+| `/validators/{uptimes,commissions,versions,cluster-info,node-observations}/{epoch}` | `close-epoch` | what the accumulators held when the epoch closed |
+| `/validators/releases` | `releases` | every client release by lineage and version: publish time, SFDP floor, feature-gate floor |
+| `/validators/ip-info` | `ip-info` | what whois answered for every address a node advertised recently |

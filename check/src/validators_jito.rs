@@ -1,10 +1,10 @@
+use crate::stored::{last_epoch, last_epoch_slot};
 use clap::Parser;
+use collect::common::measure_milliseconds_per_slot;
 use log::{debug, info};
 use rust_decimal::prelude::*;
 use solana_rpc_client::rpc_client::RpcClient;
-use tokio_postgres::Client;
-
-use collect::common::measure_milliseconds_per_slot;
+use store::directory::Directory;
 
 #[derive(Debug, Parser)]
 pub struct ValidatorsJitoCheckParams {
@@ -16,58 +16,47 @@ pub struct ValidatorsJitoCheckParams {
     execution_interval_slots: Decimal,
 }
 
-/// Verification if we should proceed with saving more JITO accounts data to the database.
-/// Currently, we index two tables: `mev` and `jito_priority_fee`.
+/// Verification if we should proceed with saving more JITO accounts data to the
+/// store. Currently, we index two document kinds: mev and priority-fee.
 pub async fn check_jito(
     params: ValidatorsJitoCheckParams,
-    psql_client: &Client,
+    directory: &Directory,
     rpc_client: &RpcClient,
-    db_table: &str,
+    dir: &str,
 ) -> anyhow::Result<bool> {
-    info!("Checking epoch data about epoch in DB table {db_table}");
+    info!("Checking epoch data about epoch in {dir}");
 
-    let row_optional = psql_client
-        .query_opt(
-            format!(
-                "SELECT epoch, MAX(epoch_slot) AS epoch_slot
-                    FROM {db_table}
-                    WHERE epoch = (SELECT MAX(epoch) FROM {db_table})
-                    GROUP BY epoch;"
-            )
-            .as_str(),
-            &[],
-        )
-        .await?;
+    let stored = match last_epoch(directory, dir).await? {
+        Some(epoch) => last_epoch_slot(directory, dir, epoch)
+            .await?
+            .map(|epoch_slot| (epoch, epoch_slot)),
+        None => None,
+    };
 
-    match row_optional {
-        Some(row) => {
-            // PostgreSQL type 'NUMERIC'
-            // the value saved within the `epoch` is the epoch of data record was created
-            // it is the epoch prior to the epoch when the data collection was executed
-            let sql_epoch: Decimal = row.get("epoch");
-            // PostgreSQL type 'NUMERIC'
-            // the value saved within the `epoch_slot` is the slot index when the data collection was executed (see collect/store)
-            let sql_slot_index: Decimal = row.get("epoch_slot");
+    match stored {
+        Some((stored_epoch, stored_slot_index)) => {
+            // the epoch of the data the record was created for: the epoch prior
+            // to the epoch when the data collection was executed
+            let sql_epoch = Decimal::from(stored_epoch);
+            let sql_slot_index = Decimal::from(stored_slot_index);
 
             let epoch_data = rpc_client.get_epoch_info()?;
             let current_epoch = Decimal::from(epoch_data.epoch);
             let current_slot_index = Decimal::from(epoch_data.slot_index);
 
             info!(
-                "DB {db_table} stores last epoch: {sql_epoch}. Epoch {} slot index: {sql_slot_index}, on-chain epoch {current_epoch} slot index: {current_slot_index}",
+                "{dir} stores last epoch: {sql_epoch}. Epoch {} slot index: {sql_slot_index}, on-chain epoch {current_epoch} slot index: {current_slot_index}",
                 sql_epoch + Decimal::one()
             );
 
-            // The lastly stored epoch saved in DB is delayed by 1 epoch compared to the current epoch.
             if current_epoch - Decimal::one() > sql_epoch {
                 info!(
-                    "The previous epoch ({}) has surpassed the last recorded table {db_table} epoch ({sql_epoch}). Initiating data collection for {db_table} analysis.",
+                    "The previous epoch ({}) has surpassed the last recorded {dir} epoch ({sql_epoch}). Initiating data collection for {dir} analysis.",
                     current_epoch - Decimal::one()
                 );
                 return Ok(true);
             }
 
-            // If the stored slot index in SQL elapses the expected interval timing, we will proceed with the data collection.
             let slots_diff = current_slot_index.saturating_sub(sql_slot_index);
             if slots_diff >= params.execution_interval_slots {
                 info!(
@@ -98,12 +87,12 @@ pub async fn check_jito(
             }
 
             info!(
-                "{db_table} data collection for the epoch prior to {current_epoch} and current slot index {current_slot_index} has already been processed"
+                "{dir} data collection for the epoch prior to {current_epoch} and current slot index {current_slot_index} has already been processed"
             );
             Ok(false)
         }
         None => {
-            info!("No {db_table} data found in DB. Proceed with data collection.");
+            info!("No {dir} data found in the store. Proceed with data collection.");
             Ok(true)
         }
     }

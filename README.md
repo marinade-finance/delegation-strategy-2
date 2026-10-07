@@ -5,8 +5,7 @@ This repository contains all necessary components to track and collect validator
 ## Repository structure
 - [Rust API to expose all validators' data](./api)
 - [Rust CLI tool to collect a snapshot from the Solana chain](./collect)
-- [Rust CLI tool to store previously collected data to DB](./store)
-- [DB migration scripts](./migrations)
+- [Rust CLI tool to store previously collected data as documents](./store)
 - [A set of scoring and utility scripts](./scripts)
 
 ## Scoring
@@ -31,13 +30,14 @@ Inside the cloned repository run:
 ## Development
 ### Prerequisities
 - Rust - for development of data collection, storing and serving
-- PostgreSQL - for the storage
+- marinade-directory - for the storage (see [DEVELOPMENT.md](./DEVELOPMENT.md))
 - R - for the scoring calculations
 
 ### Env
 Create a `.env` file after cloning the repository
 ```envc
-POSTGRES_URL=postgresql://...
+DIRECTORY_URL=http://localhost:8080
+DIRECTORY_TOKEN=...
 RPC_URL=https://api.mainnet-beta.solana.com
 WHOIS_BEARER_TOKEN=...
 ADMIN_AUTH_TOKEN=...
@@ -65,7 +65,7 @@ C4Context
     }
     Enterprise_Boundary(E_MARINADE, "Marinade") {
         System(DS_COLLECTOR, "Delegation Strategy Collector", "Collects data about validators")
-        SystemDb(DS_DB, "Delegation Strategy DB", "Stores all collected data")
+        SystemDb(DS_DB, "marinade-directory", "Stores all collected data as versioned documents")
         System(DS_API, "Delegation Strategy Public API", "Provides access to collected data")
         System(DS_PIPELINE, "Delegation Strategy Pipeline", "Provides access to collected data")
         SystemDb(DS_GITHUB_PIPELINE, "Delegation Strategy Pipeline Repository", "Stores all historical scoring inputs/outputs.")
