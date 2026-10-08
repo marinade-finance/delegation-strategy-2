@@ -900,7 +900,9 @@ pub fn group_history<'a>(
     histories: &'a HashMap<String, GroupHistory>,
     key: &str,
 ) -> Option<&'a GroupHistory> {
-    histories.get(&folded(&normalized(Some(key.to_string())))?)
+    let name = normalized(Some(key.to_string()))
+        .or_else(|| is_unknown_placeholder(key.trim()).then(|| UNKNOWN_GROUP.to_string()));
+    histories.get(&folded(&name)?)
 }
 
 #[derive(Default)]
@@ -959,7 +961,8 @@ pub fn aggregate_history(
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
             for (kind, groups) in KINDS.iter().zip(accumulators.iter_mut()) {
-                let name = group_key(validator, stats, *kind);
+                let name =
+                    group_key(validator, stats, *kind).or_else(|| Some(UNKNOWN_GROUP.to_string()));
                 let (Some(key), Some(name)) = (folded(&name), name) else {
                     continue;
                 };
@@ -2649,11 +2652,33 @@ mod tests {
             Decimal::from(600),
             "a validator the list no longer serves still has its history"
         );
+        let unknown = group_history(&history.providers, UNKNOWN_GROUP).unwrap();
+        assert_eq!(unknown.name, UNKNOWN_GROUP);
+        assert!((point(unknown, CURRENT_EPOCH).stake_share - 0.5).abs() < 1e-12);
+        assert_eq!(point(unknown, CURRENT_EPOCH).validator_count, 1);
         assert_eq!(
             history.providers.len(),
-            2,
-            "a validator with no provider has no group"
+            3,
+            "a validator with no provider is in the Unknown group, as on /providers"
         );
+    }
+
+    #[test]
+    fn history_serves_the_unknown_group_under_any_placeholder_key() {
+        let validators = validators(vec![Member::new(
+            "unregistered",
+            last_two_epochs(100, Some(99), None),
+        )]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        for key in ["Unknown", "unknown", "Unknown(99)"] {
+            for groups in [&history.providers, &history.client_lineages] {
+                let group = group_history(groups, key).unwrap_or_else(|| panic!("no group {key}"));
+                assert_eq!(point(group, CURRENT_EPOCH).total_stake, Decimal::from(100));
+            }
+        }
+        assert!(group_history(&history.providers, "").is_none());
+        assert!(group_history(&history.providers, "Hetzner").is_none());
     }
 
     #[test]

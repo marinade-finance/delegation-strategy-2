@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_group_is_not_found() {
+    fn a_missing_group_is_not_found() {
         let reply = group_history_reply(None, 90, None, || "No provider named x".to_string());
         assert_eq!(
             warp::Reply::into_response(reply).status(),

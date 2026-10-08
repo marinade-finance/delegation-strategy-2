@@ -194,7 +194,8 @@ One `/providers` or `/clients` group per epoch, newest first, one row per cached
 - `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
 - `epochs` - how many newest epochs to return, 1 to 90, default 90.
 
-Keys match case-insensitively; an unknown key answers 404. Each epoch counts the validators whose
+Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
+client are in the `Unknown` group, as on the lists. Each epoch counts the validators whose
 own row for that epoch puts them in the group, so a validator that moved counts in the old group
 before the move. `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api
 14-day rolling staker APY at the epoch end) and `take_rate` (realized, `validators_rewards`) are
