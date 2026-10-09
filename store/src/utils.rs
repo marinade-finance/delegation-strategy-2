@@ -1226,6 +1226,8 @@ pub async fn load_validators(
                 stake_to_become_superminority,
                 credits,
                 vote_reward_lamports,
+                -- agave freezes epoch_stakes(E) at the start of E-1, and effective stake holds within an epoch
+                NULLIF(previous.previous_activated_stake, 0) AS epoch_stake,
                 leader_slots,
                 blocks_produced,
                 skip_rate,
@@ -1247,6 +1249,9 @@ pub async fn load_validators(
                     SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
                     FROM jito_priority_fee ORDER BY vote_account, epoch, created_at DESC
                 ) jpf ON jpf.vote_account = validators.vote_account AND jpf.epoch = validators.epoch
+                LEFT JOIN (
+                    SELECT vote_account, epoch, activated_stake AS previous_activated_stake FROM validators
+                ) previous ON previous.vote_account = validators.vote_account AND previous.epoch = validators.epoch - 1
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
             ORDER BY epoch DESC",
             &[&Decimal::from(display_epochs)],
@@ -1581,6 +1586,7 @@ pub async fn load_validators(
                     .get::<_, Decimal>("stake_to_become_superminority"),
                 credits: tower_credits,
                 vote_reward_lamports,
+                epoch_stake: row.get("epoch_stake"),
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
                 skip_rate: row.get("skip_rate"),
