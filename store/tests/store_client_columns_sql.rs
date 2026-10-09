@@ -525,7 +525,13 @@ async fn migration_drops_the_columns_now_derived_from_the_registry() {
     }
     let client = migrated_client(schema).await.unwrap();
 
-    for table in ["validators", "versions"] {
+    for (table, expected) in [
+        (
+            "validators",
+            vec!["client_id", "client_id_raw", "client_id_source"],
+        ),
+        ("versions", vec!["client_id", "client_id_raw"]),
+    ] {
         let columns: Vec<String> = client
             .query(
                 "SELECT column_name FROM information_schema.columns
@@ -540,9 +546,8 @@ async fn migration_drops_the_columns_now_derived_from_the_registry() {
         let mut columns = columns;
         columns.sort();
         assert_eq!(
-            columns,
-            vec!["client_id".to_string(), "client_id_raw".to_string()],
-            "{table} must keep the stored identity only, everything else is derived on read"
+            columns, expected,
+            "{table} must keep the stored identity and its provenance only, everything else is derived on read"
         );
     }
 
