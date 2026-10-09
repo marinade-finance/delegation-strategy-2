@@ -1,14 +1,15 @@
 use crate::dto::{
     client_engine, client_is_classified, client_label, client_lineage, effective_client_id,
-    ClientRelease, GroupIncidents, GroupLocation, GroupRow, GroupShare, ValidatorClientGroupRecord,
-    ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
-    ValidatorGroups, ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
+    ClientRelease, GroupHistories, GroupHistory, GroupHistoryEpoch, GroupIncidents, GroupLocation,
+    GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats, ValidatorGroupNode,
+    ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorProviderGroupRecord,
+    ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
 use rust_decimal::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GroupKind {
@@ -87,9 +88,13 @@ fn group_key(
         }
         GroupKind::ProviderAso => normalized(stats.dc_aso.clone()),
         // The raw rendering is what the node reported, kept for a client absent from client-ids.csv.
-        GroupKind::ClientLabel => normalized(Some(client_label(client_id)))
-            .or_else(|| normalized(stats.client_id_raw.clone())),
-        GroupKind::ClientLineage => normalized(client_lineage(client_id)).map(as_client_name),
+        GroupKind::ClientLabel => {
+            normalized(Some(client_label(client_id, stats.version.as_deref())))
+                .or_else(|| normalized(stats.client_id_raw.clone()))
+        }
+        GroupKind::ClientLineage => {
+            normalized(client_lineage(client_id, stats.version.as_deref())).map(as_client_name)
+        }
     }
 }
 
@@ -231,13 +236,7 @@ impl ProviderAndClientBreakdowns {
             .map(|(key, tally)| GroupShare {
                 key,
                 validator_count: tally.validator_count,
-                stake_share: if group_stake.is_zero() {
-                    0.0
-                } else {
-                    (tally.total_stake / group_stake)
-                        .to_f64()
-                        .unwrap_or_default()
-                },
+                stake_share: stake_share(tally.total_stake, group_stake),
                 total_stake: tally.total_stake,
             })
             .collect();
@@ -343,6 +342,25 @@ impl StakeWeighted {
     }
 }
 
+fn stake_share(stake: Decimal, total_stake: Decimal) -> f64 {
+    if total_stake.is_zero() {
+        0.0
+    } else {
+        (stake / total_stake).to_f64().unwrap_or_default()
+    }
+}
+
+fn most_staked_spelling(spellings: &HashMap<String, Decimal>) -> Option<String> {
+    spellings
+        .iter()
+        .max_by(|(a_spelling, a_stake), (b_spelling, b_stake)| {
+            a_stake
+                .cmp(b_stake)
+                .then_with(|| b_spelling.cmp(a_spelling))
+        })
+        .map(|(spelling, _)| spelling.clone())
+}
+
 struct Accumulator<B> {
     spellings: HashMap<String, Decimal>,
     validator_count: u64,
@@ -389,14 +407,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
     }
 
     fn name(&self) -> Option<String> {
-        self.spellings
-            .iter()
-            .max_by(|(a_spelling, a_stake), (b_spelling, b_stake)| {
-                a_stake
-                    .cmp(b_stake)
-                    .then_with(|| b_spelling.cmp(a_spelling))
-            })
-            .map(|(spelling, _)| spelling.clone())
+        most_staked_spelling(&self.spellings)
     }
 
     fn add(
@@ -470,13 +481,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             key: self.name().unwrap_or_else(|| UNKNOWN_GROUP.to_string()),
             validator_count: self.validator_count,
             total_stake: self.total_stake,
-            stake_share: if total_activated_stake.is_zero() {
-                0.0
-            } else {
-                (self.total_stake / total_activated_stake)
-                    .to_f64()
-                    .unwrap_or_default()
-            },
+            stake_share: stake_share(self.total_stake, total_activated_stake),
             stake_delta_7d: delta(ctx.baseline_7d),
             stake_delta_30d: delta(ctx.baseline_30d),
             net_apy: self.net_apy.mean(),
@@ -877,6 +882,7 @@ pub fn aggregate_all(
     ValidatorGroupings {
         clients: aggregate_client_tree(&population, releases),
         providers: aggregate_providers(&population),
+        history: Default::default(),
     }
 }
 
@@ -884,6 +890,128 @@ pub fn aggregate_all(
 pub struct ValidatorGroupings {
     pub clients: ValidatorGroupTree,
     pub providers: ValidatorProviderGroups,
+    pub history: GroupHistories,
+}
+
+// apy-api stamps a point within a minute of the epoch end; an hour still excludes neighbours.
+const NET_APY_EPOCH_END_TOLERANCE_S: i64 = 3600;
+
+pub fn group_history<'a>(
+    histories: &'a HashMap<String, GroupHistory>,
+    key: &str,
+) -> Option<&'a GroupHistory> {
+    let name = normalized(Some(key.to_string()))
+        .or_else(|| is_unknown_placeholder(key.trim()).then(|| UNKNOWN_GROUP.to_string()));
+    histories.get(&folded(&name)?)
+}
+
+#[derive(Default)]
+struct HistoryPoint {
+    total_stake: Decimal,
+    validator_count: u64,
+    net_apy: StakeWeighted,
+    take_rate: StakeWeighted,
+}
+
+#[derive(Default)]
+struct HistoryAccumulator {
+    spellings: HashMap<String, Decimal>,
+    epochs: HashMap<u64, HistoryPoint>,
+}
+
+pub fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
+    series
+        .iter()
+        .filter(|(time, _)| (time - epoch_end_at).abs() <= NET_APY_EPOCH_END_TOLERANCE_S)
+        .min_by_key(|(time, _)| (time - epoch_end_at).abs())
+        .map(|(_, value)| *value)
+}
+
+// Each epoch groups by that epoch's own row, and its share is of every validator with a row.
+pub fn aggregate_history(
+    validators: &HashMap<String, ValidatorRecord>,
+    take_rates: &HashMap<(String, u64), f64>,
+    net_apy: &HashMap<String, Vec<(i64, f64)>>,
+) -> GroupHistories {
+    const KINDS: [GroupKind; 3] = [
+        GroupKind::ProviderAso,
+        GroupKind::ClientLineage,
+        GroupKind::ClientLabel,
+    ];
+
+    let mut epochs: BTreeMap<u64, &ValidatorEpochStats> = BTreeMap::new();
+    let mut epoch_stake: HashMap<u64, Decimal> = HashMap::new();
+    let mut accumulators: [HashMap<String, HistoryAccumulator>; 3] = Default::default();
+
+    for validator in validators.values() {
+        let series = net_apy.get(&validator.vote_account);
+        for stats in &validator.epoch_stats {
+            epochs.entry(stats.epoch).or_insert(stats);
+            *epoch_stake.entry(stats.epoch).or_default() += stats.activated_stake;
+
+            let (net_apy, take_rate) = match stats.epoch_end_at {
+                Some(end_at) => (
+                    series.and_then(|series| net_apy_at(series, end_at.timestamp())),
+                    take_rates
+                        .get(&(validator.vote_account.clone(), stats.epoch))
+                        .copied(),
+                ),
+                None => (None, None),
+            };
+            let weight = stats.activated_stake.to_f64().unwrap_or_default();
+
+            for (kind, groups) in KINDS.iter().zip(accumulators.iter_mut()) {
+                let name =
+                    group_key(validator, stats, *kind).or_else(|| Some(UNKNOWN_GROUP.to_string()));
+                let (Some(key), Some(name)) = (folded(&name), name) else {
+                    continue;
+                };
+                let group = groups.entry(key).or_default();
+                *group.spellings.entry(name).or_default() += stats.activated_stake;
+                let point = group.epochs.entry(stats.epoch).or_default();
+                point.total_stake += stats.activated_stake;
+                point.validator_count += 1;
+                point.net_apy.add(net_apy, weight);
+                point.take_rate.add(take_rate, weight);
+            }
+        }
+    }
+
+    let [providers, client_lineages, client_labels] = accumulators.map(|groups| {
+        groups
+            .into_iter()
+            .map(|(key, mut group)| {
+                let history = GroupHistory {
+                    name: most_staked_spelling(&group.spellings).unwrap_or_else(|| key.clone()),
+                    epochs: epochs
+                        .iter()
+                        .rev()
+                        .map(|(epoch, stats)| {
+                            let point = group.epochs.remove(epoch).unwrap_or_default();
+                            let cluster_stake = epoch_stake[epoch];
+                            GroupHistoryEpoch {
+                                epoch: *epoch,
+                                epoch_start_at: stats.epoch_start_at,
+                                epoch_end_at: stats.epoch_end_at,
+                                stake_share: stake_share(point.total_stake, cluster_stake),
+                                total_stake: point.total_stake,
+                                validator_count: point.validator_count,
+                                net_apy: point.net_apy.mean(),
+                                take_rate: point.take_rate.mean(),
+                            }
+                        })
+                        .collect(),
+                };
+                (key, history)
+            })
+            .collect()
+    });
+
+    GroupHistories {
+        providers,
+        client_lineages,
+        client_labels,
+    }
 }
 
 #[cfg(test)]
@@ -1076,9 +1204,9 @@ mod tests {
                         client_id: projected_client_id,
                         client_id_raw: member.client_id_raw.map(str::to_string),
                         client_name: client_name(projected_client_id),
-                        client_label: client_label(projected_client_id),
+                        client_label: client_label(projected_client_id, member.version),
                         client_vendor: client_vendor(projected_client_id),
-                        client_lineage: client_lineage(projected_client_id),
+                        client_lineage: client_lineage(projected_client_id, member.version),
                         version: member.version.map(str::to_string),
                         epoch_stats,
                         net_apy: member.net_apy,
@@ -2367,6 +2495,276 @@ mod tests {
         assert_eq!(
             group(&operators(&validators), "Figment").incidents,
             GroupIncidents::Records(Vec::new())
+        );
+    }
+
+    fn epoch_end_unix(validators: &HashMap<String, ValidatorRecord>, epoch: u64) -> i64 {
+        validators
+            .values()
+            .flat_map(|validator| &validator.epoch_stats)
+            .find(|stats| stats.epoch == epoch)
+            .and_then(|stats| stats.epoch_end_at)
+            .unwrap()
+            .timestamp()
+    }
+
+    fn open_current_epoch(validators: &mut HashMap<String, ValidatorRecord>) {
+        for stats in validators
+            .values_mut()
+            .flat_map(|validator| validator.epoch_stats.iter_mut())
+            .filter(|stats| stats.epoch == CURRENT_EPOCH)
+        {
+            stats.epoch_end_at = None;
+        }
+    }
+
+    fn point(history: &GroupHistory, epoch: u64) -> &GroupHistoryEpoch {
+        history
+            .epochs
+            .iter()
+            .find(|point| point.epoch == epoch)
+            .unwrap_or_else(|| panic!("no epoch {epoch} in {}", history.name))
+    }
+
+    #[test]
+    fn history_counts_a_validator_in_the_group_each_epoch_puts_it_in() {
+        let validators = validators(vec![
+            Member::new(
+                "mover",
+                vec![
+                    (CURRENT_EPOCH, 300, AGAVE, Some("Hetzner")),
+                    (PREVIOUS_EPOCH, 300, AGAVE, Some("OVH")),
+                ],
+            ),
+            Member::new("stayer", last_two_epochs(100, AGAVE, Some("OVH"))),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let hetzner = &history.providers["hetzner"];
+        assert_eq!(
+            hetzner
+                .epochs
+                .iter()
+                .map(|point| (point.epoch, point.total_stake, point.validator_count))
+                .collect::<Vec<_>>(),
+            vec![
+                (CURRENT_EPOCH, Decimal::from(300), 1),
+                (PREVIOUS_EPOCH, Decimal::ZERO, 0)
+            ],
+            "newest first, and an epoch the group had no member in is a zero row"
+        );
+        let empty = point(hetzner, PREVIOUS_EPOCH);
+        assert_eq!(empty.stake_share, 0.0);
+        assert_eq!((empty.net_apy, empty.take_rate), (None, None));
+
+        let ovh = &history.providers["ovh"];
+        assert_eq!(point(ovh, CURRENT_EPOCH).total_stake, Decimal::from(100));
+        assert_eq!(point(ovh, PREVIOUS_EPOCH).total_stake, Decimal::from(400));
+        assert_eq!(point(ovh, PREVIOUS_EPOCH).validator_count, 2);
+    }
+
+    #[test]
+    fn history_folds_provider_spellings_and_names_the_group_by_the_bigger_one() {
+        let validators = validators(vec![
+            Member::new("shouty", last_two_epochs(300, AGAVE, Some("OVH"))),
+            Member::new("quiet", last_two_epochs(100, AGAVE, Some("ovh"))),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        assert_eq!(history.providers.len(), 1);
+        let ovh = group_history(&history.providers, "Ovh").unwrap();
+        assert_eq!(ovh.name, "OVH");
+        assert_eq!(point(ovh, CURRENT_EPOCH).total_stake, Decimal::from(400));
+        assert_eq!(point(ovh, CURRENT_EPOCH).validator_count, 2);
+        assert!(group_history(&history.providers, "Hetzner").is_none());
+    }
+
+    #[test]
+    fn history_keeps_the_client_lineage_and_label_levels_apart() {
+        let validators = validators(vec![
+            Member::new("plain", last_two_epochs(300, AGAVE, None)),
+            Member::new("bam", last_two_epochs(100, JITO_BAM, None)),
+            Member {
+                version: Some("0.1204.40300"),
+                ..Member::new("frankenBam", last_two_epochs(50, Some(12), None))
+            },
+            Member {
+                version: Some("26.9.4"),
+                ..Member::new("fireBam", last_two_epochs(20, Some(12), None))
+            },
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let stake = |groups: &HashMap<String, GroupHistory>, key: &str| {
+            let group = group_history(groups, key).unwrap_or_else(|| panic!("no group {key}"));
+            (group.name.clone(), point(group, CURRENT_EPOCH).total_stake)
+        };
+        assert_eq!(
+            stake(&history.client_lineages, "agave"),
+            ("Agave".to_string(), Decimal::from(400))
+        );
+        assert_eq!(
+            stake(&history.client_labels, "Agave"),
+            ("Agave".to_string(), Decimal::from(300))
+        );
+        assert_eq!(
+            stake(&history.client_labels, "agave + jitobam"),
+            ("Agave + JitoBAM".to_string(), Decimal::from(100))
+        );
+        assert_eq!(
+            stake(&history.client_lineages, "Frankendancer"),
+            ("Frankendancer".to_string(), Decimal::from(50)),
+            "id 12 on a 0.x version is Frankendancer"
+        );
+        assert_eq!(
+            stake(&history.client_labels, "Frankendancer + JitoBAM"),
+            ("Frankendancer + JitoBAM".to_string(), Decimal::from(50))
+        );
+        assert_eq!(
+            stake(&history.client_lineages, "Firedancer"),
+            ("Firedancer".to_string(), Decimal::from(20))
+        );
+        assert_eq!(history.client_lineages.len(), 3);
+        assert_eq!(history.client_labels.len(), 4);
+    }
+
+    #[test]
+    fn history_shares_are_of_every_validator_with_a_row() {
+        let validators = validators(vec![
+            Member::new("live", last_two_epochs(200, AGAVE, Some("Hetzner"))),
+            // Gone from the newest epoch, so `/validators` no longer serves it.
+            Member::new("gone", vec![(PREVIOUS_EPOCH, 600, AGAVE, Some("Latitude"))]),
+            Member::new(
+                "unplaced",
+                vec![
+                    (CURRENT_EPOCH, 200, AGAVE, None),
+                    (PREVIOUS_EPOCH, 0, AGAVE, None),
+                ],
+            ),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let hetzner = &history.providers["hetzner"];
+        assert!((point(hetzner, CURRENT_EPOCH).stake_share - 0.5).abs() < 1e-12);
+        assert!((point(hetzner, PREVIOUS_EPOCH).stake_share - 0.25).abs() < 1e-12);
+        assert_eq!(
+            point(&history.providers["latitude"], PREVIOUS_EPOCH).total_stake,
+            Decimal::from(600),
+            "a validator the list no longer serves still has its history"
+        );
+        let unknown = group_history(&history.providers, UNKNOWN_GROUP).unwrap();
+        assert_eq!(unknown.name, UNKNOWN_GROUP);
+        assert!((point(unknown, CURRENT_EPOCH).stake_share - 0.5).abs() < 1e-12);
+        assert_eq!(point(unknown, CURRENT_EPOCH).validator_count, 1);
+        assert_eq!(
+            history.providers.len(),
+            3,
+            "a validator with no provider is in the Unknown group, as on /providers"
+        );
+    }
+
+    #[test]
+    fn history_serves_the_unknown_group_under_any_placeholder_key() {
+        let validators = validators(vec![Member::new(
+            "unregistered",
+            last_two_epochs(100, Some(99), None),
+        )]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        for key in ["Unknown", "unknown", "Unknown(99)"] {
+            for groups in [&history.providers, &history.client_lineages] {
+                let group = group_history(groups, key).unwrap_or_else(|| panic!("no group {key}"));
+                assert_eq!(point(group, CURRENT_EPOCH).total_stake, Decimal::from(100));
+            }
+        }
+        assert!(group_history(&history.providers, "").is_none());
+        assert!(group_history(&history.providers, "Hetzner").is_none());
+    }
+
+    #[test]
+    fn history_rates_are_stake_weighted_over_the_members_that_have_one() {
+        let validators = validators(vec![
+            Member::new("rated", last_two_epochs(300, AGAVE, Some("Hetzner"))),
+            Member::new("unrated", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+            Member::new("nan", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+            Member::new("small", last_two_epochs(100, AGAVE, Some("Latitude"))),
+            Member::new("big", last_two_epochs(300, AGAVE, Some("Latitude"))),
+        ]);
+        let end = epoch_end_unix(&validators, PREVIOUS_EPOCH);
+        let take_rates = HashMap::from([
+            (("rated".to_string(), PREVIOUS_EPOCH), 0.1),
+            (("nan".to_string(), PREVIOUS_EPOCH), f64::NAN),
+            (("small".to_string(), PREVIOUS_EPOCH), 0.2),
+            (("big".to_string(), PREVIOUS_EPOCH), 0.0),
+        ]);
+        let net_apy = HashMap::from([
+            ("rated".to_string(), vec![(end + 57, 0.07)]),
+            ("small".to_string(), vec![(end - 16, 0.08)]),
+            ("big".to_string(), vec![(end, 0.06)]),
+        ]);
+        let history = aggregate_history(&validators, &take_rates, &net_apy);
+
+        let hetzner = point(&history.providers["hetzner"], PREVIOUS_EPOCH);
+        assert_eq!(
+            (hetzner.take_rate, hetzner.net_apy),
+            (Some(0.1), Some(0.07)),
+            "a member with no or a non-finite rate leaves the weight instead of counting as zero"
+        );
+        let latitude = point(&history.providers["latitude"], PREVIOUS_EPOCH);
+        assert!((latitude.take_rate.unwrap() - 0.05).abs() < 1e-12);
+        assert!((latitude.net_apy.unwrap() - 0.065).abs() < 1e-12);
+    }
+
+    #[test]
+    fn history_leaves_the_open_epoch_without_rates() {
+        let mut validators = validators(vec![Member::new(
+            "rated",
+            last_two_epochs(300, AGAVE, Some("Hetzner")),
+        )]);
+        let end = epoch_end_unix(&validators, CURRENT_EPOCH);
+        open_current_epoch(&mut validators);
+        let take_rates = HashMap::from([
+            (("rated".to_string(), CURRENT_EPOCH), 0.1),
+            (("rated".to_string(), PREVIOUS_EPOCH), 0.2),
+        ]);
+        let net_apy = HashMap::from([("rated".to_string(), vec![(end, 0.07)])]);
+        let history = aggregate_history(&validators, &take_rates, &net_apy);
+
+        let hetzner = &history.providers["hetzner"];
+        let open = point(hetzner, CURRENT_EPOCH);
+        assert_eq!(open.epoch_end_at, None);
+        assert_eq!((open.net_apy, open.take_rate), (None, None));
+        assert_eq!(open.total_stake, Decimal::from(300));
+        assert_eq!(point(hetzner, PREVIOUS_EPOCH).take_rate, Some(0.2));
+    }
+
+    #[test]
+    fn history_takes_the_net_apy_point_nearest_the_epoch_end_within_an_hour() {
+        let validators = validators(vec![
+            Member::new("near", last_two_epochs(100, AGAVE, Some("Hetzner"))),
+            Member::new("far", last_two_epochs(100, AGAVE, Some("Latitude"))),
+        ]);
+        let end = epoch_end_unix(&validators, PREVIOUS_EPOCH);
+        let net_apy = HashMap::from([
+            (
+                "near".to_string(),
+                vec![(end - 1800, 0.05), (end + 30, 0.07), (end + 3000, 0.09)],
+            ),
+            (
+                "far".to_string(),
+                vec![(end - 7200, 0.05), (end + 7200, 0.09)],
+            ),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &net_apy);
+
+        assert_eq!(
+            point(&history.providers["hetzner"], PREVIOUS_EPOCH).net_apy,
+            Some(0.07)
+        );
+        assert_eq!(
+            point(&history.providers["latitude"], PREVIOUS_EPOCH).net_apy,
+            None,
+            "a point two hours off belongs to no epoch end"
         );
     }
 }

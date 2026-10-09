@@ -1,5 +1,6 @@
 use crate::context::WrappedContext;
 use crate::metrics;
+use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
@@ -9,11 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClientRelease, ClusterStats, CommissionRecord, ScoringRunRecord, UptimeRecord,
-    ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord, ValidatorScoreRecord,
-    VersionRecord,
+    ClientLevel, ClientRelease, ClusterStats, CommissionRecord, GroupHistory, ScoringRunRecord,
+    UptimeRecord, ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord,
+    ValidatorScoreRecord, VersionRecord,
 };
-use store::groups::{ClientReleases, ValidatorGroupings};
+use store::groups::{group_history, net_apy_at, ClientReleases, ValidatorGroupings};
 use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -25,7 +26,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 7;
+const WARM_STEPS: usize = 9;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Raw incident material the served `incidents` arrays are projected from, per vote account.
@@ -37,6 +38,7 @@ type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedEpochRewardMix = HashMap<u64, RewardMixShares>;
+type CachedEpochTakeRates = HashMap<(String, u64), f64>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {
@@ -71,10 +73,21 @@ pub struct CachedNetApy {
     pub last_success: Option<SystemTime>,
 }
 
+// apy-api's rolling net APY series per vote account, fetched once per closed epoch.
+#[derive(Default, Clone)]
+pub struct CachedNetApyHistory {
+    pub closed_epoch: Option<u64>,
+    pub series: HashMap<String, Vec<(i64, f64)>>,
+    pub last_success: Option<SystemTime>,
+}
+
 #[derive(Default)]
 pub struct Cache {
     pub bond_flags: CachedBondFlags,
     pub net_apy: CachedNetApy,
+    pub net_apy_history: CachedNetApyHistory,
+    pub history_net_apy_updated_at: Option<SystemTime>,
+    pub epoch_take_rates: CachedEpochTakeRates,
     pub validators: CachedValidators,
     pub validator_incidents: CachedValidatorIncidents,
     pub validator_groups: CachedValidatorGroups,
@@ -172,6 +185,23 @@ impl Cache {
 
     pub fn get_provider_groups(&self) -> ValidatorProviderGroups {
         self.validator_groups.providers.clone()
+    }
+
+    pub fn get_provider_history(&self, name: &str) -> Option<GroupHistory> {
+        group_history(&self.validator_groups.history.providers, name).cloned()
+    }
+
+    pub fn get_client_history(&self, key: &str, level: ClientLevel) -> Option<GroupHistory> {
+        let history = &self.validator_groups.history;
+        let groups = match level {
+            ClientLevel::Lineage => &history.client_lineages,
+            ClientLevel::Label => &history.client_labels,
+        };
+        group_history(groups, key).cloned()
+    }
+
+    pub fn net_apy_history_updated_at(&self) -> Option<SystemTime> {
+        self.history_net_apy_updated_at
     }
 
     // The older of the two flags, since a consumer has to assume the worse freshness of the pair.
@@ -334,6 +364,44 @@ fn resolve_net_apy(
     last
 }
 
+fn net_apy_history_epoch_to_fetch(
+    cached_epoch: Option<u64>,
+    closed_epoch: Option<(u64, DateTime<Utc>)>,
+) -> Option<(u64, DateTime<Utc>)> {
+    closed_epoch.filter(|(epoch, _)| Some(*epoch) != cached_epoch)
+}
+
+// Until the closed epoch's end has a point the cached epoch stays behind, so the next refresh retries.
+fn resolve_net_apy_history(
+    cached_epoch: Option<u64>,
+    (closed_epoch, end_at): (u64, DateTime<Utc>),
+    fetched: anyhow::Result<HashMap<String, Vec<(i64, f64)>>>,
+) -> Option<CachedNetApyHistory> {
+    match fetched {
+        Ok(series) => {
+            let covered = series
+                .values()
+                .any(|series| net_apy_at(series, end_at.timestamp()).is_some());
+            if !covered {
+                warn!("apy-api has no net APY at the end of epoch {closed_epoch} yet");
+            }
+            Some(CachedNetApyHistory {
+                closed_epoch: if covered {
+                    Some(closed_epoch)
+                } else {
+                    cached_epoch
+                },
+                series,
+                last_success: Some(SystemTime::now()),
+            })
+        }
+        Err(err) => {
+            error!("Failed to load validator net APY history, keeping the last snapshot: {err}");
+            None
+        }
+    }
+}
+
 pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading validators from DB");
     let warmup_timer = Instant::now();
@@ -349,7 +417,16 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         .unwrap_or_default();
 
     // Scoped so the guard is released before the awaits below, not held to the end of the call.
-    let (scoring_url, bonds_url, apy_url, last_flags, last_net_apy) = {
+    let (
+        scoring_url,
+        bonds_url,
+        apy_url,
+        last_flags,
+        last_net_apy,
+        epoch_take_rates,
+        net_apy_history,
+        history_net_apy_updated_at,
+    ) = {
         let ctx = context.read().await;
         (
             ctx.scoring_url.clone(),
@@ -357,6 +434,9 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
             ctx.apy_api_url.clone(),
             ctx.cache.bond_flags.clone(),
             ctx.cache.net_apy.clone(),
+            ctx.cache.epoch_take_rates.clone(),
+            ctx.cache.net_apy_history.series.clone(),
+            ctx.cache.net_apy_history.last_success,
         )
     };
 
@@ -437,7 +517,9 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
                 record.incidents =
                     validator_incidents.into_response_incidents(vote_account, &filters);
             }
-            let validator_groups = store::groups::aggregate_all(&validators, &releases);
+            let mut validator_groups = store::groups::aggregate_all(&validators, &releases);
+            validator_groups.history =
+                store::groups::aggregate_history(&validators, &epoch_take_rates, &net_apy_history);
             (validators, validator_incidents, validator_groups)
         })
         .await?;
@@ -456,6 +538,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.validators = validators;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
+        ctx.cache.history_net_apy_updated_at = history_net_apy_updated_at;
         // Inside the commit: a failed warm must not leave the gauge describing unserved records.
         record_inflation_commission_sources(ctx.cache.validators.values());
         record_unhealthy_collectors(ctx.cache.validators.values());
@@ -545,6 +628,72 @@ pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Re
 
     Ok(())
 }
+pub async fn warm_epoch_take_rates_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading epoch take rates from DB");
+    let warmup_timer = Instant::now();
+    let epoch_take_rates = store::take_rates::load_epoch_take_rates(
+        &context.read().await.psql_client,
+        DEFAULT_CACHE_EPOCHS,
+    )
+    .await?;
+
+    let take_rates_len = epoch_take_rates.len();
+    context.write().await.cache.epoch_take_rates = epoch_take_rates;
+    info!(
+        "Loaded {take_rates_len} epoch take rates to cache in {} ms",
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+pub async fn warm_net_apy_history_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    let warmup_timer = Instant::now();
+    let closed_epoch =
+        store::utils::load_last_closed_epoch(&context.read().await.psql_client).await?;
+    let (apy_url, cached_epoch) = {
+        let ctx = context.read().await;
+        (
+            ctx.apy_api_url.clone(),
+            ctx.cache.net_apy_history.closed_epoch,
+        )
+    };
+    let Some(closed) = net_apy_history_epoch_to_fetch(cached_epoch, closed_epoch) else {
+        info!("Closed epoch unchanged, keeping the cached net APY history");
+        return Ok(());
+    };
+
+    info!(
+        "Loading net APY history from apy-api for closed epoch {}",
+        closed.0
+    );
+    let (vote_accounts, first_start_at) = store::utils::load_net_apy_history_scope(
+        &context.read().await.psql_client,
+        DEFAULT_CACHE_EPOCHS,
+    )
+    .await?;
+    let fetched = match first_start_at {
+        Some(first_start_at) => {
+            store::utils::load_validator_net_apy_history(
+                &apy_url,
+                &vote_accounts,
+                first_start_at.timestamp(),
+            )
+            .await
+        }
+        None => Err(anyhow::anyhow!("no epoch of the cached window has started")),
+    };
+
+    if let Some(history) = resolve_net_apy_history(cached_epoch, closed, fetched) {
+        let series_len = history.series.len();
+        context.write().await.cache.net_apy_history = history;
+        info!(
+            "Loaded net APY history of {series_len} validators to cache in {} ms",
+            warmup_timer.elapsed().as_millis()
+        );
+    }
+
+    Ok(())
+}
 pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     info!("Loading scores from DB");
     let warmup_timer = Instant::now();
@@ -624,6 +773,12 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
         ("cluster_stats", |c| Box::pin(warm_cluster_stats_cache(c))),
         ("epoch_reward_mix", |c| {
             Box::pin(warm_epoch_reward_mix_cache(c))
+        }),
+        ("epoch_take_rates", |c| {
+            Box::pin(warm_epoch_take_rates_cache(c))
+        }),
+        ("net_apy_history", |c| {
+            Box::pin(warm_net_apy_history_cache(c))
         }),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
     ]
@@ -1021,6 +1176,74 @@ mod tests {
             "the rolling APY still describes the epoch it was computed for"
         );
         assert_eq!(resolved.last_success, Some(fetched_at));
+    }
+
+    fn closed(epoch: u64) -> (u64, DateTime<Utc>) {
+        (epoch, DateTime::from_timestamp(1_000_000, 0).unwrap())
+    }
+
+    #[test]
+    fn net_apy_history_is_fetched_only_when_a_new_epoch_closes() {
+        assert_eq!(
+            net_apy_history_epoch_to_fetch(Some(900), Some(closed(900))),
+            None
+        );
+        assert_eq!(
+            net_apy_history_epoch_to_fetch(Some(900), Some(closed(901))),
+            Some(closed(901))
+        );
+        assert_eq!(
+            net_apy_history_epoch_to_fetch(None, Some(closed(901))),
+            Some(closed(901)),
+            "a cold process fetches the history it never had"
+        );
+        assert_eq!(
+            net_apy_history_epoch_to_fetch(None, None),
+            None,
+            "with no closed epoch there is no window to ask for"
+        );
+    }
+
+    #[test]
+    fn a_net_apy_history_answer_replaces_the_snapshot_for_its_epoch() {
+        let series = HashMap::from([
+            ("voteOne".to_string(), vec![(1_000_030, 0.07)]),
+            ("voteTwo".to_string(), vec![(800_000, 0.06)]),
+        ]);
+        let resolved = resolve_net_apy_history(Some(900), closed(901), Ok(series.clone())).unwrap();
+
+        assert_eq!(resolved.closed_epoch, Some(901));
+        assert_eq!(resolved.series, series);
+        assert!(resolved.last_success.is_some());
+    }
+
+    #[test]
+    fn a_net_apy_history_without_the_closed_epoch_end_is_fetched_again() {
+        let series = HashMap::from([("voteOne".to_string(), vec![(800_000, 0.07)])]);
+        let resolved = resolve_net_apy_history(Some(900), closed(901), Ok(series.clone())).unwrap();
+
+        assert_eq!(
+            resolved.closed_epoch,
+            Some(900),
+            "apy-api lags the epoch close, so the epoch stays behind until its end has a point"
+        );
+        assert_eq!(
+            resolved.series, series,
+            "the newer points of older epochs are kept"
+        );
+        assert_eq!(
+            net_apy_history_epoch_to_fetch(resolved.closed_epoch, Some(closed(901))),
+            Some(closed(901))
+        );
+    }
+
+    #[test]
+    fn a_net_apy_history_failure_keeps_the_last_snapshot() {
+        assert!(
+            resolve_net_apy_history(Some(900), closed(901), Err(anyhow::anyhow!("apy api down")))
+                .is_none(),
+            "the cached epoch must stay behind, so the next refresh retries"
+        );
     }
 
     #[test]

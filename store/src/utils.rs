@@ -564,17 +564,18 @@ pub async fn load_versions(
             row.get::<_, Option<i32>>("client_id").map(|n| n as u16),
             client_id_raw.as_deref(),
         );
+        let version: Option<String> = row.get("version");
         let versions = records
             .entry(vote_account.clone())
             .or_insert(Default::default());
         versions.push(VersionRecord {
             epoch: row.get::<_, Decimal>("epoch").try_into()?,
-            version: row.get("version"),
             client_id,
             client_name: client_name(client_id),
-            client_label: client_label(client_id),
+            client_label: client_label(client_id, version.as_deref()),
             client_vendor: client_vendor(client_id),
-            client_lineage: client_lineage(client_id),
+            client_lineage: client_lineage(client_id, version.as_deref()),
+            version,
             client_id_raw,
             feature_set: row.get::<_, Option<i64>>("feature_set").map(|n| n as u32),
             shred_version: row.get::<_, Option<i32>>("shred_version").map(|n| n as u16),
@@ -1102,6 +1103,101 @@ pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String
     .collect())
 }
 
+// The window `latest/all` applies, so history and `/providers` share one method.
+const NET_APY_WINDOW_S: u64 = 14 * 24 * 3600;
+// apy-api's MAX_BATCH_VALIDATORS.
+const NET_APY_BATCH_SIZE: usize = 150;
+
+#[derive(serde::Deserialize)]
+struct RollingApySeries {
+    times: Vec<i64>,
+    values: Vec<f64>,
+}
+
+pub async fn load_validator_net_apy_history(
+    base: &str,
+    vote_accounts: &[String],
+    from_unix: i64,
+) -> anyhow::Result<HashMap<String, Vec<(i64, f64)>>> {
+    let mut series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
+    for chunk in vote_accounts.chunks(NET_APY_BATCH_SIZE) {
+        let url = format!(
+            "{}/v1/rolling-apy/validator/batch?validators={}&window={NET_APY_WINDOW_S}&from={from_unix}",
+            base.trim_end_matches('/'),
+            chunk.join(",")
+        );
+        let answer = fetch_json::<HashMap<String, RollingApySeries>>(
+            &url,
+            "validator net APY history endpoint",
+        )
+        .await?;
+        series.extend(
+            answer
+                .into_iter()
+                .filter(|(_, points)| !points.times.is_empty())
+                .map(|(vote_account, points)| {
+                    (
+                        vote_account,
+                        points.times.into_iter().zip(points.values).collect(),
+                    )
+                }),
+        );
+    }
+
+    anyhow::ensure!(
+        !series.is_empty(),
+        "apy-api has no net APY history for any of {} validators",
+        vote_accounts.len()
+    );
+    Ok(series)
+}
+
+pub async fn load_last_closed_epoch(
+    psql_client: &Client,
+) -> anyhow::Result<Option<(u64, DateTime<Utc>)>> {
+    let row = psql_client
+        .query_opt(
+            "SELECT epoch, end_at FROM epochs ORDER BY epoch DESC LIMIT 1",
+            &[],
+        )
+        .await?;
+    row.map(|row| {
+        Ok((
+            row.get::<_, Decimal>("epoch").try_into()?,
+            row.get("end_at"),
+        ))
+    })
+    .transpose()
+}
+
+// Not read off the validators cache, so the history loads on a cold start before that step has run.
+pub async fn load_net_apy_history_scope(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<(Vec<String>, Option<DateTime<Utc>>)> {
+    let epochs = Decimal::from(epochs);
+    let vote_accounts = psql_client
+        .query(
+            "SELECT DISTINCT vote_account FROM validators
+             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+             ORDER BY vote_account",
+            &[&epochs],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get("vote_account"))
+        .collect();
+    let first_start_at = psql_client
+        .query_one(
+            "SELECT MIN(start_at) AS start_at FROM epochs
+             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC",
+            &[&epochs],
+        )
+        .await?
+        .get("start_at");
+    Ok((vote_accounts, first_start_at))
+}
+
 // `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
@@ -1393,9 +1489,9 @@ pub async fn load_validators(
                     version: version.clone(),
                     client_id,
                     client_name: client_name(client_id),
-                    client_label: client_label(client_id),
+                    client_label: client_label(client_id, version.as_deref()),
                     client_vendor: client_vendor(client_id),
-                    client_lineage: client_lineage(client_id),
+                    client_lineage: client_lineage(client_id, version.as_deref()),
                     client_id_raw: client_id_raw.clone(),
                     feature_set,
                     shred_version,
@@ -1460,9 +1556,9 @@ pub async fn load_validators(
                 record.version = version.clone();
                 record.client_id = client_id;
                 record.client_name = client_name(client_id);
-                record.client_label = client_label(client_id);
+                record.client_label = client_label(client_id, version.as_deref());
                 record.client_vendor = client_vendor(client_id);
-                record.client_lineage = client_lineage(client_id);
+                record.client_lineage = client_lineage(client_id, version.as_deref());
                 record.client_id_raw = client_id_raw.clone();
                 record.feature_set = feature_set;
                 record.shred_version = shred_version;
@@ -1548,7 +1644,6 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
-                version,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),
@@ -1557,9 +1652,10 @@ pub async fn load_validators(
                 dc_country: row.get::<_, Option<String>>("dc_country"),
                 client_id,
                 client_name: client_name(client_id),
-                client_label: client_label(client_id),
+                client_label: client_label(client_id, version.as_deref()),
                 client_vendor: client_vendor(client_id),
-                client_lineage: client_lineage(client_id),
+                client_lineage: client_lineage(client_id, version.as_deref()),
+                version,
                 client_id_raw,
                 feature_set,
                 shred_version,
@@ -2136,18 +2232,25 @@ async fn load_stake_distribution(
 }
 
 // Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
-const CLIENT_ID_GROUPING: &str = "COALESCE(client_id::TEXT, client_id_raw, '')";
+const CLIENT_ID_GROUPING: &str =
+    "COALESCE(client_id::TEXT, client_id_raw, '') || '|' || COALESCE(version, '')";
 const UNKNOWN_CLIENT_GROUP: &str = "unknown";
 
-fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
-    map(effective_client_id(key.parse().ok(), Some(key)))
-        .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
+// The version rides in the key because id 12's lineage depends on it; a version never holds `|`.
+fn grouped_by(key: &str, map: fn(Option<u16>, Option<&str>) -> Option<String>) -> String {
+    let (client, version) = key.rsplit_once('|').unwrap_or((key, ""));
+    let version = Some(version).filter(|version| !version.is_empty());
+    map(
+        effective_client_id(client.parse().ok(), Some(client)),
+        version,
+    )
+    .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
 }
 
 // SQL groups one row per client id, but several ids share a vendor.
 fn fold_distribution(
     distributions: &[StakeDistribution],
-    map: fn(Option<u16>) -> Option<String>,
+    map: fn(Option<u16>, Option<&str>) -> Option<String>,
 ) -> Vec<StakeDistribution> {
     distributions
         .iter()
@@ -2183,7 +2286,7 @@ fn fold_distribution(
 }
 
 fn client_diversity_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientDiversityStats> {
-    fold_distribution(by_client_id, client_vendor)
+    fold_distribution(by_client_id, |client_id, _| client_vendor(client_id))
         .into_iter()
         .map(|distribution| ClientDiversityStats {
             epoch: distribution.epoch,
@@ -2358,7 +2461,7 @@ pub async fn load_validators_aggregated_flat(
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
                 cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw, (array_agg(version order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_version from versions group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,
@@ -2373,7 +2476,8 @@ pub async fn load_validators_aggregated_flat(
                     coalesce((array_agg((marinade_stake / 1e9)::double precision ORDER BY validators.epoch DESC))[1], 0) AS marinade_stake,
                     coalesce((array_agg(agg_versions.last_version))[1], '0.0.0') AS last_version,
                     (array_agg(agg_versions.last_client_id))[1] AS last_client_id,
-                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw
+                    (array_agg(agg_versions.last_client_id_raw))[1] AS last_client_id_raw,
+                    (array_agg(agg_versions.last_client_version))[1] AS last_client_version
                 FROM
                     validators
                     LEFT JOIN dc ON dc.dc_aso = validators.dc_aso AND dc.epoch = validators.epoch
@@ -2391,13 +2495,14 @@ pub async fn load_validators_aggregated_flat(
 
     let mut validators: Vec<ValidatorAggregatedFlat> = Default::default();
     for row in rows.iter() {
-        // The shared filter plus the id tiebreaker make both aggregates read off one versions row.
+        // The shared filter plus the id tiebreaker make the client columns read off one versions row.
         let last_client_id_raw: Option<String> = row.get("last_client_id_raw");
         let last_client_id = effective_client_id(
             row.get::<_, Option<i32>>("last_client_id")
                 .map(|n| n as u16),
             last_client_id_raw.as_deref(),
         );
+        let last_client_version: Option<String> = row.get("last_client_version");
         validators.push(ValidatorAggregatedFlat {
             vote_account: row.get("vote_account"),
             minimum_stake: row.get("minimum_stake"),
@@ -2412,7 +2517,7 @@ pub async fn load_validators_aggregated_flat(
             version: row.get("last_version"),
             client_vendor: client_vendor(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
-            client_lineage: client_lineage(last_client_id)
+            client_lineage: client_lineage(last_client_id, last_client_version.as_deref())
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
             max_inflation_rewards_commission_bps: row.get("max_inflation_rewards_commission_bps"),
         });

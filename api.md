@@ -188,6 +188,42 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 }
 ```
 
+## Provider and client history
+One `/providers` or `/clients` group per epoch, newest first, one row per cached epoch (90).
+- `/providers/history?name=` - a `/providers` key.
+- `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
+- `epochs` - how many newest epochs to return, 1 to 90, default 90.
+
+Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
+client are in the `Unknown` group, as on the lists. Each epoch counts the validators whose
+own row for that epoch puts them in the group, so a validator that moved counts in the old group
+before the move. `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api
+14-day rolling staker APY at the epoch end) and `take_rate` (realized, `validators_rewards`) are
+stake-weighted over the members that have one, and `null` for the open epoch (`epoch_end_at: null`).
+An epoch the group had no member in is a zero-stake row.
+```bash
+curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
+```
+```json
+{
+  "name": "Agave + JitoBAM",
+  "current_epoch": 1050,
+  "net_apy_updated_at": "2026-10-07T12:00:00Z",
+  "epochs": [
+    {
+      "epoch": 1050,
+      "epoch_start_at": "2026-10-06T10:00:00Z",
+      "epoch_end_at": null,
+      "total_stake": "41000000000000000",
+      "stake_share": 0.105,
+      "validator_count": 120,
+      "net_apy": null,
+      "take_rate": null
+    }
+  ]
+}
+```
+
 ## Versions
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/versions | jq
