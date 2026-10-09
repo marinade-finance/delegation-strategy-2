@@ -663,6 +663,7 @@ mod tests {
             },
             ValidatorGroupRecord {
                 activating_stake: Some(Decimal::from(500)),
+                deactivating_stake: Some(Decimal::ZERO),
                 ..group("netPendingStake", 100)
             },
         ];

@@ -2056,6 +2056,40 @@ mod tests {
     }
 
     #[test]
+    fn net_pending_stake_orders_the_validators_and_the_operators_alike() {
+        let pending =
+            |vote_account: &str, activating: i64, deactivating: i64, operator| ValidatorRecord {
+                activating_stake: Some(Decimal::from(activating)),
+                deactivating_stake: Some(Decimal::from(deactivating)),
+                ..operated(vote_account, 100, operator)
+            };
+        let operator_pending =
+            |key: &str, activating: i64, deactivating: i64| ValidatorGroupRecord {
+                activating_stake: Some(Decimal::from(activating)),
+                deactivating_stake: Some(Decimal::from(deactivating)),
+                ..operator(key, 100)
+            };
+        // X takes in more stake than the lone validator but loses more, so it ranks below it.
+        assert_eq!(
+            by_operator(
+                vec![
+                    pending("gainingOfX", 500, 0, Some("X")),
+                    pending("drainingOfX", 0, 900, Some("X")),
+                    pending("alone", 200, 0, None),
+                    pending("ofY", 300, 0, Some("Y")),
+                ],
+                vec![
+                    operator_pending("X", 500, 900),
+                    operator_pending("Y", 300, 0),
+                ],
+                OrderField::NetPendingStake,
+                &OrderDirection::DESC,
+            ),
+            vec!["ofY", "alone", "gainingOfX", "drainingOfX"]
+        );
+    }
+
+    #[test]
     fn every_validator_counts_as_one_so_a_count_leaves_them_on_the_vote_account_tiebreak() {
         assert_eq!(
             by_operator(
@@ -2340,13 +2374,23 @@ mod tests {
     }
 
     #[test]
-    fn net_pending_stake_orders_losses_below_zero_and_sinks_a_validator_without_either_side() {
+    fn net_pending_stake_orders_losses_below_zero_and_sinks_a_validator_missing_either_side() {
         let rows = || {
             vec![
                 ValidatorRecord {
                     activating_stake: None,
                     deactivating_stake: None,
                     ..validator("unknown", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: None,
+                    deactivating_stake: Some(Decimal::from(2000)),
+                    ..validator("draining", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(500)),
+                    deactivating_stake: None,
+                    ..validator("filling", 100, vec![])
                 },
                 ValidatorRecord {
                     activating_stake: Some(Decimal::from(100)),
@@ -2360,7 +2404,7 @@ mod tests {
                 },
                 ValidatorRecord {
                     activating_stake: Some(Decimal::from(300)),
-                    deactivating_stake: None,
+                    deactivating_stake: Some(Decimal::ZERO),
                     ..validator("gaining", 100, vec![])
                 },
             ]
@@ -2373,11 +2417,11 @@ mod tests {
         };
         assert_eq!(
             order(OrderDirection::DESC),
-            vec!["gaining", "still", "losing", "unknown"]
+            vec!["gaining", "still", "losing", "draining", "filling", "unknown"]
         );
         assert_eq!(
             order(OrderDirection::ASC),
-            vec!["losing", "still", "gaining", "unknown"]
+            vec!["losing", "still", "gaining", "draining", "filling", "unknown"]
         );
     }
 

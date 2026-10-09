@@ -2258,6 +2258,8 @@ mod tests {
             uptime_pct: Some(0.99),
             expected_take_rate: Some(0.04),
             unique_delegators: Some(12),
+            activating_stake: Some(700),
+            deactivating_stake: Some(200),
             incidents_days_ago: vec![1],
             ..Member::new(FIGMENT_ONE, last_two_epochs(300, AGAVE, None))
         }]);

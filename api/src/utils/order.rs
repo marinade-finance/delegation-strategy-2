@@ -12,8 +12,7 @@ pub enum OrderField {
     StakeDelta7d,
     StakeDelta30d,
     ActivatingStake,
-    /// Orders by `activating_stake` minus `deactivating_stake`: what the row gains, or loses below
-    /// zero, at the next epoch boundary.
+    /// Orders by `activating_stake` minus `deactivating_stake`, negative when the row loses stake.
     NetPendingStake,
     Credits,
     MarinadeScore,
@@ -59,17 +58,14 @@ impl From<Option<Decimal>> for SortKey {
     }
 }
 
-/// `Missing` only when neither side is reported; a side that is reported alone nets against zero.
 pub fn net_pending_stake(
     activating_stake: Option<Decimal>,
     deactivating_stake: Option<Decimal>,
 ) -> SortKey {
-    match (activating_stake, deactivating_stake) {
-        (None, None) => SortKey::Missing,
-        (activating, deactivating) => {
-            SortKey::Number(activating.unwrap_or_default() - deactivating.unwrap_or_default())
-        }
-    }
+    activating_stake
+        .zip(deactivating_stake)
+        .map(|(activating, deactivating)| activating - deactivating)
+        .into()
 }
 
 /// `Missing` stays last whichever way the present values go.
