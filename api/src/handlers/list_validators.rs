@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::order::{
-    compare_keys, OrderDirection, OrderField, SortKey, DEFAULT_ORDER_DIRECTION, DEFAULT_ORDER_FIELD,
+    compare_keys, net_pending_stake, OrderDirection, OrderField, SortKey, DEFAULT_ORDER_DIRECTION,
+    DEFAULT_ORDER_FIELD,
 };
 use crate::utils::response::{response_error, response_error_500};
 use crate::utils::validator_groups::{
@@ -474,6 +475,9 @@ fn get_field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::StakeDelta7d => |a: &ValidatorRecord| a.stake_delta_7d.into(),
         OrderField::StakeDelta30d => |a: &ValidatorRecord| a.stake_delta_30d.into(),
         OrderField::ActivatingStake => |a: &ValidatorRecord| a.activating_stake.into(),
+        OrderField::NetPendingStake => {
+            |a: &ValidatorRecord| net_pending_stake(a.activating_stake, a.deactivating_stake)
+        }
         // The name the list shows: what it reports for itself, or its vote account when it reports none.
         OrderField::Name => |a: &ValidatorRecord| {
             SortKey::Text(
@@ -2052,6 +2056,40 @@ mod tests {
     }
 
     #[test]
+    fn net_pending_stake_orders_the_validators_and_the_operators_alike() {
+        let pending =
+            |vote_account: &str, activating: i64, deactivating: i64, operator| ValidatorRecord {
+                activating_stake: Some(Decimal::from(activating)),
+                deactivating_stake: Some(Decimal::from(deactivating)),
+                ..operated(vote_account, 100, operator)
+            };
+        let operator_pending =
+            |key: &str, activating: i64, deactivating: i64| ValidatorGroupRecord {
+                activating_stake: Some(Decimal::from(activating)),
+                deactivating_stake: Some(Decimal::from(deactivating)),
+                ..operator(key, 100)
+            };
+        // X takes in more stake than the lone validator but loses more, so it ranks below it.
+        assert_eq!(
+            by_operator(
+                vec![
+                    pending("gainingOfX", 500, 0, Some("X")),
+                    pending("drainingOfX", 0, 900, Some("X")),
+                    pending("alone", 200, 0, None),
+                    pending("ofY", 300, 0, Some("Y")),
+                ],
+                vec![
+                    operator_pending("X", 500, 900),
+                    operator_pending("Y", 300, 0),
+                ],
+                OrderField::NetPendingStake,
+                &OrderDirection::DESC,
+            ),
+            vec!["ofY", "alone", "gainingOfX", "drainingOfX"]
+        );
+    }
+
+    #[test]
     fn every_validator_counts_as_one_so_a_count_leaves_them_on_the_vote_account_tiebreak() {
         assert_eq!(
             by_operator(
@@ -2333,6 +2371,58 @@ mod tests {
         );
         let order: Vec<_> = validators.iter().map(|v| v.vote_account.clone()).collect();
         assert_eq!(order, vec!["big", "small", "unknown"]);
+    }
+
+    #[test]
+    fn net_pending_stake_orders_losses_below_zero_and_sinks_a_validator_missing_either_side() {
+        let rows = || {
+            vec![
+                ValidatorRecord {
+                    activating_stake: None,
+                    deactivating_stake: None,
+                    ..validator("unknown", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: None,
+                    deactivating_stake: Some(Decimal::from(2000)),
+                    ..validator("draining", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(500)),
+                    deactivating_stake: None,
+                    ..validator("filling", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(100)),
+                    deactivating_stake: Some(Decimal::from(900)),
+                    ..validator("losing", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::ZERO),
+                    deactivating_stake: Some(Decimal::ZERO),
+                    ..validator("still", 100, vec![])
+                },
+                ValidatorRecord {
+                    activating_stake: Some(Decimal::from(300)),
+                    deactivating_stake: Some(Decimal::ZERO),
+                    ..validator("gaining", 100, vec![])
+                },
+            ]
+        };
+        let order = |direction| -> Vec<_> {
+            sort_validators(rows(), OrderField::NetPendingStake, &direction)
+                .iter()
+                .map(|v| v.vote_account.clone())
+                .collect()
+        };
+        assert_eq!(
+            order(OrderDirection::DESC),
+            vec!["gaining", "still", "losing", "draining", "filling", "unknown"]
+        );
+        assert_eq!(
+            order(OrderDirection::ASC),
+            vec!["losing", "still", "gaining", "draining", "filling", "unknown"]
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::utils::order::{compare_keys, OrderDirection, OrderField, SortKey};
+use crate::utils::order::{compare_keys, net_pending_stake, OrderDirection, OrderField, SortKey};
 use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -36,6 +36,9 @@ fn field_extractor(order_field: OrderField) -> FieldExtractor {
         OrderField::StakeDelta7d => |group: &ValidatorGroupRecord| group.stake_delta_7d.into(),
         OrderField::StakeDelta30d => |group: &ValidatorGroupRecord| group.stake_delta_30d.into(),
         OrderField::ActivatingStake => |group: &ValidatorGroupRecord| group.activating_stake.into(),
+        OrderField::NetPendingStake => |group: &ValidatorGroupRecord| {
+            net_pending_stake(group.activating_stake, group.deactivating_stake)
+        },
         OrderField::NetApy => {
             |group: &ValidatorGroupRecord| group.net_apy.and_then(Decimal::from_f64_retain).into()
         }
@@ -655,7 +658,13 @@ mod tests {
             },
             ValidatorGroupRecord {
                 activating_stake: Some(Decimal::from(900)),
+                deactivating_stake: Some(Decimal::from(900)),
                 ..group("activatingStake", 100)
+            },
+            ValidatorGroupRecord {
+                activating_stake: Some(Decimal::from(500)),
+                deactivating_stake: Some(Decimal::ZERO),
+                ..group("netPendingStake", 100)
             },
         ];
 
@@ -675,6 +684,7 @@ mod tests {
             (OrderField::Uptime, "uptime"),
             (OrderField::ExpectedTakeRate, "expectedTakeRate"),
             (OrderField::ActivatingStake, "activatingStake"),
+            (OrderField::NetPendingStake, "netPendingStake"),
         ] {
             let page = page_groups(
                 providers(rows.clone()),
