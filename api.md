@@ -116,6 +116,8 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 `credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
 
+`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. `null` means it held no stake then and is not a committee member. SIMD-0357 admission filtering is not applied.
+
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 
 `order_field=Credits` sorts on `credits`, then on the vote reward per lamport of stake. `/clients` and `/providers` use `vote_reward_per_stake` as the second key. This field is the stake-weighted mean of the same ratio.
