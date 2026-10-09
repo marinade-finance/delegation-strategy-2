@@ -16,7 +16,7 @@ async fn seed(client: &mut Client, schema: &str, epoch: u64, activated_stake: u6
     store_snapshot(client, schema, &snapshot).await;
 }
 
-async fn epoch_stakes(client: &Client) -> HashMap<u64, Option<u64>> {
+async fn epoch_stakes(client: &Client) -> HashMap<u64, Option<Decimal>> {
     client
         .execute(
             "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
@@ -57,7 +57,7 @@ async fn epoch_stake_is_the_activated_stake_of_the_previous_epoch() {
     seed(&mut client, schema, EPOCH, 150).await;
 
     let stakes = epoch_stakes(&client).await;
-    assert_eq!(stakes.get(&EPOCH), Some(&Some(100)));
+    assert_eq!(stakes.get(&EPOCH), Some(&Some(Decimal::from(100))));
     assert_eq!(stakes.get(&(EPOCH - 1)), Some(&None));
 }
 
@@ -90,4 +90,20 @@ async fn a_gap_epoch_leaves_the_next_one_without_a_member_stake() {
     let stakes = epoch_stakes(&client).await;
     assert_eq!(stakes.get(&EPOCH), Some(&None));
     assert_eq!(stakes.get(&(EPOCH - 2)), Some(&None));
+}
+
+#[tokio::test]
+async fn the_oldest_displayed_epoch_reads_its_previous_epoch_outside_the_window() {
+    let schema = "ds_test_epoch_stake_window";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    seed(&mut client, schema, EPOCH - 3, 100).await;
+    seed(&mut client, schema, EPOCH - 2, 150).await;
+
+    let stakes = epoch_stakes(&client).await;
+    assert_eq!(stakes.get(&(EPOCH - 3)), None);
+    assert_eq!(stakes.get(&(EPOCH - 2)), Some(&Some(Decimal::from(100))));
 }
