@@ -17,7 +17,7 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "Get provider history",
-    description = "Per-epoch stake, stake share, net APY and take rate of one `/providers` group, newest epoch first, one row per cached epoch. `name` is a `/providers` key, matched case-insensitively. Each epoch counts the validators whose own row for that epoch names the provider; `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized) are weighted by each member's stake that epoch, and null for the open epoch, whose `epoch_end_at` is null. `epochs` defaults to and is capped at 90.",
+    description = "Per-epoch stake, stake share, net APY and take rate of one `/providers` group, newest epoch first.",
     path = "/providers/history",
     params(QueryParams),
     responses(

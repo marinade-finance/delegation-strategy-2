@@ -19,7 +19,7 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "Get client history",
-    description = "Per-epoch stake, stake share, net APY and take rate of one `/clients` group, newest epoch first, one row per cached epoch. `key` is matched case-insensitively against a parent row of `/clients` (`level=lineage`, the default, e.g. `Agave`) or a child row (`level=label`, e.g. `Agave + JitoBAM`). Each epoch counts the validators whose own row for that epoch reports that client; `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized) are weighted by each member's stake that epoch, and null for the open epoch, whose `epoch_end_at` is null. `epochs` defaults to and is capped at 90.",
+    description = "Per-epoch stake, stake share, net APY and take rate of one `/clients` group (`level=lineage` or `label`), newest epoch first.",
     path = "/clients/history",
     params(QueryParams),
     responses(
