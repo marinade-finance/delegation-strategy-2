@@ -4,7 +4,9 @@ use chrono::{DateTime, Duration, Utc};
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::take_rates::{get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates};
+use store::take_rates::{
+    get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates, refresh_expected_take_rates,
+};
 use store::utils::RewardMixShares;
 use tokio_postgres::Client;
 
@@ -295,6 +297,78 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
         .unwrap();
 }
 
+async fn stored_expected_take_rate(client: &Client, vote_account: &str, epoch: u64) -> Option<f64> {
+    client
+        .query_one(
+            "SELECT expected_take_rate FROM validators_rewards WHERE vote_account = $1 AND epoch = $2",
+            &[&vote_account, &Decimal::from(epoch)],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+async fn refresh_stores_each_rows_expected_take_rate_under_its_epochs_mix() {
+    let schema = "ds_test_refresh_expected_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    // Rewards components 90/4/6 make the epoch mix equal MIX.
+    for epoch in [3001, 3002, 3003] {
+        insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
+    }
+    insert_validator(&client, 3001, Some(10), Some(10)).await;
+    insert_mev(&client, 3001, 800, Utc::now()).await;
+    insert_priority_fee(&client, 3001, 2000).await;
+    insert_validator(&client, 3002, Some(10), Some(10)).await;
+    insert_priority_fee(&client, 3002, 2000).await;
+
+    assert_eq!(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        None,
+        "nothing is stored before a refresh"
+    );
+    assert_eq!(
+        refresh_expected_take_rates(&client, &[3001, 3002, 3003])
+            .await
+            .unwrap(),
+        3
+    );
+
+    approx(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        0.1052,
+        "all three commissions known",
+    );
+    approx(
+        stored_expected_take_rate(&client, VOTE, 3002).await,
+        0.102 / 0.96,
+        "no MEV account leaves the MEV share out",
+    );
+    assert_eq!(
+        stored_expected_take_rate(&client, VOTE, 3003).await,
+        None,
+        "no commission recorded stores null, not zero"
+    );
+
+    // Another validator's rewards change the epoch mix to 90/4/106, so VOTE's rate moves too.
+    insert_reward_components(&client, "voteOther", 3001, 0, 0, 100).await;
+    refresh_expected_take_rates(&client, &[3001]).await.unwrap();
+    approx(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        (0.1 * 90.0 + 0.08 * 4.0 + 0.2 * 106.0) / 200.0,
+        "a row added to the epoch reweights every row of it",
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     let schema = "ds_test_epoch_reward_mix";
@@ -309,7 +383,7 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     insert_reward_components(&client, VOTE, 2003, 0, 0, 0).await;
     insert_reward_components(&client, VOTE, 2004, 0, 0, 50).await;
 
-    let mix = load_epoch_reward_mix(&client).await.unwrap();
+    let mix = load_epoch_reward_mix(&client, None).await.unwrap();
 
     let shared = mix[&2001];
     approx(

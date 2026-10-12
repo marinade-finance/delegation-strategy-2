@@ -625,7 +625,7 @@ pub async fn warm_epoch_reward_mix_cache(context: &WrappedContext) -> anyhow::Re
     info!("Loading epoch reward mix from DB");
     let warmup_timer = Instant::now();
     let epoch_reward_mix =
-        store::take_rates::load_epoch_reward_mix(&context.read().await.psql_client).await?;
+        store::take_rates::load_epoch_reward_mix(&context.read().await.psql_client, None).await?;
 
     let epochs_len = epoch_reward_mix.len();
     context.write().await.cache.epoch_reward_mix = epoch_reward_mix;
