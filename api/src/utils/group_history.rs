@@ -89,6 +89,7 @@ mod tests {
             validator_count: 0,
             net_apy: None,
             take_rate: None,
+            expected_take_rate: None,
         }
     }
 

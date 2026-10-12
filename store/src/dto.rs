@@ -1088,6 +1088,7 @@ pub struct GroupHistoryEpoch {
     pub validator_count: u64,
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
+    pub expected_take_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

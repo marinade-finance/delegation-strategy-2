@@ -5,7 +5,8 @@ use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use store::take_rates::{
-    get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates, refresh_expected_take_rates,
+    get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates,
+    refresh_expected_take_rates, EpochTakeRates,
 };
 use tokio_postgres::Client;
 
@@ -427,15 +428,23 @@ async fn epoch_take_rates_cover_the_cached_window_only() {
     insert_reward(&client, VOTE, LAST_EPOCH - 2, 0.07).await;
     insert_reward(&client, VOTE, LAST_EPOCH - 3, 0.09).await;
     insert_reward(&client, "voteOther", LAST_EPOCH - 1, 1.0).await;
+    client
+        .execute(
+            "UPDATE validators_rewards SET expected_take_rate = 0.06 WHERE epoch = $1",
+            &[&Decimal::from(LAST_EPOCH - 2)],
+        )
+        .await
+        .unwrap();
 
+    let rates = |realized, expected| EpochTakeRates { realized, expected };
     assert_eq!(
         load_epoch_take_rates(&client, 3).await.unwrap(),
         HashMap::from([
-            ((VOTE.to_string(), LAST_EPOCH), 0.05),
-            ((VOTE.to_string(), LAST_EPOCH - 2), 0.07),
-            (("voteOther".to_string(), LAST_EPOCH - 1), 1.0),
+            ((VOTE.to_string(), LAST_EPOCH), rates(0.05, None)),
+            ((VOTE.to_string(), LAST_EPOCH - 2), rates(0.07, Some(0.06))),
+            (("voteOther".to_string(), LAST_EPOCH - 1), rates(1.0, None)),
         ]),
-        "the window ends three epochs back from cluster_info"
+        "the window ends three epochs back from cluster_info, and the stored expected rate rides along"
     );
 
     client

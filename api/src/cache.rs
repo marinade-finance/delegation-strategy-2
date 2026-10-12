@@ -37,7 +37,7 @@ type CachedCommissions = HashMap<String, Vec<CommissionRecord>>;
 type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
-type CachedEpochTakeRates = HashMap<(String, u64), f64>;
+type CachedEpochTakeRates = HashMap<(String, u64), store::take_rates::EpochTakeRates>;
 
 #[derive(Default, Clone)]
 pub struct CachedSingleRunScores {

@@ -306,16 +306,22 @@ pub async fn refresh_expected_take_rates(
     Ok(total_updated)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EpochTakeRates {
+    pub realized: f64,
+    pub expected: Option<f64>,
+}
+
 // Same window anchor as `load_validators`, so every cached epoch row can find its rate.
 pub async fn load_epoch_take_rates(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<HashMap<(String, u64), f64>> {
+) -> anyhow::Result<HashMap<(String, u64), EpochTakeRates>> {
     let rows = psql_client
         .query(
             &format!(
                 "
-        SELECT vote_account, epoch, take_rate
+        SELECT vote_account, epoch, take_rate, expected_take_rate
         FROM {VALIDATORS_REWARDS_TABLE}
         WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
         "
@@ -331,7 +337,10 @@ pub async fn load_epoch_take_rates(
                     row.get("vote_account"),
                     row.get::<_, Decimal>("epoch").try_into()?,
                 ),
-                row.get("take_rate"),
+                EpochTakeRates {
+                    realized: row.get("take_rate"),
+                    expected: row.get("expected_take_rate"),
+                },
             ))
         })
         .collect()

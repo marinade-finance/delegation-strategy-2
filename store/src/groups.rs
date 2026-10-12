@@ -7,6 +7,7 @@ use crate::dto::{
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
+use crate::take_rates::EpochTakeRates;
 use crate::utils::{is_eligible_validator, last_reported_epoch, worst_known_commission};
 use rust_decimal::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -916,6 +917,7 @@ struct HistoryPoint {
     validator_count: u64,
     net_apy: StakeWeighted,
     take_rate: StakeWeighted,
+    expected_take_rate: StakeWeighted,
 }
 
 impl HistoryPoint {
@@ -924,6 +926,7 @@ impl HistoryPoint {
         self.validator_count += other.validator_count;
         self.net_apy.merge(&other.net_apy);
         self.take_rate.merge(&other.take_rate);
+        self.expected_take_rate.merge(&other.expected_take_rate);
     }
 }
 
@@ -957,6 +960,7 @@ fn render_history(
                     validator_count: point.validator_count,
                     net_apy: point.net_apy.mean(),
                     take_rate: point.take_rate.mean(),
+                    expected_take_rate: point.expected_take_rate.mean(),
                 })
             })
             .collect(),
@@ -974,7 +978,7 @@ pub fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
 // Each epoch groups by that epoch's own row, and its share is of every validator with a row.
 pub fn aggregate_history(
     validators: &HashMap<String, ValidatorRecord>,
-    take_rates: &HashMap<(String, u64), f64>,
+    take_rates: &HashMap<(String, u64), EpochTakeRates>,
     net_apy: &HashMap<String, Vec<(i64, f64)>>,
 ) -> GroupHistories {
     const KINDS: [GroupKind; 3] = [
@@ -993,14 +997,17 @@ pub fn aggregate_history(
             epochs.entry(stats.epoch).or_insert(stats);
             *epoch_stake.entry(stats.epoch).or_default() += stats.activated_stake;
 
-            let (net_apy, take_rate) = match stats.epoch_end_at {
-                Some(end_at) => (
-                    series.and_then(|series| net_apy_at(series, end_at.timestamp())),
-                    take_rates
-                        .get(&(validator.vote_account.clone(), stats.epoch))
-                        .copied(),
-                ),
-                None => (None, None),
+            let (net_apy, take_rate, expected_take_rate) = match stats.epoch_end_at {
+                Some(end_at) => {
+                    let rates = take_rates.get(&(validator.vote_account.clone(), stats.epoch));
+                    (
+                        series.and_then(|series| net_apy_at(series, end_at.timestamp())),
+                        rates.map(|rates| rates.realized),
+                        rates.and_then(|rates| rates.expected),
+                    )
+                }
+                // The open epoch has no reward mix yet; the table value makes the chart end where the table is.
+                None => (None, None, validator.expected_take_rate),
             };
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
@@ -1017,6 +1024,7 @@ pub fn aggregate_history(
                 point.validator_count += 1;
                 point.net_apy.add(net_apy, weight);
                 point.take_rate.add(take_rate, weight);
+                point.expected_take_rate.add(expected_take_rate, weight);
                 if let (GroupKind::ProviderAso, Some(asn)) = (kind, stats.dc_asn) {
                     group.asns.entry(stats.epoch).or_default().insert(asn);
                 }
@@ -2573,6 +2581,10 @@ mod tests {
         }
     }
 
+    fn rates(realized: f64, expected: Option<f64>) -> EpochTakeRates {
+        EpochTakeRates { realized, expected }
+    }
+
     fn point(history: &GroupHistory, epoch: u64) -> &GroupHistoryEpoch {
         history
             .epochs
@@ -2828,10 +2840,16 @@ mod tests {
         ]);
         let end = epoch_end_unix(&validators, PREVIOUS_EPOCH);
         let take_rates = HashMap::from([
-            (("rated".to_string(), PREVIOUS_EPOCH), 0.1),
-            (("nan".to_string(), PREVIOUS_EPOCH), f64::NAN),
-            (("small".to_string(), PREVIOUS_EPOCH), 0.2),
-            (("big".to_string(), PREVIOUS_EPOCH), 0.0),
+            (
+                ("rated".to_string(), PREVIOUS_EPOCH),
+                rates(0.1, Some(0.15)),
+            ),
+            (
+                ("nan".to_string(), PREVIOUS_EPOCH),
+                rates(f64::NAN, Some(f64::NAN)),
+            ),
+            (("small".to_string(), PREVIOUS_EPOCH), rates(0.2, Some(0.1))),
+            (("big".to_string(), PREVIOUS_EPOCH), rates(0.0, None)),
         ]);
         let net_apy = HashMap::from([
             ("rated".to_string(), vec![(end + 57, 0.07)]),
@@ -2849,19 +2867,31 @@ mod tests {
         let latitude = point(&history.providers["latitude"], PREVIOUS_EPOCH);
         assert!((latitude.take_rate.unwrap() - 0.05).abs() < 1e-12);
         assert!((latitude.net_apy.unwrap() - 0.065).abs() < 1e-12);
+
+        assert_eq!(
+            hetzner.expected_take_rate,
+            Some(0.15),
+            "the expected rate leaves out the same non-finite member"
+        );
+        assert_eq!(
+            latitude.expected_take_rate,
+            Some(0.1),
+            "a member with no stored expected rate leaves the weight"
+        );
     }
 
     #[test]
-    fn history_leaves_the_open_epoch_without_rates() {
+    fn history_leaves_the_open_epoch_without_realized_rates_but_with_the_table_expected_rate() {
         let mut validators = validators(vec![Member::new(
             "rated",
             last_two_epochs(300, AGAVE, Some("Hetzner")),
         )]);
         let end = epoch_end_unix(&validators, CURRENT_EPOCH);
         open_current_epoch(&mut validators);
+        validators.get_mut("rated").unwrap().expected_take_rate = Some(0.12);
         let take_rates = HashMap::from([
-            (("rated".to_string(), CURRENT_EPOCH), 0.1),
-            (("rated".to_string(), PREVIOUS_EPOCH), 0.2),
+            (("rated".to_string(), CURRENT_EPOCH), rates(0.1, Some(0.9))),
+            (("rated".to_string(), PREVIOUS_EPOCH), rates(0.2, Some(0.3))),
         ]);
         let net_apy = HashMap::from([("rated".to_string(), vec![(end, 0.07)])]);
         let history = aggregate_history(&validators, &take_rates, &net_apy);
@@ -2870,8 +2900,17 @@ mod tests {
         let open = point(hetzner, CURRENT_EPOCH);
         assert_eq!(open.epoch_end_at, None);
         assert_eq!((open.net_apy, open.take_rate), (None, None));
+        assert_eq!(
+            open.expected_take_rate,
+            Some(0.12),
+            "the open epoch carries the table value, not a stored per-epoch one"
+        );
         assert_eq!(open.total_stake, Decimal::from(300));
-        assert_eq!(point(hetzner, PREVIOUS_EPOCH).take_rate, Some(0.2));
+        let closed = point(hetzner, PREVIOUS_EPOCH);
+        assert_eq!(
+            (closed.take_rate, closed.expected_take_rate),
+            (Some(0.2), Some(0.3))
+        );
     }
 
     #[test]
