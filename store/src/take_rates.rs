@@ -7,7 +7,7 @@ use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio_postgres::Client;
+use tokio_postgres::{Client, GenericClient};
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
 
@@ -20,6 +20,7 @@ pub struct StoreTakeRatesParams {
 }
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
+pub const EXPECTED_TAKE_RATE_REFRESH_LOCK: i64 = 0x6578_7074_6b72;
 
 struct ValidatorRewardsRow {
     vote_account: String,
@@ -175,7 +176,7 @@ pub async fn store_take_rates(
 /// Cluster reward mix of `epochs`. Epochs that paid no inflation are absent: the in-progress one has
 /// only accruing block rewards, and nothing else pays out before the epoch closes.
 pub async fn load_epoch_reward_mix(
-    psql_client: &Client,
+    psql_client: &impl GenericClient,
     epochs: &[Decimal],
 ) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
     let rows = psql_client
@@ -222,16 +223,23 @@ pub async fn load_epoch_reward_mix(
 /// Recomputes `expected_take_rate` of every rewards row in `epochs`. The mix is epoch-wide, so a
 /// change to any one row of an epoch moves the rate of all of them.
 pub async fn refresh_expected_take_rates(
-    psql_client: &Client,
+    psql_client: &mut Client,
     epochs: &[u64],
 ) -> anyhow::Result<u64> {
     if epochs.is_empty() {
         return Ok(0);
     }
     let epochs: Vec<Decimal> = epochs.iter().map(|epoch| Decimal::from(*epoch)).collect();
-    let mix = load_epoch_reward_mix(psql_client, &epochs).await?;
+    let transaction = psql_client.transaction().await?;
+    // The writers run as separate jobs; serialized, the last refresh reads every committed input.
+    transaction
+        .batch_execute(&format!(
+            "SELECT pg_advisory_xact_lock({EXPECTED_TAKE_RATE_REFRESH_LOCK})"
+        ))
+        .await?;
+    let mix = load_epoch_reward_mix(&transaction, &epochs).await?;
 
-    let rows = psql_client
+    let rows = transaction
         .query(
             &format!(
                 "
@@ -283,7 +291,7 @@ pub async fn refresh_expected_take_rates(
         let vote_accounts: Vec<&str> = chunk.iter().map(|(vote, _, _)| vote.as_str()).collect();
         let epochs: Vec<&Decimal> = chunk.iter().map(|(_, epoch, _)| epoch).collect();
         let rates: Vec<Option<f64>> = chunk.iter().map(|(_, _, rate)| *rate).collect();
-        total_updated += psql_client
+        total_updated += transaction
             .execute(
                 &format!(
                     "
@@ -298,6 +306,7 @@ pub async fn refresh_expected_take_rates(
             )
             .await?;
     }
+    transaction.commit().await?;
     info!(
         "Refreshed expected take rate of {total_updated} rewards rows over {} epochs",
         epochs.len()
@@ -314,7 +323,7 @@ pub struct RefreshExpectedTakeRatesParams {
 
 pub async fn refresh_stored_expected_take_rates(
     params: RefreshExpectedTakeRatesParams,
-    psql_client: &Client,
+    psql_client: &mut Client,
 ) -> anyhow::Result<()> {
     let epochs = psql_client
         .query(

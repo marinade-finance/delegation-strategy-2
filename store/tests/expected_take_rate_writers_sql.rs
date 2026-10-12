@@ -9,7 +9,7 @@ use collect::validators_jito::{
 use collect::validators_performance::ValidatorRewards;
 use common::{
     migrated_client, performance_snapshot, run_close_epoch, skip_without_database, store_snapshot,
-    validator_performance, validator_snapshot, write_yaml,
+    stored_expected_take_rate, validator_performance, validator_snapshot, write_yaml,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -122,17 +122,6 @@ async fn run(client: &mut Client, schema: &str, writer: Writer) {
     }
 }
 
-async fn stored_rate(client: &Client) -> Option<f64> {
-    client
-        .query_one(
-            "SELECT expected_take_rate FROM validators_rewards WHERE vote_account = $1 AND epoch = $2",
-            &[&VOTE, &Decimal::from(EPOCH)],
-        )
-        .await
-        .unwrap()
-        .get(0)
-}
-
 async fn run_in_order(schema: &str, order: [Writer; 4]) -> (Option<f64>, Option<f64>) {
     let mut client = migrated_client(schema).await.unwrap();
     store_snapshot(
@@ -163,7 +152,7 @@ async fn run_in_order(schema: &str, order: [Writer; 4]) -> (Option<f64>, Option<
         Some(800),
         Some(2000),
     );
-    let stored = stored_rate(&client).await;
+    let stored = stored_expected_take_rate(&client, VOTE, EPOCH).await;
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

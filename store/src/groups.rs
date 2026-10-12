@@ -997,17 +997,16 @@ pub fn aggregate_history(
             epochs.entry(stats.epoch).or_insert(stats);
             *epoch_stake.entry(stats.epoch).or_default() += stats.activated_stake;
 
+            let rates = take_rates.get(&(validator.vote_account.clone(), stats.epoch));
+            let stored_expected = rates.and_then(|rates| rates.expected);
             let (net_apy, take_rate, expected_take_rate) = match stats.epoch_end_at {
-                Some(end_at) => {
-                    let rates = take_rates.get(&(validator.vote_account.clone(), stats.epoch));
-                    (
-                        series.and_then(|series| net_apy_at(series, end_at.timestamp())),
-                        rates.map(|rates| rates.realized),
-                        rates.and_then(|rates| rates.expected),
-                    )
-                }
+                Some(end_at) => (
+                    series.and_then(|series| net_apy_at(series, end_at.timestamp())),
+                    rates.map(|rates| rates.realized),
+                    stored_expected,
+                ),
                 // The open epoch has no reward mix yet; the table value makes the chart end where the table is.
-                None => (None, None, validator.expected_take_rate),
+                None => (None, None, stored_expected.or(validator.expected_take_rate)),
             };
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
@@ -2889,8 +2888,9 @@ mod tests {
         let end = epoch_end_unix(&validators, CURRENT_EPOCH);
         open_current_epoch(&mut validators);
         validators.get_mut("rated").unwrap().expected_take_rate = Some(0.12);
+        // The refresh stores no expected rate without the epoch's inflation, which pays out at close.
         let take_rates = HashMap::from([
-            (("rated".to_string(), CURRENT_EPOCH), rates(0.1, Some(0.9))),
+            (("rated".to_string(), CURRENT_EPOCH), rates(0.1, None)),
             (("rated".to_string(), PREVIOUS_EPOCH), rates(0.2, Some(0.3))),
         ]);
         let net_apy = HashMap::from([("rated".to_string(), vec![(end, 0.07)])]);
@@ -2903,7 +2903,7 @@ mod tests {
         assert_eq!(
             open.expected_take_rate,
             Some(0.12),
-            "the open epoch carries the table value, not a stored per-epoch one"
+            "the open epoch carries the table value"
         );
         assert_eq!(open.total_stake, Decimal::from(300));
         let closed = point(hetzner, PREVIOUS_EPOCH);
@@ -2911,6 +2911,29 @@ mod tests {
             (closed.take_rate, closed.expected_take_rate),
             (Some(0.2), Some(0.3))
         );
+    }
+
+    #[test]
+    fn history_keeps_the_stored_expected_rate_of_a_closed_epoch_with_no_end_recorded() {
+        let mut validators = validators(vec![Member::new(
+            "rated",
+            last_two_epochs(300, AGAVE, Some("Hetzner")),
+        )]);
+        for stats in &mut validators.get_mut("rated").unwrap().epoch_stats {
+            stats.epoch_end_at = None;
+        }
+        validators.get_mut("rated").unwrap().expected_take_rate = Some(0.12);
+        let take_rates =
+            HashMap::from([(("rated".to_string(), PREVIOUS_EPOCH), rates(0.2, Some(0.3)))]);
+        let history = aggregate_history(&validators, &take_rates, &HashMap::new());
+
+        let hetzner = &history.providers["hetzner"];
+        assert_eq!(
+            point(hetzner, PREVIOUS_EPOCH).expected_take_rate,
+            Some(0.3),
+            "an epoch whose close never landed keeps its own stored rate"
+        );
+        assert_eq!(point(hetzner, CURRENT_EPOCH).expected_take_rate, Some(0.12));
     }
 
     #[test]

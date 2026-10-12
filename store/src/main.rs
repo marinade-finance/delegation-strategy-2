@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
             store_take_rates(store_params, &mut psql_client).await
         }
         StoreCommand::RefreshExpectedTakeRates(refresh_params) => {
-            refresh_stored_expected_take_rates(refresh_params, &psql_client).await
+            refresh_stored_expected_take_rates(refresh_params, &mut psql_client).await
         }
         StoreCommand::Releases(store_params) => {
             store_releases(store_params, &mut psql_client).await

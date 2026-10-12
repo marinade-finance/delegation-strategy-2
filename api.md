@@ -169,7 +169,8 @@ Such an epoch is still returned by both query modes, including the open one.
 
 `realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
 commissions that epoch implied it would. It is `null` where no commission was recorded, and for
-the in-progress epoch, which has paid no inflation rewards to weight them by.
+the in-progress epoch, which has paid no inflation rewards to weight them by. It is stored, and
+refreshed whenever the epoch's rewards, Jito commissions or epoch close are stored.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
@@ -201,6 +202,9 @@ own row for that epoch puts them in the group, so a validator that moved counts 
 before the move. `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api
 14-day rolling staker APY at the epoch end) and `take_rate` (realized, `validators_rewards`) are
 stake-weighted over the members that have one, and `null` for the open epoch (`epoch_end_at: null`).
+`expected_take_rate` is weighted the same way from each epoch's stored value (see Take rates); on
+the open epoch it weights each member's current `/validators` value, the one `/providers` and
+`/clients` average over their eligible validators.
 An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
 ```bash
 curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
@@ -219,7 +223,8 @@ curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label
       "stake_share": 0.105,
       "validator_count": 120,
       "net_apy": null,
-      "take_rate": null
+      "take_rate": null,
+      "expected_take_rate": 0.0731
     }
   ]
 }
