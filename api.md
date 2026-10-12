@@ -190,7 +190,7 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 
 ## Provider and client history
 One `/providers` or `/clients` group per epoch, newest first, one row per cached epoch (90).
-- `/providers/history?name=` - a `/providers` key.
+- `/providers/history?key=` - a `/providers` key.
 - `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
 - `epochs` - how many newest epochs to return, 1 to 90, default 90.
 

@@ -9,7 +9,7 @@ use warp::{http::StatusCode, Reply};
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
-    name: String,
+    key: String,
     epochs: Option<usize>,
 }
 
@@ -40,7 +40,7 @@ pub async fn handler(
     let (history, net_apy_updated_at) = {
         let cache = &context.read().await.cache;
         (
-            cache.get_provider_history(&query_params.name),
+            cache.get_provider_history(&query_params.key),
             cache
                 .net_apy_history_updated_at()
                 .map(DateTime::<Utc>::from),
@@ -51,6 +51,6 @@ pub async fn handler(
         history,
         epochs,
         net_apy_updated_at,
-        || format!("No provider named {}", query_params.name),
+        || format!("No provider {}", query_params.key),
     ))
 }
