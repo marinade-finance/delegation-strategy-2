@@ -7,7 +7,7 @@ use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio_postgres::{Client, GenericClient};
+use tokio_postgres::{Client, GenericClient, Transaction};
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
 
@@ -93,6 +93,8 @@ pub async fn store_take_rates(
 
     let records: Vec<_> = rows.values().collect();
     let mut total_upserted = 0;
+    let transaction = psql_client.transaction().await?;
+    lock_expected_take_rates(&transaction).await?;
 
     for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
         let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
@@ -142,7 +144,7 @@ pub async fn store_take_rates(
             updated_at = EXCLUDED.updated_at"
         );
 
-        let rows_affected = psql_client
+        let rows_affected = transaction
             .execute(
                 &query,
                 &[
@@ -168,7 +170,8 @@ pub async fn store_take_rates(
     info!("Stored take rates snapshot: {total_upserted} total records upserted");
 
     let epochs: BTreeSet<u64> = rows.keys().map(|(_, epoch)| *epoch).collect();
-    refresh_expected_take_rates(psql_client, &Vec::from_iter(epochs)).await?;
+    refresh_expected_take_rates_in(&transaction, &Vec::from_iter(epochs)).await?;
+    transaction.commit().await?;
 
     Ok(())
 }
@@ -226,18 +229,34 @@ pub async fn refresh_expected_take_rates(
     psql_client: &mut Client,
     epochs: &[u64],
 ) -> anyhow::Result<u64> {
-    if epochs.is_empty() {
-        return Ok(0);
-    }
-    let epochs: Vec<Decimal> = epochs.iter().map(|epoch| Decimal::from(*epoch)).collect();
     let transaction = psql_client.transaction().await?;
-    // The writers run as separate jobs; serialized, the last refresh reads every committed input.
+    let updated = refresh_expected_take_rates_in(&transaction, epochs).await?;
+    transaction.commit().await?;
+
+    Ok(updated)
+}
+
+// The writers run as separate jobs; serialized, the last refresh reads every committed input.
+async fn lock_expected_take_rates(transaction: &Transaction<'_>) -> anyhow::Result<()> {
     transaction
         .batch_execute(&format!(
             "SELECT pg_advisory_xact_lock({EXPECTED_TAKE_RATE_REFRESH_LOCK})"
         ))
         .await?;
-    let mix = load_epoch_reward_mix(&transaction, &epochs).await?;
+
+    Ok(())
+}
+
+async fn refresh_expected_take_rates_in(
+    transaction: &Transaction<'_>,
+    epochs: &[u64],
+) -> anyhow::Result<u64> {
+    if epochs.is_empty() {
+        return Ok(0);
+    }
+    let epochs: Vec<Decimal> = epochs.iter().map(|epoch| Decimal::from(*epoch)).collect();
+    lock_expected_take_rates(transaction).await?;
+    let mix = load_epoch_reward_mix(transaction, &epochs).await?;
 
     let rows = transaction
         .query(
@@ -306,7 +325,6 @@ pub async fn refresh_expected_take_rates(
             )
             .await?;
     }
-    transaction.commit().await?;
     info!(
         "Refreshed expected take rate of {total_updated} rewards rows over {} epochs",
         epochs.len()

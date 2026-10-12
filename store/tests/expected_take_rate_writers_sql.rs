@@ -13,7 +13,7 @@ use common::{
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::take_rates::{store_take_rates, StoreTakeRatesParams};
+use store::take_rates::{store_take_rates, StoreTakeRatesParams, EXPECTED_TAKE_RATE_REFRESH_LOCK};
 use store::utils::{expected_take_rate, worst_known_commission, RewardMixShares};
 use store::validators_jito::{store_jito, StoreJitoParams};
 use tokio_postgres::Client;
@@ -198,4 +198,60 @@ async fn every_writer_order_converges_to_the_same_expected_take_rate() {
         rewards_last, formula,
         "the take-rates writer refreshes a row whose other inputs are already stored"
     );
+}
+
+#[tokio::test]
+async fn the_take_rates_upsert_waits_for_a_running_refresh() {
+    let schema = "ds_test_expected_writers_lock";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let mut holder = migrated_client("ds_test_expected_writers_lock_holder")
+        .await
+        .unwrap();
+
+    let running = holder.transaction().await.unwrap();
+    running
+        .batch_execute(&format!(
+            "SELECT pg_advisory_xact_lock({EXPECTED_TAKE_RATE_REFRESH_LOCK})"
+        ))
+        .await
+        .unwrap();
+    let mut upsert = Box::pin(run(&mut client, schema, Writer::TakeRates));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), &mut upsert)
+            .await
+            .is_err(),
+        "the take-rates store must wait while a refresh holds the lock"
+    );
+    let visible: i64 = running
+        .query_one(
+            &format!("SELECT COUNT(*) FROM {schema}.validators_rewards"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        visible, 0,
+        "no rewards row may be written while a refresh holds the lock"
+    );
+    running.commit().await.unwrap();
+    upsert.await;
+    assert!(
+        stored_expected_take_rate(&client, VOTE, EPOCH)
+            .await
+            .is_none(),
+        "the row lands once the lock is released; no commissions, so no rate"
+    );
+
+    holder
+        .batch_execute("DROP SCHEMA ds_test_expected_writers_lock_holder CASCADE")
+        .await
+        .unwrap();
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }

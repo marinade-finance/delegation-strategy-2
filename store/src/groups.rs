@@ -990,6 +990,10 @@ pub fn aggregate_history(
     let mut epochs: BTreeMap<u64, &ValidatorEpochStats> = BTreeMap::new();
     let mut epoch_stake: HashMap<u64, Decimal> = HashMap::new();
     let mut accumulators: [HashMap<String, HistoryAccumulator>; 3] = Default::default();
+    let newest_epoch = validators
+        .values()
+        .flat_map(|validator| validator.epoch_stats.iter().map(|stats| stats.epoch))
+        .max();
 
     for validator in validators.values() {
         let series = net_apy.get(&validator.vote_account);
@@ -1006,13 +1010,17 @@ pub fn aggregate_history(
                     stored_expected,
                 ),
                 // The open epoch has no reward mix yet; the table value makes the chart end where the table is.
-                None => (None, None, stored_expected.or(validator.expected_take_rate)),
+                None if Some(stats.epoch) == newest_epoch => {
+                    (None, None, validator.expected_take_rate)
+                }
+                None => (None, None, stored_expected),
             };
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
             for (kind, groups) in KINDS.iter().zip(accumulators.iter_mut()) {
-                let name =
-                    group_key(validator, stats, *kind).or_else(|| Some(UNKNOWN_GROUP.to_string()));
+                let key = group_key(validator, stats, *kind);
+                let known = key.is_some();
+                let name = key.or_else(|| Some(UNKNOWN_GROUP.to_string()));
                 let (Some(key), Some(name)) = (folded(&name), name) else {
                     continue;
                 };
@@ -1024,7 +1032,7 @@ pub fn aggregate_history(
                 point.net_apy.add(net_apy, weight);
                 point.take_rate.add(take_rate, weight);
                 point.expected_take_rate.add(expected_take_rate, weight);
-                if let (GroupKind::ProviderAso, Some(asn)) = (kind, stats.dc_asn) {
+                if let (GroupKind::ProviderAso, Some(asn), true) = (kind, stats.dc_asn, known) {
                     group.asns.entry(stats.epoch).or_default().insert(asn);
                 }
             }
@@ -2688,6 +2696,27 @@ mod tests {
     }
 
     #[test]
+    fn an_asn_without_a_provider_name_has_no_history() {
+        let validators = validators(vec![
+            Member {
+                dc_asn: Some(64500),
+                ..Member::new("nameless", last_two_epochs(300, AGAVE, None))
+            },
+            Member::new("unknown", last_two_epochs(100, AGAVE, None)),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        assert_eq!(
+            point(&history.providers["unknown"], CURRENT_EPOCH).validator_count,
+            2
+        );
+        assert!(
+            history.provider_asns.is_empty(),
+            "the Unknown bucket is no provider an ASN can lead to"
+        );
+    }
+
+    #[test]
     fn asn_seen_under_two_providers_in_one_epoch_merges_both_groups() {
         let validators = validators(vec![
             Member {
@@ -2915,14 +2944,16 @@ mod tests {
 
     #[test]
     fn history_keeps_the_stored_expected_rate_of_a_closed_epoch_with_no_end_recorded() {
-        let mut validators = validators(vec![Member::new(
-            "rated",
-            last_two_epochs(300, AGAVE, Some("Hetzner")),
-        )]);
-        for stats in &mut validators.get_mut("rated").unwrap().epoch_stats {
-            stats.epoch_end_at = None;
+        let mut validators = validators(vec![
+            Member::new("rated", last_two_epochs(300, AGAVE, Some("Hetzner"))),
+            Member::new("unrated", last_two_epochs(100, AGAVE, Some("Latitude"))),
+        ]);
+        for validator in validators.values_mut() {
+            for stats in &mut validator.epoch_stats {
+                stats.epoch_end_at = None;
+            }
+            validator.expected_take_rate = Some(0.12);
         }
-        validators.get_mut("rated").unwrap().expected_take_rate = Some(0.12);
         let take_rates =
             HashMap::from([(("rated".to_string(), PREVIOUS_EPOCH), rates(0.2, Some(0.3)))]);
         let history = aggregate_history(&validators, &take_rates, &HashMap::new());
@@ -2934,6 +2965,16 @@ mod tests {
             "an epoch whose close never landed keeps its own stored rate"
         );
         assert_eq!(point(hetzner, CURRENT_EPOCH).expected_take_rate, Some(0.12));
+        let latitude = &history.providers["latitude"];
+        assert_eq!(
+            point(latitude, PREVIOUS_EPOCH).expected_take_rate,
+            None,
+            "without a stored rate an older epoch reads null, not the open epoch's table value"
+        );
+        assert_eq!(
+            point(latitude, CURRENT_EPOCH).expected_take_rate,
+            Some(0.12)
+        );
     }
 
     #[test]
