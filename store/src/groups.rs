@@ -977,19 +977,21 @@ pub fn aggregate_history(
         }
     }
 
+    let current_epoch = epochs.keys().next_back().copied();
     let [providers, client_lineages, client_labels] = accumulators.map(|groups| {
         groups
             .into_iter()
             .map(|(key, mut group)| {
                 let history = GroupHistory {
                     name: most_staked_spelling(&group.spellings).unwrap_or_else(|| key.clone()),
+                    current_epoch,
                     epochs: epochs
                         .iter()
                         .rev()
-                        .map(|(epoch, stats)| {
-                            let point = group.epochs.remove(epoch).unwrap_or_default();
+                        .filter_map(|(epoch, stats)| {
+                            let point = group.epochs.remove(epoch)?;
                             let cluster_stake = epoch_stake[epoch];
-                            GroupHistoryEpoch {
+                            Some(GroupHistoryEpoch {
                                 epoch: *epoch,
                                 epoch_start_at: stats.epoch_start_at,
                                 epoch_end_at: stats.epoch_end_at,
@@ -998,7 +1000,7 @@ pub fn aggregate_history(
                                 validator_count: point.validator_count,
                                 net_apy: point.net_apy.mean(),
                                 take_rate: point.take_rate.mean(),
-                            }
+                            })
                         })
                         .collect(),
                 };
@@ -2547,15 +2549,10 @@ mod tests {
                 .iter()
                 .map(|point| (point.epoch, point.total_stake, point.validator_count))
                 .collect::<Vec<_>>(),
-            vec![
-                (CURRENT_EPOCH, Decimal::from(300), 1),
-                (PREVIOUS_EPOCH, Decimal::ZERO, 0)
-            ],
-            "newest first, and an epoch the group had no member in is a zero row"
+            vec![(CURRENT_EPOCH, Decimal::from(300), 1)],
+            "an epoch the group had no member in is left out"
         );
-        let empty = point(hetzner, PREVIOUS_EPOCH);
-        assert_eq!(empty.stake_share, 0.0);
-        assert_eq!((empty.net_apy, empty.take_rate), (None, None));
+        assert_eq!(hetzner.current_epoch, Some(CURRENT_EPOCH));
 
         let ovh = &history.providers["ovh"];
         assert_eq!(point(ovh, CURRENT_EPOCH).total_stake, Decimal::from(100));

@@ -29,9 +29,12 @@ fn group_history_response(
     epochs: usize,
     net_apy_updated_at: Option<DateTime<Utc>>,
 ) -> ResponseGroupHistory {
-    history.epochs.truncate(epochs);
+    let current_epoch = history.current_epoch;
+    history
+        .epochs
+        .retain(|point| current_epoch.is_some_and(|current| point.epoch + epochs as u64 > current));
     ResponseGroupHistory {
-        current_epoch: history.epochs.first().map(|point| point.epoch),
+        current_epoch,
         name: history.name,
         net_apy_updated_at,
         epochs: history.epochs,
@@ -93,6 +96,7 @@ mod tests {
     fn the_response_keeps_the_newest_epochs() {
         let history = GroupHistory {
             name: "OVH".to_string(),
+            current_epoch: Some(100),
             epochs: vec![point(100), point(99), point(98)],
         };
         let response = group_history_response(history, 2, None);
@@ -100,6 +104,27 @@ mod tests {
         assert_eq!(response.name, "OVH");
         assert_eq!(response.current_epoch, Some(100));
         assert_eq!(response.epochs, vec![point(100), point(99)]);
+    }
+
+    #[test]
+    fn the_window_counts_cluster_epochs_not_the_groups_rows() {
+        let history = GroupHistory {
+            name: "OVH".to_string(),
+            current_epoch: Some(100),
+            epochs: vec![point(98), point(97)],
+        };
+        let response = group_history_response(history, 3, None);
+
+        assert_eq!(
+            response.current_epoch,
+            Some(100),
+            "the cluster's epoch, though the group has no row in it"
+        );
+        assert_eq!(
+            response.epochs,
+            vec![point(98)],
+            "epochs=3 covers 100, 99 and 98 only"
+        );
     }
 
     #[test]

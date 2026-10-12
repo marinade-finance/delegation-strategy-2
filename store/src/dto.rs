@@ -1093,6 +1093,8 @@ pub struct GroupHistoryEpoch {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GroupHistory {
     pub name: String,
+    // Newest cached epoch of the cluster, not of the group, which may have no row in it.
+    pub current_epoch: Option<u64>,
     // Newest first.
     pub epochs: Vec<GroupHistoryEpoch>,
 }

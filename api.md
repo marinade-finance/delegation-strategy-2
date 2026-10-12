@@ -189,10 +189,10 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 ```
 
 ## Provider and client history
-One `/providers` or `/clients` group per epoch, newest first, one row per cached epoch (90).
+One `/providers` or `/clients` group per epoch, newest first, over the cached epochs (90).
 - `/providers/history?key=` - a `/providers` key.
 - `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
-- `epochs` - how many newest epochs to return, 1 to 90, default 90.
+- `epochs` - how many newest cluster epochs to cover, 1 to 90, default 90.
 
 Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
 client are in the `Unknown` group, as on the lists. Each epoch counts the validators whose
@@ -200,7 +200,7 @@ own row for that epoch puts them in the group, so a validator that moved counts 
 before the move. `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api
 14-day rolling staker APY at the epoch end) and `take_rate` (realized, `validators_rewards`) are
 stake-weighted over the members that have one, and `null` for the open epoch (`epoch_end_at: null`).
-An epoch the group had no member in is a zero-stake row.
+An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
 ```bash
 curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
 ```
