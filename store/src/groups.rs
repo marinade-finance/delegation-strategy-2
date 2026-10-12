@@ -340,6 +340,11 @@ impl StakeWeighted {
     fn mean(&self) -> Option<f64> {
         (self.weight > 0.0).then(|| self.weighted / self.weight)
     }
+
+    fn merge(&mut self, other: &StakeWeighted) {
+        self.weighted += other.weighted;
+        self.weight += other.weight;
+    }
 }
 
 fn stake_share(stake: Decimal, total_stake: Decimal) -> f64 {
@@ -913,10 +918,49 @@ struct HistoryPoint {
     take_rate: StakeWeighted,
 }
 
+impl HistoryPoint {
+    fn merge(&mut self, other: &HistoryPoint) {
+        self.total_stake += other.total_stake;
+        self.validator_count += other.validator_count;
+        self.net_apy.merge(&other.net_apy);
+        self.take_rate.merge(&other.take_rate);
+    }
+}
+
 #[derive(Default)]
 struct HistoryAccumulator {
     spellings: HashMap<String, Decimal>,
     epochs: HashMap<u64, HistoryPoint>,
+    asns: HashMap<u64, HashSet<i32>>,
+}
+
+fn render_history(
+    name: String,
+    mut points: HashMap<u64, HistoryPoint>,
+    epochs: &BTreeMap<u64, &ValidatorEpochStats>,
+    epoch_stake: &HashMap<u64, Decimal>,
+) -> GroupHistory {
+    GroupHistory {
+        name,
+        current_epoch: epochs.keys().next_back().copied(),
+        epochs: epochs
+            .iter()
+            .rev()
+            .filter_map(|(epoch, stats)| {
+                let point = points.remove(epoch)?;
+                Some(GroupHistoryEpoch {
+                    epoch: *epoch,
+                    epoch_start_at: stats.epoch_start_at,
+                    epoch_end_at: stats.epoch_end_at,
+                    stake_share: stake_share(point.total_stake, epoch_stake[epoch]),
+                    total_stake: point.total_stake,
+                    validator_count: point.validator_count,
+                    net_apy: point.net_apy.mean(),
+                    take_rate: point.take_rate.mean(),
+                })
+            })
+            .collect(),
+    }
 }
 
 pub fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
@@ -973,37 +1017,45 @@ pub fn aggregate_history(
                 point.validator_count += 1;
                 point.net_apy.add(net_apy, weight);
                 point.take_rate.add(take_rate, weight);
+                if let (GroupKind::ProviderAso, Some(asn)) = (kind, stats.dc_asn) {
+                    group.asns.entry(stats.epoch).or_default().insert(asn);
+                }
             }
         }
     }
 
-    let current_epoch = epochs.keys().next_back().copied();
+    // An ASN outlives an ASO rename; each epoch counts every provider group the ASN was in then.
+    let mut by_asn: HashMap<i32, HistoryAccumulator> = HashMap::new();
+    for group in accumulators[0].values() {
+        let name = most_staked_spelling(&group.spellings);
+        for (epoch, asns) in &group.asns {
+            let point = &group.epochs[epoch];
+            for asn in asns {
+                let history = by_asn.entry(*asn).or_default();
+                history.epochs.entry(*epoch).or_default().merge(point);
+                if let Some(name) = &name {
+                    *history.spellings.entry(name.clone()).or_default() += point.total_stake;
+                }
+            }
+        }
+    }
+    let provider_asns = by_asn
+        .into_iter()
+        .map(|(asn, group)| {
+            let name = most_staked_spelling(&group.spellings).unwrap_or_else(|| asn.to_string());
+            (
+                asn,
+                render_history(name, group.epochs, &epochs, &epoch_stake),
+            )
+        })
+        .collect();
+
     let [providers, client_lineages, client_labels] = accumulators.map(|groups| {
         groups
             .into_iter()
-            .map(|(key, mut group)| {
-                let history = GroupHistory {
-                    name: most_staked_spelling(&group.spellings).unwrap_or_else(|| key.clone()),
-                    current_epoch,
-                    epochs: epochs
-                        .iter()
-                        .rev()
-                        .filter_map(|(epoch, stats)| {
-                            let point = group.epochs.remove(epoch)?;
-                            let cluster_stake = epoch_stake[epoch];
-                            Some(GroupHistoryEpoch {
-                                epoch: *epoch,
-                                epoch_start_at: stats.epoch_start_at,
-                                epoch_end_at: stats.epoch_end_at,
-                                stake_share: stake_share(point.total_stake, cluster_stake),
-                                total_stake: point.total_stake,
-                                validator_count: point.validator_count,
-                                net_apy: point.net_apy.mean(),
-                                take_rate: point.take_rate.mean(),
-                            })
-                        })
-                        .collect(),
-                };
+            .map(|(key, group)| {
+                let name = most_staked_spelling(&group.spellings).unwrap_or_else(|| key.clone());
+                let history = render_history(name, group.epochs, &epochs, &epoch_stake);
                 (key, history)
             })
             .collect()
@@ -1011,6 +1063,7 @@ pub fn aggregate_history(
 
     GroupHistories {
         providers,
+        provider_asns,
         client_lineages,
         client_labels,
     }
@@ -2558,6 +2611,92 @@ mod tests {
         assert_eq!(point(ovh, CURRENT_EPOCH).total_stake, Decimal::from(100));
         assert_eq!(point(ovh, PREVIOUS_EPOCH).total_stake, Decimal::from(400));
         assert_eq!(point(ovh, PREVIOUS_EPOCH).validator_count, 2);
+    }
+
+    #[test]
+    fn asn_history_spans_a_provider_rename() {
+        let validators = validators(vec![Member {
+            dc_asn: Some(24940),
+            ..Member::new(
+                "renamed",
+                vec![
+                    (CURRENT_EPOCH, 300, AGAVE, Some("Hetzner")),
+                    (PREVIOUS_EPOCH, 200, AGAVE, Some("Hetzner Online")),
+                ],
+            )
+        }]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let by_asn = &history.provider_asns[&24940];
+        assert_eq!(
+            by_asn
+                .epochs
+                .iter()
+                .map(|point| (point.epoch, point.total_stake))
+                .collect::<Vec<_>>(),
+            vec![
+                (CURRENT_EPOCH, Decimal::from(300)),
+                (PREVIOUS_EPOCH, Decimal::from(200))
+            ],
+            "both names fold into the one ASN history"
+        );
+        assert_eq!(by_asn.name, "Hetzner");
+        assert_eq!(by_asn.current_epoch, Some(CURRENT_EPOCH));
+        assert_eq!(history.providers["hetzner"].epochs.len(), 1);
+        assert_eq!(history.providers["hetzner online"].epochs.len(), 1);
+    }
+
+    #[test]
+    fn asn_history_is_the_whole_provider_group() {
+        let validators = validators(vec![
+            Member {
+                dc_asn: Some(24940),
+                ..Member::new("big", last_two_epochs(300, AGAVE, Some("Hetzner")))
+            },
+            Member {
+                dc_asn: Some(213230),
+                ..Member::new("small", last_two_epochs(100, AGAVE, Some("Hetzner")))
+            },
+            Member::new("no-asn", last_two_epochs(50, AGAVE, Some("Hetzner"))),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let group = &history.providers["hetzner"];
+        for asn in [24940, 213230] {
+            assert_eq!(
+                history.provider_asns[&asn].epochs, group.epochs,
+                "ASN {asn} serves the same rows as its /providers group"
+            );
+        }
+        assert_eq!(point(group, CURRENT_EPOCH).validator_count, 3);
+        assert_eq!(
+            history.provider_asns.len(),
+            2,
+            "no history for a missing ASN"
+        );
+    }
+
+    #[test]
+    fn asn_seen_under_two_providers_in_one_epoch_merges_both_groups() {
+        let validators = validators(vec![
+            Member {
+                dc_asn: Some(16509),
+                ..Member::new("first", last_two_epochs(300, AGAVE, Some("Amazon")))
+            },
+            Member {
+                dc_asn: Some(16509),
+                ..Member::new("second", last_two_epochs(100, AGAVE, Some("AWS")))
+            },
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let merged = point(&history.provider_asns[&16509], CURRENT_EPOCH);
+        assert_eq!(
+            (merged.total_stake, merged.validator_count),
+            (Decimal::from(400), 2),
+            "each validator counted once"
+        );
+        assert_eq!(history.provider_asns[&16509].name, "Amazon");
     }
 
     #[test]

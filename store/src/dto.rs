@@ -1103,6 +1103,8 @@ pub struct GroupHistory {
 #[derive(Debug, Clone, Default)]
 pub struct GroupHistories {
     pub providers: HashMap<String, GroupHistory>,
+    // Keyed by ASN; each epoch is the whole provider group the ASN was in, across renames.
+    pub provider_asns: HashMap<i32, GroupHistory>,
     pub client_lineages: HashMap<String, GroupHistory>,
     pub client_labels: HashMap<String, GroupHistory>,
 }
