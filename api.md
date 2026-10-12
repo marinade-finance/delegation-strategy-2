@@ -191,6 +191,7 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
 ## Provider and client history
 One `/providers` or `/clients` group per epoch, newest first, over the cached epochs (90).
 - `/providers/history?key=` - a `/providers` key.
+- `/providers/history?asn=` - any ASN a `/providers` row lists. It follows that ASN across provider renames; each epoch counts the whole provider group the ASN was in, merged when two names share it. `key` and `asn` are mutually exclusive, one is required.
 - `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
 - `epochs` - how many newest cluster epochs to cover, 1 to 90, default 90.
 

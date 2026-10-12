@@ -191,6 +191,14 @@ impl Cache {
         group_history(&self.validator_groups.history.providers, name).cloned()
     }
 
+    pub fn get_provider_history_by_asn(&self, asn: i32) -> Option<GroupHistory> {
+        self.validator_groups
+            .history
+            .provider_asns
+            .get(&asn)
+            .cloned()
+    }
+
     pub fn get_client_history(&self, key: &str, level: ClientLevel) -> Option<GroupHistory> {
         let history = &self.validator_groups.history;
         let groups = match level {
