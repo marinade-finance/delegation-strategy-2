@@ -54,7 +54,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "direct_deactivating_stake": null,
       "superminority": true,
       "credits": 156411,
-      "marinade_score": 0,
+      "score": 0,
       "warnings": [],
       "epoch_stats": [
         {
@@ -76,6 +76,8 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "superminority": true,
           "stake_to_become_superminority": 0,
           "credits": 156411,
+          "vote_reward_lamports": null,
+          "epoch_stake": "9488392700088216",
           "leader_slots": 4436,
           "blocks_produced": 4314,
           "skip_rate": 0.027502254283138017,
@@ -84,8 +86,8 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "downtime": null,
           "apr": null,
           "apy": null,
-          "marinade_score": 0,
-          "rank_marinade_score": 2371,
+          "score": 0,
+          "rank_score": 2371,
           "rank_activated_stake": 1,
           "rank_apy": null
         }
@@ -116,7 +118,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 `credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
 
-`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. SIMD-0357 admission filtering is not applied.
+`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. It is an approximation: agave freezes the value before paying the rewards at the start of E-1, and `activated_stake` includes them, so it reads about 0.03% higher. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. SIMD-0357 admission filtering is not applied.
 
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 

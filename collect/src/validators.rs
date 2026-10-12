@@ -201,13 +201,6 @@ pub fn collect_validators_info(
     let mut validators: Vec<ValidatorSnapshot> = vec![];
 
     let vote_accounts = client.get_vote_accounts()?;
-    let epoch_after_vote_accounts = client.get_epoch_info()?.epoch;
-    if epoch_after_vote_accounts != current_epoch_info.epoch {
-        anyhow::bail!(
-            "Epoch changed from {} to {epoch_after_vote_accounts} while reading vote accounts, their stake may belong to either epoch",
-            current_epoch_info.epoch
-        );
-    }
     info!(
         "Total vote accounts found: {}",
         vote_accounts.current.len() + vote_accounts.delinquent.len()
@@ -305,6 +298,13 @@ pub fn collect_validators_info(
         validator_params.rpc_attempts,
         &node_info,
     )?;
+
+    let rpc_epoch = client.get_epoch_info()?.epoch;
+    if rpc_epoch != epoch {
+        anyhow::bail!(
+            "Snapshot is labelled epoch {epoch} but the RPC was at epoch {rpc_epoch} after reading the accounts, their state may belong to either epoch"
+        );
+    }
 
     for vote_account in vote_accounts
         .current

@@ -1226,7 +1226,7 @@ pub async fn load_validators(
                 stake_to_become_superminority,
                 credits,
                 vote_reward_lamports,
-                -- agave freezes epoch_stakes(E) at the start of E-1, and effective stake holds within an epoch
+                -- agave freezes epoch_stakes(E) at the start of E-1, before paying that epoch's rewards
                 NULLIF(previous.previous_activated_stake, 0) AS epoch_stake,
                 leader_slots,
                 blocks_produced,
