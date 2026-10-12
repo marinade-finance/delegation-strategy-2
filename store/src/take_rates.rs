@@ -6,7 +6,7 @@ use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tokio_postgres::Client;
 
 pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
@@ -165,6 +165,9 @@ pub async fn store_take_rates(
     }
 
     info!("Stored take rates snapshot: {total_upserted} total records upserted");
+
+    let epochs: BTreeSet<u64> = rows.keys().map(|(_, epoch)| *epoch).collect();
+    refresh_expected_take_rates(psql_client, &Vec::from_iter(epochs)).await?;
 
     Ok(())
 }
