@@ -172,12 +172,11 @@ pub async fn store_take_rates(
     Ok(())
 }
 
-/// Cluster reward mix per epoch, of every epoch when `epochs` is None. Epochs that paid no inflation
-/// are absent: the in-progress one has only accruing block rewards, and nothing else pays out before
-/// the epoch closes.
+/// Cluster reward mix of `epochs`. Epochs that paid no inflation are absent: the in-progress one has
+/// only accruing block rewards, and nothing else pays out before the epoch closes.
 pub async fn load_epoch_reward_mix(
     psql_client: &Client,
-    epochs: Option<&[Decimal]>,
+    epochs: &[Decimal],
 ) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
     let rows = psql_client
         .query(
@@ -189,7 +188,7 @@ pub async fn load_epoch_reward_mix(
             SUM(mev_rewards) AS mev,
             SUM(block_rewards) AS block
         FROM {VALIDATORS_REWARDS_TABLE}
-        WHERE $1::NUMERIC[] IS NULL OR epoch = ANY($1)
+        WHERE epoch = ANY($1)
         GROUP BY epoch
         HAVING SUM(inflation_rewards) > 0
         "
@@ -230,7 +229,7 @@ pub async fn refresh_expected_take_rates(
         return Ok(0);
     }
     let epochs: Vec<Decimal> = epochs.iter().map(|epoch| Decimal::from(*epoch)).collect();
-    let mix = load_epoch_reward_mix(psql_client, Some(&epochs)).await?;
+    let mix = load_epoch_reward_mix(psql_client, &epochs).await?;
 
     let rows = psql_client
         .query(
@@ -342,31 +341,15 @@ pub async fn get_take_rate_series(
     psql_client: &Client,
     vote_account: &str,
     from_epoch: Option<u64>,
-    reward_mix: &HashMap<u64, RewardMixShares>,
 ) -> anyhow::Result<Vec<TakeRateRecord>> {
     let from_epoch = from_epoch.map(Decimal::from);
     let query = format!(
         "
         SELECT
-            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate AS realized_take_rate, created_at,
-            epochs.start_at AS epoch_start, epochs.end_at AS epoch_end,
-            validators.commission_max_observed, validators.commission_advertised,
-            mev.mev_commission AS mev_commission_bps,
-            jpf.validator_commission AS priority_commission_bps
+            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate AS realized_take_rate, expected_take_rate,
+            created_at, epochs.start_at AS epoch_start, epochs.end_at AS epoch_end
         FROM {VALIDATORS_REWARDS_TABLE}
         LEFT JOIN epochs ON {VALIDATORS_REWARDS_TABLE}.epoch = epochs.epoch
-        LEFT JOIN validators
-            ON validators.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
-            AND validators.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        -- Both filters stay inside the subqueries; moved to the join they scan every validator's snapshots.
-        LEFT JOIN (
-            SELECT DISTINCT ON (epoch) epoch, mev_commission
-            FROM mev WHERE vote_account = $1 ORDER BY epoch, created_at DESC
-        ) mev ON mev.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        LEFT JOIN (
-            SELECT DISTINCT ON (epoch) epoch, validator_commission
-            FROM jito_priority_fee WHERE vote_account = $1 ORDER BY epoch, created_at DESC
-        ) jpf ON jpf.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
         WHERE {VALIDATORS_REWARDS_TABLE}.vote_account = $1
           AND ($2::NUMERIC IS NULL OR {VALIDATORS_REWARDS_TABLE}.epoch >= $2::NUMERIC)
         ORDER BY {VALIDATORS_REWARDS_TABLE}.epoch ASC
@@ -386,17 +369,7 @@ pub async fn get_take_rate_series(
             epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
             epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
             realized_take_rate: row.get("realized_take_rate"),
-            expected_take_rate: reward_mix.get(&epoch).and_then(|shares| {
-                expected_take_rate(
-                    *shares,
-                    worst_known_commission(
-                        row.get::<_, Option<i32>>("commission_max_observed"),
-                        row.get::<_, Option<i32>>("commission_advertised"),
-                    ),
-                    row.get::<_, Option<i32>>("mev_commission_bps"),
-                    row.get::<_, Option<i32>>("priority_commission_bps"),
-                )
-            }),
+            expected_take_rate: row.get("expected_take_rate"),
             created_at: row.get("created_at"),
         })
     }

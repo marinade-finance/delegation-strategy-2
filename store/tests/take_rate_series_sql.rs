@@ -7,18 +7,11 @@ use std::collections::HashMap;
 use store::take_rates::{
     get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates, refresh_expected_take_rates,
 };
-use store::utils::RewardMixShares;
 use tokio_postgres::Client;
 
 const LAST_EPOCH: u64 = 1000;
 const EPOCHS: u64 = 120;
 const VOTE: &str = "voteTakeRates";
-
-const MIX: RewardMixShares = RewardMixShares {
-    inflation: 0.90,
-    mev: 0.04,
-    block: 0.06,
-};
 
 fn approx(actual: Option<f64>, expected: f64, context: &str) {
     let actual = actual.unwrap_or_else(|| panic!("{context} must not be null"));
@@ -170,17 +163,14 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     }
     insert_reward(&client, "voteOther", LAST_EPOCH, 0.1).await;
 
-    let no_mix = HashMap::new();
-    let series = get_take_rate_series(&client, VOTE, None, &no_mix)
-        .await
-        .unwrap();
+    let series = get_take_rate_series(&client, VOTE, None).await.unwrap();
     let epochs: Vec<u64> = series.iter().map(|record| record.epoch).collect();
     assert_eq!(epochs, (first_epoch..=LAST_EPOCH).collect::<Vec<_>>());
     assert!(
         series
             .iter()
             .all(|record| record.expected_take_rate.is_none()),
-        "an unloaded reward mix must null the whole series instead of weighting by zero"
+        "a row no writer has refreshed reads null instead of a rate computed on read"
     );
 
     let epoch_without_boundaries = series.last().unwrap();
@@ -191,18 +181,18 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     let closed_epoch = &series[0];
     assert_eq!(closed_epoch.epoch_start_at, Some(epoch_start(first_epoch)));
 
-    let bounded = get_take_rate_series(&client, VOTE, Some(LAST_EPOCH - 2), &no_mix)
+    let bounded = get_take_rate_series(&client, VOTE, Some(LAST_EPOCH - 2))
         .await
         .unwrap();
     let epochs: Vec<u64> = bounded.iter().map(|record| record.epoch).collect();
     assert_eq!(epochs, vec![LAST_EPOCH - 2, LAST_EPOCH - 1, LAST_EPOCH]);
 
-    let other = get_take_rate_series(&client, "voteOther", None, &no_mix)
+    let other = get_take_rate_series(&client, "voteOther", None)
         .await
         .unwrap();
     assert_eq!(other.len(), 1);
 
-    let unknown = get_take_rate_series(&client, "voteUnknown", None, &no_mix)
+    let unknown = get_take_rate_series(&client, "voteUnknown", None)
         .await
         .unwrap();
     assert!(unknown.is_empty());
@@ -221,12 +211,11 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
     }
     let client = migrated_client(schema).await.unwrap();
 
-    // One epoch per case. Every epoch gets a rewards row, so a null can only come from the joins.
+    // One epoch per case. Every epoch gets a rewards row with a 90/4/6 mix, so a null can only come
+    // from the joins.
     let epochs = 1001..=1006;
-    let mut mix = HashMap::new();
     for epoch in epochs.clone() {
-        insert_reward(&client, VOTE, epoch, 0.05).await;
-        mix.insert(epoch, MIX);
+        insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
     }
 
     // 1001: all three commissions known.
@@ -256,9 +245,10 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
     insert_mev(&client, 1006, 300, Utc::now()).await;
     insert_priority_fee(&client, 1006, 2000).await;
 
-    let series = get_take_rate_series(&client, VOTE, None, &mix)
+    refresh_expected_take_rates(&client, &Vec::from_iter(epochs.clone()))
         .await
         .unwrap();
+    let series = get_take_rate_series(&client, VOTE, None).await.unwrap();
     let rates: HashMap<u64, Option<f64>> = series
         .iter()
         .map(|record| (record.epoch, record.expected_take_rate))
@@ -316,7 +306,7 @@ async fn refresh_stores_each_rows_expected_take_rate_under_its_epochs_mix() {
     }
     let client = migrated_client(schema).await.unwrap();
 
-    // Rewards components 90/4/6 make the epoch mix equal MIX.
+    // Rewards components 90/4/6 make the epoch mix 0.90/0.04/0.06.
     for epoch in [3001, 3002, 3003] {
         insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
     }
@@ -383,7 +373,9 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     insert_reward_components(&client, VOTE, 2003, 0, 0, 0).await;
     insert_reward_components(&client, VOTE, 2004, 0, 0, 50).await;
 
-    let mix = load_epoch_reward_mix(&client, None).await.unwrap();
+    let mix = load_epoch_reward_mix(&client, &[2001, 2002, 2003, 2004].map(Decimal::from))
+        .await
+        .unwrap();
 
     let shared = mix[&2001];
     approx(
