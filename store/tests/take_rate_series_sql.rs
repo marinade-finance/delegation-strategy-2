@@ -1,12 +1,14 @@
 mod common;
 
 use chrono::{DateTime, Duration, Utc};
+use clap::Parser;
 use common::{migrated_client, skip_without_database};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use store::take_rates::{
     get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates,
-    refresh_expected_take_rates, EpochTakeRates,
+    refresh_expected_take_rates, refresh_stored_expected_take_rates, EpochTakeRates,
+    RefreshExpectedTakeRatesParams,
 };
 use tokio_postgres::Client;
 
@@ -353,6 +355,47 @@ async fn refresh_stores_each_rows_expected_take_rate_under_its_epochs_mix() {
         (0.1 * 90.0 + 0.08 * 4.0 + 0.2 * 106.0) / 200.0,
         "a row added to the epoch reweights every row of it",
     );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn backfill_refreshes_every_stored_epoch_from_the_given_one() {
+    let schema = "ds_test_backfill_expected_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for epoch in [3001, 3002, 3003] {
+        insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
+        insert_validator(&client, epoch, Some(10), Some(10)).await;
+        insert_mev(&client, epoch, 800, Utc::now()).await;
+        insert_priority_fee(&client, epoch, 2000).await;
+    }
+
+    refresh_stored_expected_take_rates(
+        RefreshExpectedTakeRatesParams::parse_from(["refresh", "--from-epoch", "3002"]),
+        &client,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        None,
+        "an epoch before --from-epoch is left alone"
+    );
+    for epoch in [3002, 3003] {
+        approx(
+            stored_expected_take_rate(&client, VOTE, epoch).await,
+            0.1052,
+            &format!("epoch {epoch} is filled"),
+        );
+    }
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))

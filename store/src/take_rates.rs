@@ -306,6 +306,37 @@ pub async fn refresh_expected_take_rates(
     Ok(total_updated)
 }
 
+#[derive(Debug, Parser)]
+pub struct RefreshExpectedTakeRatesParams {
+    #[arg(long = "from-epoch")]
+    from_epoch: u64,
+}
+
+pub async fn refresh_stored_expected_take_rates(
+    params: RefreshExpectedTakeRatesParams,
+    psql_client: &Client,
+) -> anyhow::Result<()> {
+    let epochs = psql_client
+        .query(
+            &format!(
+                "SELECT DISTINCT epoch FROM {VALIDATORS_REWARDS_TABLE} WHERE epoch >= $1 ORDER BY epoch"
+            ),
+            &[&Decimal::from(params.from_epoch)],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get::<_, Decimal>("epoch").try_into())
+        .collect::<Result<Vec<u64>, _>>()?;
+    info!(
+        "Refreshing expected take rates of {} epochs from epoch {}",
+        epochs.len(),
+        params.from_epoch
+    );
+    refresh_expected_take_rates(psql_client, &epochs).await?;
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EpochTakeRates {
     pub realized: f64,
