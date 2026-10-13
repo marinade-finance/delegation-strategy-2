@@ -2,6 +2,7 @@ use crate::dto::{
     BlacklistRecord, GlobalUnstakeHintRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord,
     ValidatorScoreRecord,
 };
+use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
 use csv::{required, Column};
 use rust_decimal::prelude::*;
@@ -81,28 +82,6 @@ async fn voters_with_marinade_stake_in_epoch(
         .collect())
 }
 
-async fn voters_credits_performance_in_epoch(
-    psql_client: &Client,
-    epoch: u64,
-) -> anyhow::Result<HashMap<String, f64>> {
-    log::info!("Loading list of poor voters: {epoch}");
-    Ok(psql_client
-        .query(
-            "WITH stats AS (SELECT AVG(activated_stake * credits) / avg(activated_stake) AS stake_weighted_avg_credits FROM validators WHERE epoch = $1)
-            SELECT
-                vote_account,
-                credits,
-                coalesce(credits / stake_weighted_avg_credits, 0)::double precision AS credits_performance
-            FROM validators LEFT JOIN stats ON 1 = 1
-            WHERE epoch = $1 AND credits IS NOT NULL",
-            &[&Decimal::from(epoch)],
-        )
-        .await?
-        .iter()
-        .map(|row| (row.get("vote_account"), row.get("credits_performance")))
-        .collect())
-}
-
 pub async fn load_unstake_hints(
     psql_client: &Client,
     blacklist_path: &String,
@@ -117,8 +96,7 @@ pub async fn load_unstake_hints(
     } else {
         Default::default()
     };
-    let voters_credits_performance =
-        voters_credits_performance_in_epoch(psql_client, epoch).await?;
+    let vote_performance = load_vote_performance(psql_client, epoch, epoch).await?;
     let blacklist = load_blacklist(blacklist_path)?;
 
     for (vote_account, commission) in commissions_in_this_epoch {
@@ -146,7 +124,7 @@ pub async fn load_unstake_hints(
             .insert(UnstakeHint::Blacklist);
     }
 
-    for (vote_account, performance) in voters_credits_performance {
+    for ((_, vote_account), performance) in vote_performance {
         if performance < MIN_REQUIRED_CREDITS_PERFORMANCE {
             hints
                 .entry(vote_account)

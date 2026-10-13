@@ -122,7 +122,19 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 
-`order_field=Credits` sorts on `credits`, then on the vote reward per lamport of stake. `/clients` and `/providers` use `vote_reward_per_stake` as the second key. This field is the stake-weighted mean of the same ratio.
+`vote_performance` compares the votes of a validator to the cluster in one epoch. 1 is on par with the cluster.
+
+| Epoch | `vote_performance` |
+|---|---|
+| Before Alpenglow | `credits` over the stake-weighted mean of `credits` |
+| Migration epoch | `null` |
+| After the migration epoch | `(reward/w) / (Σreward/Σw)`, with `w = activated_stake/S + leader_slots/N` |
+
+S and N are the sums over the validators that have a vote reward. `vote_performance` is `null` when an input is `null`. It is on `epoch_stats[]`, on the validator, on `/clients` and `/providers` rows as the stake-weighted mean, and in `/validators/{vote_account}/events`.
+
+`order_field=Credits` sorts on `credits`, then on `vote_performance`. `/clients` and `/providers` use the same two keys.
+
+The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/validators/flat` gives `avg_adjusted_vote_performance`, the mean of `vote_performance × (1 - commission)` over the epochs that have a value.
 
 ## Uptimes
 ```bash
