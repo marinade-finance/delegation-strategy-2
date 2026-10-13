@@ -25,7 +25,7 @@ async fn create_bigquery_client() -> anyhow::Result<BqClient> {
     Ok(BqClient::new(config).await?)
 }
 
-/// `None` while the epoch is not loaded yet; it lands about 21 hours into the epoch.
+/// `None` while the ETL has not loaded the epoch yet.
 async fn query_vote_leader_slots(
     bq_client: &BqClient,
     epoch: Epoch,
