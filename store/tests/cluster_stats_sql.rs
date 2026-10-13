@@ -582,3 +582,83 @@ async fn validators_flat_survives_zero_epochs() {
         .await
         .unwrap();
 }
+
+async fn set_block_production(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+    leader_slots: u64,
+    skip_rate: Option<f64>,
+) {
+    client
+        .execute(
+            "UPDATE validators SET leader_slots = $3, blocks_produced = 0, skip_rate = $4
+             WHERE vote_account = $1 AND epoch = $2",
+            &[
+                &vote_account,
+                &Decimal::from(epoch),
+                &Decimal::from(leader_slots),
+                &skip_rate,
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
+    let schema = "ds_test_validators_flat_unknown_skip";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    let null_epoch = LAST_EPOCH;
+    for epoch in (LAST_EPOCH - EPOCHS + 1)..=LAST_EPOCH {
+        insert_validator(&client, "graced", epoch, 100, 10, None).await;
+        set_block_production(&client, "graced", epoch, 100, Some(0.5)).await;
+        insert_validator(&client, "steady", epoch, 100, 10, None).await;
+        set_block_production(&client, "steady", epoch, 300, Some(0.2)).await;
+        insert_validator(&client, "unknown", epoch, 1000, 10, None).await;
+        set_block_production(&client, "unknown", epoch, 0, None).await;
+        insert_validator(&client, "partly", epoch, 100, 10, None).await;
+        let partly_skip_rate = (epoch != null_epoch).then_some(0.1);
+        set_block_production(&client, "partly", epoch, 300, partly_skip_rate).await;
+    }
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    let flat = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|v| v.vote_account == vote_account)
+            .unwrap()
+    };
+    let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
+
+    let partly = flat("partly");
+    assert!(close(partly.avg_skip_rate, 0.1), "{}", partly.avg_skip_rate);
+    assert!(close(partly.avg_grace_skip_rate, 0.1), "{}", partly.avg_grace_skip_rate);
+
+    // The cluster rate weighs only the stake with a known skip rate.
+    let cluster_with_partly = (0.5 * 100.0 + 0.2 * 100.0 + 0.1 * 100.0) / 300.0;
+    let cluster_without_partly = (0.5 * 100.0 + 0.2 * 100.0) / 200.0;
+    let graced_expected =
+        ((EPOCHS - 1) as f64 * cluster_with_partly + cluster_without_partly) / EPOCHS as f64;
+    let graced = flat("graced");
+    assert!(
+        close(graced.avg_grace_skip_rate, graced_expected),
+        "{} != {graced_expected}",
+        graced.avg_grace_skip_rate
+    );
+
+    let unknown = flat("unknown");
+    assert_eq!(unknown.avg_skip_rate, 1.0);
+    assert_eq!(unknown.avg_grace_skip_rate, 1.0);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}

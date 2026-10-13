@@ -1,4 +1,5 @@
 pub mod common;
+pub mod leader_schedule;
 pub mod marinade_service;
 pub mod releases;
 pub mod slot_params;

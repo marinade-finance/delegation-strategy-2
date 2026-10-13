@@ -805,7 +805,7 @@ mod tests {
             vote_reward_lamports: None,
             leader_slots: 0,
             blocks_produced: 0,
-            skip_rate: 0.0,
+            skip_rate: None,
             uptime_pct: None,
             uptime: None,
             downtime: None,

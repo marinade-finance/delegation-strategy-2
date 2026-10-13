@@ -2356,7 +2356,7 @@ pub async fn load_validators_aggregated_flat(
             .query(
                 "with
                 cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) stake_weighted_skip_rate from validators group by epoch),
+                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) filter (where skip_rate is not null) stake_weighted_skip_rate from validators group by epoch),
                 dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
                 agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw from versions group by vote_account)
                 select
@@ -2365,7 +2365,7 @@ pub async fn load_validators_aggregated_flat(
                     avg(activated_stake / 1e9)::double precision AS avg_stake,
                     coalesce(avg(dc_concentration), 0)::double precision AS avg_dc_concentration,
                     coalesce(avg(skip_rate), 1)::double precision AS avg_skip_rate,
-                    coalesce(avg(case when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
+                    coalesce(avg(case when skip_rate is null then null when leader_slots < 200 then least(skip_rate, cluster_skip_rate.stake_weighted_skip_rate) else skip_rate end), 1)::double precision AS avg_grace_skip_rate,
                     max(coalesce(commission_effective, commission_advertised, 100)) AS max_commission,
                     case when bool_and(inflation_rewards_commission_bps is not null) then max(inflation_rewards_commission_bps) end AS max_inflation_rewards_commission_bps,
                     (coalesce(avg(credits * greatest(0, 100 - coalesce(commission_effective, commission_advertised, 100))), 0) / 100)::double precision AS avg_adjusted_credits,

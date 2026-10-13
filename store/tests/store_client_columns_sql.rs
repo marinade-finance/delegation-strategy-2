@@ -58,7 +58,7 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
         credits_total: Some(10),
         leader_slots: 100,
         blocks_produced: 100,
-        skip_rate: 0f64,
+        skip_rate: Some(0f64),
         delinquent: false,
     }
 }

@@ -294,6 +294,7 @@ pub fn collect_validators_info(
     let performance = validators_performance(
         &client,
         epoch,
+        current_epoch_info.epoch,
         &vote_accounts,
         validator_params.rpc_attempts,
         &node_info,
