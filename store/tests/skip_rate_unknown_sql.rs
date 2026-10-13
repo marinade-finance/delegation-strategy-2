@@ -2,8 +2,8 @@ mod common;
 
 use collect::validators_performance::{ValidatorPerformance, ValidatorRewards};
 use common::{
-    migrated_client, performance_snapshot, run_close_epoch, skip_without_database,
-    store_snapshot, validator_performance, validator_snapshot,
+    migrated_client, performance_snapshot, run_close_epoch, skip_without_database, store_snapshot,
+    validator_performance, validator_snapshot,
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -62,7 +62,10 @@ async fn close_epoch_overwrites_a_skip_rate_with_unknown() {
 
     let snapshot = validator_snapshot(EPOCH, "identitySkipRateUnknown", VOTE_ACCOUNT);
     store_snapshot(&mut client, schema, &snapshot).await;
-    assert_eq!(read_skip_rate(&client).await, (Decimal::from(100), Some(0.0)));
+    assert_eq!(
+        read_skip_rate(&client).await,
+        (Decimal::from(100), Some(0.0))
+    );
 
     let closed = performance_snapshot(
         EPOCH,

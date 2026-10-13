@@ -63,7 +63,9 @@ async fn query_vote_leader_slots(
     match row_count {
         0 => Ok(None),
         n if n == slots_in_epoch => Ok(Some(schedule)),
-        n => bail!("Leader schedule of epoch {epoch} has {n} slots in BigQuery, expected {slots_in_epoch}"),
+        n => bail!(
+            "Leader schedule of epoch {epoch} has {n} slots in BigQuery, expected {slots_in_epoch}"
+        ),
     }
 }
 
@@ -116,7 +118,10 @@ pub fn count_block_production(
                 .iter()
                 .filter(|slot| **slot <= last_slot)
                 .fold((0, 0), |(leader_slots, blocks_produced), slot| {
-                    (leader_slots + 1, blocks_produced + has_block(*slot) as usize)
+                    (
+                        leader_slots + 1,
+                        blocks_produced + has_block(*slot) as usize,
+                    )
                 });
             (vote_pubkey.clone(), (leader_slots, blocks_produced))
         })

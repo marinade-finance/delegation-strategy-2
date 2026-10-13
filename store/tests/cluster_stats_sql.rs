@@ -645,7 +645,8 @@ async fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
 
     let partly = flat("partly");
     assert!(close(partly.avg_skip_rate, 0.1), "{}", partly.avg_skip_rate);
-    let partly_grace_expected = ((EPOCHS - 1) as f64 * 0.1 + cluster_without_partly) / EPOCHS as f64;
+    let partly_grace_expected =
+        ((EPOCHS - 1) as f64 * 0.1 + cluster_without_partly) / EPOCHS as f64;
     assert!(
         close(partly.avg_grace_skip_rate, partly_grace_expected),
         "{} != {partly_grace_expected}",
