@@ -637,15 +637,20 @@ async fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
     };
     let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
 
-    let partly = flat("partly");
-    assert!(close(partly.avg_skip_rate, 0.1), "{}", partly.avg_skip_rate);
-    assert!(close(partly.avg_grace_skip_rate, 0.1), "{}", partly.avg_grace_skip_rate);
-
     // The cluster rate weighs only the stake with a known skip rate.
     let cluster_with_partly = (0.5 * 100.0 + 0.2 * 100.0 + 0.1 * 100.0) / 300.0;
     let cluster_without_partly = (0.5 * 100.0 + 0.2 * 100.0) / 200.0;
     let graced_expected =
         ((EPOCHS - 1) as f64 * cluster_with_partly + cluster_without_partly) / EPOCHS as f64;
+
+    let partly = flat("partly");
+    assert!(close(partly.avg_skip_rate, 0.1), "{}", partly.avg_skip_rate);
+    let partly_grace_expected = ((EPOCHS - 1) as f64 * 0.1 + cluster_without_partly) / EPOCHS as f64;
+    assert!(
+        close(partly.avg_grace_skip_rate, partly_grace_expected),
+        "{} != {partly_grace_expected}",
+        partly.avg_grace_skip_rate
+    );
     let graced = flat("graced");
     assert!(
         close(graced.avg_grace_skip_rate, graced_expected),
@@ -655,7 +660,11 @@ async fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
 
     let unknown = flat("unknown");
     assert_eq!(unknown.avg_skip_rate, 1.0);
-    assert_eq!(unknown.avg_grace_skip_rate, 1.0);
+    assert!(
+        close(unknown.avg_grace_skip_rate, graced_expected),
+        "{} != {graced_expected}",
+        unknown.avg_grace_skip_rate
+    );
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
