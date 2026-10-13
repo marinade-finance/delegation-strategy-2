@@ -12,7 +12,7 @@ use solana_sdk::{
     slot_history::{self, SlotHistory},
     sysvar,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
@@ -48,6 +48,7 @@ async fn query_vote_leader_slots(
 
     let mut schedule = VoteLeaderSlots::new();
     let mut row_count = 0u64;
+    let mut seen_slots = HashSet::new();
     while let Some(row) = iter.next().await? {
         row_count += 1;
         let vote_pubkey = row
@@ -57,6 +58,9 @@ async fn query_vote_leader_slots(
         let slot: Slot = raw_slot
             .parse()
             .context(format!("Failed to parse slot '{raw_slot}'"))?;
+        if !seen_slots.insert(slot) {
+            bail!("Leader schedule of epoch {epoch} has slot {slot} more than once");
+        }
         schedule.entry(vote_pubkey).or_default().push(slot);
     }
 
