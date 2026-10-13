@@ -299,6 +299,13 @@ pub fn collect_validators_info(
         &node_info,
     )?;
 
+    let rpc_epoch = client.get_epoch_info()?.epoch;
+    if rpc_epoch != epoch {
+        anyhow::bail!(
+            "Snapshot is labelled epoch {epoch} but the RPC was at epoch {rpc_epoch} after reading the accounts, their state may belong to either epoch"
+        );
+    }
+
     for vote_account in vote_accounts
         .current
         .iter()

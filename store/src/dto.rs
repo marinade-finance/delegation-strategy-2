@@ -371,6 +371,8 @@ pub struct ValidatorEpochStats {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
+    /// Alpenglow reward-committee stake: prior epoch's `activated_stake`. Null if none or no data.
+    pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
     pub skip_rate: f64,
