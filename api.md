@@ -197,14 +197,15 @@ One `/providers` or `/clients` group per epoch, newest first, over the cached ep
 - `epochs` - how many newest cluster epochs to cover, 1 to 90, default 90.
 
 Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
-client are in the `Unknown` group, as on the lists. Each epoch counts the validators whose
-own row for that epoch puts them in the group, so a validator that moved counts in the old group
-before the move. `stake_share` is of every validator with a row that epoch. `net_apy` (apy-api
-14-day rolling staker APY at the epoch end) and `take_rate` (realized, `validators_rewards`) are
-stake-weighted over the members that have one, and `null` for the open epoch (`epoch_end_at: null`).
-`expected_take_rate` is weighted the same way from each epoch's stored value (see Take rates); on
-the open epoch it weights each member's current `/validators` value, the one `/providers` and
-`/clients` average over their eligible validators.
+client are in the `Unknown` group, as on the lists. The newest epoch counts exactly what
+`/providers` and `/clients` count, so it matches the list row. Each older epoch counts the
+validators whose own row for that epoch puts them in the group, so a validator that moved counts in
+the old group before the move, and its `stake_share` is of every validator with a row that epoch.
+`net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
+`validators_rewards`) are stake-weighted over the members that have one, and `null` for the open
+epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's stored
+value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
+lists.
 An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
 ```bash
 curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq

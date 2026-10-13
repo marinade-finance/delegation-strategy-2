@@ -975,7 +975,7 @@ pub fn net_apy_at(series: &[(i64, f64)], epoch_end_at: i64) -> Option<f64> {
         .map(|(_, value)| *value)
 }
 
-// Each epoch groups by that epoch's own row, and its share is of every validator with a row.
+// Past epochs group every validator by its own row; the newest counts as `/providers` and `/clients`.
 pub fn aggregate_history(
     validators: &HashMap<String, ValidatorRecord>,
     take_rates: &HashMap<(String, u64), EpochTakeRates>,
@@ -997,8 +997,14 @@ pub fn aggregate_history(
 
     for validator in validators.values() {
         let series = net_apy.get(&validator.vote_account);
+        let listed =
+            newest_epoch.is_some_and(|newest_epoch| is_eligible_validator(validator, newest_epoch));
         for stats in &validator.epoch_stats {
             epochs.entry(stats.epoch).or_insert(stats);
+            let newest = Some(stats.epoch) == newest_epoch;
+            if newest && !listed {
+                continue;
+            }
             *epoch_stake.entry(stats.epoch).or_default() += stats.activated_stake;
 
             let rates = take_rates.get(&(validator.vote_account.clone(), stats.epoch));
@@ -1010,15 +1016,17 @@ pub fn aggregate_history(
                     stored_expected,
                 ),
                 // The open epoch has no reward mix yet; the table value makes the chart end where the table is.
-                None if Some(stats.epoch) == newest_epoch => {
-                    (None, None, validator.expected_take_rate)
-                }
+                None if newest => (None, None, validator.expected_take_rate),
                 None => (None, None, stored_expected),
             };
             let weight = stats.activated_stake.to_f64().unwrap_or_default();
 
             for (kind, groups) in KINDS.iter().zip(accumulators.iter_mut()) {
-                let key = group_key(validator, stats, *kind);
+                let key = if newest {
+                    current_group_key(validator, stats, *kind)
+                } else {
+                    group_key(validator, stats, *kind)
+                };
                 let known = key.is_some();
                 let name = key.or_else(|| Some(UNKNOWN_GROUP.to_string()));
                 let (Some(key), Some(name)) = (folded(&name), name) else {
@@ -2974,6 +2982,68 @@ mod tests {
         assert_eq!(
             point(latitude, CURRENT_EPOCH).expected_take_rate,
             Some(0.12)
+        );
+    }
+
+    #[test]
+    fn history_newest_epoch_counts_what_the_lists_count() {
+        let mut validators = validators(vec![
+            Member::new("listed", last_two_epochs(300, AGAVE, Some("Hetzner"))),
+            // One epoch of history: not eligible, so no list serves it yet.
+            Member::new("fresh", vec![(CURRENT_EPOCH, 100, AGAVE, Some("Hetzner"))]),
+            // Gossip missed the newest row; the record keeps the client the lists group it by.
+            Member::new(
+                "missed",
+                vec![
+                    (CURRENT_EPOCH, 200, None, Some("Latitude")),
+                    (PREVIOUS_EPOCH, 200, AGAVE, Some("Latitude")),
+                ],
+            ),
+        ]);
+        open_current_epoch(&mut validators);
+        validators.get_mut("listed").unwrap().expected_take_rate = Some(0.1);
+        validators.get_mut("fresh").unwrap().expected_take_rate = Some(0.5);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+        let lists = aggregate_all(&validators, &Default::default());
+
+        let as_listed = |group: &ValidatorGroupRecord| {
+            (
+                group.total_stake,
+                group.validator_count,
+                group.stake_share,
+                group.expected_take_rate,
+            )
+        };
+        let as_history = |history: &GroupHistory| {
+            let newest = point(history, CURRENT_EPOCH);
+            (
+                newest.total_stake,
+                newest.validator_count,
+                newest.stake_share,
+                newest.expected_take_rate,
+            )
+        };
+        let hetzner = group(&lists.providers.groups, "Hetzner").row();
+        assert_eq!(
+            as_history(&history.providers["hetzner"]),
+            as_listed(hetzner)
+        );
+        assert_eq!(as_listed(hetzner), (Decimal::from(300), 1, 0.6, Some(0.1)));
+        let agave = &lists
+            .clients
+            .nodes
+            .iter()
+            .find(|node| node.group.key == "Agave")
+            .unwrap()
+            .group;
+        assert_eq!(
+            as_history(&history.client_lineages["agave"]),
+            as_listed(agave)
+        );
+        assert_eq!(agave.total_stake, Decimal::from(500));
+        assert!(
+            !history.client_lineages.contains_key("unknown"),
+            "the missed row counts under the record's client, as on /clients"
         );
     }
 
