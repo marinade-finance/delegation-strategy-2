@@ -645,7 +645,7 @@ fn parse_validator_info(
         anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
-    if !key_list.keys.is_empty() && key_list.keys.contains(&(validator_info::id(), false)) {
+    if key_list.keys.len() > 1 && key_list.keys.contains(&(validator_info::id(), false)) {
         let (validator_pubkey, _) = key_list.keys[1];
         let validator_info_string: String = deserialize(get_config_data(&account.data)?)?;
         let validator_info: Map<_, _> = serde_json::from_str(&validator_info_string)?;
@@ -2407,5 +2407,40 @@ mod collector_health_tests {
             collector_health_of(&vote_account.to_string(), None, &health_map),
             (None, None)
         );
+    }
+}
+
+#[cfg(test)]
+mod validator_info_tests {
+    use super::*;
+
+    fn config_account(keys: Vec<(Pubkey, bool)>, info: &str) -> Account {
+        let mut data = bincode::serialize(&ConfigKeys { keys }).unwrap();
+        data.extend(bincode::serialize(info).unwrap());
+        Account {
+            lamports: 1,
+            data,
+            owner: solana_config_program_client::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn a_key_list_holding_only_the_validator_info_id_is_rejected() {
+        let account = config_account(vec![(validator_info::id(), false)], r#"{"name":"x"}"#);
+        assert!(parse_validator_info(&Pubkey::new_unique(), &account).is_err());
+    }
+
+    #[test]
+    fn a_validator_info_account_yields_its_signer_and_name() {
+        let validator = Pubkey::new_unique();
+        let account = config_account(
+            vec![(validator_info::id(), false), (validator, true)],
+            r#"{"name":"x"}"#,
+        );
+        let (pubkey, info) = parse_validator_info(&Pubkey::new_unique(), &account).unwrap();
+        assert_eq!(pubkey, validator);
+        assert_eq!(info.name.as_deref(), Some("x"));
     }
 }
