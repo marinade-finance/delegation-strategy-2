@@ -52,6 +52,11 @@ fn normalized(value: Option<String>) -> Option<String> {
     Some(value.to_string())
 }
 
+// ASN 0 is reserved (RFC 7607); whois reports it when it has no answer.
+fn known_asn(stats: &ValidatorEpochStats) -> Option<i32> {
+    stats.dc_asn.filter(|asn| *asn != 0)
+}
+
 fn is_unknown_placeholder(value: &str) -> bool {
     let lowercase = value.to_lowercase();
     if lowercase == "unknown" {
@@ -203,7 +208,7 @@ impl EpochStatBreakdowns for ProviderAndClientBreakdowns {
     fn add(&mut self, validator: &ValidatorRecord, stats: &ValidatorEpochStats) {
         let stake = stats.activated_stake;
 
-        if let Some(asn) = stats.dc_asn {
+        if let Some(asn) = known_asn(stats) {
             *self.asns.entry(asn).or_default() += stake;
         }
 
@@ -1049,7 +1054,7 @@ pub fn aggregate_history(
                 point.net_apy.add(net_apy, weight);
                 point.take_rate.add(take_rate, weight);
                 point.expected_take_rate.add(expected_take_rate, weight);
-                if let (GroupKind::ProviderAso, Some(asn), true) = (kind, stats.dc_asn, known) {
+                if let (GroupKind::ProviderAso, Some(asn), true) = (kind, known_asn(stats), known) {
                     group.asns.entry(stats.epoch).or_default().insert(asn);
                 }
             }
@@ -2772,6 +2777,41 @@ mod tests {
         assert!(
             history.provider_asns.is_empty(),
             "the Unknown bucket is no provider an ASN can lead to"
+        );
+    }
+
+    #[test]
+    fn asn_zero_links_no_providers() {
+        let validators = validators(vec![
+            Member {
+                dc_asn: Some(0),
+                ..Member::new(
+                    "czarnomorka",
+                    last_two_epochs(300, AGAVE, Some("Czarnomorka")),
+                )
+            },
+            Member {
+                dc_asn: Some(0),
+                ..Member::new("globecomm", last_two_epochs(200, AGAVE, Some("Globecomm")))
+            },
+            Member {
+                dc_asn: Some(24940),
+                ..Member::new("routed", last_two_epochs(100, AGAVE, Some("Czarnomorka")))
+            },
+        ]);
+
+        let groups = aggregate_provider_rows(&validators);
+        assert_eq!(group(&groups, "Czarnomorka").asns, vec![24940]);
+        assert!(group(&groups, "Globecomm").asns.is_empty());
+
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            point(&history.providers["globecomm"], CURRENT_EPOCH).validator_count,
+            1
+        );
+        assert_eq!(
+            history.provider_asns.keys().collect::<Vec<_>>(),
+            vec![&24940]
         );
     }
 
