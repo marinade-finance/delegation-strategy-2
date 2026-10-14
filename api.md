@@ -173,7 +173,8 @@ Such an epoch is still returned by both query modes, including the open one.
 
 `realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
 commissions that epoch implied it would. It is `null` where no commission was recorded, and for
-the in-progress epoch, which has paid no inflation rewards to weight them by.
+the in-progress epoch, which has paid no inflation rewards to weight them by. It is stored, and
+refreshed whenever the epoch's rewards, Jito commissions or epoch close are stored.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
@@ -187,6 +188,48 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "realized_take_rate": 0.0812,
       "expected_take_rate": 0.1052,
       "created_at": "2022-11-30T15:58:04.038843Z"
+    }
+  ]
+}
+```
+
+## Provider and client history
+One `/providers` or `/clients` group per epoch, newest first, over the cached epochs (90).
+- `/providers/history?key=` - a `/providers` key.
+- `/providers/history?asn=` - any ASN a `/providers` row lists. It follows that ASN across provider renames; each epoch counts the whole provider group the ASN was in, merged when two names share it. `key` and `asn` are mutually exclusive, one is required.
+- `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
+- `epochs` - how many newest cluster epochs to cover, 1 to 90, default 90.
+
+Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
+client are in the `Unknown` group, as on the lists. The newest epoch counts exactly what
+`/providers` and `/clients` count, so it matches the list row. Each older epoch counts the
+validators whose own row for that epoch puts them in the group, so a validator that moved counts in
+the old group before the move, and its `stake_share` is of every validator with a row that epoch.
+`net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
+`validators_rewards`) are stake-weighted over the members that have one, and `null` for the open
+epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's stored
+value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
+lists.
+An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
+```bash
+curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
+```
+```json
+{
+  "name": "Agave + JitoBAM",
+  "current_epoch": 1050,
+  "net_apy_updated_at": "2026-10-07T12:00:00Z",
+  "epochs": [
+    {
+      "epoch": 1050,
+      "epoch_start_at": "2026-10-06T10:00:00Z",
+      "epoch_end_at": null,
+      "total_stake": "41000000000000000",
+      "stake_share": 0.105,
+      "validator_count": 120,
+      "net_apy": null,
+      "take_rate": null,
+      "expected_take_rate": 0.0731
     }
   ]
 }

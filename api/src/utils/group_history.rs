@@ -1,0 +1,139 @@
+use crate::cache::DEFAULT_CACHE_EPOCHS;
+use crate::utils::response::response_error;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use store::dto::{GroupHistory, GroupHistoryEpoch};
+use warp::{
+    http::StatusCode,
+    reply::{json, Json, WithStatus},
+};
+
+#[derive(Serialize, Debug, utoipa::ToSchema)]
+pub struct ResponseGroupHistory {
+    name: String,
+    current_epoch: Option<u64>,
+    net_apy_updated_at: Option<DateTime<Utc>>,
+    epochs: Vec<GroupHistoryEpoch>,
+}
+
+pub fn history_epochs(epochs: Option<usize>) -> Result<usize, String> {
+    let max = DEFAULT_CACHE_EPOCHS as usize;
+    match epochs.unwrap_or(max) {
+        epochs if (1..=max).contains(&epochs) => Ok(epochs),
+        _ => Err(format!("epochs must be between 1 and {max}")),
+    }
+}
+
+fn group_history_response(
+    mut history: GroupHistory,
+    epochs: usize,
+    net_apy_updated_at: Option<DateTime<Utc>>,
+) -> ResponseGroupHistory {
+    let current_epoch = history.current_epoch;
+    history
+        .epochs
+        .retain(|point| current_epoch.is_some_and(|current| point.epoch + epochs as u64 > current));
+    ResponseGroupHistory {
+        current_epoch,
+        name: history.name,
+        net_apy_updated_at,
+        epochs: history.epochs,
+    }
+}
+
+pub fn group_history_reply(
+    history: Option<GroupHistory>,
+    epochs: usize,
+    net_apy_updated_at: Option<DateTime<Utc>>,
+    not_found: impl FnOnce() -> String,
+) -> WithStatus<Json> {
+    match history {
+        Some(history) => warp::reply::with_status(
+            json(&group_history_response(history, epochs, net_apy_updated_at)),
+            StatusCode::OK,
+        ),
+        None => response_error(StatusCode::NOT_FOUND, not_found()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epochs_default_to_the_whole_cached_window() {
+        assert_eq!(history_epochs(None), Ok(DEFAULT_CACHE_EPOCHS as usize));
+        assert_eq!(history_epochs(Some(1)), Ok(1));
+        assert_eq!(
+            history_epochs(Some(DEFAULT_CACHE_EPOCHS as usize)),
+            Ok(DEFAULT_CACHE_EPOCHS as usize)
+        );
+    }
+
+    #[test]
+    fn epochs_outside_the_cached_window_are_refused() {
+        assert!(history_epochs(Some(0)).is_err());
+        assert!(
+            history_epochs(Some(DEFAULT_CACHE_EPOCHS as usize + 1)).is_err(),
+            "the cache holds no epoch past its window"
+        );
+    }
+
+    fn point(epoch: u64) -> GroupHistoryEpoch {
+        GroupHistoryEpoch {
+            epoch,
+            epoch_start_at: None,
+            epoch_end_at: None,
+            total_stake: Default::default(),
+            stake_share: 0.0,
+            validator_count: 0,
+            net_apy: None,
+            take_rate: None,
+            expected_take_rate: None,
+        }
+    }
+
+    #[test]
+    fn the_response_keeps_the_newest_epochs() {
+        let history = GroupHistory {
+            name: "OVH".to_string(),
+            current_epoch: Some(100),
+            epochs: vec![point(100), point(99), point(98)],
+        };
+        let response = group_history_response(history, 2, None);
+
+        assert_eq!(response.name, "OVH");
+        assert_eq!(response.current_epoch, Some(100));
+        assert_eq!(response.epochs, vec![point(100), point(99)]);
+    }
+
+    #[test]
+    fn the_window_counts_cluster_epochs_not_the_groups_rows() {
+        let history = GroupHistory {
+            name: "OVH".to_string(),
+            current_epoch: Some(100),
+            epochs: vec![point(98), point(97)],
+        };
+        let response = group_history_response(history, 3, None);
+
+        assert_eq!(
+            response.current_epoch,
+            Some(100),
+            "the cluster's epoch, though the group has no row in it"
+        );
+        assert_eq!(
+            response.epochs,
+            vec![point(98)],
+            "epochs=3 covers 100, 99 and 98 only"
+        );
+    }
+
+    #[test]
+    fn a_missing_group_is_not_found() {
+        let reply = group_history_reply(None, 90, None, || "No provider named x".to_string());
+        assert_eq!(
+            warp::Reply::into_response(reply).status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+}

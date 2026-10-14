@@ -4,31 +4,31 @@ Running the collectors CLI locally.
 
 # 1. Run PosgreSQL and apply migrations scripts
 
+The container gets no network (`--network none`) and serves only a Unix socket in a host
+directory, so it adds no bridge, veth or iptables rules and nothing on the LAN can reach it.
+
 ```bash
 export DB='delegation-strategy'
+export PG_SOCKET_DIR=/tmp/ds-pg
+mkdir -m 777 -p "$PG_SOCKET_DIR"
 
-docker run --name postgresql-${DB} -p 5432:5432 --rm \
+docker run -d --name postgresql-${DB} --rm --network none \
+  -v "$PG_SOCKET_DIR":/var/run/postgresql \
   -e POSTGRES_DB=${DB} \
   -e POSTGRES_USER=${DB} \
   -e POSTGRES_PASSWORD=${DB} \
-  postgres:17.4 \
-  -c max-prepared-transactions=100 \
-  -c log-statement=all \
-  -c ssl=on \
-  -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem \
-  -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+  postgres:17.4
 
-export DB='delegation-strategy'
 for FILE in ./migrations/*.sql; do
   echo "Migration SQL init execution: $FILE"
-  PGPASSWORD=${DB} psql -U ${DB} -d ${DB} \
-    -h localhost -p 5432 -f "$FILE"
+  docker exec -i postgresql-${DB} psql -v ON_ERROR_STOP=1 -U ${DB} -d ${DB} < "$FILE"
 done
-
-docker cp postgresql-${DB}:/etc/ssl/certs/ssl-cert-snakeoil.pem /tmp/postgres-root-cert.pem
 ```
 
-The PostgreSQL URL is then `postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy`
+The PostgreSQL URL is then `host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy`.
+Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file,
+e.g. `/etc/ssl/certs/ca-certificates.crt`. Keep the socket directory path short: a Unix socket
+path is capped at 107 bytes.
 
 # 2. Run the SQL loader tests
 
@@ -38,7 +38,7 @@ applies `migrations/*.sql` into it and drops it again, so it needs an empty
 database only on the first run.
 
 ```bash
-export DS_TEST_POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
+export DS_TEST_POSTGRES_URL='host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy'
 cargo test --all-features
 ```
 
