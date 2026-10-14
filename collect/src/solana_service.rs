@@ -27,12 +27,7 @@ use solana_rpc_client_api::config::{
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
 use solana_rpc_client_api::response::{RpcVoteAccountInfo, RpcVoteAccountStatus};
-use solana_sdk::{
-    account::from_account,
-    clock::{Epoch, Slot},
-    slot_history::{self, SlotHistory},
-    sysvar,
-};
+use solana_sdk::clock::{Epoch, Slot};
 use solana_sdk::{account::Account, pubkey::Pubkey};
 use solana_stake_interface::{self as stake, state::StakeStateV2};
 use std::{
@@ -574,74 +569,6 @@ pub fn get_minimum_superminority_stake(vote_accounts: &RpcVoteAccountStatus) -> 
     }
 
     last_stake
-}
-
-pub fn get_block_production_by_validator(
-    rpc_client: &RpcClient,
-    epoch: Epoch,
-) -> anyhow::Result<HashMap<String, (usize, usize)>> {
-    info!("Getting block production by validator");
-    let epoch_schedule = rpc_client.get_epoch_schedule()?;
-    let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
-    let last_slot_in_epoch = epoch_schedule.get_last_slot_in_epoch(epoch);
-
-    let current_epoch_production = rpc_client.get_block_production()?;
-    if first_slot_in_epoch == current_epoch_production.value.range.first_slot {
-        return Ok(current_epoch_production.value.by_identity);
-    }
-
-    let confirmed_blocks =
-        get_confirmed_blocks(rpc_client, first_slot_in_epoch, last_slot_in_epoch)?;
-
-    let leader_schedule = rpc_client
-        .get_leader_schedule_with_commitment(
-            Some(first_slot_in_epoch),
-            CommitmentConfig::finalized(), // todo take from config
-        )?
-        .unwrap();
-
-    let mut blocks_and_slots = HashMap::new();
-    for (validator_identity, relative_slots) in leader_schedule {
-        let mut validator_blocks = 0;
-        let mut validator_slots = 0;
-        for relative_slot in relative_slots {
-            let slot = first_slot_in_epoch + relative_slot as Slot;
-            validator_slots += 1;
-            if confirmed_blocks.contains(&slot) {
-                validator_blocks += 1;
-            }
-        }
-        if validator_slots > 0 {
-            let e = blocks_and_slots.entry(validator_identity).or_insert((0, 0));
-            e.0 += validator_slots;
-            e.1 += validator_blocks;
-        }
-    }
-
-    Ok(blocks_and_slots)
-}
-
-fn get_confirmed_blocks(
-    rpc_client: &RpcClient,
-    start_slot: Slot,
-    end_slot: Slot,
-) -> anyhow::Result<HashSet<Slot>> {
-    info!("loading slot history. slot range is [{start_slot},{end_slot}]");
-    let slot_history_account = rpc_client
-        .get_account_with_commitment(&sysvar::slot_history::id(), CommitmentConfig::finalized())?
-        .value
-        .unwrap();
-
-    let slot_history: SlotHistory = from_account(&slot_history_account).unwrap();
-
-    if start_slot >= slot_history.oldest() && end_slot <= slot_history.newest() {
-        info!("slot range within the SlotHistory sysvar");
-        Ok((start_slot..=end_slot)
-            .filter(|slot| slot_history.check(*slot) == slot_history::Check::Found)
-            .collect())
-    } else {
-        anyhow::bail!("slot range is not within the SlotHistory sysvar")
-    }
 }
 
 fn parse_validator_info(

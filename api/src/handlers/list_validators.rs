@@ -806,7 +806,7 @@ mod tests {
             epoch_stake: None,
             leader_slots: 0,
             blocks_produced: 0,
-            skip_rate: 0.0,
+            skip_rate: None,
             uptime_pct: None,
             uptime: None,
             downtime: None,

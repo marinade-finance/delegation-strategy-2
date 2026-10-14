@@ -193,7 +193,7 @@ pub struct Validator {
     pub credits: CreditsColumns,
     pub leader_slots: Decimal,
     pub blocks_produced: Decimal,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     pub uptime_pct: Option<f64>,
     pub uptime: Option<Decimal>,
     pub downtime: Option<Decimal>,
@@ -375,7 +375,7 @@ pub struct ValidatorEpochStats {
     pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     pub uptime_pct: Option<f64>,
     pub uptime: Option<u64>,
     pub downtime: Option<u64>,
@@ -744,7 +744,7 @@ pub struct SettlementRecord {
 pub struct PerformanceRecord {
     pub blocks_produced: u64,
     pub leader_slots: u64,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     /// Tower vote credits. Null in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
 }

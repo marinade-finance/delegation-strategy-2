@@ -265,7 +265,7 @@ struct ValidatorUpdateRecord {
     credits: CreditsColumns,
     leader_slots: Decimal,
     blocks_produced: Decimal,
-    skip_rate: f64,
+    skip_rate: Option<f64>,
     updated_at: DateTime<Utc>,
 }
 
