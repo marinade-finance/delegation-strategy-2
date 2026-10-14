@@ -47,10 +47,8 @@ async fn query_vote_leader_slots(
         .context("Failed to query the leader schedule")?;
 
     let mut schedule = VoteLeaderSlots::new();
-    let mut row_count = 0u64;
     let mut seen_slots = HashSet::new();
     while let Some(row) = iter.next().await? {
-        row_count += 1;
         let vote_pubkey = row
             .column::<String>(0)
             .context("Failed to read vote_pubkey")?;
@@ -64,7 +62,7 @@ async fn query_vote_leader_slots(
         schedule.entry(vote_pubkey).or_default().push(slot);
     }
 
-    match row_count {
+    match seen_slots.len() as u64 {
         0 => Ok(None),
         n if n == slots_in_epoch => Ok(Some(schedule)),
         n => bail!(
