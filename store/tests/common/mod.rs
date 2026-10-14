@@ -60,6 +60,21 @@ pub fn skip_without_database(schema: &str) -> bool {
     true
 }
 
+pub async fn stored_expected_take_rate(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+) -> Option<f64> {
+    client
+        .query_one(
+            "SELECT expected_take_rate FROM validators_rewards WHERE vote_account = $1 AND epoch = $2",
+            &[&vote_account, &Decimal::from(epoch)],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
 pub fn write_yaml(name: &str, contents: &str) -> String {
     let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
     std::fs::write(&path, contents).unwrap();

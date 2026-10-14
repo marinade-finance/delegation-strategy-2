@@ -1,7 +1,9 @@
 use crate::common::retry_blocking;
 use crate::common::QuadraticBackoffStrategy;
 use crate::marinade_service::fetch_bonds;
+use crate::releases::firedancer_lineage;
 use crate::slot_params::SLOTS_IN_EPOCH;
+use crate::validator_version::ValidatorVersion;
 use crate::validators::*;
 use bincode::deserialize;
 use csv::{required, Column};
@@ -347,8 +349,14 @@ impl ClientId {
         self.groupings().map(|grouping| grouping.vendor)
     }
 
-    pub fn lineage(&self) -> Option<&'static str> {
-        self.groupings().map(|grouping| grouping.lineage)
+    pub fn lineage(&self, version: Option<&str>) -> Option<&'static str> {
+        let lineage = self.groupings()?.lineage;
+        let version = version.and_then(|version| ValidatorVersion::from_gossip(version).ok());
+        Some(match (self, version) {
+            // Frankendancer + JitoBAM also reported id 12 until FrankenBAM got id 14.
+            (ClientId::Registered(12), Some(version)) => firedancer_lineage(&version),
+            _ => lineage,
+        })
     }
 
     pub fn engine(&self) -> Option<&'static str> {
@@ -356,9 +364,9 @@ impl ClientId {
     }
 
     /// The lineage as display text, and the block engine after it: `Agave + Jito`.
-    pub fn label(&self) -> Option<String> {
+    pub fn label(&self, version: Option<&str>) -> Option<String> {
         let grouping = self.groupings()?;
-        let mut label = grouping.lineage.to_string();
+        let mut label = self.lineage(version)?.to_string();
         label[..1].make_ascii_uppercase();
         if let Some(engine) = grouping.engine {
             label.push_str(" + ");
@@ -368,9 +376,7 @@ impl ClientId {
         Some(label)
     }
 
-    // Vendor is who ships the binary, lineage is which codebase it forks, engine is the block engine
-    // the binary runs; the registry assigns a separate id per lineage variant of a vendor, so all
-    // three are a function of the id alone.
+    // The registry assigns an id per lineage variant of a vendor; id 12 is the shared-id exception.
     fn groupings(&self) -> Option<ClientGrouping> {
         let ClientId::Registered(id) = self else {
             return None;
@@ -391,8 +397,9 @@ impl ClientId {
             9 => ClientGrouping::new("harmonic", "firedancer", Some("Harmonic")),
             10 => ClientGrouping::new("harmonic", "agave", Some("Harmonic")),
             11 => ClientGrouping::new("harmonic", "frankendancer", Some("Harmonic")),
-            12 => ClientGrouping::new("bam", "frankendancer", Some("JitoBAM")),
+            12 => ClientGrouping::new("bam", "firedancer", Some("JitoBAM")),
             13 => ClientGrouping::new("raiku", "agave", Some("Raiku")),
+            14 => ClientGrouping::new("bam", "frankendancer", Some("JitoBAM")),
             _ => return None,
         })
     }
@@ -572,7 +579,7 @@ fn parse_validator_info(
         anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
-    if !key_list.keys.is_empty() && key_list.keys.contains(&(validator_info::id(), false)) {
+    if key_list.keys.len() > 1 && key_list.keys.contains(&(validator_info::id(), false)) {
         let (validator_pubkey, _) = key_list.keys[1];
         let validator_info_string: String = deserialize(get_config_data(&account.data)?)?;
         let validator_info: Map<_, _> = serde_json::from_str(&validator_info_string)?;
@@ -1411,7 +1418,7 @@ mod tests {
 
     #[test]
     fn client_label_pairs_lineage_with_the_vendor_modification() {
-        let label = |raw: &str| resolve_client_id(Some(raw)).label();
+        let label = |raw: &str| resolve_client_id(Some(raw)).label(None);
         let some = |label: &str| Some(label.to_string());
         assert_eq!(label("Agave"), some("Agave"));
         assert_eq!(label("Solana Labs"), some("Agave"));
@@ -1423,12 +1430,15 @@ mod tests {
         assert_eq!(label("Raiku"), some("Agave + Raiku"));
         assert_eq!(label("Frankendancer"), some("Frankendancer"));
         assert_eq!(label("Unknown(11)"), some("Frankendancer + Harmonic"));
-        assert_eq!(label("Unknown(12)"), some("Frankendancer + JitoBAM"));
+        assert_eq!(label("Unknown(12)"), some("Firedancer + JitoBAM"));
+        assert_eq!(label("FireBAM"), some("Firedancer + JitoBAM"));
+        assert_eq!(label("Unknown(14)"), some("Frankendancer + JitoBAM"));
+        assert_eq!(label("FrankenBAM"), some("Frankendancer + JitoBAM"));
         assert_eq!(label("Firedancer"), some("Firedancer"));
         assert_eq!(label("Unknown(9)"), some("Firedancer + Harmonic"));
         assert_eq!(label("Sig"), some("Sig"));
         assert_eq!(label("Unknown(86)"), None);
-        assert_eq!(resolve_client_id(None).label(), None);
+        assert_eq!(resolve_client_id(None).label(None), None);
     }
 
     // The label repeats the lineage as display text, so a mapping edit that touches one and not the
@@ -1437,14 +1447,19 @@ mod tests {
     fn every_label_starts_with_its_own_lineage() {
         for id in client_registry().names.keys() {
             let client = ClientId::Registered(*id);
-            let (lineage, label) = (client.lineage().unwrap(), client.label().unwrap());
-            let label = label.as_str();
-            let mut expected = lineage.to_string();
-            expected[..1].make_ascii_uppercase();
-            assert!(
-                label.starts_with(&expected),
-                "client id {id} label {label} does not start with its lineage {lineage}"
-            );
+            for version in [None, Some("0.1204.40300"), Some("26.9.4")] {
+                let (lineage, label) = (
+                    client.lineage(version).unwrap(),
+                    client.label(version).unwrap(),
+                );
+                let label = label.as_str();
+                let mut expected = lineage.to_string();
+                expected[..1].make_ascii_uppercase();
+                assert!(
+                    label.starts_with(&expected),
+                    "client id {id} label {label} does not start with its lineage {lineage}"
+                );
+            }
         }
     }
 
@@ -1466,7 +1481,7 @@ mod tests {
     fn an_unregistered_client_stores_the_same_identity_whichever_form_the_rpc_renders() {
         let stored = |raw| {
             let resolved = resolve_client_id(Some(raw));
-            (resolved.number(), resolved.vendor(), resolved.lineage())
+            (resolved.number(), resolved.vendor(), resolved.lineage(None))
         };
         assert_eq!(stored("Unknown(86)"), (None, None, None));
         assert_eq!(stored("Vexor"), stored("Unknown(86)"));
@@ -1483,12 +1498,12 @@ mod tests {
     fn unclassified_clients_are_summarised_by_node_count() {
         let renderings = HashMap::from([
             ("Raiku2".to_string(), 12),
-            ("Unknown(14)".to_string(), 37),
+            ("Unknown(99)".to_string(), 37),
             ("Vexor".to_string(), 12),
         ]);
         assert_eq!(
             unclassified_clients_summary(&renderings),
-            "Unknown(14) on 37 node(s), Raiku2 on 12 node(s), Vexor on 12 node(s)"
+            "Unknown(99) on 37 node(s), Raiku2 on 12 node(s), Vexor on 12 node(s)"
         );
         assert_eq!(unclassified_clients_summary(&HashMap::new()), "");
     }
@@ -1541,18 +1556,64 @@ mod tests {
         for id in [9, 10, 11] {
             assert_eq!(ClientId::Registered(id).vendor(), Some("harmonic"));
         }
-        assert_eq!(ClientId::Registered(9).lineage(), Some("firedancer"));
-        assert_eq!(ClientId::Registered(10).lineage(), Some("agave"));
-        assert_eq!(ClientId::Registered(11).lineage(), Some("frankendancer"));
+        assert_eq!(ClientId::Registered(9).lineage(None), Some("firedancer"));
+        assert_eq!(ClientId::Registered(10).lineage(None), Some("agave"));
+        assert_eq!(
+            ClientId::Registered(11).lineage(None),
+            Some("frankendancer")
+        );
     }
 
     #[test]
     fn vendor_separates_bam_from_plain_agave() {
         assert_eq!(ClientId::Registered(6).vendor(), Some("bam"));
-        assert_eq!(ClientId::Registered(6).lineage(), Some("agave"));
+        assert_eq!(ClientId::Registered(6).lineage(None), Some("agave"));
         assert_eq!(ClientId::Registered(3).vendor(), Some("agave"));
         assert_eq!(ClientId::Registered(12).vendor(), Some("bam"));
-        assert_eq!(ClientId::Registered(12).lineage(), Some("frankendancer"));
+        assert_eq!(ClientId::Registered(12).lineage(None), Some("firedancer"));
+        assert_eq!(ClientId::Registered(14).name(), Some("FrankenBAM"));
+        assert_eq!(ClientId::Registered(14).vendor(), Some("bam"));
+        assert_eq!(ClientId::Registered(14).engine(), Some("JitoBAM"));
+        assert_eq!(
+            ClientId::Registered(14).lineage(None),
+            Some("frankendancer")
+        );
+    }
+
+    #[test]
+    fn id_12_on_a_frankendancer_version_keeps_the_frankendancer_lineage() {
+        let fire_bam = ClientId::Registered(12);
+        assert_eq!(
+            fire_bam.lineage(Some("0.1204.40300")),
+            Some("frankendancer")
+        );
+        assert_eq!(
+            fire_bam.label(Some("0.1204.40300")),
+            Some("Frankendancer + JitoBAM".to_string())
+        );
+        assert_eq!(fire_bam.lineage(Some("26.9.4")), Some("firedancer"));
+        assert_eq!(
+            fire_bam.label(Some("26.9.4")),
+            Some("Firedancer + JitoBAM".to_string())
+        );
+        assert_eq!(fire_bam.lineage(None), Some("firedancer"));
+        assert_eq!(
+            fire_bam.lineage(Some("not-a-version")),
+            Some("firedancer"),
+            "an unparseable version reads as no version"
+        );
+        assert_eq!(fire_bam.vendor(), Some("bam"));
+        assert_eq!(fire_bam.engine(), Some("JitoBAM"));
+
+        assert_eq!(
+            ClientId::Registered(5).lineage(Some("0.1204.40300")),
+            Some("firedancer"),
+            "the version rule is id 12's alone"
+        );
+        assert_eq!(
+            ClientId::Registered(14).lineage(Some("26.9.4")),
+            Some("frankendancer")
+        );
     }
 
     // Only about what the rendering can be parsed into: the number is kept in the resolution so the
@@ -1568,7 +1629,7 @@ mod tests {
             ClientId::Unrecognized(Some(37013))
         );
         assert_eq!(resolve_client_id(Some("Unknown(86)")).vendor(), None);
-        assert_eq!(resolve_client_id(Some("Unknown(86)")).lineage(), None);
+        assert_eq!(resolve_client_id(Some("Unknown(86)")).lineage(None), None);
     }
 
     #[test]
@@ -2334,5 +2395,40 @@ mod collector_health_tests {
             collector_health_of(&vote_account.to_string(), None, &health_map),
             (None, None)
         );
+    }
+}
+
+#[cfg(test)]
+mod validator_info_tests {
+    use super::*;
+
+    fn config_account(keys: Vec<(Pubkey, bool)>, info: &str) -> Account {
+        let mut data = bincode::serialize(&ConfigKeys { keys }).unwrap();
+        data.extend(bincode::serialize(info).unwrap());
+        Account {
+            lamports: 1,
+            data,
+            owner: solana_config_program_client::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn a_key_list_holding_only_the_validator_info_id_is_rejected() {
+        let account = config_account(vec![(validator_info::id(), false)], r#"{"name":"x"}"#);
+        assert!(parse_validator_info(&Pubkey::new_unique(), &account).is_err());
+    }
+
+    #[test]
+    fn a_validator_info_account_yields_its_signer_and_name() {
+        let validator = Pubkey::new_unique();
+        let account = config_account(
+            vec![(validator_info::id(), false), (validator, true)],
+            r#"{"name":"x"}"#,
+        );
+        let (pubkey, info) = parse_validator_info(&Pubkey::new_unique(), &account).unwrap();
+        assert_eq!(pubkey, validator);
+        assert_eq!(info.name.as_deref(), Some("x"));
     }
 }

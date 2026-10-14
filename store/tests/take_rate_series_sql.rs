@@ -1,22 +1,20 @@
 mod common;
 
 use chrono::{DateTime, Duration, Utc};
-use common::{migrated_client, skip_without_database};
+use clap::Parser;
+use common::{migrated_client, skip_without_database, stored_expected_take_rate};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use store::take_rates::{get_take_rate_series, load_epoch_reward_mix};
-use store::utils::RewardMixShares;
+use store::take_rates::{
+    get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates,
+    refresh_expected_take_rates, refresh_stored_expected_take_rates, EpochTakeRates,
+    RefreshExpectedTakeRatesParams, EXPECTED_TAKE_RATE_REFRESH_LOCK,
+};
 use tokio_postgres::Client;
 
 const LAST_EPOCH: u64 = 1000;
 const EPOCHS: u64 = 120;
 const VOTE: &str = "voteTakeRates";
-
-const MIX: RewardMixShares = RewardMixShares {
-    inflation: 0.90,
-    mev: 0.04,
-    block: 0.06,
-};
 
 fn approx(actual: Option<f64>, expected: f64, context: &str) {
     let actual = actual.unwrap_or_else(|| panic!("{context} must not be null"));
@@ -168,17 +166,14 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     }
     insert_reward(&client, "voteOther", LAST_EPOCH, 0.1).await;
 
-    let no_mix = HashMap::new();
-    let series = get_take_rate_series(&client, VOTE, None, &no_mix)
-        .await
-        .unwrap();
+    let series = get_take_rate_series(&client, VOTE, None).await.unwrap();
     let epochs: Vec<u64> = series.iter().map(|record| record.epoch).collect();
     assert_eq!(epochs, (first_epoch..=LAST_EPOCH).collect::<Vec<_>>());
     assert!(
         series
             .iter()
             .all(|record| record.expected_take_rate.is_none()),
-        "an unloaded reward mix must null the whole series instead of weighting by zero"
+        "a row no writer has refreshed reads null instead of a rate computed on read"
     );
 
     let epoch_without_boundaries = series.last().unwrap();
@@ -189,18 +184,18 @@ async fn take_rate_series_spans_the_whole_stored_history() {
     let closed_epoch = &series[0];
     assert_eq!(closed_epoch.epoch_start_at, Some(epoch_start(first_epoch)));
 
-    let bounded = get_take_rate_series(&client, VOTE, Some(LAST_EPOCH - 2), &no_mix)
+    let bounded = get_take_rate_series(&client, VOTE, Some(LAST_EPOCH - 2))
         .await
         .unwrap();
     let epochs: Vec<u64> = bounded.iter().map(|record| record.epoch).collect();
     assert_eq!(epochs, vec![LAST_EPOCH - 2, LAST_EPOCH - 1, LAST_EPOCH]);
 
-    let other = get_take_rate_series(&client, "voteOther", None, &no_mix)
+    let other = get_take_rate_series(&client, "voteOther", None)
         .await
         .unwrap();
     assert_eq!(other.len(), 1);
 
-    let unknown = get_take_rate_series(&client, "voteUnknown", None, &no_mix)
+    let unknown = get_take_rate_series(&client, "voteUnknown", None)
         .await
         .unwrap();
     assert!(unknown.is_empty());
@@ -217,14 +212,13 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
     if skip_without_database(schema) {
         return;
     }
-    let client = migrated_client(schema).await.unwrap();
+    let mut client = migrated_client(schema).await.unwrap();
 
-    // One epoch per case. Every epoch gets a rewards row, so a null can only come from the joins.
+    // One epoch per case. Every epoch gets a rewards row with a 90/4/6 mix, so a null can only come
+    // from the joins.
     let epochs = 1001..=1006;
-    let mut mix = HashMap::new();
     for epoch in epochs.clone() {
-        insert_reward(&client, VOTE, epoch, 0.05).await;
-        mix.insert(epoch, MIX);
+        insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
     }
 
     // 1001: all three commissions known.
@@ -254,9 +248,10 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
     insert_mev(&client, 1006, 300, Utc::now()).await;
     insert_priority_fee(&client, 1006, 2000).await;
 
-    let series = get_take_rate_series(&client, VOTE, None, &mix)
+    refresh_expected_take_rates(&mut client, &Vec::from_iter(epochs.clone()))
         .await
         .unwrap();
+    let series = get_take_rate_series(&client, VOTE, None).await.unwrap();
     let rates: HashMap<u64, Option<f64>> = series
         .iter()
         .map(|record| (record.epoch, record.expected_take_rate))
@@ -296,6 +291,139 @@ async fn expected_take_rate_weights_each_epoch_by_its_own_commissions() {
 }
 
 #[tokio::test]
+async fn refresh_stores_each_rows_expected_take_rate_under_its_epochs_mix() {
+    let schema = "ds_test_refresh_expected_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    // Rewards components 90/4/6 make the epoch mix 0.90/0.04/0.06.
+    insert_reward_components(&client, VOTE, 3001, 90, 4, 6).await;
+    insert_validator(&client, 3001, Some(10), Some(10)).await;
+    insert_mev(&client, 3001, 800, Utc::now()).await;
+    insert_priority_fee(&client, 3001, 2000).await;
+
+    assert_eq!(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        None,
+        "nothing is stored before a refresh"
+    );
+    assert_eq!(
+        refresh_expected_take_rates(&mut client, &[3001])
+            .await
+            .unwrap(),
+        1
+    );
+    approx(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        0.1052,
+        "all three commissions known",
+    );
+
+    // Another validator's rewards change the epoch mix to 90/4/106, so VOTE's rate moves too.
+    insert_reward_components(&client, "voteOther", 3001, 0, 0, 100).await;
+    refresh_expected_take_rates(&mut client, &[3001])
+        .await
+        .unwrap();
+    approx(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        (0.1 * 90.0 + 0.08 * 4.0 + 0.2 * 106.0) / 200.0,
+        "a row added to the epoch reweights every row of it",
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_refresh_waits_for_the_one_already_running() {
+    let schema = "ds_test_refresh_lock";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let mut holder = migrated_client("ds_test_refresh_lock_holder")
+        .await
+        .unwrap();
+    insert_reward_components(&client, VOTE, 3001, 90, 4, 6).await;
+    insert_validator(&client, 3001, Some(10), Some(10)).await;
+
+    let running = holder.transaction().await.unwrap();
+    running
+        .batch_execute(&format!(
+            "SELECT pg_advisory_xact_lock({EXPECTED_TAKE_RATE_REFRESH_LOCK})"
+        ))
+        .await
+        .unwrap();
+    let mut refresh = Box::pin(refresh_expected_take_rates(&mut client, &[3001]));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), &mut refresh)
+            .await
+            .is_err(),
+        "a refresh must not run while another one holds the lock"
+    );
+    running.commit().await.unwrap();
+    assert_eq!(
+        refresh.await.unwrap(),
+        1,
+        "it runs once the lock is released"
+    );
+
+    holder
+        .batch_execute("DROP SCHEMA ds_test_refresh_lock_holder CASCADE")
+        .await
+        .unwrap();
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn backfill_refreshes_every_stored_epoch_from_the_given_one() {
+    let schema = "ds_test_backfill_expected_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    for epoch in [3001, 3002, 3003] {
+        insert_reward_components(&client, VOTE, epoch, 90, 4, 6).await;
+        insert_validator(&client, epoch, Some(10), Some(10)).await;
+        insert_mev(&client, epoch, 800, Utc::now()).await;
+        insert_priority_fee(&client, epoch, 2000).await;
+    }
+
+    refresh_stored_expected_take_rates(
+        RefreshExpectedTakeRatesParams::parse_from(["refresh", "--from-epoch", "3002"]),
+        &mut client,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        stored_expected_take_rate(&client, VOTE, 3001).await,
+        None,
+        "an epoch before --from-epoch is left alone"
+    );
+    for epoch in [3002, 3003] {
+        approx(
+            stored_expected_take_rate(&client, VOTE, epoch).await,
+            0.1052,
+            &format!("epoch {epoch} is filled"),
+        );
+    }
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     let schema = "ds_test_epoch_reward_mix";
     if skip_without_database(schema) {
@@ -309,7 +437,9 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     insert_reward_components(&client, VOTE, 2003, 0, 0, 0).await;
     insert_reward_components(&client, VOTE, 2004, 0, 0, 50).await;
 
-    let mix = load_epoch_reward_mix(&client).await.unwrap();
+    let mix = load_epoch_reward_mix(&client, &[2001, 2002, 2003, 2004].map(Decimal::from))
+        .await
+        .unwrap();
 
     let shared = mix[&2001];
     approx(
@@ -333,6 +463,51 @@ async fn epoch_reward_mix_splits_each_epoch_across_its_components() {
     assert!(
         !mix.contains_key(&2004),
         "an in-progress epoch has only accruing block rewards, which would weight out every commission"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn epoch_take_rates_cover_the_cached_window_only() {
+    let schema = "ds_test_epoch_take_rates";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (1, $1, 0, NOW())",
+            &[&Decimal::from(LAST_EPOCH)],
+        )
+        .await
+        .unwrap();
+    insert_reward(&client, VOTE, LAST_EPOCH, 0.05).await;
+    insert_reward(&client, VOTE, LAST_EPOCH - 2, 0.07).await;
+    insert_reward(&client, VOTE, LAST_EPOCH - 3, 0.09).await;
+    insert_reward(&client, "voteOther", LAST_EPOCH - 1, 1.0).await;
+    client
+        .execute(
+            "UPDATE validators_rewards SET expected_take_rate = 0.06 WHERE epoch = $1",
+            &[&Decimal::from(LAST_EPOCH - 2)],
+        )
+        .await
+        .unwrap();
+
+    let rates = |realized, expected| EpochTakeRates { realized, expected };
+    assert_eq!(
+        load_epoch_take_rates(&client, 3).await.unwrap(),
+        HashMap::from([
+            ((VOTE.to_string(), LAST_EPOCH), rates(0.05, None)),
+            ((VOTE.to_string(), LAST_EPOCH - 2), rates(0.07, Some(0.06))),
+            (("voteOther".to_string(), LAST_EPOCH - 1), rates(1.0, None)),
+        ]),
+        "the window ends three epochs back from cluster_info, and the stored expected rate rides along"
     );
 
     client
