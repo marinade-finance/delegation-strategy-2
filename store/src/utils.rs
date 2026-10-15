@@ -187,19 +187,19 @@ impl InflationApyCalculator {
         self.annualize(stake_fraction_per_epoch)
     }
 
-    // `vote_reward_lamports` is the inflation reward of the whole stake, before commission.
+    // `vote_reward_lamports` is the inflation reward of the whole `epoch_stake`, before commission.
     fn yields_from_vote_reward(
         &self,
         vote_reward_lamports: u64,
-        activated_stake: u64,
+        epoch_stake: u64,
         commission: u8,
     ) -> (f64, f64) {
-        if activated_stake == 0 || self.duration == 0 {
+        if epoch_stake == 0 || self.duration == 0 {
             return (0.0, 0.0);
         }
 
         let stake_fraction_per_epoch =
-            staker_share(commission) * vote_reward_lamports as f64 / activated_stake as f64;
+            staker_share(commission) * vote_reward_lamports as f64 / epoch_stake as f64;
 
         self.annualize(stake_fraction_per_epoch)
     }
@@ -1295,14 +1295,17 @@ pub async fn load_validators(
                 .get::<_, Option<i32>>("commission_effective")
                 .map(|n| n.try_into().unwrap())
                 .unwrap_or(100);
+            let epoch_stake: Option<Decimal> = row.get("epoch_stake");
             let yields = apy_calculators.get(&epoch).and_then(|c| {
                 // In the migration epoch this leaves out the reward of the tower credits
                 match (vote_reward_lamports, tower_credits) {
-                    (Some(lamports), _) => Some(c.yields_from_vote_reward(
-                        lamports,
-                        row.get::<_, Decimal>("activated_stake").try_into().unwrap(),
-                        commission_effective,
-                    )),
+                    (Some(lamports), _) => epoch_stake.map(|epoch_stake| {
+                        c.yields_from_vote_reward(
+                            lamports,
+                            epoch_stake.try_into().unwrap(),
+                            commission_effective,
+                        )
+                    }),
                     (None, Some(credits)) => c
                         .total_weighted_credits
                         .map(|_| c.estimate_yields(credits, commission_effective)),

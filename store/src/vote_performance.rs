@@ -5,6 +5,8 @@ use tokio_postgres::Client;
 pub struct VotePerformanceInput {
     pub vote_account: String,
     pub activated_stake: Decimal,
+    /// `activated_stake` of the previous epoch. Agave pays the Alpenglow vote reward on this stake.
+    pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
     pub credits: Option<u64>,
     pub vote_reward_lamports: Option<u64>,
@@ -71,19 +73,17 @@ fn tower_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
         .collect()
 }
 
-// (reward/w) / (Σreward/Σw) with w = stake/S + leader_slots/N
+// (reward/w) / (Σreward/Σw) with w = epoch_stake/S + leader_slots/N
 fn alpenglow_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
     let admitted: Vec<(&str, Decimal, Decimal, Decimal)> = rows
         .iter()
         .filter_map(|row| {
-            row.vote_reward_lamports.map(|reward| {
-                (
-                    row.vote_account.as_str(),
-                    row.activated_stake,
-                    Decimal::from(row.leader_slots),
-                    Decimal::from(reward),
-                )
-            })
+            Some((
+                row.vote_account.as_str(),
+                row.epoch_stake?,
+                Decimal::from(row.leader_slots),
+                Decimal::from(row.vote_reward_lamports?),
+            ))
         })
         .collect();
     let total_stake: Decimal = admitted.iter().map(|(_, stake, ..)| stake).sum();
@@ -130,9 +130,13 @@ pub async fn load_vote_performance(
 ) -> anyhow::Result<HashMap<(u64, String), f64>> {
     let rows = psql_client
         .query(
-            "SELECT epoch, vote_account, activated_stake, leader_slots, credits, vote_reward_lamports
+            "SELECT validators.epoch, validators.vote_account, validators.activated_stake,
+                NULLIF(previous.activated_stake, 0) AS epoch_stake,
+                validators.leader_slots, validators.credits, validators.vote_reward_lamports
             FROM validators
-            WHERE epoch BETWEEN $1 AND $2",
+                LEFT JOIN validators previous ON previous.vote_account = validators.vote_account
+                    AND previous.epoch = validators.epoch - 1
+            WHERE validators.epoch BETWEEN $1 AND $2",
             &[&Decimal::from(from_epoch), &Decimal::from(to_epoch)],
         )
         .await?;
@@ -146,6 +150,7 @@ pub async fn load_vote_performance(
             .push(VotePerformanceInput {
                 vote_account: row.get("vote_account"),
                 activated_stake: row.get("activated_stake"),
+                epoch_stake: row.get("epoch_stake"),
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
                 credits: row
                     .get::<_, Option<Decimal>>("credits")
@@ -176,6 +181,7 @@ mod tests {
         VotePerformanceInput {
             vote_account: vote_account.into(),
             activated_stake: stake.into(),
+            epoch_stake: Some(stake.into()),
             leader_slots: 0,
             credits,
             vote_reward_lamports: None,
@@ -191,6 +197,7 @@ mod tests {
         VotePerformanceInput {
             vote_account: vote_account.into(),
             activated_stake: stake.into(),
+            epoch_stake: Some(stake.into()),
             leader_slots,
             credits: None,
             vote_reward_lamports: reward,
@@ -333,6 +340,36 @@ mod tests {
                 alpenglow("a", 100, 10, Some(1000)),
                 alpenglow("b", 100, 10, Some(1000)),
                 alpenglow("unknown", 100, 10, None),
+            ],
+            &[("a", Some(1.0)), ("b", Some(1.0)), ("unknown", None)],
+        );
+    }
+
+    #[test]
+    fn alpenglow_weighs_by_the_epoch_stake() {
+        // 'grown' doubles its stake in the epoch, agave pays it on the 100 of the previous epoch
+        assert_performance(
+            &[
+                VotePerformanceInput {
+                    activated_stake: 200.into(),
+                    ..alpenglow("grown", 100, 10, Some(1000))
+                },
+                alpenglow("steady", 100, 10, Some(1000)),
+            ],
+            &[("grown", Some(1.0)), ("steady", Some(1.0))],
+        );
+    }
+
+    #[test]
+    fn alpenglow_leaves_out_a_reward_without_epoch_stake() {
+        assert_performance(
+            &[
+                alpenglow("a", 100, 10, Some(1000)),
+                alpenglow("b", 100, 10, Some(1000)),
+                VotePerformanceInput {
+                    epoch_stake: None,
+                    ..alpenglow("unknown", 100, 10, Some(1000))
+                },
             ],
             &[("a", Some(1.0)), ("b", Some(1.0)), ("unknown", None)],
         );

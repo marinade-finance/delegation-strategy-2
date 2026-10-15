@@ -6,6 +6,7 @@ use store::dto::UnstakeHint;
 use store::scoring::load_unstake_hints;
 use store::utils::{load_validators, load_validators_aggregated_flat, ValidatorOverlays};
 use store::validators_events::get_events_with_context;
+use store::vote_performance::load_vote_performance;
 use tokio_postgres::Client;
 
 const LAST_EPOCH: u64 = 1000;
@@ -271,4 +272,36 @@ async fn validators_and_events_serve_the_vote_performance() {
         performance(LAST_EPOCH).unwrap(),
         alpenglow_performance(row("down")),
     );
+}
+
+#[tokio::test]
+async fn alpenglow_reads_the_stake_of_the_previous_epoch() {
+    let schema = "ds_test_vote_performance_epoch_stake";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+    let [previous, epoch] = [ALPENGLOW_EPOCHS[0], ALPENGLOW_EPOCHS[1]];
+    // "grown" doubles its stake in `epoch`, its reward is on the 100 of `previous`
+    for (vote_account, stake) in [("grown", 200), ("steady", 100)] {
+        insert_validator(
+            &client,
+            vote_account,
+            previous,
+            100,
+            10,
+            0,
+            None,
+            Some(1000),
+        )
+        .await;
+        insert_validator(&client, vote_account, epoch, stake, 10, 0, None, Some(1000)).await;
+    }
+    // Without a row in the previous epoch
+    insert_validator(&client, "new", epoch, 100, 10, 0, None, Some(1000)).await;
+
+    let performance = load_vote_performance(&client, epoch, epoch).await.unwrap();
+    assert_close(performance[&(epoch, "grown".to_string())], 1.0);
+    assert_close(performance[&(epoch, "steady".to_string())], 1.0);
+    assert_eq!(performance.get(&(epoch, "new".to_string())), None);
 }

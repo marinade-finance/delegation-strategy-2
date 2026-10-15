@@ -120,7 +120,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 `epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. It is an approximation: agave freezes the value before paying the rewards at the start of E-1, and `activated_stake` includes them, so it reads about 0.03% higher. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. SIMD-0357 admission filtering is not applied.
 
-`apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
+`apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. The vote reward is divided by the `activated_stake` of the previous epoch, because agave pays the reward on that stake. In the migration epoch, they count only the reward after the migration. They are `null` when the previous epoch has no `activated_stake`.
 
 `vote_performance` compares the votes of a validator to the cluster in one epoch. 1 is on par with the cluster.
 
@@ -128,9 +128,9 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 |---|---|
 | Before Alpenglow | `credits` over the stake-weighted mean of `credits` |
 | Migration epoch | `null` |
-| After the migration epoch | `(reward/w) / (Σreward/Σw)`, with `w = activated_stake/S + leader_slots/N` |
+| After the migration epoch | `(reward/w) / (Σreward/Σw)`, with `w = stake/S + leader_slots/N` |
 
-S and N are the sums over the validators that have a vote reward. `vote_performance` is `null` when an input is `null`. It is on `epoch_stats[]`, on the validator, on `/clients` and `/providers` rows as the stake-weighted mean, and in `/validators/{vote_account}/events`.
+`stake` is the `activated_stake` of the previous epoch, because agave pays the reward on that stake. S and N are the sums over the validators that have a vote reward and a `stake`. `vote_performance` is `null` when an input is `null`. It is on `epoch_stats[]`, on the validator, on `/clients` and `/providers` rows as the stake-weighted mean, and in `/validators/{vote_account}/events`.
 
 `order_field=Credits` sorts on `credits`, then on `vote_performance`. `/clients` and `/providers` use the same two keys.
 
