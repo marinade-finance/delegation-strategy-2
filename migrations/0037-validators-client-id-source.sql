@@ -1,1 +1,1 @@
-ALTER TABLE validators ADD COLUMN client_id_source TEXT NULL;
+ALTER TABLE validators ADD COLUMN IF NOT EXISTS client_id_source TEXT NULL;

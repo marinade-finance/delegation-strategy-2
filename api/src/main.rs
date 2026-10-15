@@ -76,13 +76,16 @@ async fn main() -> anyhow::Result<()> {
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;
     let connector = MakeTlsConnector::new(builder.build());
 
-    let (psql_client, psql_conn) = tokio_postgres::connect(&params.postgres_url, connector).await?;
+    let (mut psql_client, psql_conn) =
+        tokio_postgres::connect(&params.postgres_url, connector).await?;
     tokio::spawn(async move {
         if let Err(err) = psql_conn.await {
             error!("PSQL Connection error: {err}");
             std::process::exit(1);
         }
     });
+
+    store::migrations::migrate(&mut psql_client).await?;
 
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
