@@ -33,6 +33,8 @@ solana-rpc-client-api = "2.3.13"
 solana-program = "2.2.1"
 validator = { version = "0.20.0", features = ["derive"] }
 
+include_dir = "0.7.4"
+
 # API-specific dependencies
 bytes = "1.11"
 futures = { version = "0.3", default-features = false }
