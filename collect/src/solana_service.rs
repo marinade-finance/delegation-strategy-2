@@ -638,6 +638,9 @@ const VOTE_V4_BLOCK_REVENUE_COLLECTOR_OFFSET: usize = 100;
 const VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET: usize = 132;
 const VOTE_V4_BLOCK_REVENUE_COMMISSION_BPS_OFFSET: usize = 134;
 const VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET: usize = 136;
+// Bincode Option: one tag byte, then the 48-byte compressed key.
+const VOTE_V4_BLS_PUBKEY_OFFSET: usize = 144;
+const BLS_PUBKEY_COMPRESSED_SIZE: usize = 48;
 
 // Names and null semantics match solana-snapshot-parser's ValidatorMeta so both stay reconcilable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -650,6 +653,10 @@ pub struct VoteStateFields {
     pub block_revenue_collector: Option<Pubkey>,
     pub block_revenue_commission_bps: Option<u16>,
     pub pending_delegator_rewards: Option<u64>,
+    /// Base58 of the compressed key; None on v4 without a key and on every pre-v4 state.
+    pub bls_pubkey: Option<String>,
+    // Set by the scan, not by the parser, which sees only the account data.
+    pub lamports: Option<u64>,
 }
 
 fn read_array<const N: usize>(data: &[u8], offset: usize, field: &str) -> anyhow::Result<[u8; N]> {
@@ -661,6 +668,27 @@ fn read_array<const N: usize>(data: &[u8], offset: usize, field: &str) -> anyhow
                 data.len()
             )
         })
+}
+
+fn read_bls_pubkey(data: &[u8]) -> anyhow::Result<Option<String>> {
+    let tag = read_array::<1>(
+        data,
+        VOTE_V4_BLS_PUBKEY_OFFSET,
+        "the bls_pubkey_compressed tag",
+    )?[0];
+    match tag {
+        0 => Ok(None),
+        1 => Ok(Some(
+            solana_sdk::bs58::encode(read_array::<BLS_PUBKEY_COMPRESSED_SIZE>(
+                data,
+                VOTE_V4_BLS_PUBKEY_OFFSET + 1,
+                "bls_pubkey_compressed",
+            )?)
+            .into_string(),
+        )),
+        // agave rejects the whole vote state on any other tag.
+        _ => anyhow::bail!("bls_pubkey_compressed tag is {tag}, expected 0 or 1"),
+    }
 }
 
 fn read_pubkey(data: &[u8], offset: usize, field: &str) -> anyhow::Result<Pubkey> {
@@ -692,6 +720,8 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 block_revenue_collector: None,
                 block_revenue_commission_bps: None,
                 pending_delegator_rewards: None,
+                bls_pubkey: None,
+                lamports: None,
             })
         }
         VOTE_STATE_VERSION_V4 => Ok(VoteStateFields {
@@ -722,6 +752,8 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET,
                 "pending_delegator_rewards",
             )?)),
+            bls_pubkey: read_bls_pubkey(data)?,
+            lamports: None,
         }),
         // An unknown version still yields the withdrawer; its SIMD-0185 offsets may have moved.
         _ => Ok(VoteStateFields {
@@ -732,6 +764,8 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
             block_revenue_collector: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            bls_pubkey: None,
+            lamports: None,
         }),
     }
 }
@@ -751,7 +785,13 @@ pub fn get_vote_account_states(
         .map(|(account_pubkey, account)| (account_pubkey.to_string(), account.data.as_slice()))
         .collect();
 
-    parse_vote_account_states(&accounts)
+    let mut states = parse_vote_account_states(&accounts)?;
+    for (account_pubkey, account) in vote_accounts.iter() {
+        if let Some(state) = states.get_mut(&account_pubkey.to_string()) {
+            state.lamports = Some(account.lamports);
+        }
+    }
+    Ok(states)
 }
 
 fn parse_vote_account_states(
@@ -1690,6 +1730,22 @@ mod vote_state_tests {
         pending_delegator_rewards: u64,
         total_len: usize,
     ) -> Vec<u8> {
+        v4_account_with_bls(
+            inflation_bps,
+            block_bps,
+            pending_delegator_rewards,
+            None,
+            total_len,
+        )
+    }
+
+    fn v4_account_with_bls(
+        inflation_bps: u16,
+        block_bps: u16,
+        pending_delegator_rewards: u64,
+        bls_pubkey: Option<[u8; BLS_PUBKEY_COMPRESSED_SIZE]>,
+        total_len: usize,
+    ) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&VOTE_STATE_VERSION_V4.to_le_bytes());
         data.extend_from_slice(&NODE);
@@ -1699,6 +1755,10 @@ mod vote_state_tests {
         data.extend_from_slice(&inflation_bps.to_le_bytes());
         data.extend_from_slice(&block_bps.to_le_bytes());
         data.extend_from_slice(&pending_delegator_rewards.to_le_bytes());
+        if let Some(bls_pubkey) = bls_pubkey {
+            data.push(1);
+            data.extend_from_slice(&bls_pubkey);
+        }
         data.resize(total_len.max(data.len()), 0);
         data
     }
@@ -1716,8 +1776,41 @@ mod vote_state_tests {
                 block_revenue_collector: Some(Pubkey::new_from_array(BLOCK_COLLECTOR)),
                 block_revenue_commission_bps: Some(1234),
                 pending_delegator_rewards: Some(42),
+                bls_pubkey: None,
+                lamports: None,
             }
         );
+    }
+
+    #[test]
+    fn a_v4_bls_pubkey_reads_after_pending_delegator_rewards() {
+        let key = [7u8; BLS_PUBKEY_COMPRESSED_SIZE];
+        let state = parse_vote_state(&v4_account_with_bls(733, 1234, 42, Some(key), 3762)).unwrap();
+        assert_eq!(
+            state.bls_pubkey,
+            Some(solana_sdk::bs58::encode(key).into_string())
+        );
+        assert_eq!(state.pending_delegator_rewards, Some(42));
+    }
+
+    #[test]
+    fn a_v4_bls_tag_of_zero_means_no_key() {
+        let state = parse_vote_state(&v4_account(733, 1234, 42, 3762)).unwrap();
+        assert_eq!(state.bls_pubkey, None);
+    }
+
+    #[test]
+    fn a_v4_bls_tag_other_than_zero_or_one_fails_the_account() {
+        let mut data = v4_account(733, 1234, 42, 3762);
+        data[VOTE_V4_BLS_PUBKEY_OFFSET] = 2;
+        assert!(parse_vote_state(&data).is_err());
+    }
+
+    #[test]
+    fn a_v4_bls_key_cut_short_fails_the_account() {
+        let key = [7u8; BLS_PUBKEY_COMPRESSED_SIZE];
+        let data = v4_account_with_bls(733, 1234, 42, Some(key), 0);
+        assert!(parse_vote_state(&data[..data.len() - 1]).is_err());
     }
 
     #[test]
@@ -1733,6 +1826,7 @@ mod vote_state_tests {
             assert_eq!(state.block_revenue_collector, None);
             assert_eq!(state.block_revenue_commission_bps, None);
             assert_eq!(state.pending_delegator_rewards, None);
+            assert_eq!(state.bls_pubkey, None);
             assert_ne!(
                 state.inflation_rewards_collector,
                 Some(Pubkey::default()),
@@ -2331,6 +2425,8 @@ mod collector_health_tests {
             block_revenue_collector: block_revenue,
             block_revenue_commission_bps: Some(10_000),
             pending_delegator_rewards: Some(0),
+            bls_pubkey: None,
+            lamports: None,
         }
     }
 

@@ -17,6 +17,7 @@ use store::take_rates::{
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
+use store::vat_admission_check::{check_vat_admission, CheckVatAdmissionParams};
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
 use validators_jito::{store_jito, StoreJitoParams};
@@ -59,6 +60,7 @@ enum StoreCommand {
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
+    CheckVatAdmission(CheckVatAdmissionParams),
 }
 
 pub mod cluster_info;
@@ -150,5 +152,8 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
+        StoreCommand::CheckVatAdmission(check_params) => {
+            check_vat_admission(check_params, &mut psql_client).await
+        }
     }
 }

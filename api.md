@@ -78,6 +78,9 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "credits": 156411,
           "vote_reward_lamports": null,
           "epoch_stake": "9488392700088216",
+          "bls_pubkey": null,
+          "vat_admitted": null,
+          "vat_admission_reason": null,
           "leader_slots": 4436,
           "blocks_produced": 4314,
           "skip_rate": 0.027502254283138017,
@@ -118,7 +121,16 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 `credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
 
-`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. It is an approximation: agave freezes the value before paying the rewards at the start of E-1, and `activated_stake` includes them, so it reads about 0.03% higher. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. SIMD-0357 admission filtering is not applied.
+`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. It is an approximation: agave freezes the value before paying the rewards at the start of E-1, and `activated_stake` includes them, so it reads about 0.03% higher. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. It does not apply the SIMD-0357 filter: a validator with `vat_admitted` false in epoch E-2 holds no stake in `epoch_stakes(E)`.
+
+`epoch_stats[].vat_admitted` is the SIMD-0357 admission for the inflation rewards of that epoch. DS2 applies agave's `clone_and_filter_for_vat` to the last snapshot before the epoch closes:
+
+1. The vote account has a BLS key (`bls_pubkey`).
+2. Its `activated_stake` is more than 0.
+3. Its balance, less `pending_delegator_rewards` once block revenue sharing is active, is at least the rent of a vote account, plus the VAT once Alpenglow is active.
+4. It is in the top 2000 by stake. Every account with a stake equal to or less than the first account cut off is also cut off.
+
+`false` means the stakers get no inflation rewards for that epoch, and `vat_admission_reason` says which check failed: `no_bls_key`, `no_stake`, `low_balance` or `below_stake_cutoff`. `null` means the vote state did not parse, or the row is older than this field. Agave ranks by the stake of the next epoch, so a stake that changes at the boundary can make the verdict wrong.
 
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 
