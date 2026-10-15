@@ -89,7 +89,7 @@ fn secondary_field_extractor(order_field: OrderField) -> FieldExtractor {
         // Breaks ties on `credits`, which is null for every group after the Alpenglow migration epoch.
         OrderField::Credits => |group: &ValidatorGroupRecord| {
             group
-                .vote_reward_per_stake
+                .vote_performance
                 .and_then(Decimal::from_f64_retain)
                 .into()
         },
@@ -300,19 +300,19 @@ mod tests {
     }
 
     #[test]
-    fn credits_order_breaks_ties_on_vote_reward_per_stake() {
+    fn credits_order_breaks_ties_on_vote_performance() {
         let with_credits =
-            |key: &str, credits: Option<f64>, rate: Option<f64>| ValidatorGroupRecord {
+            |key: &str, credits: Option<f64>, performance: Option<f64>| ValidatorGroupRecord {
                 credits,
-                vote_reward_per_stake: rate,
+                vote_performance: performance,
                 ..group(key, 100)
             };
         let sorted = sort_groups(
             vec![
                 with_credits("missing", None, None),
-                with_credits("low", Some(10.0), Some(0.005)),
-                with_credits("migration_low", Some(20.0), Some(0.001)),
-                with_credits("migration_high", Some(20.0), Some(0.009)),
+                with_credits("low", Some(10.0), Some(0.5)),
+                with_credits("tied_low", Some(20.0), Some(0.1)),
+                with_credits("tied_high", Some(20.0), Some(0.9)),
             ],
             OrderField::Credits,
             &OrderDirection::DESC,
@@ -322,7 +322,7 @@ mod tests {
                 .iter()
                 .map(|group| group.key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["migration_high", "migration_low", "low", "missing"]
+            vec!["tied_high", "tied_low", "low", "missing"]
         );
     }
 

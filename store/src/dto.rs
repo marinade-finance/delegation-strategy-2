@@ -371,6 +371,8 @@ pub struct ValidatorEpochStats {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
+    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    pub vote_performance: Option<f64>,
     /// Alpenglow reward-committee stake: prior epoch's `activated_stake`. Null if none or no data.
     pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
@@ -481,6 +483,8 @@ pub struct ValidatorRecord {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
+    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    pub vote_performance: Option<f64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
     pub epoch_stats: Vec<ValidatorEpochStats>,
@@ -514,7 +518,9 @@ pub struct ValidatorRecord {
 impl ValidatorRecord {
     pub fn vote_reward_per_stake(&self) -> Option<Decimal> {
         let lamports = self.vote_reward_lamports?;
-        (!self.activated_stake.is_zero()).then(|| Decimal::from(lamports) / self.activated_stake)
+        // The first entry is the epoch of `vote_reward_lamports`
+        let epoch_stake = self.epoch_stats.first()?.epoch_stake?;
+        (!epoch_stake.is_zero()).then(|| Decimal::from(lamports) / epoch_stake)
     }
 }
 
@@ -747,6 +753,8 @@ pub struct PerformanceRecord {
     pub skip_rate: Option<f64>,
     /// Tower vote credits. Null in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
+    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    pub vote_performance: Option<f64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -883,8 +891,10 @@ pub struct ValidatorGroupRecord {
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
-    /// Stake-weighted mean of the members' `vote_reward_lamports / activated_stake`. Null before Alpenglow.
+    /// Stake-weighted mean of the members' `vote_reward_lamports` over the `activated_stake` of the previous epoch. Null before Alpenglow.
     pub vote_reward_per_stake: Option<f64>,
+    /// Stake-weighted mean of the members' `vote_performance`.
+    pub vote_performance: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
     pub commission: Option<f64>,
@@ -1146,6 +1156,8 @@ pub struct ValidatorAggregatedFlat {
     pub client_vendor: String,
     pub client_lineage: String,
     pub max_inflation_rewards_commission_bps: Option<i32>,
+    /// Mean of `vote_performance × (1 - commission)` over the epochs that have a `vote_performance`.
+    pub avg_adjusted_vote_performance: Option<f64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
