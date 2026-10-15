@@ -3,6 +3,7 @@ pub mod dto;
 pub mod groups;
 pub mod incidents;
 pub mod ip_info;
+pub mod migrations;
 pub mod node_observations;
 pub mod operators;
 pub mod releases;
