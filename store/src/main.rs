@@ -10,7 +10,10 @@ use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::releases::{store_releases, StoreReleasesParams};
-use store::take_rates::{store_take_rates, StoreTakeRatesParams};
+use store::take_rates::{
+    refresh_stored_expected_take_rates, store_take_rates, RefreshExpectedTakeRatesParams,
+    StoreTakeRatesParams,
+};
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
@@ -50,6 +53,7 @@ enum StoreCommand {
     ValidatorsEvents(StoreEventsParams),
     ValidatorsSandwiches(StoreSandwichesParams),
     TakeRates(StoreTakeRatesParams),
+    RefreshExpectedTakeRates(RefreshExpectedTakeRatesParams),
     Releases(StoreReleasesParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
@@ -66,6 +70,7 @@ pub mod ls_open_epochs;
 pub mod node_observations;
 pub mod operators;
 pub mod stake_deltas;
+pub mod take_rates;
 pub mod uptime;
 pub mod utils;
 pub mod validators;
@@ -137,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::TakeRates(store_params) => {
             store_take_rates(store_params, &mut psql_client).await
+        }
+        StoreCommand::RefreshExpectedTakeRates(refresh_params) => {
+            refresh_stored_expected_take_rates(refresh_params, &mut psql_client).await
         }
         StoreCommand::Releases(store_params) => {
             store_releases(store_params, &mut psql_client).await

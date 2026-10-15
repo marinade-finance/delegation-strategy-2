@@ -809,7 +809,7 @@ mod tests {
             epoch_stake: None,
             leader_slots: 0,
             blocks_produced: 0,
-            skip_rate: 0.0,
+            skip_rate: None,
             uptime_pct: None,
             uptime: None,
             downtime: None,
@@ -1068,13 +1068,13 @@ mod tests {
     }
 
     /// `client_id` as the registry numbers it: 1 is `Agave + Jito`, 3 is `Agave`, 6 is
-    /// `Agave + JitoBAM`, 12 is `Frankendancer + JitoBAM`.
+    /// `Agave + JitoBAM`, 14 is `Frankendancer + JitoBAM`.
     fn running_client(vote_account: &str, client_id: u16) -> ValidatorRecord {
         let client_id = Some(client_id);
         ValidatorRecord {
             client_id,
-            client_label: client_label(client_id),
-            client_lineage: client_lineage(client_id),
+            client_label: client_label(client_id, None),
+            client_lineage: client_lineage(client_id, None),
             client_vendor: client_vendor(client_id),
             ..validator(vote_account, 100, vec![])
         }
@@ -1133,7 +1133,7 @@ mod tests {
     fn two_clients_running_one_block_engine() -> Vec<ValidatorRecord> {
         vec![
             running_client("agaveBam", 6),
-            running_client("frankendancerBam", 12),
+            running_client("frankendancerBam", 14),
             running_client("jito", 1),
             running_client("plain", 3),
         ]

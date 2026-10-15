@@ -1,6 +1,7 @@
 use crate::dto::{
     CreditsColumns, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
 };
+use crate::take_rates::refresh_expected_take_rates;
 use crate::utils::UpdateQueryCombiner;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -264,7 +265,7 @@ struct ValidatorUpdateRecord {
     credits: CreditsColumns,
     leader_slots: Decimal,
     blocks_produced: Decimal,
-    skip_rate: f64,
+    skip_rate: Option<f64>,
     updated_at: DateTime<Utc>,
 }
 
@@ -443,6 +444,7 @@ pub async fn close_epoch(
 
     update_uptimes(psql_client, snapshot.epoch).await?;
     update_observed_commission(psql_client, snapshot.epoch).await?;
+    refresh_expected_take_rates(psql_client, &[snapshot.epoch]).await?;
     if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
         warn!("Could not count validator rows without commission_effective: {err}");
     }

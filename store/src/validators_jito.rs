@@ -2,6 +2,7 @@ use crate::dto::{
     JitoMevRecord, JitoPriorityFeeRecord, JitoRecord, ValidatorJitoMEVInfo,
     ValidatorJitoPriorityFeeInfo,
 };
+use crate::take_rates::refresh_expected_take_rates;
 use crate::utils::*;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -60,7 +61,7 @@ pub async fn store_jito(
                 account_type.db_table_name(),
                 validators_jito_mev,
             )
-            .await
+            .await?
         }
         JitoAccountType::PriorityFeeDistribution => {
             let validators_jito_priority_fee: HashMap<_, _> = snapshot
@@ -81,9 +82,12 @@ pub async fn store_jito(
                 account_type.db_table_name(),
                 validators_jito_priority_fee,
             )
-            .await
+            .await?
         }
     }
+
+    refresh_expected_take_rates(psql_client, &[snapshot.epoch]).await?;
+    Ok(())
 }
 
 async fn get_existing_vote_accounts(

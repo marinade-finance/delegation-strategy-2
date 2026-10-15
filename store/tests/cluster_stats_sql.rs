@@ -240,6 +240,140 @@ async fn client_diversity_merges_the_ids_a_vendor_ships_across_lineages() {
 }
 
 #[tokio::test]
+async fn client_lineage_splits_id_12_by_the_version_it_reports() {
+    let schema = "ds_test_client_lineage_id_12_version";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for (vote_account, client_id, stake, version) in [
+        ("voteFrankenBamOld", 12, 100, Some("0.1204.40300")),
+        ("voteFireBam", 12, 200, Some("26.9.4")),
+        ("voteFireBamNoVersion", 12, 400, None),
+        ("voteFrankenBam", 14, 800, Some("0.1300.40300")),
+        ("voteFiredancer", 5, 1600, Some("0.1204.40300")),
+    ] {
+        insert_validator(
+            &client,
+            vote_account,
+            LAST_EPOCH,
+            stake,
+            10,
+            Some(client_id),
+        )
+        .await;
+        client
+            .execute(
+                "UPDATE validators SET version = $1 WHERE vote_account = $2",
+                &[&version, &vote_account],
+            )
+            .await
+            .unwrap();
+    }
+
+    let lineage = load_client_lineage_stats(&client, 1).await.unwrap();
+    let stats = lineage
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(stats.total_activated_stake, 3100);
+    assert_eq!(
+        stats.lineage_stake.get("frankendancer"),
+        Some(&900),
+        "id 12 on a 0.x version joins id 14 on the frankendancer lineage"
+    );
+    assert_eq!(stats.lineage_validator_count.get("frankendancer"), Some(&2));
+    assert_eq!(
+        stats.lineage_stake.get("firedancer"),
+        Some(&2200),
+        "id 12 on a newer or no version is firedancer, and id 5 ignores the version"
+    );
+    assert_eq!(stats.lineage_validator_count.get("firedancer"), Some(&3));
+
+    let diversity = load_client_diversity_stats(&client, 1).await.unwrap();
+    let stats = diversity
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(
+        stats.client_stake.get("bam"),
+        Some(&1500),
+        "the vendor does not depend on the version"
+    );
+    assert_eq!(stats.client_validator_count.get("bam"), Some(&4));
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn validators_flat_reads_the_lineage_of_id_12_off_the_same_versions_row() {
+    let schema = "ds_test_validators_flat_id_12_version";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    for epoch in (LAST_EPOCH - EPOCHS + 1)..=LAST_EPOCH {
+        insert_validator(&client, "voteFrankenBam", epoch, 100, 10, None).await;
+        insert_validator(&client, "voteFireBam", epoch, 100, 10, None).await;
+    }
+    insert_version(
+        &client,
+        "voteFrankenBam",
+        990,
+        "2026-01-01T00:00:00Z",
+        Some("0.1204.40300"),
+        Some(12),
+    )
+    .await;
+    insert_version(
+        &client,
+        "voteFrankenBam",
+        1001,
+        "2026-03-01T00:00:00Z",
+        Some("26.9.4"),
+        Some(12),
+    )
+    .await;
+    insert_version(
+        &client,
+        "voteFireBam",
+        990,
+        "2026-01-01T00:00:00Z",
+        Some("26.9.4"),
+        Some(12),
+    )
+    .await;
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    let lineage = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|validator| validator.vote_account == vote_account)
+            .unwrap_or_else(|| panic!("{vote_account} must be in the window"))
+            .client_lineage
+            .clone()
+    };
+    assert_eq!(
+        lineage("voteFrankenBam"),
+        "frankendancer",
+        "the version above last_epoch must not reclassify the bounded client row"
+    );
+    assert_eq!(lineage("voteFireBam"), "firedancer");
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn client_diversity_classifies_a_validator_from_its_raw_rendering_alone() {
     let schema = "ds_test_client_diversity_raw";
     if skip_without_database(schema) {
@@ -575,6 +709,96 @@ async fn validators_flat_survives_zero_epochs() {
     assert!(
         validators.is_empty(),
         "epochs=0 can never satisfy the HAVING clause"
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+async fn set_block_production(
+    client: &Client,
+    vote_account: &str,
+    epoch: u64,
+    leader_slots: u64,
+    skip_rate: Option<f64>,
+) {
+    client
+        .execute(
+            "UPDATE validators SET leader_slots = $3, blocks_produced = 0, skip_rate = $4
+             WHERE vote_account = $1 AND epoch = $2",
+            &[
+                &vote_account,
+                &Decimal::from(epoch),
+                &Decimal::from(leader_slots),
+                &skip_rate,
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
+    let schema = "ds_test_validators_flat_unknown_skip";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    let null_epoch = LAST_EPOCH;
+    for epoch in (LAST_EPOCH - EPOCHS + 1)..=LAST_EPOCH {
+        insert_validator(&client, "graced", epoch, 100, 10, None).await;
+        set_block_production(&client, "graced", epoch, 100, Some(0.5)).await;
+        insert_validator(&client, "steady", epoch, 100, 10, None).await;
+        set_block_production(&client, "steady", epoch, 300, Some(0.2)).await;
+        insert_validator(&client, "unknown", epoch, 1000, 10, None).await;
+        set_block_production(&client, "unknown", epoch, 0, None).await;
+        insert_validator(&client, "partly", epoch, 100, 10, None).await;
+        let partly_skip_rate = (epoch != null_epoch).then_some(0.1);
+        set_block_production(&client, "partly", epoch, 300, partly_skip_rate).await;
+    }
+
+    let validators = load_validators_aggregated_flat(&client, LAST_EPOCH, EPOCHS)
+        .await
+        .unwrap();
+    let flat = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|v| v.vote_account == vote_account)
+            .unwrap()
+    };
+    let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
+
+    // The cluster rate weighs only the stake with a known skip rate.
+    let cluster_with_partly = (0.5 * 100.0 + 0.2 * 100.0 + 0.1 * 100.0) / 300.0;
+    let cluster_without_partly = (0.5 * 100.0 + 0.2 * 100.0) / 200.0;
+    let graced_expected =
+        ((EPOCHS - 1) as f64 * cluster_with_partly + cluster_without_partly) / EPOCHS as f64;
+
+    let partly = flat("partly");
+    assert!(close(partly.avg_skip_rate, 0.1), "{}", partly.avg_skip_rate);
+    let partly_grace_expected =
+        ((EPOCHS - 1) as f64 * 0.1 + cluster_without_partly) / EPOCHS as f64;
+    assert!(
+        close(partly.avg_grace_skip_rate, partly_grace_expected),
+        "{} != {partly_grace_expected}",
+        partly.avg_grace_skip_rate
+    );
+    let graced = flat("graced");
+    assert!(
+        close(graced.avg_grace_skip_rate, graced_expected),
+        "{} != {graced_expected}",
+        graced.avg_grace_skip_rate
+    );
+
+    let unknown = flat("unknown");
+    assert_eq!(unknown.avg_skip_rate, 1.0);
+    assert!(
+        close(unknown.avg_grace_skip_rate, graced_expected),
+        "{} != {graced_expected}",
+        unknown.avg_grace_skip_rate
     );
 
     client
