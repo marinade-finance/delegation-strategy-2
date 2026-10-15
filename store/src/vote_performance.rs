@@ -2,14 +2,14 @@ use rust_decimal::prelude::*;
 use std::collections::HashMap;
 use tokio_postgres::Client;
 
-pub struct VotePerformanceInput {
-    pub vote_account: String,
-    pub activated_stake: Decimal,
+struct VotePerformanceInput {
+    vote_account: String,
+    activated_stake: Decimal,
     /// `activated_stake` of the previous epoch. Agave pays the Alpenglow vote reward on this stake.
-    pub epoch_stake: Option<Decimal>,
-    pub leader_slots: u64,
-    pub credits: Option<u64>,
-    pub vote_reward_lamports: Option<u64>,
+    epoch_stake: Option<Decimal>,
+    leader_slots: u64,
+    credits: Option<u64>,
+    vote_reward_lamports: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,106 +20,132 @@ enum EpochKind {
     Alpenglow,
 }
 
-fn epoch_kind(rows: &[VotePerformanceInput]) -> Option<EpochKind> {
-    let has_credits = rows.iter().any(|row| row.credits.is_some());
-    let has_rewards = rows.iter().any(|row| row.vote_reward_lamports.is_some());
-    match (has_credits, has_rewards) {
-        (true, true) => Some(EpochKind::Migration),
-        (true, false) => Some(EpochKind::Tower),
-        (false, true) => Some(EpochKind::Alpenglow),
-        (false, false) => None,
+/// Cluster sums of one epoch. The Alpenglow sums cover the rows with a vote reward and an `epoch_stake`.
+#[derive(Debug, Default, PartialEq)]
+struct EpochTotals {
+    has_credits: bool,
+    has_rewards: bool,
+    tower_stake: Decimal,
+    tower_weighted_credits: Decimal,
+    alpenglow_stake: Decimal,
+    alpenglow_leader_slots: Decimal,
+    alpenglow_reward: Decimal,
+}
+
+fn alpenglow_input(row: &VotePerformanceInput) -> Option<(Decimal, Decimal, Decimal)> {
+    Some((
+        row.epoch_stake?,
+        Decimal::from(row.leader_slots),
+        Decimal::from(row.vote_reward_lamports?),
+    ))
+}
+
+impl EpochTotals {
+    fn from_rows(rows: &[VotePerformanceInput]) -> Self {
+        let mut totals = Self::default();
+        for row in rows {
+            totals.has_credits |= row.credits.is_some();
+            totals.has_rewards |= row.vote_reward_lamports.is_some();
+            if let Some(credits) = row.credits {
+                totals.tower_stake += row.activated_stake;
+                totals.tower_weighted_credits += row.activated_stake * Decimal::from(credits);
+            }
+            if let Some((stake, slots, reward)) = alpenglow_input(row) {
+                totals.alpenglow_stake += stake;
+                totals.alpenglow_leader_slots += slots;
+                totals.alpenglow_reward += reward;
+            }
+        }
+        totals
+    }
+
+    fn kind(&self) -> Option<EpochKind> {
+        match (self.has_credits, self.has_rewards) {
+            (true, true) => Some(EpochKind::Migration),
+            (true, false) => Some(EpochKind::Tower),
+            (false, true) => Some(EpochKind::Alpenglow),
+            (false, false) => None,
+        }
+    }
+
+    /// Votes of `row` relative to the cluster, 1 = on par.
+    fn performance(&self, row: &VotePerformanceInput) -> Option<f64> {
+        match self.kind()? {
+            EpochKind::Tower => self.tower_performance(row),
+            EpochKind::Alpenglow => self.alpenglow_performance(row),
+            EpochKind::Migration => None,
+        }
+    }
+
+    // credits / stake-weighted mean credits
+    fn tower_performance(&self, row: &VotePerformanceInput) -> Option<f64> {
+        let credits = Decimal::from(row.credits?);
+        if self.tower_stake.is_zero() || self.tower_weighted_credits.is_zero() {
+            return None;
+        }
+        (credits / (self.tower_weighted_credits / self.tower_stake)).to_f64()
+    }
+
+    // (reward/w) / (Σreward/Σw) with w = epoch_stake/S + leader_slots/N
+    fn alpenglow_performance(&self, row: &VotePerformanceInput) -> Option<f64> {
+        let (stake, slots, reward) = alpenglow_input(row)?;
+        let share = |part: Decimal, total: Decimal| {
+            if total.is_zero() {
+                Decimal::ZERO
+            } else {
+                part / total
+            }
+        };
+        let weight = share(stake, self.alpenglow_stake) + share(slots, self.alpenglow_leader_slots);
+        // Each share sums to 1 over the rows when its total is above 0
+        let total_weight = Decimal::from(
+            u8::from(!self.alpenglow_stake.is_zero())
+                + u8::from(!self.alpenglow_leader_slots.is_zero()),
+        );
+        if weight.is_zero() || total_weight.is_zero() || self.alpenglow_reward.is_zero() {
+            return None;
+        }
+        (reward / weight / (self.alpenglow_reward / total_weight)).to_f64()
     }
 }
 
 /// Votes of one epoch relative to the cluster, 1 = on par. Vote accounts without a value are left out.
-pub fn vote_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
-    match epoch_kind(rows) {
-        Some(EpochKind::Tower) => tower_performance(rows),
-        Some(EpochKind::Alpenglow) => alpenglow_performance(rows),
-        Some(EpochKind::Migration) | None => Default::default(),
-    }
-}
-
-// credits / stake-weighted mean credits
-fn tower_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
-    let with_credits: Vec<(&str, Decimal, Decimal)> = rows
-        .iter()
+fn vote_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
+    let totals = EpochTotals::from_rows(rows);
+    rows.iter()
         .filter_map(|row| {
-            row.credits.map(|credits| {
-                (
-                    row.vote_account.as_str(),
-                    row.activated_stake,
-                    credits.into(),
-                )
-            })
-        })
-        .collect();
-    let total_stake: Decimal = with_credits.iter().map(|(_, stake, _)| stake).sum();
-    let weighted_credits: Decimal = with_credits
-        .iter()
-        .map(|(_, stake, credits)| stake * credits)
-        .sum();
-    if total_stake.is_zero() || weighted_credits.is_zero() {
-        return Default::default();
-    }
-    let mean_credits = weighted_credits / total_stake;
-    with_credits
-        .into_iter()
-        .filter_map(|(vote_account, _, credits)| {
-            (credits / mean_credits)
-                .to_f64()
-                .map(|ratio| (vote_account.to_string(), ratio))
+            totals
+                .performance(row)
+                .map(|ratio| (row.vote_account.clone(), ratio))
         })
         .collect()
 }
 
-// (reward/w) / (Σreward/Σw) with w = epoch_stake/S + leader_slots/N
-fn alpenglow_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
-    let admitted: Vec<(&str, Decimal, Decimal, Decimal)> = rows
-        .iter()
-        .filter_map(|row| {
-            Some((
-                row.vote_account.as_str(),
-                row.epoch_stake?,
-                Decimal::from(row.leader_slots),
-                Decimal::from(row.vote_reward_lamports?),
-            ))
-        })
-        .collect();
-    let total_stake: Decimal = admitted.iter().map(|(_, stake, ..)| stake).sum();
-    let total_slots: Decimal = admitted.iter().map(|(_, _, slots, _)| slots).sum();
-    let share = |part: Decimal, total: Decimal| {
-        if total.is_zero() {
-            Decimal::ZERO
-        } else {
-            part / total
-        }
-    };
-    let weighted: Vec<(&str, Decimal, Decimal)> = admitted
-        .into_iter()
-        .map(|(vote_account, stake, slots, reward)| {
-            (
-                vote_account,
-                share(stake, total_stake) + share(slots, total_slots),
-                reward,
-            )
-        })
-        .collect();
-    let total_weight: Decimal = weighted.iter().map(|(_, weight, _)| weight).sum();
-    let total_reward: Decimal = weighted.iter().map(|(.., reward)| reward).sum();
-    if total_weight.is_zero() || total_reward.is_zero() {
-        return Default::default();
-    }
-    let mean_reward_per_weight = total_reward / total_weight;
-    weighted
-        .into_iter()
-        .filter(|(_, weight, _)| !weight.is_zero())
-        .filter_map(|(vote_account, weight, reward)| {
-            (reward / weight / mean_reward_per_weight)
-                .to_f64()
-                .map(|ratio| (vote_account.to_string(), ratio))
-        })
-        .collect()
+// epoch_stake is the activated_stake of the previous epoch
+const VOTE_PERFORMANCE_ROWS: &str =
+    "SELECT validators.epoch, validators.vote_account, validators.activated_stake,
+        NULLIF(previous.activated_stake, 0) AS epoch_stake,
+        validators.leader_slots, validators.credits, validators.vote_reward_lamports
+    FROM validators
+        LEFT JOIN validators previous ON previous.vote_account = validators.vote_account
+            AND previous.epoch = validators.epoch - 1
+    WHERE validators.epoch BETWEEN $1 AND $2";
+
+fn input_from_row(row: &tokio_postgres::Row) -> anyhow::Result<VotePerformanceInput> {
+    Ok(VotePerformanceInput {
+        vote_account: row.get("vote_account"),
+        activated_stake: row.get("activated_stake"),
+        epoch_stake: row.get("epoch_stake"),
+        leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+        credits: row
+            .get::<_, Option<Decimal>>("credits")
+            .map(u64::try_from)
+            .transpose()?,
+        vote_reward_lamports: row
+            .get::<_, Option<Decimal>>("vote_reward_lamports")
+            .map(u64::try_from)
+            .transpose()?,
+    })
 }
 
 /// `vote_performance` keyed by (epoch, vote account) for the epochs `from_epoch..=to_epoch`.
@@ -130,13 +156,7 @@ pub async fn load_vote_performance(
 ) -> anyhow::Result<HashMap<(u64, String), f64>> {
     let rows = psql_client
         .query(
-            "SELECT validators.epoch, validators.vote_account, validators.activated_stake,
-                NULLIF(previous.activated_stake, 0) AS epoch_stake,
-                validators.leader_slots, validators.credits, validators.vote_reward_lamports
-            FROM validators
-                LEFT JOIN validators previous ON previous.vote_account = validators.vote_account
-                    AND previous.epoch = validators.epoch - 1
-            WHERE validators.epoch BETWEEN $1 AND $2",
+            VOTE_PERFORMANCE_ROWS,
             &[&Decimal::from(from_epoch), &Decimal::from(to_epoch)],
         )
         .await?;
@@ -147,20 +167,7 @@ pub async fn load_vote_performance(
         by_epoch
             .entry(epoch)
             .or_default()
-            .push(VotePerformanceInput {
-                vote_account: row.get("vote_account"),
-                activated_stake: row.get("activated_stake"),
-                epoch_stake: row.get("epoch_stake"),
-                leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-                credits: row
-                    .get::<_, Option<Decimal>>("credits")
-                    .map(u64::try_from)
-                    .transpose()?,
-                vote_reward_lamports: row
-                    .get::<_, Option<Decimal>>("vote_reward_lamports")
-                    .map(u64::try_from)
-                    .transpose()?,
-            });
+            .push(input_from_row(&row)?);
     }
 
     Ok(by_epoch
@@ -171,6 +178,63 @@ pub async fn load_vote_performance(
                 .map(move |(vote_account, ratio)| ((epoch, vote_account), ratio))
         })
         .collect())
+}
+
+/// `vote_performance` of one vote account keyed by epoch.
+pub async fn load_vote_performance_of(
+    psql_client: &Client,
+    vote_account: &str,
+    from_epoch: u64,
+    to_epoch: u64,
+) -> anyhow::Result<HashMap<u64, f64>> {
+    let query = format!(
+        "WITH input AS ({VOTE_PERFORMANCE_ROWS}),
+        totals AS (
+            SELECT epoch,
+                bool_or(credits IS NOT NULL) AS has_credits,
+                bool_or(vote_reward_lamports IS NOT NULL) AS has_rewards,
+                COALESCE(SUM(activated_stake) FILTER (WHERE credits IS NOT NULL), 0) AS tower_stake,
+                COALESCE(SUM(activated_stake * credits), 0) AS tower_weighted_credits,
+                COALESCE(SUM(epoch_stake) FILTER (WHERE vote_reward_lamports IS NOT NULL), 0) AS alpenglow_stake,
+                COALESCE(SUM(leader_slots) FILTER (WHERE vote_reward_lamports IS NOT NULL AND epoch_stake IS NOT NULL), 0) AS alpenglow_leader_slots,
+                COALESCE(SUM(vote_reward_lamports) FILTER (WHERE epoch_stake IS NOT NULL), 0) AS alpenglow_reward
+            FROM input
+            GROUP BY epoch
+        )
+        SELECT input.*, totals.has_credits, totals.has_rewards, totals.tower_stake,
+            totals.tower_weighted_credits, totals.alpenglow_stake,
+            totals.alpenglow_leader_slots, totals.alpenglow_reward
+        FROM input JOIN totals ON totals.epoch = input.epoch
+        WHERE input.vote_account = $3"
+    );
+    let rows = psql_client
+        .query(
+            &query,
+            &[
+                &Decimal::from(from_epoch),
+                &Decimal::from(to_epoch),
+                &vote_account,
+            ],
+        )
+        .await?;
+
+    let mut result: HashMap<u64, f64> = Default::default();
+    for row in rows {
+        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+        let totals = EpochTotals {
+            has_credits: row.get("has_credits"),
+            has_rewards: row.get("has_rewards"),
+            tower_stake: row.get("tower_stake"),
+            tower_weighted_credits: row.get("tower_weighted_credits"),
+            alpenglow_stake: row.get("alpenglow_stake"),
+            alpenglow_leader_slots: row.get("alpenglow_leader_slots"),
+            alpenglow_reward: row.get("alpenglow_reward"),
+        };
+        if let Some(ratio) = totals.performance(&input_from_row(&row)?) {
+            result.insert(epoch, ratio);
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -405,7 +469,10 @@ mod tests {
             },
             tower("down", 100, Some(0)),
         ];
-        assert_eq!(epoch_kind(&rows), Some(EpochKind::Migration));
+        assert_eq!(
+            EpochTotals::from_rows(&rows).kind(),
+            Some(EpochKind::Migration)
+        );
         assert_performance(&rows, &[("up", None), ("down", None)]);
     }
 }

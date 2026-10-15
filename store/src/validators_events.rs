@@ -1,6 +1,6 @@
 use crate::dto::{EventEpochRecord, PerformanceRecord, SettlementRecord};
 use crate::utils::DEFAULT_CACHE_EPOCHS;
-use crate::vote_performance::load_vote_performance;
+use crate::vote_performance::load_vote_performance_of;
 use chrono::{DateTime, Utc};
 use collect::validators_events::ValidatorsEventsSnapshot;
 use log::info;
@@ -190,7 +190,8 @@ pub async fn get_events_with_context(
         .into_iter()
         .max()
         .unwrap_or(first_epoch);
-    let vote_performance = load_vote_performance(psql_client, first_epoch, last_epoch).await?;
+    let vote_performance =
+        load_vote_performance_of(psql_client, vote_account, first_epoch, last_epoch).await?;
 
     let mut by_epoch: HashMap<u64, EventEpochRecord> = Default::default();
     for row in perf_rows {
@@ -208,9 +209,7 @@ pub async fn get_events_with_context(
                         .get::<_, Option<Decimal>>("credits")
                         .map(u64::try_from)
                         .transpose()?,
-                    vote_performance: vote_performance
-                        .get(&(epoch, vote_account.to_string()))
-                        .copied(),
+                    vote_performance: vote_performance.get(&epoch).copied(),
                 }),
                 uptime_pct: row.get("uptime_pct"),
                 downtime: row
