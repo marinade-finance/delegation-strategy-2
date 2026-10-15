@@ -72,11 +72,26 @@ async fn empty_database_records_every_file_and_a_second_run_changes_nothing() {
         .unwrap();
 }
 
-// The newest file in the adopt list, prod on 2026-10-15, and a database with every file.
+async fn apply_by_hand_through(client: &Client, last_by_hand: &str) {
+    for file in migration_files() {
+        let name = file.path().to_string_lossy();
+        if name == ADOPT {
+            continue;
+        }
+        if *name > *last_by_hand {
+            break;
+        }
+        client
+            .batch_execute(file.contents_utf8().unwrap())
+            .await
+            .unwrap();
+    }
+}
+
+// Prod on 2026-10-15 without 0039, and a database with every file.
 #[tokio::test]
 async fn database_migrated_by_hand_is_adopted() {
     for last_by_hand in [
-        "0035-commission-effective-vintage-backfill.sql",
         "0038-validators-rewards-expected-take-rate.sql",
         "0039-validators-skip-rate-nullable.sql",
     ] {
@@ -85,19 +100,7 @@ async fn database_migrated_by_hand_is_adopted() {
             return;
         }
         let mut client = empty_schema(schema).await;
-        for file in migration_files() {
-            let name = file.path().to_string_lossy();
-            if name == ADOPT {
-                continue;
-            }
-            if *name > *last_by_hand {
-                break;
-            }
-            client
-                .batch_execute(file.contents_utf8().unwrap())
-                .await
-                .unwrap();
-        }
+        apply_by_hand_through(&client, last_by_hand).await;
 
         migrate(&mut client)
             .await
@@ -115,4 +118,24 @@ async fn database_migrated_by_hand_is_adopted() {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn database_without_0038_is_not_adopted() {
+    let schema = "ds_test_migrations_adopt_without_0038";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = empty_schema(schema).await;
+    apply_by_hand_through(&client, "0037-validators-client-id-source.sql").await;
+
+    let err = migrate(&mut client).await.unwrap_err();
+
+    assert!(format!("{err:#}").contains("up to 0038"), "{err:#}");
+    assert!(recorded_names(&client).await.is_empty());
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }
