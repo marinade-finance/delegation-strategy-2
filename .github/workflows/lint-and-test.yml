@@ -53,13 +53,25 @@ jobs:
       # in-memory backend, and fail rather than skip when the image is missing.
       # marinade-directory is unreleased, and its main branch predates the store
       # these suites talk to, so the image comes from the branch carrying it.
+      # Same GitHub App as the org's static-analysis workflow (marinade-finance/.github).
+      - name: 🔑 Create token for the marinade-directory checkout
+        id: directory-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CARGO_GIT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CARGO_GIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: marinade-directory
+          permission-contents: read
+
       - name: 📦 Checkout marinade-directory
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: marinade-finance/marinade-directory
           ref: 20260618_go
           path: marinade-directory
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ steps.directory-token.outputs.token }}
+          persist-credentials: false
 
       - name: 📦 Build the marinade-directory image
         run: docker build -t marinade-directory:test marinade-directory
