@@ -1,11 +1,15 @@
 use chrono::{DateTime, Utc};
-use store::directory::Precondition;
+use std::collections::HashMap;
+use store::directory::{Fetch, Precondition};
 use store::docs::{
-    epoch_doc_path, ClusterInfoDoc, ClusterInfoSample, EpochDoc, SnapshotDoc, EPOCHS_DIR,
-    LIVE_CLUSTER_INFO, SNAPSHOT_DIR,
+    epoch_doc_path, ClusterInfoDoc, ClusterInfoSample, EpochDoc, SealedVersionsDoc, SnapshotDoc,
+    VersionSample, EPOCHS_DIR, LIVE_CLUSTER_INFO, SNAPSHOT_DIR, VERSIONS_DIR,
 };
 use store::dto::Validator;
-use store::utils::{load_cluster_stats, DEFAULT_CACHE_EPOCHS};
+use store::utils::{
+    load_cluster_stats, load_validators, load_validators_aggregated_flat, ValidatorOverlays,
+    DEFAULT_CACHE_EPOCHS,
+};
 use store::warehouse::{has_validators, Warehouse};
 
 mod common;
@@ -164,4 +168,153 @@ async fn the_warehouse_warms_from_the_documents_and_then_answers_304() {
         2,
         "a changed document replaces the cached copy"
     );
+}
+
+#[tokio::test]
+async fn previous_snapshot_survives_refresh_and_rollover_without_expanding_the_window() {
+    let Some(store) = common::directory_store("warehouse-previous-snapshot").await else {
+        return;
+    };
+    let directory = store.client();
+    let mut etags = HashMap::new();
+    for epoch in EPOCH - 7..=EPOCH {
+        let mut validator = validator(epoch * 100);
+        validator.epoch = epoch.into();
+        let mut snapshot = SnapshotDoc::from([(VOTE_ACCOUNT.to_string(), validator)]);
+        if epoch == EPOCH - 7 {
+            snapshot.insert(
+                "votePreviousOnly".to_string(),
+                common::validator("votePreviousOnly", epoch),
+            );
+        }
+        let etag = directory
+            .put(
+                &epoch_doc_path(SNAPSHOT_DIR, epoch),
+                &snapshot,
+                Precondition::Create,
+            )
+            .await
+            .expect("write snapshot");
+        etags.insert(epoch, etag);
+    }
+    for (epoch, version, created_at) in [
+        (EPOCH - 7, "99.0.0", "2030-01-01T00:00:00Z"),
+        (EPOCH, "2.0.0", "2026-08-03T00:00:00Z"),
+    ] {
+        let versions = SealedVersionsDoc::from([(
+            VOTE_ACCOUNT.to_string(),
+            vec![VersionSample {
+                epoch,
+                epoch_slot: 0,
+                version: Some(version.to_string()),
+                client_id: Some(3),
+                client_id_raw: None,
+                feature_set: None,
+                shred_version: None,
+                created_at: at(created_at),
+            }],
+        )]);
+        directory
+            .put(
+                &epoch_doc_path(VERSIONS_DIR, epoch),
+                &versions,
+                Precondition::Create,
+            )
+            .await
+            .expect("write versions");
+    }
+    let mut warehouse = Warehouse::default();
+    let mut cluster_etag = None;
+    for last_epoch in [EPOCH, EPOCH, EPOCH + 1] {
+        if last_epoch > EPOCH {
+            let mut validator = validator(last_epoch * 100);
+            validator.epoch = last_epoch.into();
+            let snapshot = SnapshotDoc::from([(VOTE_ACCOUNT.to_string(), validator)]);
+            directory
+                .put(
+                    &epoch_doc_path(SNAPSHOT_DIR, last_epoch),
+                    &snapshot,
+                    Precondition::Create,
+                )
+                .await
+                .expect("write advancing snapshot");
+        }
+        if cluster_etag.is_none() || last_epoch > EPOCH {
+            let precondition = match cluster_etag.take() {
+                Some(etag) => Precondition::IfMatch(etag),
+                None => Precondition::Create,
+            };
+            cluster_etag = Some(
+                directory
+                    .put(
+                        LIVE_CLUSTER_INFO,
+                        &ClusterInfoDoc {
+                            epoch: last_epoch,
+                            samples: Vec::new(),
+                        },
+                        precondition,
+                    )
+                    .await
+                    .expect("write cluster info"),
+            );
+        }
+        warehouse.warm(&directory, 7).await.expect("warm window");
+        let previous_epoch = last_epoch - 7;
+        assert_eq!(
+            warehouse.snapshots.keys().copied().collect::<Vec<_>>(),
+            (last_epoch - 6..=last_epoch).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            warehouse
+                .previous_snapshot
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![previous_epoch]
+        );
+        assert_eq!(
+            warehouse.previous_snapshot[&previous_epoch][VOTE_ACCOUNT].activated_stake,
+            (previous_epoch * 100).into()
+        );
+        assert_eq!(warehouse.last_epoch(), last_epoch);
+        assert_eq!(
+            warehouse.epochs_window(7),
+            (last_epoch - 6..=last_epoch).rev().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            warehouse.versions.keys().copied().collect::<Vec<_>>(),
+            vec![EPOCH]
+        );
+        assert!(matches!(
+            directory
+                .get_if_none_match::<SnapshotDoc>(
+                    &epoch_doc_path(SNAPSHOT_DIR, previous_epoch),
+                    &etags[&previous_epoch]
+                )
+                .await
+                .expect("conditional snapshot read"),
+            Fetch::NotModified
+        ));
+        let records = load_validators(&warehouse, 7, 7, &ValidatorOverlays::default())
+            .await
+            .unwrap();
+        assert!(!records.contains_key("votePreviousOnly"));
+        assert_eq!(records[VOTE_ACCOUNT].epoch_stats.len(), 7);
+        let oldest = records[VOTE_ACCOUNT]
+            .epoch_stats
+            .iter()
+            .min_by_key(|stats| stats.epoch)
+            .unwrap();
+        assert_eq!(oldest.epoch, last_epoch - 6);
+        assert_eq!(oldest.epoch_stake, Some((previous_epoch * 100).into()));
+        let flat = load_validators_aggregated_flat(&warehouse, last_epoch, 7).unwrap();
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].version, "2.0.0");
+        let expected_stake = if last_epoch == EPOCH {
+            0.0000997
+        } else {
+            0.0000998
+        };
+        assert!((flat[0].avg_stake - expected_stake).abs() < 1e-12);
+    }
 }

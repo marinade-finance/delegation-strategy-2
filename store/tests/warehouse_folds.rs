@@ -1,11 +1,13 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use collect::validators_performance::ValidatorPerformance;
+use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
-use store::docs::{VersionSample, VersionState};
+use store::docs::{EpochDoc, VersionSample, VersionState};
 use store::dto::{Validator, UNKNOWN_CLIENT_NAME};
 use store::utils::{
     load_client_diversity_stats, load_client_lineage_stats, load_dc_concentration_stats,
-    load_validators, load_versions, ValidatorOverlays,
+    load_last_closed_epoch, load_net_apy_history_scope, load_validators, load_versions,
+    ValidatorOverlays,
 };
 use store::warehouse::Warehouse;
 
@@ -495,4 +497,135 @@ fn client_lineage_splits_id_12_by_the_version_it_reports() {
         .unwrap();
     assert_eq!(stats.client_stake.get("bam"), Some(&1500));
     assert_eq!(stats.client_validator_count.get("bam"), Some(&4));
+}
+
+async fn epoch_stakes(warehouse: &Warehouse) -> HashMap<u64, Option<Decimal>> {
+    load_validators(warehouse, 3, 3, &ValidatorOverlays::default())
+        .await
+        .unwrap()
+        .remove("voteEpochStake")
+        .expect("validator must load")
+        .epoch_stats
+        .into_iter()
+        .map(|stats| (stats.epoch, stats.epoch_stake))
+        .collect()
+}
+
+#[tokio::test]
+async fn epoch_stake_is_the_activated_stake_of_the_previous_epoch() {
+    let mut warehouse = Warehouse::default();
+    warehouse.live.cluster_info.epoch = LAST_EPOCH;
+    for (epoch, stake) in [(LAST_EPOCH - 1, 100), (LAST_EPOCH, 150)] {
+        store_validator(
+            &mut warehouse,
+            epoch,
+            validator("voteEpochStake", epoch, stake, 10, None, None),
+        );
+    }
+    let stakes = epoch_stakes(&warehouse).await;
+    assert_eq!(stakes.get(&LAST_EPOCH), Some(&Some(Decimal::from(100))));
+    assert_eq!(stakes.get(&(LAST_EPOCH - 1)), Some(&None));
+}
+
+#[tokio::test]
+async fn a_validator_unstaked_in_the_previous_epoch_is_not_a_member() {
+    let mut warehouse = Warehouse::default();
+    warehouse.live.cluster_info.epoch = LAST_EPOCH;
+    for (epoch, stake) in [(LAST_EPOCH - 1, 0), (LAST_EPOCH, 150)] {
+        store_validator(
+            &mut warehouse,
+            epoch,
+            validator("voteEpochStake", epoch, stake, 10, None, None),
+        );
+    }
+    assert_eq!(epoch_stakes(&warehouse).await.get(&LAST_EPOCH), Some(&None));
+}
+
+#[tokio::test]
+async fn a_gap_epoch_leaves_the_next_one_without_a_member_stake() {
+    let mut warehouse = Warehouse::default();
+    warehouse.live.cluster_info.epoch = LAST_EPOCH;
+    for (epoch, stake) in [(LAST_EPOCH - 2, 100), (LAST_EPOCH, 150)] {
+        store_validator(
+            &mut warehouse,
+            epoch,
+            validator("voteEpochStake", epoch, stake, 10, None, None),
+        );
+    }
+    let stakes = epoch_stakes(&warehouse).await;
+    assert_eq!(stakes.get(&LAST_EPOCH), Some(&None));
+    assert_eq!(stakes.get(&(LAST_EPOCH - 2)), Some(&None));
+}
+
+#[tokio::test]
+async fn the_oldest_displayed_epoch_reads_its_previous_epoch_outside_the_window() {
+    let mut warehouse = Warehouse::default();
+    warehouse.live.cluster_info.epoch = LAST_EPOCH;
+    let previous_epoch = LAST_EPOCH - 3;
+    let previous = validator("voteEpochStake", previous_epoch, 100, 10, None, None);
+    warehouse
+        .previous_snapshot
+        .entry(previous_epoch)
+        .or_default()
+        .insert(previous.vote_account.clone(), previous);
+    store_validator(
+        &mut warehouse,
+        LAST_EPOCH - 2,
+        validator("voteEpochStake", LAST_EPOCH - 2, 150, 10, None, None),
+    );
+    let stakes = epoch_stakes(&warehouse).await;
+    assert_eq!(stakes.get(&previous_epoch), None);
+    assert_eq!(
+        stakes.get(&(LAST_EPOCH - 2)),
+        Some(&Some(Decimal::from(100)))
+    );
+}
+
+#[test]
+fn net_apy_history_scope_covers_the_cached_window() {
+    let mut warehouse = Warehouse::default();
+    assert_eq!(load_last_closed_epoch(&warehouse), None);
+    warehouse.live.cluster_info.epoch = LAST_EPOCH;
+    let start = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+    for epoch in LAST_EPOCH - 3..LAST_EPOCH {
+        let start_at = start + Duration::days(2 * epoch as i64);
+        warehouse.epochs.insert(
+            epoch,
+            EpochDoc {
+                epoch,
+                start_at,
+                end_at: start_at + Duration::days(2),
+                transaction_count: 0,
+                supply: Decimal::ZERO,
+                inflation: 0.0,
+                inflation_taper: 0.0,
+                slots_per_year: 0.0,
+            },
+        );
+    }
+    for (vote_account, epoch) in [
+        ("voteOpen", LAST_EPOCH),
+        ("voteOpen", LAST_EPOCH - 1),
+        ("voteEdge", LAST_EPOCH - 2),
+        ("voteOld", LAST_EPOCH - 3),
+    ] {
+        store_validator(
+            &mut warehouse,
+            epoch,
+            validator(vote_account, epoch, 100, 10, None, None),
+        );
+    }
+    assert_eq!(
+        load_last_closed_epoch(&warehouse),
+        Some((
+            LAST_EPOCH - 1,
+            start + Duration::days(2 * LAST_EPOCH as i64)
+        ))
+    );
+    let (votes, first_start_at) = load_net_apy_history_scope(&warehouse, 3);
+    assert_eq!(votes, vec!["voteEdge".to_string(), "voteOpen".to_string()]);
+    assert_eq!(
+        first_start_at,
+        Some(start + Duration::days(2 * (LAST_EPOCH - 2) as i64))
+    );
 }
