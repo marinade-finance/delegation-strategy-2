@@ -173,8 +173,8 @@ Such an epoch is still returned by both query modes, including the open one.
 
 `realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
 commissions that epoch implied it would. It is `null` where no commission was recorded, and for
-the in-progress epoch, which has paid no inflation rewards to weight them by. It is stored, and
-refreshed whenever the epoch's rewards, Jito commissions or epoch close are stored.
+the in-progress epoch, which has paid no inflation rewards to weight them by.
+Each cache refresh computes the expected rate from the cached documents.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
@@ -206,8 +206,8 @@ client are in the `Unknown` group, as on the lists. The newest epoch counts exac
 validators whose own row for that epoch puts them in the group, so a validator that moved counts in
 the old group before the move, and its `stake_share` is of every validator with a row that epoch.
 `net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
-`validators_rewards`) are stake-weighted over the members that have one, and `null` for the open
-epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's stored
+the validator-rewards documents) are stake-weighted over the members that have one, and `null` for the open
+epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's
 value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
 lists.
 An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
@@ -450,14 +450,6 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 ## Metrics
 ```bash
 curl -sLfS 'http://localhost:9000/metrics'
-```
-
-### Admin - Score upload
-```bash
-curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=COMMISSION_ADJUSTED_CREDITS,GRACE_SKIP_RATE,DC_CONCENTRATION&component_weights=10,1,2&ui_id=fw3' -X POST \
-  -H 'Content-Type: multipart/form-data' \
-  -H 'Authorization: foo' \
-  --form 'scores_csv=@./scores.csv'
 ```
 
 ### Admin - Metrics upload

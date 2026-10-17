@@ -5,7 +5,6 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::dto::EventEpochRecord;
 use store::validators_events::get_events_with_context;
-use tokio_postgres::Client;
 use warp::{http::StatusCode, reply::json, Reply};
 
 #[derive(Serialize, Debug, utoipa::ToSchema)]
@@ -16,16 +15,10 @@ pub struct ResponseEvents {
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct QueryParams {
-    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the last 90 epochs.
+    /// Lower-bound epoch (inclusive). Mutually exclusive with `query_from_date`. Defaults to the whole served range, which is the last 90 epochs; that range is a hard floor, so a lower value adds no epochs to the answer.
     query_from_epoch: Option<u64>,
     /// Lower-bound date (RFC3339), resolved to the first epoch ending on/after it. Mutually exclusive with `query_from_epoch`.
     query_from_date: Option<DateTime<Utc>>,
-}
-
-impl QueryParams {
-    async fn resolve_from_epoch(&self, psql: &Client) -> Result<Option<u64>, (StatusCode, String)> {
-        resolve_from_epoch(psql, self.query_from_epoch, self.query_from_date).await
-    }
 }
 
 #[utoipa::path(
@@ -68,14 +61,19 @@ pub async fn handler(
         }
     };
 
-    let ctx = context.read().await;
+    let warehouse = context.read().await.warehouse.clone();
+    let warehouse = warehouse.read().await;
 
-    let from_epoch = match query_params.resolve_from_epoch(&ctx.psql_client).await {
+    let from_epoch = match resolve_from_epoch(
+        &warehouse,
+        query_params.query_from_epoch,
+        query_params.query_from_date,
+    ) {
         Ok(from_epoch) => from_epoch,
         Err((status, message)) => return Ok(response_error(status, message)),
     };
 
-    let events = match get_events_with_context(&ctx.psql_client, &vote_key, from_epoch).await {
+    let events = match get_events_with_context(&warehouse, &vote_key, from_epoch) {
         Ok(events) => events,
         Err(err) => {
             error!("Failed to fetch events for {vote_account}: {err}");

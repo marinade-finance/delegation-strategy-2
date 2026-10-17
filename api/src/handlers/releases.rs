@@ -1,8 +1,7 @@
 use crate::context::WrappedContext;
 use crate::metrics;
 use crate::utils::order::{directed, OrderDirection, DEFAULT_ORDER_DIRECTION};
-use crate::utils::response::response_error;
-use log::{error, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use store::dto::{FeatureGateFloor, ReleaseRecord, SfdpFloor};
 use store::releases::{load_feature_gate_floors, load_releases, load_sfdp_floors};
@@ -30,12 +29,11 @@ pub struct QueryParams {
     get,
     tag = "Validators",
     operation_id = "List client releases",
-    description = "Mainnet client releases and the two version floors, as three lists: what was published (`releases`), what the Solana Foundation Delegation Program required (`sfdp_floors`), and what the cluster's feature gates required (`feature_gate_floors`).",
+    description = "Mainnet client releases and the two version floors, as three lists: what was published (`releases`), what the Solana Foundation Delegation Program required (`sfdp_floors`), and what the cluster's feature gates required (`feature_gate_floors`). `available_epoch` is resolved against the served range of epochs, the last 90, and is null for a release older than it.",
     path = "/releases",
     params(QueryParams),
     responses(
-        (status = 200, body = ResponseReleases),
-        (status = 500, description = "Failed to fetch records")
+        (status = 200, body = ResponseReleases)
     )
 )]
 pub async fn handler(
@@ -45,7 +43,8 @@ pub async fn handler(
     metrics::REQUEST_COUNT_RELEASES.inc();
     info!("Fetching releases {query_params:?}");
 
-    let ctx = context.read().await;
+    let warehouse = context.read().await.warehouse.clone();
+    let warehouse = warehouse.read().await;
 
     let client = query_params.client.as_deref();
     let since_epoch = query_params.since_epoch;
@@ -53,20 +52,9 @@ pub async fn handler(
         .order_direction
         .unwrap_or(DEFAULT_ORDER_DIRECTION);
 
-    let (mut releases, mut sfdp_floors, mut feature_gate_floors) = match tokio::try_join!(
-        load_releases(&ctx.psql_client, client, since_epoch),
-        load_sfdp_floors(&ctx.psql_client, client, since_epoch),
-        load_feature_gate_floors(&ctx.psql_client, client, since_epoch),
-    ) {
-        Ok(fetched) => fetched,
-        Err(err) => {
-            error!("Failed to fetch releases: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch records!".into(),
-            ));
-        }
-    };
+    let mut releases = load_releases(&warehouse, client, since_epoch);
+    let mut sfdp_floors = load_sfdp_floors(&warehouse, client, since_epoch);
+    let mut feature_gate_floors = load_feature_gate_floors(&warehouse, client, since_epoch);
 
     releases.sort_by(|a, b| directed(a.released_at.cmp(&b.released_at), &order_direction));
     sfdp_floors

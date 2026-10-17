@@ -1,21 +1,22 @@
 # check CLI
 
-Verification if it is time to save the data to the database.
+Verification if it is time to save the data to the store.
 
 ## Development
 
-See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for the local store setup, which also
+exports `DIRECTORY_URL` and `DIRECTORY_TOKEN`.
 
 ```
 export RPC_URL=...
-export POSTGRES_URL='postgresql://delegation-strategy:delegation-strategy@localhost:5432/delegation-strategy'
+CHECK="cargo run --bin check -- --directory-url $DIRECTORY_URL --directory-token $DIRECTORY_TOKEN"
 
-# verification `jito_priority_fee` table
-cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-priority
+# verification of /validators/priority-fee
+$CHECK jito-priority
 
-# verification jit `mev` table
-cargo run --bin check -- --postgres-url "$POSTGRES_URL" jito-mev
+# verification of /validators/mev
+$CHECK jito-mev
 
-# verification `validators_block_rewards`
-cargo run --bin check -- --postgres-url "$POSTGRES_URL" block-rewards
+# verification of /validators/block-rewards
+$CHECK block-rewards
 ```

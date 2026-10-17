@@ -1,15 +1,18 @@
+use crate::directory::Directory;
+use crate::docs::{
+    epoch_doc_path, merge_into, merge_validator_rewards, ValidatorRewardsDoc,
+    ValidatorRewardsEntry, VALIDATOR_REWARDS_DIR,
+};
 use crate::dto::TakeRateRecord;
 use crate::utils::{expected_take_rate, worst_known_commission, RewardMixShares};
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::take_rates::ValidatorRewardsSnapshot;
 use log::info;
 use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio_postgres::{Client, GenericClient, Transaction};
-
-pub const VALIDATORS_REWARDS_TABLE: &str = "validators_rewards";
+use std::collections::{BTreeMap, HashMap};
 
 const SUPPORTED_DATA_VERSION: u16 = 1;
 
@@ -19,23 +22,9 @@ pub struct StoreTakeRatesParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
-pub const EXPECTED_TAKE_RATE_REFRESH_LOCK: i64 = 0x6578_7074_6b72;
-
-struct ValidatorRewardsRow {
-    vote_account: String,
-    epoch: Decimal,
-    validator_rewards: Decimal,
-    total_rewards: Decimal,
-    inflation_rewards: Decimal,
-    mev_rewards: Decimal,
-    block_rewards: Decimal,
-    take_rate: f64,
-}
-
 pub async fn store_take_rates(
     params: StoreTakeRatesParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing take rates snapshot...");
 
@@ -51,167 +40,61 @@ pub async fn store_take_rates(
         snapshot.version
     );
 
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
     info!(
         "Loaded the snapshot from epoch {}. Snapshot created at {} loaded at epoch {}, slot index {}",
-        snapshot.from_epoch,
-        snapshot_created_at,
-        snapshot.loaded_at_epoch,
-        snapshot.loaded_at_slot_index
+        snapshot.from_epoch, created_at, snapshot.loaded_at_epoch, snapshot.loaded_at_slot_index
     );
 
-    // The BigQuery query already emits one row per (vote_account, epoch); dedup defensively so a
-    // single upsert statement can never touch the same conflict target twice.
-    let rows: BTreeMap<(String, u64), ValidatorRewardsRow> = snapshot
-        .rewards
-        .iter()
-        .filter(|r| r.total_rewards > 0)
-        .map(|r| {
-            let key = (r.vote_account.clone(), r.epoch);
-            let take_rate = r.validator_rewards as f64 / r.total_rewards as f64;
-            (
-                key,
-                ValidatorRewardsRow {
-                    vote_account: r.vote_account.clone(),
-                    epoch: Decimal::from(r.epoch),
-                    validator_rewards: Decimal::from(r.validator_rewards),
-                    total_rewards: Decimal::from(r.total_rewards),
-                    inflation_rewards: Decimal::from(r.inflation_rewards),
-                    mev_rewards: Decimal::from(r.mev_rewards),
-                    block_rewards: Decimal::from(r.block_rewards),
-                    take_rate,
-                },
-            )
-        })
-        .collect();
-
-    info!(
-        "Processing snapshot loaded take rate records {}",
-        rows.len()
-    );
-
-    let records: Vec<_> = rows.values().collect();
-    let mut total_upserted = 0;
-    let transaction = psql_client.transaction().await?;
-    lock_expected_take_rates(&transaction).await?;
-
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        let vote_accounts: Vec<&str> = chunk.iter().map(|r| r.vote_account.as_str()).collect();
-        let epochs: Vec<&Decimal> = chunk.iter().map(|r| &r.epoch).collect();
-        let validator_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.validator_rewards).collect();
-        let total_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.total_rewards).collect();
-        let inflation_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.inflation_rewards).collect();
-        let mev_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.mev_rewards).collect();
-        let block_rewards: Vec<&Decimal> = chunk.iter().map(|r| &r.block_rewards).collect();
-        let take_rates: Vec<f64> = chunk.iter().map(|r| r.take_rate).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        let query = format!(
-            "INSERT INTO {VALIDATORS_REWARDS_TABLE} (
-            vote_account,
-            epoch,
-            validator_rewards,
-            total_rewards,
-            inflation_rewards,
-            mev_rewards,
-            block_rewards,
-            take_rate,
-            created_at,
-            updated_at
-        )
-        SELECT * FROM UNNEST(
-            $1::TEXT[],
-            $2::NUMERIC[],
-            $3::NUMERIC[],
-            $4::NUMERIC[],
-            $5::NUMERIC[],
-            $6::NUMERIC[],
-            $7::NUMERIC[],
-            $8::DOUBLE PRECISION[],
-            $9::TIMESTAMP WITH TIME ZONE[],
-            $10::TIMESTAMP WITH TIME ZONE[]
-        )
-        ON CONFLICT (vote_account, epoch)
-        DO UPDATE SET
-            validator_rewards = EXCLUDED.validator_rewards,
-            total_rewards = EXCLUDED.total_rewards,
-            inflation_rewards = EXCLUDED.inflation_rewards,
-            mev_rewards = EXCLUDED.mev_rewards,
-            block_rewards = EXCLUDED.block_rewards,
-            take_rate = EXCLUDED.take_rate,
-            updated_at = EXCLUDED.updated_at"
+    // One snapshot reaches back over several epochs; each has its own
+    // document. A validator that earned nothing has no rate to store.
+    let mut rewards_by_epoch: BTreeMap<u64, ValidatorRewardsDoc> = Default::default();
+    for rewards in snapshot.rewards.iter().filter(|r| r.total_rewards > 0) {
+        rewards_by_epoch.entry(rewards.epoch).or_default().insert(
+            rewards.vote_account.clone(),
+            ValidatorRewardsEntry {
+                validator_rewards: Decimal::from(rewards.validator_rewards),
+                total_rewards: Decimal::from(rewards.total_rewards),
+                inflation_rewards: Decimal::from(rewards.inflation_rewards),
+                mev_rewards: Decimal::from(rewards.mev_rewards),
+                block_rewards: Decimal::from(rewards.block_rewards),
+                take_rate: rewards.validator_rewards as f64 / rewards.total_rewards as f64,
+                created_at,
+                updated_at: created_at,
+            },
         );
-
-        let rows_affected = transaction
-            .execute(
-                &query,
-                &[
-                    &vote_accounts,
-                    &epochs,
-                    &validator_rewards,
-                    &total_rewards,
-                    &inflation_rewards,
-                    &mev_rewards,
-                    &block_rewards,
-                    &take_rates,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
-
-        total_upserted += rows_affected;
-
-        info!("Upserted {rows_affected} take rate records in this chunk");
     }
 
-    info!("Stored take rates snapshot: {total_upserted} total records upserted");
+    let mut total = 0;
+    for (epoch, rewards) in rewards_by_epoch {
+        let path = epoch_doc_path(VALIDATOR_REWARDS_DIR, epoch);
+        total += rewards.len();
+        merge_into(directory, &path, rewards, merge_validator_rewards).await?;
+        info!("Stored take rate records at {path}");
+    }
 
-    let epochs: BTreeSet<u64> = rows.keys().map(|(_, epoch)| *epoch).collect();
-    refresh_expected_take_rates_in(&transaction, &Vec::from_iter(epochs)).await?;
-    transaction.commit().await?;
+    info!("Stored take rates snapshot: {total} total records");
 
     Ok(())
 }
 
-/// Cluster reward mix of `epochs`. Epochs that paid no inflation are absent: the in-progress one has
-/// only accruing block rewards, and nothing else pays out before the epoch closes.
-pub async fn load_epoch_reward_mix(
-    psql_client: &impl GenericClient,
-    epochs: &[Decimal],
-) -> anyhow::Result<HashMap<u64, RewardMixShares>> {
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT
-            epoch,
-            SUM(inflation_rewards) AS inflation,
-            SUM(mev_rewards) AS mev,
-            SUM(block_rewards) AS block
-        FROM {VALIDATORS_REWARDS_TABLE}
-        WHERE epoch = ANY($1)
-        GROUP BY epoch
-        HAVING SUM(inflation_rewards) > 0
-        "
-            ),
-            &[&epochs],
-        )
-        .await?;
-
-    let mut mix = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        let inflation: Decimal = row.get("inflation");
-        let mev: Decimal = row.get("mev");
-        let block: Decimal = row.get("block");
+/// Cluster reward mix per epoch. Epochs that paid no inflation are absent: the
+/// in-progress one has only accruing block rewards, and nothing else pays out
+/// before the epoch closes.
+pub fn load_epoch_reward_mix(warehouse: &Warehouse) -> HashMap<u64, RewardMixShares> {
+    let mut mix = HashMap::with_capacity(warehouse.validator_rewards.len());
+    for (epoch, rewards) in warehouse.validator_rewards.iter() {
+        let inflation: Decimal = rewards.values().map(|r| r.inflation_rewards).sum();
+        let mev: Decimal = rewards.values().map(|r| r.mev_rewards).sum();
+        let block: Decimal = rewards.values().map(|r| r.block_rewards).sum();
+        if inflation <= Decimal::ZERO {
+            continue;
+        }
 
         let total = (inflation + mev + block).to_f64().unwrap_or_default();
-
         mix.insert(
-            epoch,
+            *epoch,
             RewardMixShares {
                 inflation: inflation.to_f64().unwrap_or_default() / total,
                 mev: mev.to_f64().unwrap_or_default() / total,
@@ -220,148 +103,7 @@ pub async fn load_epoch_reward_mix(
         );
     }
 
-    Ok(mix)
-}
-
-/// Recomputes `expected_take_rate` of every rewards row in `epochs`. The mix is epoch-wide, so a
-/// change to any one row of an epoch moves the rate of all of them.
-pub async fn refresh_expected_take_rates(
-    psql_client: &mut Client,
-    epochs: &[u64],
-) -> anyhow::Result<u64> {
-    let transaction = psql_client.transaction().await?;
-    let updated = refresh_expected_take_rates_in(&transaction, epochs).await?;
-    transaction.commit().await?;
-
-    Ok(updated)
-}
-
-// The writers run as separate jobs; serialized, the last refresh reads every committed input.
-async fn lock_expected_take_rates(transaction: &Transaction<'_>) -> anyhow::Result<()> {
-    transaction
-        .batch_execute(&format!(
-            "SELECT pg_advisory_xact_lock({EXPECTED_TAKE_RATE_REFRESH_LOCK})"
-        ))
-        .await?;
-
-    Ok(())
-}
-
-async fn refresh_expected_take_rates_in(
-    transaction: &Transaction<'_>,
-    epochs: &[u64],
-) -> anyhow::Result<u64> {
-    if epochs.is_empty() {
-        return Ok(0);
-    }
-    let epochs: Vec<Decimal> = epochs.iter().map(|epoch| Decimal::from(*epoch)).collect();
-    lock_expected_take_rates(transaction).await?;
-    let mix = load_epoch_reward_mix(transaction, &epochs).await?;
-
-    let rows = transaction
-        .query(
-            &format!(
-                "
-        SELECT
-            {VALIDATORS_REWARDS_TABLE}.vote_account, {VALIDATORS_REWARDS_TABLE}.epoch,
-            validators.commission_max_observed, validators.commission_advertised,
-            mev.mev_commission AS mev_commission_bps,
-            jpf.validator_commission AS priority_commission_bps
-        FROM {VALIDATORS_REWARDS_TABLE}
-        LEFT JOIN validators
-            ON validators.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
-            AND validators.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        LEFT JOIN (
-            SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, mev_commission
-            FROM mev WHERE epoch = ANY($1) ORDER BY vote_account, epoch, created_at DESC
-        ) mev ON mev.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
-            AND mev.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        LEFT JOIN (
-            SELECT DISTINCT ON (vote_account, epoch) vote_account, epoch, validator_commission
-            FROM jito_priority_fee WHERE epoch = ANY($1) ORDER BY vote_account, epoch, created_at DESC
-        ) jpf ON jpf.vote_account = {VALIDATORS_REWARDS_TABLE}.vote_account
-            AND jpf.epoch = {VALIDATORS_REWARDS_TABLE}.epoch
-        WHERE {VALIDATORS_REWARDS_TABLE}.epoch = ANY($1)
-        "
-            ),
-            &[&epochs],
-        )
-        .await?;
-
-    let mut rates = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let epoch: Decimal = row.get("epoch");
-        let rate = mix.get(&epoch.try_into()?).and_then(|shares| {
-            expected_take_rate(
-                *shares,
-                worst_known_commission(
-                    row.get::<_, Option<i32>>("commission_max_observed"),
-                    row.get::<_, Option<i32>>("commission_advertised"),
-                ),
-                row.get::<_, Option<i32>>("mev_commission_bps"),
-                row.get::<_, Option<i32>>("priority_commission_bps"),
-            )
-        });
-        rates.push((row.get::<_, String>("vote_account"), epoch, rate));
-    }
-
-    let mut total_updated = 0;
-    for chunk in rates.chunks(DEFAULT_CHUNK_SIZE) {
-        let vote_accounts: Vec<&str> = chunk.iter().map(|(vote, _, _)| vote.as_str()).collect();
-        let epochs: Vec<&Decimal> = chunk.iter().map(|(_, epoch, _)| epoch).collect();
-        let rates: Vec<Option<f64>> = chunk.iter().map(|(_, _, rate)| *rate).collect();
-        total_updated += transaction
-            .execute(
-                &format!(
-                    "
-            UPDATE {VALIDATORS_REWARDS_TABLE} SET expected_take_rate = u.expected_take_rate
-            FROM UNNEST($1::TEXT[], $2::NUMERIC[], $3::DOUBLE PRECISION[])
-                AS u(vote_account, epoch, expected_take_rate)
-            WHERE {VALIDATORS_REWARDS_TABLE}.vote_account = u.vote_account
-                AND {VALIDATORS_REWARDS_TABLE}.epoch = u.epoch
-            "
-                ),
-                &[&vote_accounts, &epochs, &rates],
-            )
-            .await?;
-    }
-    info!(
-        "Refreshed expected take rate of {total_updated} rewards rows over {} epochs",
-        epochs.len()
-    );
-
-    Ok(total_updated)
-}
-
-#[derive(Debug, Parser)]
-pub struct RefreshExpectedTakeRatesParams {
-    #[arg(long = "from-epoch")]
-    from_epoch: u64,
-}
-
-pub async fn refresh_stored_expected_take_rates(
-    params: RefreshExpectedTakeRatesParams,
-    psql_client: &mut Client,
-) -> anyhow::Result<()> {
-    let epochs = psql_client
-        .query(
-            &format!(
-                "SELECT DISTINCT epoch FROM {VALIDATORS_REWARDS_TABLE} WHERE epoch >= $1 ORDER BY epoch"
-            ),
-            &[&Decimal::from(params.from_epoch)],
-        )
-        .await?
-        .iter()
-        .map(|row| row.get::<_, Decimal>("epoch").try_into())
-        .collect::<Result<Vec<u64>, _>>()?;
-    info!(
-        "Refreshing expected take rates of {} epochs from epoch {}",
-        epochs.len(),
-        params.from_epoch
-    );
-    refresh_expected_take_rates(psql_client, &epochs).await?;
-
-    Ok(())
+    mix
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -370,76 +112,95 @@ pub struct EpochTakeRates {
     pub expected: Option<f64>,
 }
 
-// Same window anchor as `load_validators`, so every cached epoch row can find its rate.
-pub async fn load_epoch_take_rates(
-    psql_client: &Client,
+pub fn load_epoch_take_rates(
+    warehouse: &Warehouse,
     epochs: u64,
-) -> anyhow::Result<HashMap<(String, u64), EpochTakeRates>> {
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT vote_account, epoch, take_rate, expected_take_rate
-        FROM {VALIDATORS_REWARDS_TABLE}
-        WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
-        "
-            ),
-            &[&Decimal::from(epochs)],
-        )
-        .await?;
-
-    rows.iter()
-        .map(|row| {
-            Ok((
-                (
-                    row.get("vote_account"),
-                    row.get::<_, Decimal>("epoch").try_into()?,
-                ),
+) -> HashMap<(String, u64), EpochTakeRates> {
+    let reward_mix = load_epoch_reward_mix(warehouse);
+    let mut rates = HashMap::new();
+    for (epoch, rewards) in warehouse
+        .validator_rewards
+        .range(warehouse.window_start(epochs)..)
+    {
+        for (vote_account, entry) in rewards.iter() {
+            rates.insert(
+                (vote_account.clone(), *epoch),
                 EpochTakeRates {
-                    realized: row.get("take_rate"),
-                    expected: row.get("expected_take_rate"),
+                    realized: entry.take_rate,
+                    expected: reward_mix.get(epoch).and_then(|shares| {
+                        get_expected_take_rate(warehouse, *epoch, vote_account, *shares)
+                    }),
                 },
-            ))
-        })
-        .collect()
+            );
+        }
+    }
+    rates
 }
 
-pub async fn get_take_rate_series(
-    psql_client: &Client,
+fn get_expected_take_rate(
+    warehouse: &Warehouse,
+    epoch: u64,
+    vote_account: &str,
+    shares: RewardMixShares,
+) -> Option<f64> {
+    let validator = warehouse
+        .snapshots
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    let mev = warehouse
+        .mev
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    let priority = warehouse
+        .priority_fees
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    expected_take_rate(
+        shares,
+        worst_known_commission(
+            validator.and_then(|v| v.commission_max_observed),
+            validator.and_then(|v| v.commission_advertised),
+        ),
+        mev.map(|entry| entry.mev_commission),
+        priority.map(|entry| entry.priority_commission),
+    )
+}
+
+/// One validator's take rate per epoch, oldest first, over the epochs the
+/// warehouse holds. `epoch_start_at` and `epoch_end_at` are null where the
+/// epoch is not sealed yet.
+pub fn get_take_rate_series(
+    warehouse: &Warehouse,
     vote_account: &str,
     from_epoch: Option<u64>,
-) -> anyhow::Result<Vec<TakeRateRecord>> {
-    let from_epoch = from_epoch.map(Decimal::from);
-    let query = format!(
-        "
-        SELECT
-            {VALIDATORS_REWARDS_TABLE}.epoch, take_rate AS realized_take_rate, expected_take_rate,
-            created_at, epochs.start_at AS epoch_start, epochs.end_at AS epoch_end
-        FROM {VALIDATORS_REWARDS_TABLE}
-        LEFT JOIN epochs ON {VALIDATORS_REWARDS_TABLE}.epoch = epochs.epoch
-        WHERE {VALIDATORS_REWARDS_TABLE}.vote_account = $1
-          AND ($2::NUMERIC IS NULL OR {VALIDATORS_REWARDS_TABLE}.epoch >= $2::NUMERIC)
-        ORDER BY {VALIDATORS_REWARDS_TABLE}.epoch ASC
-        "
-    );
-    let rows = psql_client
-        .query(&query, &[&vote_account, &from_epoch])
-        .await?;
-
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        // Null where `epochs` has no row: `store close-epoch` has not run for it yet, or a
-        // `--from-epoch` backfill reached past the stored epoch history.
+    rates: &HashMap<(String, u64), EpochTakeRates>,
+) -> Vec<TakeRateRecord> {
+    let from_epoch = from_epoch.unwrap_or_default();
+    let mut records = Vec::new();
+    let mut reward_mix = None;
+    for (epoch, rewards) in warehouse.validator_rewards.range(from_epoch..) {
+        let Some(entry) = rewards.get(vote_account) else {
+            continue;
+        };
+        let epoch_record = warehouse.epochs.get(epoch);
+        let expected_take_rate = match rates.get(&(vote_account.to_string(), *epoch)) {
+            Some(rates) => rates.expected,
+            None => {
+                let mix = reward_mix.get_or_insert_with(|| load_epoch_reward_mix(warehouse));
+                mix.get(epoch).and_then(|shares| {
+                    get_expected_take_rate(warehouse, *epoch, vote_account, *shares)
+                })
+            }
+        };
         records.push(TakeRateRecord {
-            epoch,
-            epoch_start_at: row.get::<_, Option<DateTime<Utc>>>("epoch_start"),
-            epoch_end_at: row.get::<_, Option<DateTime<Utc>>>("epoch_end"),
-            realized_take_rate: row.get("realized_take_rate"),
-            expected_take_rate: row.get("expected_take_rate"),
-            created_at: row.get("created_at"),
-        })
+            epoch: *epoch,
+            epoch_start_at: epoch_record.map(|record| record.start_at),
+            epoch_end_at: epoch_record.map(|record| record.end_at),
+            realized_take_rate: entry.take_rate,
+            expected_take_rate,
+            created_at: entry.created_at,
+        });
     }
 
-    Ok(records)
+    records
 }

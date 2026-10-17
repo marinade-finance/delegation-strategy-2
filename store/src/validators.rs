@@ -1,14 +1,13 @@
+use crate::directory::Directory;
+use crate::docs::{
+    epoch_doc_path, merge_into, merge_snapshot, EpochDoc, SnapshotDoc, EPOCHS_DIR, SNAPSHOT_DIR,
+};
 use crate::dto::Validator;
-use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators::Snapshot;
 use log::{info, warn};
-use rust_decimal::prelude::*;
 use serde_yaml;
-use std::collections::{HashMap, HashSet};
-use tokio_postgres::types::ToSql;
-use tokio_postgres::Client;
 
 #[derive(Debug, Parser)]
 pub struct StoreValidatorsParams {
@@ -16,26 +15,25 @@ pub struct StoreValidatorsParams {
     snapshot_path: String,
 }
 
-const DEFAULT_CHUNK_SIZE: usize = 500;
+/// How far back a data center is still good evidence of where a node is now.
 const DATA_CENTER_CARRY_EPOCHS: u64 = 10;
 
 pub async fn store_validators(
     params: StoreValidatorsParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing validators snapshot...");
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
-    let snapshot_epoch: Decimal = snapshot.epoch.into();
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
 
-    // close_epoch runs once per epoch, so a snapshot landing after it would leave mid-epoch values.
-    if psql_client
-        .query_opt("SELECT 1 FROM epochs WHERE epoch = $1", &[&snapshot_epoch])
-        .await?
-        .is_some()
-    {
+    // close-epoch runs once per epoch, so a snapshot landing after it would
+    // leave mid-epoch values.
+    let sealed = directory
+        .get::<EpochDoc>(&epoch_doc_path(EPOCHS_DIR, snapshot.epoch))
+        .await?;
+    if sealed.is_some() {
         warn!(
             "Epoch {} is already closed, skipping the snapshot taken at {}",
             snapshot.epoch, snapshot.created_at
@@ -43,494 +41,77 @@ pub async fn store_validators(
         return Ok(());
     }
 
-    let validators: HashMap<_, _> = snapshot
+    let mut validators: SnapshotDoc = snapshot
         .validators
         .iter()
         .map(|v| {
-            (
-                v.vote_account.clone(),
-                Validator::new_from_snapshot(v, snapshot.epoch),
-            )
+            let mut validator = Validator::new_from_snapshot(v, snapshot.epoch);
+            validator.updated_at = Some(created_at);
+            (v.vote_account.clone(), validator)
         })
         .collect();
-    let mut updated_vote_accounts: HashSet<_> = Default::default();
-    let mut unresolved_vote_accounts: Vec<String> = Default::default();
 
-    info!("Loaded the snapshot");
+    info!("Loaded the snapshot: {} validators", validators.len());
 
-    for chunk in psql_client
-        .query(
-            "
-        SELECT vote_account
-        FROM validators
-        WHERE epoch = $1
-    ",
-            &[&snapshot_epoch],
-        )
-        .await?
-        .chunks(DEFAULT_CHUNK_SIZE)
-    {
-        let mut query = UpdateQueryCombiner::new(
-            "validators".to_string(),
-            "
-            identity = u.identity,
-            vote_account = u.vote_account,
-            epoch = u.epoch,
-            info_name = u.info_name,
-            info_url = u.info_url,
-            info_keybase = u.info_keybase,
-            node_ip = u.node_ip,
-            -- get_data_centers swallows a per-IP whois failure, so only an unresolved lookup on an unchanged IP may keep what is stored; a resolved answer replaces all eight together, since mixing its nulls with the previous data center invents a location nothing observed
-            dc_coordinates_lat = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_coordinates_lat ELSE validators.dc_coordinates_lat END,
-            dc_coordinates_lon = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_coordinates_lon ELSE validators.dc_coordinates_lon END,
-            dc_continent = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_continent ELSE validators.dc_continent END,
-            dc_country_iso = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_country_iso ELSE validators.dc_country_iso END,
-            dc_country = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_country ELSE validators.dc_country END,
-            dc_city = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_city ELSE validators.dc_city END,
-            dc_asn = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_asn ELSE validators.dc_asn END,
-            dc_aso = CASE WHEN u.dc_resolved OR u.node_ip IS DISTINCT FROM validators.node_ip THEN u.dc_aso ELSE validators.dc_aso END,
-            commission_advertised = u.commission_advertised,
-            version = COALESCE(u.version, validators.version),
-            activated_stake = u.activated_stake,
-            marinade_stake = u.marinade_stake,
-            foundation_stake = u.foundation_stake,
-            marinade_native_stake = u.marinade_native_stake,
-            institutional_stake = u.institutional_stake,
-            self_stake = u.self_stake,
-            superminority = u.superminority,
-            stake_to_become_superminority = u.stake_to_become_superminority,
-            -- Both NULL: the epoch is not in the epochCredits window, so keep what is stored
-            credits = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.credits ELSE u.credits END,
-            vote_reward_lamports = CASE WHEN u.credits IS NULL AND u.vote_reward_lamports IS NULL THEN validators.vote_reward_lamports ELSE u.vote_reward_lamports END,
-            leader_slots = u.leader_slots,
-            blocks_produced = u.blocks_produced,
-            skip_rate = u.skip_rate,
-            updated_at = u.updated_at,
-            info_icon_url = u.info_icon_url,
-            client_id = CASE WHEN u.client_id_raw IS NOT NULL THEN u.client_id ELSE validators.client_id END,
-            client_id_raw = COALESCE(u.client_id_raw, validators.client_id_raw),
-            feature_set = u.feature_set,
-            shred_version = u.shred_version,
-            gossip_port = u.gossip_port,
-            rpc_public = u.rpc_public,
-            pubsub_public = u.pubsub_public,
-            -- is_v4 marks a read state, so an unparsed one keeps close_epoch's fallback sample
-            inflation_rewards_collector = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector ELSE validators.inflation_rewards_collector END,
-            block_revenue_collector = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector ELSE validators.block_revenue_collector END,
-            inflation_rewards_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_commission_bps ELSE validators.inflation_rewards_commission_bps END,
-            inflation_rewards_commission_bps_is_v4 = COALESCE(u.inflation_rewards_commission_bps_is_v4, validators.inflation_rewards_commission_bps_is_v4),
-            block_revenue_commission_bps = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_commission_bps ELSE validators.block_revenue_commission_bps END,
-            pending_delegator_rewards = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.pending_delegator_rewards ELSE validators.pending_delegator_rewards END,
-            activating_stake = COALESCE(u.activating_stake, validators.activating_stake),
-            deactivating_stake = COALESCE(u.deactivating_stake, validators.deactivating_stake),
-            direct_stake = COALESCE(u.direct_stake, validators.direct_stake),
-            direct_activating_stake = COALESCE(u.direct_activating_stake, validators.direct_activating_stake),
-            direct_deactivating_stake = COALESCE(u.direct_deactivating_stake, validators.direct_deactivating_stake),
-            inflation_rewards_collector_owner = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_owner ELSE validators.inflation_rewards_collector_owner END,
-            inflation_rewards_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_lamports ELSE validators.inflation_rewards_collector_lamports END,
-            inflation_rewards_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_healthy ELSE validators.inflation_rewards_collector_healthy END,
-            block_revenue_collector_owner = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_owner ELSE validators.block_revenue_collector_owner END,
-            block_revenue_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_lamports ELSE validators.block_revenue_collector_lamports END,
-            block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END
-            "
-            .to_string(),
-            "u(
-                identity,
-                vote_account,
-                epoch,
-                info_name,
-                info_url,
-                info_keybase,
-                node_ip,
-                dc_coordinates_lat,
-                dc_coordinates_lon,
-                dc_continent,
-                dc_country_iso,
-                dc_country,
-                dc_city,
-                dc_asn,
-                dc_aso,
-                commission_advertised,
-                version,
-                activated_stake,
-                marinade_stake,
-                foundation_stake,
-                marinade_native_stake,
-                institutional_stake,
-                self_stake,
-                superminority,
-                stake_to_become_superminority,
-                credits,
-                leader_slots,
-                blocks_produced,
-                skip_rate,
-                updated_at,
-                info_icon_url,
-                client_id,
-                client_id_raw,
-                feature_set,
-                shred_version,
-                gossip_port,
-                rpc_public,
-                pubsub_public,
-                dc_resolved,
-                inflation_rewards_collector,
-                block_revenue_collector,
-                inflation_rewards_commission_bps,
-                inflation_rewards_commission_bps_is_v4,
-                block_revenue_commission_bps,
-                pending_delegator_rewards,
-                activating_stake,
-                deactivating_stake,
-                direct_stake,
-                direct_activating_stake,
-                direct_deactivating_stake,
-                inflation_rewards_collector_owner,
-                inflation_rewards_collector_lamports,
-                inflation_rewards_collector_healthy,
-                block_revenue_collector_owner,
-                block_revenue_collector_lamports,
-                block_revenue_collector_healthy,
-                vote_reward_lamports
-            )"
-            .to_string(),
-            "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
-        );
-        for row in chunk {
-            let vote_account: &str = row.get("vote_account");
+    carry_previous_data_centers(directory, snapshot.epoch, &mut validators).await?;
 
-            if let Some(v) = validators.get(vote_account) {
-                let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                    &v.identity,
-                    &v.vote_account,
-                    &v.epoch,
-                    &v.info_name,
-                    &v.info_url,
-                    &v.info_keybase,
-                    &v.node_ip,
-                    &v.dc_coordinates_lat,
-                    &v.dc_coordinates_lon,
-                    &v.dc_continent,
-                    &v.dc_country_iso,
-                    &v.dc_country,
-                    &v.dc_city,
-                    &v.dc_asn,
-                    &v.dc_aso,
-                    &v.commission_advertised,
-                    &v.version,
-                    &v.activated_stake,
-                    &v.marinade_stake,
-                    &v.foundation_stake,
-                    &v.marinade_native_stake,
-                    &v.institutional_stake,
-                    &v.self_stake,
-                    &v.superminority,
-                    &v.stake_to_become_superminority,
-                    &v.credits.credits,
-                    &v.leader_slots,
-                    &v.blocks_produced,
-                    &v.skip_rate,
-                    &snapshot_created_at,
-                    &v.info_icon_url,
-                    &v.client_id,
-                    &v.client_id_raw,
-                    &v.feature_set,
-                    &v.shred_version,
-                    &v.gossip_port,
-                    &v.rpc_public,
-                    &v.pubsub_public,
-                    &v.dc_resolved,
-                    &v.inflation_rewards_collector,
-                    &v.block_revenue_collector,
-                    &v.inflation_rewards_commission_bps,
-                    &v.inflation_rewards_commission_bps_is_v4,
-                    &v.block_revenue_commission_bps,
-                    &v.pending_delegator_rewards,
-                    &v.activating_stake,
-                    &v.deactivating_stake,
-                    &v.direct_stake,
-                    &v.direct_activating_stake,
-                    &v.direct_deactivating_stake,
-                    &v.inflation_rewards_collector_owner,
-                    &v.inflation_rewards_collector_lamports,
-                    &v.inflation_rewards_collector_healthy,
-                    &v.block_revenue_collector_owner,
-                    &v.block_revenue_collector_lamports,
-                    &v.block_revenue_collector_healthy,
-                    &v.credits.vote_reward_lamports,
-                ];
-                query.add(
-                    &mut params,
-                    HashMap::from_iter([
-                        (2, "NUMERIC".into()),                   // epoch
-                        (7, "DOUBLE PRECISION".into()),          // dc_coordinates_lat
-                        (8, "DOUBLE PRECISION".into()),          // dc_coordinates_lon
-                        (13, "INTEGER".into()),                  // dc_asn
-                        (15, "INTEGER".into()),                  // commission_advertised
-                        (17, "NUMERIC".into()),                  // activated_stake
-                        (18, "NUMERIC".into()),                  // marinade_stake
-                        (19, "NUMERIC".into()),                  // foundation_stake
-                        (20, "NUMERIC".into()),                  // marinade_native_stake
-                        (21, "NUMERIC".into()),                  // institutional_stake
-                        (22, "NUMERIC".into()),                  // selft_stake
-                        (23, "BOOL".into()),                     // superminority
-                        (24, "NUMERIC".into()),                  // stake_to_become_superminority
-                        (25, "NUMERIC".into()),                  // credits
-                        (26, "NUMERIC".into()),                  // leader_slots
-                        (27, "NUMERIC".into()),                  // blocks_produced
-                        (28, "DOUBLE PRECISION".into()),         // skip_rate
-                        (29, "TIMESTAMP WITH TIME ZONE".into()), // updated_at
-                        (30, "TEXT".into()),                     // icon_url
-                        (31, "INTEGER".into()),                  // client_id
-                        (32, "TEXT".into()),                     // client_id_raw
-                        (33, "BIGINT".into()),                   // feature_set
-                        (34, "INTEGER".into()),                  // shred_version
-                        (35, "INTEGER".into()),                  // gossip_port
-                        (36, "BOOL".into()),                     // rpc_public
-                        (37, "BOOL".into()),                     // pubsub_public
-                        (38, "BOOL".into()),                     // dc_resolved
-                        (39, "TEXT".into()),                     // inflation_rewards_collector
-                        (40, "TEXT".into()),                     // block_revenue_collector
-                        (41, "INTEGER".into()),                  // inflation_rewards_commission_bps
-                        (42, "BOOL".into()), // inflation_rewards_commission_bps_is_v4
-                        (43, "INTEGER".into()), // block_revenue_commission_bps
-                        (44, "NUMERIC".into()), // pending_delegator_rewards
-                        (45, "NUMERIC".into()), // activating_stake
-                        (46, "NUMERIC".into()), // deactivating_stake
-                        (47, "NUMERIC".into()), // direct_stake
-                        (48, "NUMERIC".into()), // direct_activating_stake
-                        (49, "NUMERIC".into()), // direct_deactivating_stake
-                        (50, "TEXT".into()), // inflation_rewards_collector_owner
-                        (51, "NUMERIC".into()), // inflation_rewards_collector_lamports
-                        (52, "BOOL".into()), // inflation_rewards_collector_healthy
-                        (53, "TEXT".into()), // block_revenue_collector_owner
-                        (54, "NUMERIC".into()), // block_revenue_collector_lamports
-                        (55, "BOOL".into()), // block_revenue_collector_healthy
-                        (56, "NUMERIC".into()), // vote_reward_lamports
-                    ]),
-                );
-                updated_vote_accounts.insert(vote_account.to_string());
-                if !v.dc_resolved {
-                    unresolved_vote_accounts.push(vote_account.to_string());
-                }
-            }
-        }
-        query.execute(psql_client).await?;
-        info!(
-            "Updated previously existing validator records: {}",
-            updated_vote_accounts.len()
-        );
-    }
+    let path = epoch_doc_path(SNAPSHOT_DIR, snapshot.epoch);
+    merge_into(directory, &path, validators, merge_snapshot).await?;
 
-    let validators: Vec<_> = validators
-        .into_iter()
-        .filter(|(vote_account, _validator)| !updated_vote_accounts.contains(vote_account))
-        .collect();
-    let mut insertions = 0;
-
-    for chunk in validators.chunks(DEFAULT_CHUNK_SIZE) {
-        let mut query = InsertQueryCombiner::new(
-            "validators".to_string(),
-            "
-        identity,
-        vote_account,
-        epoch,
-        info_name,
-        info_url,
-        info_keybase,
-        node_ip,
-        dc_coordinates_lat,
-        dc_coordinates_lon,
-        dc_continent,
-        dc_country_iso,
-        dc_country,
-        dc_city,
-        dc_asn,
-        dc_aso,
-        commission_max_observed,
-        commission_min_observed,
-        commission_advertised,
-        commission_effective,
-        version,
-        activated_stake,
-        marinade_stake,
-        foundation_stake,
-        marinade_native_stake,
-        institutional_stake,
-        self_stake,
-        superminority,
-        stake_to_become_superminority,
-        credits,
-        leader_slots,
-        blocks_produced,
-        skip_rate,
-        uptime_pct,
-        uptime,
-        downtime,
-        updated_at,
-        info_icon_url,
-        client_id,
-        client_id_raw,
-        feature_set,
-        shred_version,
-        gossip_port,
-        rpc_public,
-        pubsub_public,
-        inflation_rewards_collector,
-        block_revenue_collector,
-        inflation_rewards_commission_bps,
-        inflation_rewards_commission_bps_is_v4,
-        block_revenue_commission_bps,
-        pending_delegator_rewards,
-        activating_stake,
-        deactivating_stake,
-        direct_stake,
-        direct_activating_stake,
-        direct_deactivating_stake,
-        inflation_rewards_collector_owner,
-        inflation_rewards_collector_lamports,
-        inflation_rewards_collector_healthy,
-        block_revenue_collector_owner,
-        block_revenue_collector_lamports,
-        block_revenue_collector_healthy,
-        vote_reward_lamports
-        "
-            .to_string(),
-        );
-
-        for (vote_account, v) in chunk {
-            if updated_vote_accounts.contains(vote_account) {
-                continue;
-            }
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &v.identity,
-                &v.vote_account,
-                &v.epoch,
-                &v.info_name,
-                &v.info_url,
-                &v.info_keybase,
-                &v.node_ip,
-                &v.dc_coordinates_lat,
-                &v.dc_coordinates_lon,
-                &v.dc_continent,
-                &v.dc_country_iso,
-                &v.dc_country,
-                &v.dc_city,
-                &v.dc_asn,
-                &v.dc_aso,
-                &v.commission_max_observed,
-                &v.commission_min_observed,
-                &v.commission_advertised,
-                &v.commission_effective,
-                &v.version,
-                &v.activated_stake,
-                &v.marinade_stake,
-                &v.foundation_stake,
-                &v.marinade_native_stake,
-                &v.institutional_stake,
-                &v.self_stake,
-                &v.superminority,
-                &v.stake_to_become_superminority,
-                &v.credits.credits,
-                &v.leader_slots,
-                &v.blocks_produced,
-                &v.skip_rate,
-                &v.uptime_pct,
-                &v.uptime,
-                &v.downtime,
-                &snapshot_created_at,
-                &v.info_icon_url,
-                &v.client_id,
-                &v.client_id_raw,
-                &v.feature_set,
-                &v.shred_version,
-                &v.gossip_port,
-                &v.rpc_public,
-                &v.pubsub_public,
-                &v.inflation_rewards_collector,
-                &v.block_revenue_collector,
-                &v.inflation_rewards_commission_bps,
-                &v.inflation_rewards_commission_bps_is_v4,
-                &v.block_revenue_commission_bps,
-                &v.pending_delegator_rewards,
-                &v.activating_stake,
-                &v.deactivating_stake,
-                &v.direct_stake,
-                &v.direct_activating_stake,
-                &v.direct_deactivating_stake,
-                &v.inflation_rewards_collector_owner,
-                &v.inflation_rewards_collector_lamports,
-                &v.inflation_rewards_collector_healthy,
-                &v.block_revenue_collector_owner,
-                &v.block_revenue_collector_lamports,
-                &v.block_revenue_collector_healthy,
-                &v.credits.vote_reward_lamports,
-            ];
-            query.add(&mut params);
-            if !v.dc_resolved {
-                unresolved_vote_accounts.push(vote_account.clone());
-            }
-        }
-        insertions += query.execute(psql_client).await?.unwrap_or(0);
-        info!("Stored {insertions} new validator records");
-    }
-
-    if !unresolved_vote_accounts.is_empty() {
-        carry_previous_data_centers(psql_client, &snapshot_epoch, &unresolved_vote_accounts)
-            .await?;
-    }
+    info!("Stored the validators snapshot at {path}");
 
     Ok(())
 }
 
-// Without this an unresolved lookup drops a location the previous epoch knew: the INSERT branch has no row for the epoch to preserve, and the UPDATE branch preserves whatever an interrupted earlier run left, so the gap would last the whole epoch; matching node_ip is what stops a node that moved from inheriting the old address's data center.
+/// Fills the data center of every validator whose whois lookup failed from
+/// the newest previous epoch that knew one for the same address, so a
+/// boundary-wide lookup failure does not open a gap the whole epoch long.
+/// Matching the address is what stops a node that moved from inheriting the
+/// old address's data center. The merge keeps whatever the epoch already
+/// holds for an unchanged address, so this only reaches the entries that
+/// would otherwise hold nothing.
 async fn carry_previous_data_centers(
-    psql_client: &Client,
-    epoch: &Decimal,
-    vote_accounts: &[String],
+    directory: &Directory,
+    epoch: u64,
+    validators: &mut SnapshotDoc,
 ) -> anyhow::Result<()> {
-    let carry_window = Decimal::from(DATA_CENTER_CARRY_EPOCHS);
-    let carried = psql_client
-        .execute(
-            "
-        UPDATE validators
-        SET
-            dc_coordinates_lat = previous.dc_coordinates_lat,
-            dc_coordinates_lon = previous.dc_coordinates_lon,
-            dc_continent = previous.dc_continent,
-            dc_country_iso = previous.dc_country_iso,
-            dc_country = previous.dc_country,
-            dc_city = previous.dc_city,
-            dc_asn = previous.dc_asn,
-            dc_aso = previous.dc_aso
-        FROM (
-            -- Keyed per address so a node returning to an earlier one reuses that address's own history: keyed by vote_account alone the newest row wins outright, and a different address there rejects the carry at the outer predicate while a matching older row goes unseen.
-            SELECT DISTINCT ON (vote_account, node_ip)
-                vote_account,
-                node_ip,
-                dc_coordinates_lat,
-                dc_coordinates_lon,
-                dc_continent,
-                dc_country_iso,
-                dc_country,
-                dc_city,
-                dc_asn,
-                dc_aso
-            FROM validators
-            -- Bounded because an unbounded epoch < $1 sequentially scans the whole table for a boundary-wide failure, and a location last seen further back than this is no longer good evidence of where the node is now; skipping rows that carry no location at all is what lets the carry step over an epoch some earlier gap left empty instead of propagating that gap forward.
-            WHERE epoch < $1 AND epoch >= $1 - $3 AND vote_account = ANY($2)
-                AND num_nonnulls(dc_coordinates_lat, dc_coordinates_lon, dc_continent, dc_country_iso, dc_country, dc_city, dc_asn, dc_aso) > 0
-            ORDER BY vote_account, node_ip, epoch DESC
-        ) previous
-        WHERE validators.vote_account = previous.vote_account
-            AND validators.epoch = $1
-            AND validators.node_ip IS NOT DISTINCT FROM previous.node_ip
-            -- An unresolved UPDATE reaches here with whatever the epoch already holds, so restricting the carry to rows that hold nothing is what keeps it from undoing the preserve.
-            AND num_nonnulls(validators.dc_coordinates_lat, validators.dc_coordinates_lon, validators.dc_continent, validators.dc_country_iso, validators.dc_country, validators.dc_city, validators.dc_asn, validators.dc_aso) = 0
-    ",
-            &[epoch, &vote_accounts, &carry_window],
-        )
-        .await?;
+    let mut unresolved: Vec<String> = validators
+        .iter()
+        .filter(|(_, validator)| !validator.dc_resolved && !validator.has_data_center())
+        .map(|(vote_account, _)| vote_account.clone())
+        .collect();
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    let oldest = epoch.saturating_sub(DATA_CENTER_CARRY_EPOCHS);
+    let mut carried = 0;
+    for previous in (oldest..epoch).rev() {
+        if unresolved.is_empty() {
+            break;
+        }
+        let Some(stored) = directory
+            .get::<SnapshotDoc>(&epoch_doc_path(SNAPSHOT_DIR, previous))
+            .await?
+        else {
+            continue;
+        };
+        unresolved.retain(|vote_account| {
+            let Some(known) = stored.body.get(vote_account) else {
+                return true;
+            };
+            let validator = validators
+                .get_mut(vote_account)
+                .expect("the unresolved list was built from these validators");
+            if known.node_ip != validator.node_ip || !known.has_data_center() {
+                return true;
+            }
+            validator.copy_data_center_from(known);
+            carried += 1;
+            false
+        });
+    }
+
     info!("Carried a previously known data center for {carried} validators");
 
     Ok(())

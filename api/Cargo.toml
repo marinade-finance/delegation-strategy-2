@@ -20,9 +20,6 @@ serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
 reqwest = { workspace = true, features = ["stream"] }
-tokio-postgres = { workspace = true }
-openssl = { workspace = true }
-postgres-openssl = { workspace = true }
 store = { path = "../store" }
 chrono = { workspace = true }
 tokio = { workspace = true }

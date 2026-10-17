@@ -1,17 +1,38 @@
+use crate::directory::{Directory, Precondition};
+use crate::docs::{ReleaseEntry, ReleasesDoc, RELEASES_PATH};
 use crate::dto::{FeatureGateFloor, ReleaseRecord, SfdpFloor};
+use crate::warehouse::Warehouse;
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use collect::releases::{ReleaseEntry, ReleaseSource, ReleasesSnapshot};
-use collect::validator_version::ValidatorVersion;
+use collect::releases::{ReleaseSource, ReleasesSnapshot};
 use log::{info, warn};
-use rust_decimal::prelude::*;
-use std::collections::BTreeMap;
-use tokio_postgres::Client;
-
-pub const RELEASES_TABLE: &str = "releases";
+use serde_yaml;
+use std::collections::HashSet;
 
 const SUPPORTED_DATA_VERSION: u16 = 1;
-const DEFAULT_CHUNK_SIZE: usize = 500;
+
+/// The feature-gate floor history, reconstructed from the Solana Tech Discord
+/// announcements (epochs 943-1019) and from the gates' own activation slots for
+/// the rest. The collector derives the same timeline from Anza's tracker, but
+/// only over the newest gates it reads, so this is what gives the older epochs
+/// an answer. Applied on every write, where a version the document already
+/// names is left as it is.
+const SEEDED_FEATURE_GATE_FLOORS: &[(&str, &str, u64)] = &[
+    ("agave", "3.1.0", 946),
+    ("agave", "3.1.7", 953),
+    ("agave", "4.0.0-beta.0", 979),
+    ("agave", "4.0.2", 992),
+    ("agave", "4.1.0-beta.0", 999),
+    ("agave", "4.1.0-beta.1", 1008),
+    ("agave", "4.2.0-beta.1", 1019),
+    ("frankendancer", "0.812.30108", 946),
+    ("frankendancer", "0.902.40002", 979),
+    ("frankendancer", "0.911.40002", 992),
+    ("frankendancer", "0.1001.40101", 999),
+    ("frankendancer", "0.1102.40201", 1019),
+    ("firedancer", "1.1.1", 1019),
+    ("firedancer", "26.8.0", 1026),
+];
 
 #[derive(Debug, Parser)]
 pub struct StoreReleasesParams {
@@ -19,29 +40,9 @@ pub struct StoreReleasesParams {
     snapshot_path: String,
 }
 
-struct ReleaseRow {
-    client_lineage: String,
-    client_version: String,
-    released_at: Option<DateTime<Utc>>,
-    release_url: Option<String>,
-    sfdp_floor_epoch: Option<Decimal>,
-    feature_gate_epoch: Option<Decimal>,
-}
-
-fn to_row(entry: &ReleaseEntry) -> ReleaseRow {
-    ReleaseRow {
-        client_lineage: entry.client_lineage.clone(),
-        client_version: entry.client_version.to_string(),
-        released_at: entry.released_at,
-        release_url: entry.release_url.clone(),
-        sfdp_floor_epoch: entry.sfdp_floor_epoch.map(Decimal::from),
-        feature_gate_epoch: entry.feature_gate_epoch.map(Decimal::from),
-    }
-}
-
 pub async fn store_releases(
     params: StoreReleasesParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing releases snapshot...");
 
@@ -57,288 +58,185 @@ pub async fn store_releases(
         snapshot.version
     );
 
-    let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
     info!(
-        "Loaded the snapshot of {} releases, created at {snapshot_created_at}",
+        "Loaded the snapshot of {} releases, created at {created_at}",
         snapshot.releases.len()
     );
 
-    // Split by what the entry fills, because each set of columns is upserted on its own and one
-    // statement must never touch the same conflict target twice.
-    let mut availability: BTreeMap<(String, String), ReleaseRow> = BTreeMap::new();
-    let mut floors: BTreeMap<(String, String), ReleaseRow> = BTreeMap::new();
-    let mut gates: BTreeMap<(String, String), ReleaseRow> = BTreeMap::new();
-    for entry in &snapshot.releases {
-        let row = to_row(entry);
-        let key = (row.client_lineage.clone(), row.client_version.clone());
-        let rows = match entry.source {
-            ReleaseSource::Github => &mut availability,
-            ReleaseSource::Sfdp => &mut floors,
-            ReleaseSource::FeatureGates => &mut gates,
-        };
-        if rows.insert(key.clone(), row).is_some() {
-            warn!("Snapshot carries {key:?} more than once, keeping the last");
-        }
-    }
+    let stored = directory.get::<ReleasesDoc>(RELEASES_PATH).await?;
+    let (mut releases, precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (ReleasesDoc::new(), Precondition::Create),
+    };
 
-    let upserted_availability =
-        upsert_availability(psql_client, &availability, snapshot_created_at).await?;
-    let upserted_floors = upsert_floors(psql_client, &floors, snapshot_created_at).await?;
-    let upserted_gates = upsert_feature_gates(psql_client, &gates, snapshot_created_at).await?;
+    seed_feature_gate_floors(&mut releases, created_at);
+    let written = apply_releases(&mut releases, &snapshot, created_at);
 
-    info!("Stored releases snapshot: {upserted_availability} availability rows, {upserted_floors} SFDP floors, {upserted_gates} feature-gate floors");
+    // No retry on a conflict: the cron is the retry.
+    directory
+        .put(RELEASES_PATH, &releases, precondition)
+        .await?;
+
+    info!(
+        "Stored releases snapshot: {} availability rows, {} SFDP floors, {} feature-gate floors",
+        written.github, written.sfdp, written.feature_gates
+    );
 
     Ok(())
 }
 
-/// Writes only the columns GitHub answers for, so a run cannot blank a floor.
-async fn upsert_availability(
-    psql_client: &Client,
-    rows: &BTreeMap<(String, String), ReleaseRow>,
-    written_at: DateTime<Utc>,
-) -> anyhow::Result<u64> {
-    let records: Vec<_> = rows.values().collect();
-    let mut total = 0;
-
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        let client_lineages: Vec<&str> = chunk.iter().map(|r| r.client_lineage.as_str()).collect();
-        let client_versions: Vec<&str> = chunk.iter().map(|r| r.client_version.as_str()).collect();
-        let released_ats: Vec<Option<&DateTime<Utc>>> =
-            chunk.iter().map(|r| r.released_at.as_ref()).collect();
-        let release_urls: Vec<Option<&str>> =
-            chunk.iter().map(|r| r.release_url.as_deref()).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&written_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        total += psql_client
-            .execute(
-                &format!(
-                    "INSERT INTO {RELEASES_TABLE} (
-                client_lineage, client_version, released_at, release_url,
-                created_at, updated_at
-            )
-            SELECT * FROM UNNEST(
-                $1::TEXT[],
-                $2::TEXT[],
-                $3::TIMESTAMP WITH TIME ZONE[],
-                $4::TEXT[],
-                $5::TIMESTAMP WITH TIME ZONE[],
-                $6::TIMESTAMP WITH TIME ZONE[]
-            )
-            ON CONFLICT (client_lineage, client_version)
-            DO UPDATE SET
-                released_at = EXCLUDED.released_at,
-                release_url = EXCLUDED.release_url,
-                updated_at = EXCLUDED.updated_at"
-                ),
-                &[
-                    &client_lineages,
-                    &client_versions,
-                    &released_ats,
-                    &release_urls,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
-    }
-
-    Ok(total)
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WrittenReleases {
+    pub github: usize,
+    pub sfdp: usize,
+    pub feature_gates: usize,
 }
 
-/// Writes only the floor, so a run cannot blank a release's publish timestamp.
-async fn upsert_floors(
-    psql_client: &Client,
-    rows: &BTreeMap<(String, String), ReleaseRow>,
+/// Each source writes only the fields it answers for, so a run cannot blank
+/// another source's floor or publish time. The last entry wins where a
+/// snapshot carries a version twice for one source.
+pub fn apply_releases(
+    releases: &mut ReleasesDoc,
+    snapshot: &ReleasesSnapshot,
     written_at: DateTime<Utc>,
-) -> anyhow::Result<u64> {
-    let records: Vec<_> = rows.values().collect();
-    let mut total = 0;
+) -> WrittenReleases {
+    let mut written = WrittenReleases::default();
+    let mut seen: HashSet<(&str, String, String)> = HashSet::new();
 
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        let client_lineages: Vec<&str> = chunk.iter().map(|r| r.client_lineage.as_str()).collect();
-        let client_versions: Vec<&str> = chunk.iter().map(|r| r.client_version.as_str()).collect();
-        let sfdp_floor_epochs: Vec<Option<&Decimal>> =
-            chunk.iter().map(|r| r.sfdp_floor_epoch.as_ref()).collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&written_at; chunk.len()];
-        let created_ats = updated_ats.clone();
+    for entry in &snapshot.releases {
+        let version = entry.client_version.to_string();
+        let key = (
+            entry.source.as_str(),
+            entry.client_lineage.clone(),
+            version.clone(),
+        );
+        if !seen.insert(key) {
+            warn!(
+                "Snapshot carries {} {version} more than once for {}, keeping the last",
+                entry.client_lineage,
+                entry.source.as_str()
+            );
+        }
 
-        total += psql_client
-            .execute(
-                &format!(
-                    "INSERT INTO {RELEASES_TABLE} (
-                client_lineage, client_version, sfdp_floor_epoch, created_at, updated_at
-            )
-            SELECT * FROM UNNEST(
-                $1::TEXT[],
-                $2::TEXT[],
-                $3::NUMERIC[],
-                $4::TIMESTAMP WITH TIME ZONE[],
-                $5::TIMESTAMP WITH TIME ZONE[]
-            )
-            ON CONFLICT (client_lineage, client_version)
-            DO UPDATE SET
-                sfdp_floor_epoch = EXCLUDED.sfdp_floor_epoch,
-                updated_at = EXCLUDED.updated_at"
-                ),
-                &[
-                    &client_lineages,
-                    &client_versions,
-                    &sfdp_floor_epochs,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
+        let release = releases
+            .entry(entry.client_lineage.clone())
+            .or_default()
+            .entry(version)
+            .or_insert_with(|| new_entry(written_at));
+        match entry.source {
+            ReleaseSource::Github => {
+                release.released_at = entry.released_at;
+                release.release_url = entry.release_url.clone();
+                written.github += 1;
+            }
+            ReleaseSource::Sfdp => {
+                release.sfdp_floor_epoch = entry.sfdp_floor_epoch;
+                written.sfdp += 1;
+            }
+            ReleaseSource::FeatureGates => {
+                release.feature_gate_epoch = entry.feature_gate_epoch;
+                written.feature_gates += 1;
+            }
+        }
+        release.updated_at = written_at;
     }
 
-    Ok(total)
+    written
 }
 
-/// What was published: one row per version the client's releases carry a timestamp for.
-/// Writes only the feature-gate floor.
-async fn upsert_feature_gates(
-    psql_client: &Client,
-    rows: &BTreeMap<(String, String), ReleaseRow>,
-    written_at: DateTime<Utc>,
-) -> anyhow::Result<u64> {
-    let records: Vec<_> = rows.values().collect();
-    let mut total = 0;
-
-    for chunk in records.chunks(DEFAULT_CHUNK_SIZE) {
-        let client_lineages: Vec<&str> = chunk.iter().map(|r| r.client_lineage.as_str()).collect();
-        let client_versions: Vec<&str> = chunk.iter().map(|r| r.client_version.as_str()).collect();
-        let feature_gate_epochs: Vec<Option<&Decimal>> = chunk
-            .iter()
-            .map(|r| r.feature_gate_epoch.as_ref())
-            .collect();
-        let updated_ats: Vec<&DateTime<Utc>> = vec![&written_at; chunk.len()];
-        let created_ats = updated_ats.clone();
-
-        total += psql_client
-            .execute(
-                &format!(
-                    "INSERT INTO {RELEASES_TABLE} (
-                client_lineage, client_version, feature_gate_epoch, created_at, updated_at
-            )
-            SELECT * FROM UNNEST(
-                $1::TEXT[],
-                $2::TEXT[],
-                $3::NUMERIC[],
-                $4::TIMESTAMP WITH TIME ZONE[],
-                $5::TIMESTAMP WITH TIME ZONE[]
-            )
-            ON CONFLICT (client_lineage, client_version)
-            DO UPDATE SET
-                feature_gate_epoch = EXCLUDED.feature_gate_epoch,
-                updated_at = EXCLUDED.updated_at"
-                ),
-                &[
-                    &client_lineages,
-                    &client_versions,
-                    &feature_gate_epochs,
-                    &created_ats,
-                    &updated_ats,
-                ],
-            )
-            .await?;
+pub fn seed_feature_gate_floors(releases: &mut ReleasesDoc, written_at: DateTime<Utc>) {
+    for (lineage, version, epoch) in SEEDED_FEATURE_GATE_FLOORS {
+        releases
+            .entry(lineage.to_string())
+            .or_default()
+            .entry(version.to_string())
+            .or_insert_with(|| ReleaseEntry {
+                feature_gate_epoch: Some(*epoch),
+                ..new_entry(written_at)
+            });
     }
-
-    Ok(total)
 }
 
-pub async fn load_releases(
-    psql_client: &Client,
+fn new_entry(written_at: DateTime<Utc>) -> ReleaseEntry {
+    ReleaseEntry {
+        released_at: None,
+        release_url: None,
+        sfdp_floor_epoch: None,
+        feature_gate_epoch: None,
+        created_at: written_at,
+        updated_at: written_at,
+    }
+}
+
+/// What was published, newest first: one record per version a release carries
+/// a timestamp for. A version only a floor named belongs in a floor list, not
+/// here. `available_epoch` is resolved against the epochs the warehouse holds,
+/// so a release older than that window has none.
+pub fn load_releases(
+    warehouse: &Warehouse,
     client_lineage: Option<&str>,
     since_epoch: Option<u64>,
-) -> anyhow::Result<Vec<ReleaseRecord>> {
-    let since_epoch = since_epoch.map(Decimal::from);
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT
-            client_lineage, client_version, released_at, release_url, updated_at,
-            -- Null until the epoch the release landed in closes and gets its row.
-            epochs.epoch AS available_epoch
-        FROM {RELEASES_TABLE}
-        LEFT JOIN epochs
-            ON released_at >= epochs.start_at
-           AND released_at < epochs.end_at
-        -- A row with no timestamp exists only because a floor named the version; it belongs in a
-        -- floor list, not here.
-        WHERE released_at IS NOT NULL
-          AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
-          AND ($2::NUMERIC IS NULL OR released_at >= (
-              -- The epoch asked for may have no row: older than the history we keep takes
-              -- everything, newer than it -- the running epoch -- takes what followed the last
-              -- close.
-              SELECT CASE
-                  WHEN $2::NUMERIC <= (SELECT MIN(epoch) FROM epochs) THEN '-infinity'::TIMESTAMPTZ
-                  ELSE COALESCE(
-                      (SELECT MIN(start_at) FROM epochs WHERE epoch >= $2::NUMERIC),
-                      (SELECT MAX(end_at) FROM epochs)
-                  )
-              END
-          ))
-        ORDER BY released_at DESC, client_lineage, client_version
-    "
-            ),
-            &[&client_lineage, &since_epoch],
-        )
-        .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(ReleaseRecord {
-                client_lineage: row.get("client_lineage"),
-                client_version: row.get("client_version"),
-                available_epoch: row
-                    .get::<_, Option<Decimal>>("available_epoch")
-                    .map(u64::try_from)
-                    .transpose()?,
-                released_at: row.get("released_at"),
-                release_url: row.get("release_url"),
-                updated_at: row.get("updated_at"),
+) -> Vec<ReleaseRecord> {
+    let since = since_epoch.and_then(|epoch| released_since(warehouse, epoch));
+    let mut records: Vec<ReleaseRecord> = lineages(warehouse, client_lineage)
+        .flat_map(|(lineage, versions)| {
+            versions.iter().filter_map(move |(version, release)| {
+                let released_at = release.released_at?;
+                if since.is_some_and(|since| released_at < since) {
+                    return None;
+                }
+                Some(ReleaseRecord {
+                    client_lineage: lineage.clone(),
+                    client_version: version.clone(),
+                    available_epoch: epoch_of(warehouse, released_at),
+                    released_at: Some(released_at),
+                    release_url: release.release_url.clone(),
+                    updated_at: release.updated_at,
+                })
             })
         })
-        .collect()
+        .collect();
+
+    records.sort_by(|a, b| {
+        b.released_at
+            .cmp(&a.released_at)
+            .then_with(|| a.client_lineage.cmp(&b.client_lineage))
+            .then_with(|| a.client_version.cmp(&b.client_version))
+    });
+    records
 }
 
-/// Every version SFDP has required, newest floor first.
-pub async fn load_sfdp_floors(
-    psql_client: &Client,
+/// Every version SFDP has required, newest floor first within a lineage.
+pub fn load_sfdp_floors(
+    warehouse: &Warehouse,
     client_lineage: Option<&str>,
     since_epoch: Option<u64>,
-) -> anyhow::Result<Vec<SfdpFloor>> {
-    Ok(
-        load_floors(psql_client, "sfdp_floor_epoch", client_lineage, since_epoch)
-            .await?
-            .into_iter()
-            .map(
-                |(client_lineage, client_version, effective_epoch)| SfdpFloor {
-                    client_lineage,
-                    client_version,
-                    effective_epoch,
-                },
-            )
-            .collect(),
+) -> Vec<SfdpFloor> {
+    floors(warehouse, client_lineage, since_epoch, |release| {
+        release.sfdp_floor_epoch
+    })
+    .into_iter()
+    .map(
+        |(client_lineage, client_version, effective_epoch)| SfdpFloor {
+            client_lineage,
+            client_version,
+            effective_epoch,
+        },
     )
+    .collect()
 }
 
-/// Every version the cluster's feature gates have required, newest floor first.
-pub async fn load_feature_gate_floors(
-    psql_client: &Client,
+/// Every version the cluster's feature gates have required, newest floor first
+/// within a lineage.
+pub fn load_feature_gate_floors(
+    warehouse: &Warehouse,
     client_lineage: Option<&str>,
     since_epoch: Option<u64>,
-) -> anyhow::Result<Vec<FeatureGateFloor>> {
-    Ok(load_floors(
-        psql_client,
-        "feature_gate_epoch",
-        client_lineage,
-        since_epoch,
-    )
-    .await?
+) -> Vec<FeatureGateFloor> {
+    floors(warehouse, client_lineage, since_epoch, |release| {
+        release.feature_gate_epoch
+    })
     .into_iter()
     .map(
         |(client_lineage, client_version, effective_epoch)| FeatureGateFloor {
@@ -347,133 +245,71 @@ pub async fn load_feature_gate_floors(
             effective_epoch,
         },
     )
-    .collect())
+    .collect()
 }
 
-/// `column` is one of this module's own floor columns, never caller input.
-async fn load_floors(
-    psql_client: &Client,
-    column: &str,
+fn floors(
+    warehouse: &Warehouse,
     client_lineage: Option<&str>,
     since_epoch: Option<u64>,
-) -> anyhow::Result<Vec<(String, String, u64)>> {
-    let since_epoch = since_epoch.map(Decimal::from);
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT client_lineage, client_version, {column} AS effective_epoch
-        FROM {RELEASES_TABLE}
-        WHERE {column} IS NOT NULL
-          AND ($1::TEXT IS NULL OR client_lineage = $1::TEXT)
-          AND ($2::NUMERIC IS NULL OR {column} >= $2::NUMERIC)
-        ORDER BY client_lineage, {column} DESC, client_version
-    "
-            ),
-            &[&client_lineage, &since_epoch],
-        )
-        .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok((
-                row.get("client_lineage"),
-                row.get("client_version"),
-                row.get::<_, Decimal>("effective_epoch").try_into()?,
-            ))
-        })
-        .collect()
-}
-
-/// The SFDP floor in force at `epoch`, one row per lineage: the latest one to take effect by then.
-pub async fn get_sfdp_floor_at_epoch(
-    psql_client: &Client,
-    client_lineage: Option<&str>,
-    epoch: u64,
-) -> anyhow::Result<Vec<SfdpFloor>> {
-    Ok(
-        floor_at_epoch(psql_client, "sfdp_floor_epoch", client_lineage, epoch)
-            .await?
-            .into_iter()
-            .map(
-                |(client_lineage, client_version, effective_epoch)| SfdpFloor {
-                    client_lineage,
-                    client_version,
-                    effective_epoch,
-                },
-            )
-            .collect(),
-    )
-}
-
-/// The feature-gate floor in force at `epoch`, one row per lineage. Below it a validator forks off,
-/// which is the harder of the two obligations.
-pub async fn get_feature_gate_floor_at_epoch(
-    psql_client: &Client,
-    client_lineage: Option<&str>,
-    epoch: u64,
-) -> anyhow::Result<Vec<FeatureGateFloor>> {
-    Ok(
-        floor_at_epoch(psql_client, "feature_gate_epoch", client_lineage, epoch)
-            .await?
-            .into_iter()
-            .map(
-                |(client_lineage, client_version, effective_epoch)| FeatureGateFloor {
-                    client_lineage,
-                    client_version,
-                    effective_epoch,
-                },
-            )
-            .collect(),
-    )
-}
-
-async fn floor_at_epoch(
-    psql_client: &Client,
-    column: &str,
-    client_lineage: Option<&str>,
-    epoch: u64,
-) -> anyhow::Result<Vec<(String, String, u64)>> {
-    let epoch = Decimal::from(epoch);
-    let rows = psql_client
-        .query(
-            &format!(
-                "
-        SELECT client_lineage, client_version, {column} AS effective_epoch
-        FROM {RELEASES_TABLE}
-        WHERE {column} IS NOT NULL
-          AND {column} <= $1::NUMERIC
-          AND ($2::TEXT IS NULL OR client_lineage = $2::TEXT)
-    "
-            ),
-            &[&epoch, &client_lineage],
-        )
-        .await?;
-
-    // Picked here rather than with DISTINCT ON: two rows can share the newest epoch, and the higher
-    // version settles that, which SQL would order as text.
-    let mut newest: BTreeMap<String, (u64, ValidatorVersion)> = BTreeMap::new();
-    for row in rows {
-        let lineage: String = row.get("client_lineage");
-        let version: String = row.get("client_version");
-        let effective_epoch: u64 = row.get::<_, Decimal>("effective_epoch").try_into()?;
-        let Ok(version) = version.parse::<ValidatorVersion>() else {
-            warn!("Floor row {lineage} {version} is not a version, skipping it");
-            continue;
-        };
-
-        newest
-            .entry(lineage)
-            .and_modify(|floor| {
-                if (effective_epoch, &version) > (floor.0, &floor.1) {
-                    *floor = (effective_epoch, version.clone());
+    floor: fn(&ReleaseEntry) -> Option<u64>,
+) -> Vec<(String, String, u64)> {
+    let mut rows: Vec<(String, String, u64)> = lineages(warehouse, client_lineage)
+        .flat_map(|(lineage, versions)| {
+            versions.iter().filter_map(move |(version, release)| {
+                let effective_epoch = floor(release)?;
+                if since_epoch.is_some_and(|since| effective_epoch < since) {
+                    return None;
                 }
+                Some((lineage.clone(), version.clone(), effective_epoch))
             })
-            .or_insert((effective_epoch, version));
-    }
+        })
+        .collect();
 
-    Ok(newest
-        .into_iter()
-        .map(|(lineage, (epoch, version))| (lineage, version.to_string(), epoch))
-        .collect())
+    rows.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    rows
+}
+
+fn lineages<'a>(
+    warehouse: &'a Warehouse,
+    client_lineage: Option<&'a str>,
+) -> impl Iterator<
+    Item = (
+        &'a String,
+        &'a std::collections::BTreeMap<String, ReleaseEntry>,
+    ),
+> + 'a {
+    warehouse
+        .releases
+        .iter()
+        .filter(move |(lineage, _)| client_lineage.is_none_or(|wanted| wanted == lineage.as_str()))
+}
+
+/// The epoch a moment falls in, among the sealed ones.
+fn epoch_of(warehouse: &Warehouse, at: DateTime<Utc>) -> Option<u64> {
+    warehouse
+        .epochs
+        .iter()
+        .find(|(_, record)| record.start_at <= at && at < record.end_at)
+        .map(|(epoch, _)| *epoch)
+}
+
+/// The moment a `since_epoch` bound starts at. The epoch asked for may have no
+/// document: older than the history held takes everything, newer than it, the
+/// running epoch, takes what followed the last close.
+fn released_since(warehouse: &Warehouse, since_epoch: u64) -> Option<DateTime<Utc>> {
+    let oldest = *warehouse.epochs.keys().next()?;
+    if since_epoch <= oldest {
+        return None;
+    }
+    warehouse
+        .epochs
+        .range(since_epoch..)
+        .next()
+        .map(|(_, record)| record.start_at)
+        .or_else(|| warehouse.epochs.values().map(|record| record.end_at).max())
 }

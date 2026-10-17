@@ -7,3 +7,14 @@ target
 # JS stage lint
 node_modules/
 pnpm-lock.yaml
+
+# Runtime cache of the blacklist fetched from ds-sam-pipeline
+blacklist.cache.csv
+# scoring-fetch-inputs.bash downloads this one from ds-sam-pipeline before a run
+/blacklist.csv
+
+# Local working dirs
+/specs/
+/.ship/
+/.diary/
+/BUGS.md

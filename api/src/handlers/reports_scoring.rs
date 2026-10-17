@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{context::WrappedContext, utils::response::response_error_500};
+use crate::context::WrappedContext;
 use chrono::{DateTime, Utc};
-use log::{error, info};
+use log::info;
 use serde::Serialize;
 use store::dto::ScoringRunRecord;
 use warp::{http::StatusCode, reply, Reply};
@@ -154,14 +154,8 @@ fn scoring_run_to_report(scoring_run: ScoringRunRecord) -> Report {
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Serving the scoring reports");
 
-    let scoring_runs =
-        match store::scoring::load_scoring_runs(&context.read().await.psql_client).await {
-            Ok(scoring_runs) => scoring_runs,
-            Err(err) => {
-                error!("Failed to fetch scoring run records: {err}");
-                return Ok(response_error_500("Failed to fetch records!".into()));
-            }
-        };
+    let warehouse = context.read().await.warehouse.clone();
+    let scoring_runs = store::scoring::load_scoring_runs(&*warehouse.read().await);
 
     Ok(warp::reply::with_status(
         reply::json(&ResponseReportScoring {

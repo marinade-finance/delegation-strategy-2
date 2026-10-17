@@ -1,6 +1,5 @@
 use crate::context::WrappedContext;
-use crate::utils::response::response_error;
-use log::{error, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use store::rewards::{
     get_block_rewards, get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards,
@@ -45,68 +44,13 @@ pub async fn handler(
     let epochs: u64 = query_params.epochs.unwrap_or(DEFAULT_EPOCHS).into();
     info!("Fetching rewards for past {epochs:?}");
 
-    let context_guard = context.read().await;
-    let psql_client = &context_guard.psql_client;
-    let (inflation_result, mev_result, jito_result, block_result, running_epoch_result) = tokio::join!(
-        get_estimated_inflation_rewards(psql_client, epochs),
-        get_mev_rewards(psql_client, epochs),
-        get_jito_priority_rewards(psql_client, epochs),
-        get_block_rewards(psql_client, epochs),
-        get_running_epoch_slots_per_year(psql_client),
-    );
-
-    let inflation_with_provenance = match inflation_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch inflation rewards: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch inflation rewards!".into(),
-            ));
-        }
-    };
-    let rewards_mev = match mev_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch MEV rewards: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch MEV rewards!".into(),
-            ));
-        }
-    };
-    let rewards_jito_priority = match jito_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch Jito Priority rewards: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch Jito Priority rewards!".into(),
-            ));
-        }
-    };
-
-    let rewards_block = match block_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch Block rewards: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch Block rewards!".into(),
-            ));
-        }
-    };
-
-    let running_epoch = match running_epoch_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch the running epoch's slots per year: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch slots per year!".into(),
-            ));
-        }
-    };
+    let warehouse = context.read().await.warehouse.clone();
+    let warehouse = warehouse.read().await;
+    let inflation_with_provenance = get_estimated_inflation_rewards(&warehouse, epochs);
+    let rewards_mev = get_mev_rewards(&warehouse, epochs);
+    let rewards_jito_priority = get_jito_priority_rewards(&warehouse, epochs);
+    let rewards_block = get_block_rewards(&warehouse, epochs);
+    let running_epoch = get_running_epoch_slots_per_year(&warehouse);
 
     let mut rewards_inflation_est = Vec::with_capacity(inflation_with_provenance.len());
     let mut slots_per_year: Vec<(u64, f64)> = running_epoch.into_iter().collect();

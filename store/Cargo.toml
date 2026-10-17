@@ -6,8 +6,6 @@ publish = false
 
 [dependencies]
 rust_decimal = { workspace = true }
-redis-macros = { workspace = true }
-redis = { workspace = true }
 anyhow = { workspace = true }
 borsh = { workspace = true }
 log = { workspace = true }
@@ -18,12 +16,13 @@ serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
 reqwest = { workspace = true }
-tokio-postgres = { workspace = true }
-openssl = { workspace = true }
-postgres-openssl = { workspace = true }
 tokio = { workspace = true }
 google-cloud-bigquery = { workspace = true }
 collect = { path = "../collect" }
 chrono = { workspace = true }
 csv = { package = "ds-csv", path = "../csv" }
 utoipa = { workspace = true }
+
+[dev-dependencies]
+jsonwebtoken = "9.3"
+testcontainers = { version = "0.28.0", features = ["http_wait_plain"] }

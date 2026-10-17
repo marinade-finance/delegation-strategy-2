@@ -1,4 +1,3 @@
-pub mod admin_score_upload;
 pub mod client_history;
 pub mod cluster_stats;
 pub mod commissions;

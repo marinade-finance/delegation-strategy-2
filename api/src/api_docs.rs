@@ -1,9 +1,9 @@
 use crate::handlers::{
-    admin_score_upload, client_history, cluster_stats, commissions, config, docs, events,
-    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
-    list_validators, provider_history, readiness, releases, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints,
-    uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores,
+    client_history, cluster_stats, commissions, config, docs, events, global_unstake_hints,
+    glossary, health, jito, jito_mev, list_clients, list_providers, list_validators,
+    provider_history, readiness, releases, reports_commission_changes, reports_scoring,
+    reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints, uptimes,
+    validator_score_breakdown, validator_score_breakdowns, validator_scores,
     validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
@@ -19,7 +19,6 @@ use utoipa::OpenApi;
         )
     ),
     components(
-        schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(cluster_stats::ResponseClusterStats),
         schemas(commissions::ResponseCommissions),
         schemas(take_rates::ResponseTakeRates),
@@ -97,7 +96,6 @@ use utoipa::OpenApi;
         schemas(validators_block_rewards::ResponseValidatorsBlockRewards),
     ),
     paths(
-        admin_score_upload::handler,
         cluster_stats::handler,
         list_clients::handler,
         list_providers::handler,

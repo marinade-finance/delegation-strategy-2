@@ -1,10 +1,10 @@
+use crate::directory::{Directory, Doc, Precondition};
+use crate::docs::{ClusterInfoDoc, ClusterInfoSample, LIVE_CLUSTER_INFO};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use log::info;
-use rust_decimal::prelude::*;
 use serde_yaml;
-use tokio_postgres::Client;
 
 #[derive(Debug, Parser)]
 pub struct StoreClusterInfoParams {
@@ -14,7 +14,7 @@ pub struct StoreClusterInfoParams {
 
 pub async fn store_cluster_info(
     params: StoreClusterInfoParams,
-    psql_client: &mut Client,
+    directory: &Directory,
 ) -> anyhow::Result<()> {
     info!("Storing cluster info...");
 
@@ -23,21 +23,46 @@ pub async fn store_cluster_info(
 
     info!("Loaded the cluster info");
 
-    psql_client
-        .execute(
-            // todo add supply, inflation and active stake
-            "
-        INSERT INTO cluster_info (epoch, epoch_slot, transaction_count, created_at, slots_per_year)
-        VALUES ($1, $2, $3, $4, $5)
-    ",
-            &[
-                &(Decimal::from(snapshot.epoch)),
-                &(Decimal::from(snapshot.epoch_slot)),
-                &(Decimal::from(snapshot.transaction_count)),
-                &snapshot.created_at.parse::<DateTime<Utc>>().unwrap(),
-                &snapshot.slots_per_year,
-            ],
-        )
+    let stored = directory.get::<ClusterInfoDoc>(LIVE_CLUSTER_INFO).await?;
+    write_cluster_info(directory, stored, &snapshot).await
+}
+
+pub async fn write_cluster_info(
+    directory: &Directory,
+    stored: Option<Doc<ClusterInfoDoc>>,
+    snapshot: &ValidatorsPerformanceSnapshot,
+) -> anyhow::Result<()> {
+    let created_at: DateTime<Utc> = snapshot.created_at.parse()?;
+    let (mut cluster_info, precondition) = match stored {
+        Some(stored) => (stored.body, Precondition::IfMatch(stored.etag)),
+        None => (
+            ClusterInfoDoc {
+                epoch: snapshot.epoch,
+                samples: Vec::new(),
+            },
+            Precondition::Create,
+        ),
+    };
+    if snapshot.epoch < cluster_info.epoch {
+        anyhow::bail!(
+            "Sample of epoch {} is older than the stored epoch {}",
+            snapshot.epoch,
+            cluster_info.epoch
+        );
+    }
+
+    cluster_info.epoch = snapshot.epoch;
+    cluster_info.samples.push(ClusterInfoSample {
+        epoch: snapshot.epoch,
+        epoch_slot: snapshot.epoch_slot,
+        transaction_count: snapshot.transaction_count,
+        created_at,
+        slots_per_year: snapshot.slots_per_year,
+    });
+
+    // No retry on a conflict: the cron is the retry.
+    directory
+        .put(LIVE_CLUSTER_INFO, &cluster_info, precondition)
         .await?;
 
     info!("Stored cluster info");

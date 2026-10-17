@@ -29,8 +29,8 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching Jito MEV Info");
 
-    let response = match get_last_mev_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await
-    {
+    let warehouse = context.read().await.warehouse.clone();
+    let response = match get_last_mev_info(&*warehouse.read().await, DEFAULT_EPOCHS) {
         Ok(validators) => {
             warp::reply::with_status(json(&ResponseJitoMev { validators }), StatusCode::OK)
         }

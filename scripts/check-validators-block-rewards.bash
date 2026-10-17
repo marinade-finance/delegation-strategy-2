@@ -10,16 +10,17 @@ if [[ -z $RPC_URL ]]; then
   exit 22
 fi
 
-if [[ -z $POSTGRES_URL ]]; then
-  echo "Env variable POSTGRES_URL is missing!" >&2
+if [[ -z $DIRECTORY_URL ]]; then
+  echo "Env variable DIRECTORY_URL is missing!" >&2
   exit 23
 fi
-if [[ -z $PG_SSLROOTCERT ]]; then
-  echo "Env variable PG_SSLROOTCERT is missing!" >&2
+if [[ -z $DIRECTORY_TOKEN ]]; then
+  echo "Env variable DIRECTORY_TOKEN is missing!" >&2
   exit 24
 fi
 
 "$BIN_DIR/check" \
   --rpc-url "$RPC_URL" \
-  --postgres-url "$POSTGRES_URL" \
+  --directory-url "$DIRECTORY_URL" \
+  --directory-token "$DIRECTORY_TOKEN" \
   block-rewards

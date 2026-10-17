@@ -4,7 +4,7 @@ Collecting on-chain data to YAML files.
 
 ## Development
 
-See [DEVELOPMENT.md](../DEVELOPMENT.md) for local PostgreSQL setup.
+See [DEVELOPMENT.md](../DEVELOPMENT.md) for the local setup.
 
 > **NOTE:** we can collect the data from this or previous epochs.
 > The reason is that RPC methods normally is not supporting historical data collection.

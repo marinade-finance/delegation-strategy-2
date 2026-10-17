@@ -2,46 +2,58 @@
 
 Running the collectors CLI locally.
 
-# 1. Run PosgreSQL and apply migrations scripts
+# 1. Run marinade-directory
+
+The store keeps its documents in a bucket, so a local run needs the emulator
+and the directory in front of it.
 
 The container gets no network (`--network none`) and serves only a Unix socket in a host
 directory, so it adds no bridge, veth or iptables rules and nothing on the LAN can reach it.
 
 ```bash
-export DB='delegation-strategy'
-export PG_SOCKET_DIR=/tmp/ds-pg
-mkdir -m 777 -p "$PG_SOCKET_DIR"
+export GCS_PORT=4443
+export DIRECTORY_PORT=8080
+export JWT_SECRET='delegation-strategy-local-secret-at-least-32b'
 
-docker run -d --name postgresql-${DB} --rm --network none \
-  -v "$PG_SOCKET_DIR":/var/run/postgresql \
-  -e POSTGRES_DB=${DB} \
-  -e POSTGRES_USER=${DB} \
-  -e POSTGRES_PASSWORD=${DB} \
-  postgres:17.4
+docker run -d --rm --name fake-gcs --network host \
+  fsouza/fake-gcs-server:1.56.1 \
+  -backend memory -scheme http -port $GCS_PORT -public-host localhost:$GCS_PORT
 
-for FILE in ./migrations/*.sql; do
-  echo "Migration SQL init execution: $FILE"
-  docker exec -i postgresql-${DB} psql -v ON_ERROR_STOP=1 -U ${DB} -d ${DB} < "$FILE"
-done
+curl -sf -X POST "http://localhost:$GCS_PORT/storage/v1/b?project=delegation-strategy" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"delegation-strategy","versioning":{"enabled":true}}'
+
+docker run -d --rm --name marinade-directory --network host \
+  -e STORAGE_EMULATOR_HOST=localhost:$GCS_PORT \
+  -e GCS_BUCKET=delegation-strategy \
+  -e JWT_SECRET="$JWT_SECRET" \
+  -e PORT=$DIRECTORY_PORT \
+  -e METRICS_PORT=0 \
+  marinade-directory:test
+
+curl -sf "http://localhost:$DIRECTORY_PORT/ready"
 ```
 
-The PostgreSQL URL is then `host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy`.
-Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file,
-e.g. `/etc/ssl/certs/ca-certificates.crt`. Keep the socket directory path short: a Unix socket
-path is capped at 107 bytes.
-
-# 2. Run the SQL loader tests
-
-`store/tests/cluster_stats_sql.rs` exercises the `/cluster-stats` and
-`/validators/flat` queries against a real PostgreSQL. It creates its own schema,
-applies `migrations/*.sql` into it and drops it again, so it needs an empty
-database only on the first run.
+Every `/v1` request carries a HS256 token signed with `JWT_SECRET`, whose
+`grants` are globs with a leading slash — `validators/**` matches nothing:
 
 ```bash
-export DS_TEST_POSTGRES_URL='host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy'
-cargo test --all-features
+b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+HEADER=$(printf '{"alg":"HS256"}' | b64)
+CLAIMS=$(printf '{"sub":"local","grants":["/validators/**:rw","/scoring/**:rw"],"exp":%s}' \
+  $(($(date +%s) + 86400)) | b64)
+export DIRECTORY_URL="http://localhost:$DIRECTORY_PORT"
+export DIRECTORY_TOKEN="$HEADER.$CLAIMS.$(printf "$HEADER.$CLAIMS" \
+  | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64)"
 ```
 
-Without `DS_TEST_POSTGRES_URL` the tests report why they are skipped and pass.
-On Podman, start the container with `podman run` and export
-`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`.
+# 2. Run the tests
+
+The tests own their store: each one starts `marinade-directory` on its
+in-memory backend with `docker`, mints its own token and stops the container
+when it ends — no bucket and no emulator, since the mem backend answers the
+same contract. Without `docker` they say why they skipped and pass.
+
+```bash
+cargo test --all-features
+```

@@ -30,17 +30,17 @@ pub async fn handler(
 ) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching Jito Priority Fee Info");
 
-    let validators =
-        match get_last_jito_info(&context.read().await.psql_client, DEFAULT_EPOCHS).await {
-            Ok(r) => r,
-            Err(err) => {
-                error!("Failed to fetch Jito info: {err}");
-                return Ok(response_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch Jito records!".into(),
-                ));
-            }
-        };
+    let warehouse = context.read().await.warehouse.clone();
+    let validators = match get_last_jito_info(&*warehouse.read().await, DEFAULT_EPOCHS) {
+        Ok(r) => r,
+        Err(err) => {
+            error!("Failed to fetch Jito info: {err}");
+            return Ok(response_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch Jito records!".into(),
+            ));
+        }
+    };
 
     Ok(warp::reply::with_status(
         json(&ResponseJito { validators }),
