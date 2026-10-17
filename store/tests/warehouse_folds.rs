@@ -461,3 +461,38 @@ delinquent: false
     let performance: ValidatorPerformance = serde_yaml::from_str(&unknown).unwrap();
     assert_eq!(performance.client_id, None);
 }
+
+#[test]
+fn client_lineage_splits_id_12_by_the_version_it_reports() {
+    let mut warehouse = Warehouse::default();
+    for (vote_account, client_id, stake, version) in [
+        ("voteFrankenBamOld", 12, 100, Some("0.1204.40300")),
+        ("voteFireBam", 12, 200, Some("26.9.4")),
+        ("voteFireBamNoVersion", 12, 400, None),
+        ("voteFrankenBam", 14, 800, Some("0.1300.40300")),
+        ("voteFiredancer", 5, 1600, Some("0.1204.40300")),
+    ] {
+        let mut validator = validator(vote_account, LAST_EPOCH, stake, 10, Some(client_id), None);
+        validator.version = version.map(str::to_string);
+        store_validator(&mut warehouse, LAST_EPOCH, validator);
+    }
+
+    let lineage = load_client_lineage_stats(&warehouse, 1).unwrap();
+    let stats = lineage
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(stats.total_activated_stake, 3100);
+    assert_eq!(stats.lineage_stake.get("frankendancer"), Some(&900));
+    assert_eq!(stats.lineage_validator_count.get("frankendancer"), Some(&2));
+    assert_eq!(stats.lineage_stake.get("firedancer"), Some(&2200));
+    assert_eq!(stats.lineage_validator_count.get("firedancer"), Some(&3));
+
+    let diversity = load_client_diversity_stats(&warehouse, 1).unwrap();
+    let stats = diversity
+        .iter()
+        .find(|stats| stats.epoch == LAST_EPOCH)
+        .unwrap();
+    assert_eq!(stats.client_stake.get("bam"), Some(&1500));
+    assert_eq!(stats.client_validator_count.get("bam"), Some(&4));
+}

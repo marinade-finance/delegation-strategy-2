@@ -302,3 +302,33 @@ fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
     assert_eq!(flat("unknown").avg_skip_rate, 1.0);
     assert!(close(flat("unknown").avg_grace_skip_rate, graced_expected));
 }
+
+#[test]
+fn validators_flat_reads_the_lineage_of_id_12_off_the_same_versions_row() {
+    for (version, expected_lineage) in [("0.1204.40300", "frankendancer"), ("26.9.4", "firedancer")]
+    {
+        let mut warehouse = warehouse_with_window();
+        store_version(
+            &mut warehouse,
+            990,
+            "2026-01-01T00:00:00Z",
+            Some(version),
+            Some(12),
+            None,
+        );
+        store_version(
+            &mut warehouse,
+            LAST_EPOCH + 1,
+            "2026-03-01T00:00:00Z",
+            Some("26.9.4"),
+            Some(12),
+            None,
+        );
+
+        let validators = load_validators_aggregated_flat(&warehouse, LAST_EPOCH, EPOCHS).unwrap();
+        assert_eq!(validators.len(), 1);
+        assert_eq!(validators[0].client_lineage, expected_lineage);
+        assert_eq!(validators[0].client_vendor, "bam");
+        assert_eq!(validators[0].version, "26.9.4");
+    }
+}
