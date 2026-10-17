@@ -346,9 +346,9 @@ pub fn load_versions(
                 version: change.version.clone(),
                 client_id,
                 client_name: client_name(client_id),
-                client_label: client_label(client_id),
+                client_label: client_label(client_id, change.version.as_deref()),
                 client_vendor: client_vendor(client_id),
-                client_lineage: client_lineage(client_id),
+                client_lineage: client_lineage(client_id, change.version.as_deref()),
                 client_id_raw: change.client_id_raw.clone(),
                 feature_set: change.feature_set.map(|set| set as u32),
                 shred_version: change.shred_version.map(|version| version as u16),
@@ -849,6 +849,83 @@ pub async fn load_validator_net_apy(base: &str) -> anyhow::Result<HashMap<String
     .collect())
 }
 
+// The window `latest/all` applies, so history and `/providers` share one method.
+const NET_APY_WINDOW_S: u64 = 14 * 24 * 3600;
+// apy-api's MAX_BATCH_VALIDATORS.
+const NET_APY_BATCH_SIZE: usize = 150;
+
+#[derive(serde::Deserialize)]
+struct RollingApySeries {
+    times: Vec<i64>,
+    values: Vec<f64>,
+}
+
+pub async fn load_validator_net_apy_history(
+    base: &str,
+    vote_accounts: &[String],
+    from_unix: i64,
+) -> anyhow::Result<HashMap<String, Vec<(i64, f64)>>> {
+    let mut series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
+    for chunk in vote_accounts.chunks(NET_APY_BATCH_SIZE) {
+        let url = format!(
+            "{}/v1/rolling-apy/validator/batch?validators={}&window={NET_APY_WINDOW_S}&from={from_unix}",
+            base.trim_end_matches('/'),
+            chunk.join(",")
+        );
+        let answer = fetch_json::<HashMap<String, RollingApySeries>>(
+            &url,
+            "validator net APY history endpoint",
+        )
+        .await?;
+        series.extend(
+            answer
+                .into_iter()
+                .filter(|(_, points)| !points.times.is_empty())
+                .map(|(vote_account, points)| {
+                    (
+                        vote_account,
+                        points.times.into_iter().zip(points.values).collect(),
+                    )
+                }),
+        );
+    }
+
+    anyhow::ensure!(
+        !series.is_empty(),
+        "apy-api has no net APY history for any of {} validators",
+        vote_accounts.len()
+    );
+    Ok(series)
+}
+
+pub fn load_last_closed_epoch(warehouse: &Warehouse) -> Option<(u64, DateTime<Utc>)> {
+    warehouse
+        .epochs
+        .last_key_value()
+        .map(|(epoch, record)| (*epoch, record.end_at))
+}
+
+pub fn load_net_apy_history_scope(
+    warehouse: &Warehouse,
+    epochs: u64,
+) -> (Vec<String>, Option<DateTime<Utc>>) {
+    let first_epoch = warehouse.window_start(epochs);
+    let mut vote_accounts: Vec<_> = warehouse
+        .snapshots
+        .range(first_epoch..)
+        .flat_map(|(_, snapshot)| snapshot.keys().cloned())
+        .collect();
+    vote_accounts.sort();
+    vote_accounts.dedup();
+    let first_start_at = warehouse
+        .epochs
+        .range(first_epoch..)
+        .map(|(_, record)| record.start_at)
+        .min();
+    (vote_accounts, first_start_at)
+}
+
+// `base` is the validator-bonds API base URL; `/v1/validators/{flag}` is appended here.
 async fn load_validator_flag<T, F>(
     base: &str,
     flag: &str,
@@ -1018,9 +1095,9 @@ pub async fn load_validators(
                     version: validator.version.clone(),
                     client_id,
                     client_name: client_name(client_id),
-                    client_label: client_label(client_id),
+                    client_label: client_label(client_id, validator.version.as_deref()),
                     client_vendor: client_vendor(client_id),
-                    client_lineage: client_lineage(client_id),
+                    client_lineage: client_lineage(client_id, validator.version.as_deref()),
                     client_id_raw: validator.client_id_raw.clone(),
                     feature_set: validator.feature_set.map(|set| set as u32),
                     shred_version: validator.shred_version.map(|version| version as u16),
@@ -1085,9 +1162,9 @@ pub async fn load_validators(
                 record.version = validator.version.clone();
                 record.client_id = client_id;
                 record.client_name = client_name(client_id);
-                record.client_label = client_label(client_id);
+                record.client_label = client_label(client_id, validator.version.as_deref());
                 record.client_vendor = client_vendor(client_id);
-                record.client_lineage = client_lineage(client_id);
+                record.client_lineage = client_lineage(client_id, validator.version.as_deref());
                 record.client_id_raw = validator.client_id_raw.clone();
                 record.feature_set = validator.feature_set.map(|set| set as u32);
                 record.shred_version = validator.shred_version.map(|version| version as u16);
@@ -1128,8 +1205,20 @@ pub async fn load_validators(
                 record.has_last_epoch_stats = true;
             }
 
+            let epoch_stake = epoch.checked_sub(1).and_then(|previous_epoch| {
+                warehouse
+                    .snapshots
+                    .get(&previous_epoch)
+                    .or_else(|| warehouse.previous_snapshot.get(&previous_epoch))
+                    .and_then(|snapshot| snapshot.get(vote_account))
+                    .and_then(|previous| {
+                        (previous.activated_stake != Decimal::ZERO)
+                            .then_some(previous.activated_stake)
+                    })
+            });
             record.epoch_stats.push(ValidatorEpochStats {
                 epoch,
+                epoch_stake,
                 epoch_start_at: Some(epoch_record.map_or_else(Utc::now, |epoch| epoch.start_at)),
                 epoch_end_at: epoch_record.map(|epoch| epoch.end_at),
                 commission_max_observed: to_commission(validator.commission_max_observed)?,
@@ -1167,9 +1256,9 @@ pub async fn load_validators(
                 dc_country: validator.dc_country.clone(),
                 client_id,
                 client_name: client_name(client_id),
-                client_label: client_label(client_id),
+                client_label: client_label(client_id, validator.version.as_deref()),
                 client_vendor: client_vendor(client_id),
-                client_lineage: client_lineage(client_id),
+                client_lineage: client_lineage(client_id, validator.version.as_deref()),
                 client_id_raw: validator.client_id_raw.clone(),
                 feature_set: validator.feature_set.map(|set| set as u32),
                 shred_version: validator.shred_version.map(|version| version as u16),
@@ -1605,22 +1694,35 @@ const UNKNOWN_CLIENT_GROUP: &str = "unknown";
 
 // Empty rather than a word, so the sentinel cannot collide with a client name in the registry.
 fn client_id_group(validator: &Validator) -> String {
-    validator
+    let client = validator
         .client_id
         .map(|id| id.to_string())
         .or_else(|| validator.client_id_raw.clone())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    format!(
+        "{client}|{}",
+        validator.version.as_deref().unwrap_or_default()
+    )
 }
 
-fn grouped_by(key: &str, map: fn(Option<u16>) -> Option<String>) -> String {
-    map(effective_client_id(key.parse().ok(), Some(key)))
-        .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
+fn grouped_by(key: &str, map: fn(Option<u16>, Option<&str>) -> Option<String>) -> String {
+    let (client, version) = key.rsplit_once('|').unwrap_or((key, ""));
+    let version = if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    };
+    map(
+        effective_client_id(client.parse().ok(), Some(client)),
+        version,
+    )
+    .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string())
 }
 
 // One entry per client id, but several ids share a vendor.
 fn fold_distribution(
     distributions: &[StakeDistribution],
-    map: fn(Option<u16>) -> Option<String>,
+    map: fn(Option<u16>, Option<&str>) -> Option<String>,
 ) -> Vec<StakeDistribution> {
     distributions
         .iter()
@@ -1656,7 +1758,7 @@ fn fold_distribution(
 }
 
 fn client_diversity_stats(by_client_id: &[StakeDistribution]) -> Vec<ClientDiversityStats> {
-    fold_distribution(by_client_id, client_vendor)
+    fold_distribution(by_client_id, |client_id, _| client_vendor(client_id))
         .into_iter()
         .map(|distribution| ClientDiversityStats {
             epoch: distribution.epoch,
@@ -1869,6 +1971,8 @@ pub fn load_validators_aggregated_flat(
             )
         });
 
+        let last_client_version = last_client.and_then(|change| change.version.as_deref());
+
         let max_inflation_rewards_commission_bps =
             accumulator.max_inflation_rewards_commission_bps();
         validators.push(ValidatorAggregatedFlat {
@@ -1876,8 +1980,16 @@ pub fn load_validators_aggregated_flat(
             minimum_stake: accumulator.minimum_stake,
             avg_stake: accumulator.stake / accumulator.count as f64,
             avg_dc_concentration: accumulator.average_dc_concentration(),
-            avg_skip_rate: accumulator.skip_rate / accumulator.count as f64,
-            avg_grace_skip_rate: accumulator.grace_skip_rate / accumulator.count as f64,
+            avg_skip_rate: if accumulator.epochs_with_skip_rate > 0 {
+                accumulator.skip_rate / accumulator.epochs_with_skip_rate as f64
+            } else {
+                1.0
+            },
+            avg_grace_skip_rate: if accumulator.epochs_with_grace_skip_rate > 0 {
+                accumulator.grace_skip_rate / accumulator.epochs_with_grace_skip_rate as f64
+            } else {
+                1.0
+            },
             max_commission: accumulator.max_commission.try_into()?,
             avg_adjusted_credits: accumulator.average_adjusted_credits(),
             dc_aso: accumulator.dc_aso.unwrap_or_else(|| "Unknown".to_string()),
@@ -1885,7 +1997,7 @@ pub fn load_validators_aggregated_flat(
             version: last_version,
             client_vendor: client_vendor(last_client_id)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
-            client_lineage: client_lineage(last_client_id)
+            client_lineage: client_lineage(last_client_id, last_client_version)
                 .unwrap_or_else(|| UNKNOWN_CLIENT_GROUP.to_string()),
             max_inflation_rewards_commission_bps,
         });
@@ -1905,19 +2017,24 @@ impl ClusterEpoch {
     fn of(snapshot: &SnapshotDoc) -> Self {
         let mut stake = 0f64;
         let mut weighted_skip_rate = 0f64;
+        let mut known_skip_rate_stake = 0f64;
         let mut stake_by_aso: HashMap<String, f64> = Default::default();
 
         for validator in snapshot.values() {
             let activated_stake = validator.activated_stake.to_f64().unwrap_or_default();
             stake += activated_stake;
-            weighted_skip_rate += validator.skip_rate * activated_stake;
+            if let Some(skip_rate) = validator.skip_rate {
+                weighted_skip_rate += skip_rate * activated_stake;
+                known_skip_rate_stake += activated_stake;
+            }
             if let Some(aso) = validator.dc_aso.clone() {
                 *stake_by_aso.entry(aso).or_default() += activated_stake;
             }
         }
 
         Self {
-            weighted_skip_rate: (stake > 0f64).then(|| weighted_skip_rate / stake),
+            weighted_skip_rate: (known_skip_rate_stake > 0f64)
+                .then(|| weighted_skip_rate / known_skip_rate_stake),
             concentration_by_aso: stake_by_aso
                 .into_iter()
                 .map(|(aso, aso_stake)| (aso, aso_stake / stake))
@@ -1935,7 +2052,9 @@ struct FlatAccumulator {
     dc_concentration: f64,
     epochs_with_aso: u64,
     skip_rate: f64,
+    epochs_with_skip_rate: u64,
     grace_skip_rate: f64,
+    epochs_with_grace_skip_rate: u64,
     max_commission: i32,
     /// `None` once any epoch of the window carried no basis points: a
     /// maximum over a partial series would understate the rate.
@@ -1981,12 +2100,22 @@ impl FlatAccumulator {
             self.epochs_with_aso += 1;
         }
 
-        self.skip_rate += validator.skip_rate;
+        if let Some(skip_rate) = validator.skip_rate {
+            self.skip_rate += skip_rate;
+            self.epochs_with_skip_rate += 1;
+        }
         let leader_slots = validator.leader_slots.to_u64().unwrap_or_default();
-        self.grace_skip_rate += match (leader_slots < 200, cluster.weighted_skip_rate) {
-            (true, Some(cluster_skip_rate)) => validator.skip_rate.min(cluster_skip_rate),
-            _ => validator.skip_rate,
+        let grace_skip_rate = match (validator.skip_rate, cluster.weighted_skip_rate) {
+            (Some(skip_rate), Some(cluster_skip_rate)) if leader_slots < 200 => {
+                Some(skip_rate.min(cluster_skip_rate))
+            }
+            (Some(skip_rate), _) => Some(skip_rate),
+            (None, cluster_skip_rate) => cluster_skip_rate,
         };
+        if let Some(grace_skip_rate) = grace_skip_rate {
+            self.grace_skip_rate += grace_skip_rate;
+            self.epochs_with_grace_skip_rate += 1;
+        }
 
         let commission = validator
             .commission_effective

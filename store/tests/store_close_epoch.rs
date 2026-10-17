@@ -48,7 +48,7 @@ fn performance(commission: u8, delinquent: bool) -> ValidatorPerformance {
         credits_total: Some(10),
         leader_slots: 100,
         blocks_produced: 100,
-        skip_rate: 0f64,
+        skip_rate: Some(0f64),
         delinquent,
     }
 }
@@ -149,7 +149,7 @@ async fn run_close_epoch(directory: &Directory) {
             credits: Some(4242),
             leader_slots: 200,
             blocks_produced: 180,
-            skip_rate: 0.1,
+            skip_rate: Some(0.1),
             ..performance(9, false)
         },
     )
@@ -232,7 +232,7 @@ async fn close_epoch_seals_derives_and_marks_the_epoch_closed() {
     assert_eq!(validator.credits, Some(Decimal::from(4242)));
     assert_eq!(validator.leader_slots, Decimal::from(200));
     assert_eq!(validator.blocks_produced, Decimal::from(180));
-    assert_eq!(validator.skip_rate, 0.1);
+    assert_eq!(validator.skip_rate, Some(0.1));
     assert_eq!(validator.commission_effective, Some(EFFECTIVE as i32));
     assert_eq!(validator.commission_min_observed, Some(ADVERTISED as i32));
     assert_eq!(validator.commission_max_observed, Some(9));

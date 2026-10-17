@@ -60,7 +60,7 @@ pub fn validator(vote_account: &str, epoch: u64) -> Validator {
         vote_reward_lamports: None,
         leader_slots: 0.into(),
         blocks_produced: 0.into(),
-        skip_rate: 0f64,
+        skip_rate: Some(0f64),
         uptime_pct: None,
         uptime: None,
         downtime: None,
@@ -94,7 +94,7 @@ pub fn validator_performance() -> ValidatorPerformance {
         credits_total: Some(10),
         leader_slots: 100,
         blocks_produced: 100,
-        skip_rate: 0f64,
+        skip_rate: Some(0f64),
         delinquent: false,
     }
 }

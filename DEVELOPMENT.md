@@ -7,6 +7,9 @@ Running the collectors CLI locally.
 The store keeps its documents in a bucket, so a local run needs the emulator
 and the directory in front of it.
 
+The container gets no network (`--network none`) and serves only a Unix socket in a host
+directory, so it adds no bridge, veth or iptables rules and nothing on the LAN can reach it.
+
 ```bash
 export GCS_PORT=4443
 export DIRECTORY_PORT=8080

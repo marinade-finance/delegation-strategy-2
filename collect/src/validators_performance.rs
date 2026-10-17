@@ -1,4 +1,5 @@
 use crate::common::*;
+use crate::leader_schedule::get_block_production_by_vote_account;
 use crate::slot_params::{
     baseline_slots_per_year, get_slot_time_activations, nearest_slot_time_ms, select_slot_params,
     SlotParams, SLOTS_IN_EPOCH,
@@ -96,7 +97,9 @@ pub struct ValidatorPerformance {
     pub credits_total: Option<u64>,
     pub leader_slots: usize,
     pub blocks_produced: usize,
-    pub skip_rate: f64,
+    // None when no leader slot of the vote account is resolved.
+    #[serde(default)]
+    pub skip_rate: Option<f64>,
     pub delinquent: bool,
 }
 
@@ -203,6 +206,7 @@ fn inflation_and_supply_at(
 pub fn validators_performance(
     client: &RpcClient,
     epoch: Epoch,
+    current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
     rpc_attempts: usize,
     node_info: &HashMap<String, NodeContact>,
@@ -216,7 +220,7 @@ pub fn validators_performance(
         .collect();
     // block production is the first RPC after the whois fetch; retry so a keep-alive socket dropped during that idle gap doesn't abort the whole snapshot
     let production_by_validator = retry_blocking(
-        || get_block_production_by_validator(client, epoch),
+        || get_block_production_by_vote_account(client, epoch, current_epoch, vote_accounts),
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
@@ -232,7 +236,7 @@ pub fn validators_performance(
         let vote_pubkey = vote_account.vote_pubkey.clone();
         let identity = vote_account.node_pubkey.clone();
         let (leader_slots, blocks_produced) = production_by_validator
-            .get(&identity)
+            .get(&vote_pubkey)
             .cloned()
             .unwrap_or((0, 0));
 
@@ -264,11 +268,8 @@ pub fn validators_performance(
                 credits_total: latest_credits_total(&vote_account.epoch_credits),
                 leader_slots,
                 blocks_produced,
-                skip_rate: if leader_slots == 0 {
-                    0f64
-                } else {
-                    1f64 - (blocks_produced as f64 / leader_slots as f64)
-                },
+                skip_rate: (leader_slots > 0)
+                    .then(|| 1f64 - (blocks_produced as f64 / leader_slots as f64)),
                 delinquent: delinquent.contains(&vote_pubkey),
             },
         );
@@ -333,6 +334,7 @@ pub fn collect_validators_performance_info(
     let validators = validators_performance(
         &client,
         epoch,
+        current_epoch_info.epoch,
         &vote_accounts,
         performance_params.rpc_attempts,
         &node_info,

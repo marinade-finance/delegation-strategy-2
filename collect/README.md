@@ -29,7 +29,7 @@ cargo run --bin collect -- jito-priority --epoch $EPOCH | \
 cargo run --bin collect -- jito-mev --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/jito-mev.yaml
 
-# getBlockProduction method works only with recent epochs (cannot work with EPOCH-1)
+# leader slots come from the BigQuery leader_schedule table and blocks from the SlotHistory sysvar, which holds about 2 epochs
 cargo run --bin collect -- validators-performance --epoch $EPOCH | \
   tee "$OUTPUT_DIR"/snapshot-performance-last-epoch.yaml
 ```

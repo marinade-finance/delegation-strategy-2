@@ -224,19 +224,24 @@ fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored() {
     let mut warehouse = Warehouse::default();
     warehouse.live.cluster_info.epoch = LAST_EPOCH;
     let changes: Vec<VersionSample> = [
-        (None, None),
-        (None, Some("Raiku2")),
-        (None, Some("Agave")),
-        (None, Some("Unknown(12)")),
-        (Some(12), Some("FireBAM")),
+        (None, None, None),
+        (None, Some("Raiku2"), None),
+        (None, Some("Agave"), None),
+        (None, Some("Unknown(12)"), None),
+        (Some(12), Some("FireBAM"), None),
+        (Some(12), Some("FireBAM"), Some("26.9.4")),
+        (Some(12), Some("FireBAM"), Some("0.1204.40300")),
     ]
     .into_iter()
-    .map(|(client_id, raw)| version_sample(client_id, raw))
+    .map(|(client_id, raw, version)| VersionSample {
+        version: version.map(str::to_string),
+        ..version_sample(client_id, raw)
+    })
     .collect();
     warehouse.live.versions.insert(
         "voteClientColumns".to_string(),
         VersionState {
-            last: changes[4].clone(),
+            last: changes[6].clone(),
             changes,
         },
     );
@@ -275,9 +280,9 @@ fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored() {
             Some(raw.to_string()),
             stored.or(Some(12)),
             "FireBAM".to_string(),
-            "Frankendancer + JitoBAM".to_string(),
+            "Firedancer + JitoBAM".to_string(),
             Some("bam".to_string()),
-            Some("frankendancer".to_string()),
+            Some("firedancer".to_string()),
         )
     };
     assert_eq!(
@@ -293,6 +298,15 @@ fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored() {
                 Some("agave".to_string()),
             ),
             firebam("FireBAM", Some(12)),
+            firebam("FireBAM", Some(12)),
+            (
+                Some("FireBAM".to_string()),
+                Some(12),
+                "FireBAM".to_string(),
+                "Frankendancer + JitoBAM".to_string(),
+                Some("bam".to_string()),
+                Some("frankendancer".to_string()),
+            ),
             unknown(Some("Raiku2")),
             firebam("Unknown(12)", None),
         ],
@@ -306,17 +320,21 @@ fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored() {
 async fn load_validators_classifies_the_record_and_its_epoch_stats() {
     let mut warehouse = Warehouse::default();
     warehouse.live.cluster_info.epoch = LAST_EPOCH;
-    for (vote_account, client_id, client_id_raw) in [
-        ("voteRegistered", Some(12), Some("FireBAM")),
-        ("voteRawOnly", None, Some("JitoLabs")),
-        ("voteReported", None, Some("Raiku2")),
-        ("voteNoClient", None, None),
+    for (vote_account, client_id, client_id_raw, version) in [
+        ("voteRegistered", Some(12), Some("FireBAM"), Some("26.9.4")),
+        (
+            "voteFrankenBam",
+            Some(12),
+            Some("FireBAM"),
+            Some("0.1204.40300"),
+        ),
+        ("voteRawOnly", None, Some("JitoLabs"), None),
+        ("voteReported", None, Some("Raiku2"), None),
+        ("voteNoClient", None, None, None),
     ] {
-        store_validator(
-            &mut warehouse,
-            LAST_EPOCH,
-            validator(vote_account, LAST_EPOCH, 100, 0, client_id, client_id_raw),
-        );
+        let mut validator = validator(vote_account, LAST_EPOCH, 100, 0, client_id, client_id_raw);
+        validator.version = version.map(str::to_string);
+        store_validator(&mut warehouse, LAST_EPOCH, validator);
     }
 
     let overlays = ValidatorOverlays {
@@ -356,6 +374,15 @@ async fn load_validators_classifies_the_record_and_its_epoch_stats() {
     for (vote_account, expected) in [
         (
             "voteRegistered",
+            (
+                "FireBAM",
+                "Firedancer + JitoBAM",
+                Some("bam"),
+                Some("firedancer"),
+            ),
+        ),
+        (
+            "voteFrankenBam",
             (
                 "FireBAM",
                 "Frankendancer + JitoBAM",

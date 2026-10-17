@@ -106,6 +106,66 @@ pub fn load_epoch_reward_mix(warehouse: &Warehouse) -> HashMap<u64, RewardMixSha
     mix
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EpochTakeRates {
+    pub realized: f64,
+    pub expected: Option<f64>,
+}
+
+pub fn load_epoch_take_rates(
+    warehouse: &Warehouse,
+    epochs: u64,
+) -> HashMap<(String, u64), EpochTakeRates> {
+    let reward_mix = load_epoch_reward_mix(warehouse);
+    let mut rates = HashMap::new();
+    for (epoch, rewards) in warehouse
+        .validator_rewards
+        .range(warehouse.window_start(epochs)..)
+    {
+        for (vote_account, entry) in rewards.iter() {
+            rates.insert(
+                (vote_account.clone(), *epoch),
+                EpochTakeRates {
+                    realized: entry.take_rate,
+                    expected: reward_mix.get(epoch).and_then(|shares| {
+                        get_expected_take_rate(warehouse, *epoch, vote_account, *shares)
+                    }),
+                },
+            );
+        }
+    }
+    rates
+}
+
+fn get_expected_take_rate(
+    warehouse: &Warehouse,
+    epoch: u64,
+    vote_account: &str,
+    shares: RewardMixShares,
+) -> Option<f64> {
+    let validator = warehouse
+        .snapshots
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    let mev = warehouse
+        .mev
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    let priority = warehouse
+        .priority_fees
+        .get(&epoch)
+        .and_then(|doc| doc.get(vote_account));
+    expected_take_rate(
+        shares,
+        worst_known_commission(
+            validator.and_then(|v| v.commission_max_observed),
+            validator.and_then(|v| v.commission_advertised),
+        ),
+        mev.map(|entry| entry.mev_commission),
+        priority.map(|entry| entry.priority_commission),
+    )
+}
+
 /// One validator's take rate per epoch, oldest first, over the epochs the
 /// warehouse holds. `epoch_start_at` and `epoch_end_at` are null where the
 /// epoch is not sealed yet.
@@ -113,7 +173,7 @@ pub fn get_take_rate_series(
     warehouse: &Warehouse,
     vote_account: &str,
     from_epoch: Option<u64>,
-    reward_mix: &HashMap<u64, RewardMixShares>,
+    rates: &HashMap<(String, u64), EpochTakeRates>,
 ) -> Vec<TakeRateRecord> {
     let from_epoch = from_epoch.unwrap_or_default();
     let mut records = Vec::new();
@@ -122,37 +182,14 @@ pub fn get_take_rate_series(
             continue;
         };
         let epoch_record = warehouse.epochs.get(epoch);
-        let validator = warehouse
-            .snapshots
-            .get(epoch)
-            .and_then(|snapshot| snapshot.get(vote_account));
-        let mev_commission_bps = warehouse
-            .mev
-            .get(epoch)
-            .and_then(|mev| mev.get(vote_account))
-            .map(|mev| mev.mev_commission);
-        let priority_commission_bps = warehouse
-            .priority_fees
-            .get(epoch)
-            .and_then(|fees| fees.get(vote_account))
-            .map(|fees| fees.priority_commission);
-
         records.push(TakeRateRecord {
             epoch: *epoch,
             epoch_start_at: epoch_record.map(|record| record.start_at),
             epoch_end_at: epoch_record.map(|record| record.end_at),
             realized_take_rate: entry.take_rate,
-            expected_take_rate: reward_mix.get(epoch).and_then(|shares| {
-                expected_take_rate(
-                    *shares,
-                    worst_known_commission(
-                        validator.and_then(|v| v.commission_max_observed),
-                        validator.and_then(|v| v.commission_advertised),
-                    ),
-                    mev_commission_bps,
-                    priority_commission_bps,
-                )
-            }),
+            expected_take_rate: rates
+                .get(&(vote_account.to_string(), *epoch))
+                .and_then(|rates| rates.expected),
             created_at: entry.created_at,
         });
     }

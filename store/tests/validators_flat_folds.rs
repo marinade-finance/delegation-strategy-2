@@ -221,3 +221,29 @@ fn validators_flat_averages_the_window_it_is_given() {
     );
     assert_eq!(validator.dc_aso, "Unknown");
 }
+
+#[test]
+fn validators_flat_grace_average_ignores_an_epoch_without_any_known_rate() {
+    let mut warehouse = warehouse_with_window();
+    for (epoch, snapshot) in warehouse.snapshots.iter_mut() {
+        let validator = snapshot.get_mut(VOTE_ACCOUNT).unwrap();
+        validator.skip_rate = if *epoch == LAST_EPOCH - EPOCHS + 1 {
+            None
+        } else {
+            Some(0.2)
+        };
+    }
+
+    let validators = load_validators_aggregated_flat(&warehouse, LAST_EPOCH, EPOCHS).unwrap();
+    assert_eq!(validators.len(), 1);
+    assert!((validators[0].avg_skip_rate - 0.2).abs() < 1e-12);
+    assert!((validators[0].avg_grace_skip_rate - 0.2).abs() < 1e-12);
+
+    for snapshot in warehouse.snapshots.values_mut() {
+        snapshot.get_mut(VOTE_ACCOUNT).unwrap().skip_rate = None;
+    }
+    let validators = load_validators_aggregated_flat(&warehouse, LAST_EPOCH, EPOCHS).unwrap();
+    assert_eq!(validators.len(), 1);
+    assert_eq!(validators[0].avg_skip_rate, 1.0);
+    assert_eq!(validators[0].avg_grace_skip_rate, 1.0);
+}

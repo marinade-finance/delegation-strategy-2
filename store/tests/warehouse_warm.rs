@@ -35,7 +35,7 @@ fn validator(activated_stake: u64) -> Validator {
         credits: Some(100.into()),
         leader_slots: 100.into(),
         blocks_produced: 90.into(),
-        skip_rate: 0.1,
+        skip_rate: Some(0.1),
         uptime_pct: Some(1.0),
         uptime: Some(3600.into()),
         downtime: Some(0.into()),

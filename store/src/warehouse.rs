@@ -28,6 +28,7 @@ pub struct Live {
 #[derive(Default)]
 pub struct Warehouse {
     pub snapshots: BTreeMap<u64, SnapshotDoc>,
+    pub previous_snapshot: BTreeMap<u64, SnapshotDoc>,
     pub mev: BTreeMap<u64, MevDoc>,
     pub priority_fees: BTreeMap<u64, PriorityFeeDoc>,
     pub events: BTreeMap<u64, EventsDoc>,
@@ -54,6 +55,20 @@ impl Warehouse {
         let window = last_epoch.saturating_sub(epochs.saturating_sub(1))..=last_epoch;
         info!("Warming documents of epochs {window:?}");
 
+        if let Some(previous_epoch) = window.start().checked_sub(1) {
+            if let Some(snapshot) = self.snapshots.remove(&previous_epoch) {
+                self.previous_snapshot.insert(previous_epoch, snapshot);
+            }
+            self.warm_kind(
+                directory,
+                SNAPSHOT_DIR,
+                previous_epoch..=previous_epoch,
+                |w| &mut w.previous_snapshot,
+            )
+            .await?;
+        } else {
+            self.previous_snapshot.clear();
+        }
         self.warm_kind(directory, SNAPSHOT_DIR, window.clone(), |w| {
             &mut w.snapshots
         })

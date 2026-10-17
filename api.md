@@ -8,7 +8,7 @@ Query parameters:
 - `query_marinade_score` - Optional, if set, filters validators based on them having a positive score from Marinade.
 - `query_marinade_stake` - Optional, if set, filters validators based on them having stake from Marinade.
 - `query_with_names` - Optional, if set, filters validators based on them having/not having `info_name`.
-- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MarinadeScore`, `Apy`, `NetApy`, `Commission`, `Uptime`, `TakeRate`, `ExpectedTakeRate`.
+- `order_field` - Default `Stake`, possible values: `Stake`, `Credits`, `MarinadeScore`, `Apy`, `NetApy`, `Commission`, `Uptime`, `TakeRate`, `ExpectedTakeRate`, `NetPendingStake`.
 - `order_direction` - Default `DESC`, possible values: `ASC`, `DESC`.
 - `offset` - Default `0`.
 - `limit` - Default `100`.
@@ -54,7 +54,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
       "direct_deactivating_stake": null,
       "superminority": true,
       "credits": 156411,
-      "marinade_score": 0,
+      "score": 0,
       "warnings": [],
       "epoch_stats": [
         {
@@ -76,6 +76,8 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "superminority": true,
           "stake_to_become_superminority": 0,
           "credits": 156411,
+          "vote_reward_lamports": null,
+          "epoch_stake": "9488392700088216",
           "leader_slots": 4436,
           "blocks_produced": 4314,
           "skip_rate": 0.027502254283138017,
@@ -84,8 +86,8 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "downtime": null,
           "apr": null,
           "apy": null,
-          "marinade_score": 0,
-          "rank_marinade_score": 2371,
+          "score": 0,
+          "rank_score": 2371,
           "rank_activated_stake": 1,
           "rank_apy": null
         }
@@ -115,6 +117,8 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 | `vote_reward_lamports` | `null` | vote rewards after the migration | vote rewards |
 
 `credits` is also `null` when the collector has no data for the epoch. The same rules apply to `epoch_stats[].credits`, `epoch_stats[].vote_reward_lamports`, and `credits` in `/validators/{vote_account}/events`.
+
+`epoch_stats[].epoch_stake` is the stake the validator holds in that epoch's `epoch_stakes`, the Alpenglow reward committee: its `activated_stake` of the previous epoch, because agave freezes `epoch_stakes(E)` at the start of E-1. It is an approximation: agave freezes the value before paying the rewards at the start of E-1, and `activated_stake` includes them, so it reads about 0.03% higher. `null` means it held no stake then and is not a committee member, or that the collector has no data for the previous epoch. SIMD-0357 admission filtering is not applied.
 
 `apr` and `apy` come from the vote reward when there is one, and from the tower credits otherwise. In the migration epoch, they count only the reward after the migration.
 
@@ -170,6 +174,7 @@ Such an epoch is still returned by both query modes, including the open one.
 `realized_take_rate` is what the validator kept that epoch; `expected_take_rate` is what its
 commissions that epoch implied it would. It is `null` where no commission was recorded, and for
 the in-progress epoch, which has paid no inflation rewards to weight them by.
+Each cache refresh computes the expected rate from the cached documents.
 ```bash
 curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr/take-rates | jq
 ```
@@ -183,6 +188,48 @@ curl -sfLS localhost:8000/validators/XkCriyrNwS3G4rzAXtG5B1nnvb5Ka1JtCku93VqeKAr
       "realized_take_rate": 0.0812,
       "expected_take_rate": 0.1052,
       "created_at": "2022-11-30T15:58:04.038843Z"
+    }
+  ]
+}
+```
+
+## Provider and client history
+One `/providers` or `/clients` group per epoch, newest first, over the cached epochs (90).
+- `/providers/history?key=` - a `/providers` key.
+- `/providers/history?asn=` - any ASN a `/providers` row lists. It follows that ASN across provider renames; each epoch counts the whole provider group the ASN was in, merged when two names share it. `key` and `asn` are mutually exclusive, one is required.
+- `/clients/history?key=&level=` - a `/clients` parent key (`level=lineage`, default) or child key (`level=label`).
+- `epochs` - how many newest cluster epochs to cover, 1 to 90, default 90.
+
+Keys match case-insensitively; a key no group has answers 404. Validators with no provider or
+client are in the `Unknown` group, as on the lists. The newest epoch counts exactly what
+`/providers` and `/clients` count, so it matches the list row. Each older epoch counts the
+validators whose own row for that epoch puts them in the group, so a validator that moved counts in
+the old group before the move, and its `stake_share` is of every validator with a row that epoch.
+`net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
+the validator-rewards documents) are stake-weighted over the members that have one, and `null` for the open
+epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's
+value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
+lists.
+An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
+```bash
+curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
+```
+```json
+{
+  "name": "Agave + JitoBAM",
+  "current_epoch": 1050,
+  "net_apy_updated_at": "2026-10-07T12:00:00Z",
+  "epochs": [
+    {
+      "epoch": 1050,
+      "epoch_start_at": "2026-10-06T10:00:00Z",
+      "epoch_end_at": null,
+      "total_stake": "41000000000000000",
+      "stake_share": 0.105,
+      "validator_count": 120,
+      "net_apy": null,
+      "take_rate": null,
+      "expected_take_rate": 0.0731
     }
   ]
 }

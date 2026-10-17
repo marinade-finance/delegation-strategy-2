@@ -73,8 +73,8 @@ pub async fn handler(
         Err((status, message)) => return Ok(response_error(status, message)),
     };
 
-    let reward_mix = context_guard.cache.get_epoch_reward_mix();
-    let take_rates = get_take_rate_series(&warehouse, vote_key, from_epoch, reward_mix);
+    let epoch_take_rates = context_guard.cache.get_epoch_take_rates();
+    let take_rates = get_take_rate_series(&warehouse, vote_key, from_epoch, epoch_take_rates);
 
     Ok(warp::reply::with_status(
         json(&ResponseTakeRates { take_rates }),

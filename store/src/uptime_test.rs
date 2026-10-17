@@ -24,7 +24,7 @@ fn performance(
         credits_total,
         leader_slots: 0,
         blocks_produced: 0,
-        skip_rate: 0.0,
+        skip_rate: None,
         delinquent,
     }
 }

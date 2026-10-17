@@ -12,6 +12,8 @@ pub enum OrderField {
     StakeDelta7d,
     StakeDelta30d,
     ActivatingStake,
+    /// Orders by `activating_stake` minus `deactivating_stake`, negative when the row loses stake.
+    NetPendingStake,
     Credits,
     MarinadeScore,
     Apy,
@@ -54,6 +56,16 @@ impl From<Option<Decimal>> for SortKey {
     fn from(value: Option<Decimal>) -> Self {
         value.map_or(SortKey::Missing, SortKey::Number)
     }
+}
+
+pub fn net_pending_stake(
+    activating_stake: Option<Decimal>,
+    deactivating_stake: Option<Decimal>,
+) -> SortKey {
+    activating_stake
+        .zip(deactivating_stake)
+        .map(|(activating, deactivating)| activating - deactivating)
+        .into()
 }
 
 /// `Missing` stays last whichever way the present values go.

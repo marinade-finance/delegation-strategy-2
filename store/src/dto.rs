@@ -25,7 +25,7 @@ pub fn effective_client_id(client_id: Option<u16>, client_id_raw: Option<&str>) 
 // Gated on both halves of the registry — the CSV names and the vendored groupings — so an id in one but not the other cannot read as half-classified.
 fn classified(client_id: Option<u16>) -> Option<ClientId> {
     let client = ClientId::Registered(client_id?);
-    (client.name().is_some() && client.label().is_some()).then_some(client)
+    (client.name().is_some() && client.label(None).is_some()).then_some(client)
 }
 
 pub fn client_name(client_id: Option<u16>) -> String {
@@ -35,9 +35,9 @@ pub fn client_name(client_id: Option<u16>) -> String {
         .to_string()
 }
 
-pub fn client_label(client_id: Option<u16>) -> String {
+pub fn client_label(client_id: Option<u16>, version: Option<&str>) -> String {
     classified(client_id)
-        .and_then(|client| client.label())
+        .and_then(|client| client.label(version))
         .unwrap_or_else(|| UNKNOWN_CLIENT_NAME.to_string())
 }
 
@@ -45,8 +45,8 @@ pub fn client_vendor(client_id: Option<u16>) -> Option<String> {
     classified(client_id).and_then(|client| client.vendor().map(str::to_string))
 }
 
-pub fn client_lineage(client_id: Option<u16>) -> Option<String> {
-    classified(client_id).and_then(|client| client.lineage().map(str::to_string))
+pub fn client_lineage(client_id: Option<u16>, version: Option<&str>) -> Option<String> {
+    classified(client_id).and_then(|client| client.lineage(version).map(str::to_string))
 }
 
 /// Whether the registry places the client, so its vendor, lineage and block engine are known.
@@ -195,7 +195,7 @@ pub struct Validator {
     pub vote_reward_lamports: Option<Decimal>,
     pub leader_slots: Decimal,
     pub blocks_produced: Decimal,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     pub uptime_pct: Option<f64>,
     pub uptime: Option<Decimal>,
     pub downtime: Option<Decimal>,
@@ -412,9 +412,11 @@ pub struct ValidatorEpochStats {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
+    /// Alpenglow reward-committee stake: prior epoch's `activated_stake`. Null if none or no data.
+    pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     pub uptime_pct: Option<f64>,
     pub uptime: Option<u64>,
     pub downtime: Option<u64>,
@@ -785,7 +787,7 @@ pub struct SettlementRecord {
 pub struct PerformanceRecord {
     pub blocks_produced: u64,
     pub leader_slots: u64,
-    pub skip_rate: f64,
+    pub skip_rate: Option<f64>,
     /// Tower vote credits. Null in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
 }
@@ -923,6 +925,7 @@ pub struct ValidatorGroupRecord {
     pub stake_delta_7d: Option<Decimal>,
     pub stake_delta_30d: Option<Decimal>,
     pub activating_stake: Option<Decimal>,
+    pub deactivating_stake: Option<Decimal>,
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
@@ -1114,6 +1117,46 @@ pub struct ValidatorGroupTree {
     pub nodes: Vec<ValidatorGroupNode>,
     pub total_activated_stake: Decimal,
     pub current_epoch: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientLevel {
+    #[default]
+    Lineage,
+    Label,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
+pub struct GroupHistoryEpoch {
+    pub epoch: u64,
+    pub epoch_start_at: Option<DateTime<Utc>>,
+    pub epoch_end_at: Option<DateTime<Utc>>,
+    pub total_stake: Decimal,
+    pub stake_share: f64,
+    pub validator_count: u64,
+    pub net_apy: Option<f64>,
+    pub take_rate: Option<f64>,
+    pub expected_take_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GroupHistory {
+    pub name: String,
+    // Newest cached epoch of the cluster, not of the group, which may have no row in it.
+    pub current_epoch: Option<u64>,
+    // Newest first.
+    pub epochs: Vec<GroupHistoryEpoch>,
+}
+
+// Keyed by the case-folded group name.
+#[derive(Debug, Clone, Default)]
+pub struct GroupHistories {
+    pub providers: HashMap<String, GroupHistory>,
+    // Keyed by ASN; each epoch is the whole provider group the ASN was in, across renames.
+    pub provider_asns: HashMap<i32, GroupHistory>,
+    pub client_lineages: HashMap<String, GroupHistory>,
+    pub client_labels: HashMap<String, GroupHistory>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]

@@ -15,7 +15,8 @@ use store::releases::{
     load_feature_gate_floors, load_releases, load_sfdp_floors, store_releases, StoreReleasesParams,
 };
 use store::take_rates::{
-    get_take_rate_series, load_epoch_reward_mix, store_take_rates, StoreTakeRatesParams,
+    get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates, store_take_rates,
+    StoreTakeRatesParams,
 };
 use store::utils::RewardMixShares;
 use store::validators_sandwiches::{
@@ -441,7 +442,8 @@ fn the_take_rate_series_weights_each_epoch_by_its_own_commissions() {
     assert!((shares.mev - 0.05).abs() < 1e-12);
     assert!((shares.block - 0.05).abs() < 1e-12);
 
-    let series = get_take_rate_series(&warehouse, VOTE_ACCOUNT, None, &mix);
+    let rates = load_epoch_take_rates(&warehouse, 90);
+    let series = get_take_rate_series(&warehouse, VOTE_ACCOUNT, None, &rates);
     assert_eq!(
         series.iter().map(|record| record.epoch).collect::<Vec<_>>(),
         vec![EPOCH, EPOCH + 1, EPOCH + 2, EPOCH + 3],
@@ -477,7 +479,7 @@ fn the_take_rate_series_weights_each_epoch_by_its_own_commissions() {
         "an unsealed epoch has no boundaries to report"
     );
     assert_eq!(
-        get_take_rate_series(&warehouse, VOTE_ACCOUNT, Some(EPOCH + 2), &mix).len(),
+        get_take_rate_series(&warehouse, VOTE_ACCOUNT, Some(EPOCH + 2), &rates).len(),
         2
     );
 }
