@@ -49,11 +49,6 @@ jobs:
       - name: 🧭 Run cargo lint
         run: cargo fmt -- --check && cargo clippy
 
-      # The store-backed suites start marinade-directory themselves, on its
-      # in-memory backend, and fail rather than skip when the image is missing.
-      # marinade-directory is unreleased, and its main branch predates the store
-      # these suites talk to, so the image comes from the branch carrying it.
-      # Same GitHub App as the org's static-analysis workflow (marinade-finance/.github).
       - name: 🔑 Create token for the marinade-directory checkout
         id: directory-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -68,7 +63,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: marinade-finance/marinade-directory
-          ref: 20260618_go
+          ref: 35740d2ddb29da6bbd9813eea9df0637bc275626
           path: marinade-directory
           token: ${{ steps.directory-token.outputs.token }}
           persist-credentials: false
