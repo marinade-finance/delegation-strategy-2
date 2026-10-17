@@ -177,19 +177,27 @@ pub fn get_take_rate_series(
 ) -> Vec<TakeRateRecord> {
     let from_epoch = from_epoch.unwrap_or_default();
     let mut records = Vec::new();
+    let mut reward_mix = None;
     for (epoch, rewards) in warehouse.validator_rewards.range(from_epoch..) {
         let Some(entry) = rewards.get(vote_account) else {
             continue;
         };
         let epoch_record = warehouse.epochs.get(epoch);
+        let expected_take_rate = match rates.get(&(vote_account.to_string(), *epoch)) {
+            Some(rates) => rates.expected,
+            None => {
+                let mix = reward_mix.get_or_insert_with(|| load_epoch_reward_mix(warehouse));
+                mix.get(epoch).and_then(|shares| {
+                    get_expected_take_rate(warehouse, *epoch, vote_account, *shares)
+                })
+            }
+        };
         records.push(TakeRateRecord {
             epoch: *epoch,
             epoch_start_at: epoch_record.map(|record| record.start_at),
             epoch_end_at: epoch_record.map(|record| record.end_at),
             realized_take_rate: entry.take_rate,
-            expected_take_rate: rates
-                .get(&(vote_account.to_string(), *epoch))
-                .and_then(|rates| rates.expected),
+            expected_take_rate,
             created_at: entry.created_at,
         });
     }

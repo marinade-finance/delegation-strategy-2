@@ -4,12 +4,25 @@ use collect::releases::{ReleaseEntry, ReleaseSource, ReleasesSnapshot};
 use collect::slot_params::baseline_slots_per_year;
 use collect::take_rates::{ValidatorEpochRewards, ValidatorRewardsSnapshot};
 use collect::validator_version::ValidatorVersion;
+use collect::validators::Snapshot;
+use collect::validators_jito::{
+    JitoAccountType, JitoSnapshot, MevTipDistributionValidatorSnapshot,
+    PriorityFeeDistributionValidatorSnapshot,
+};
+use collect::validators_performance::{
+    ClusterInflation, ValidatorRewards, ValidatorsPerformanceSnapshot,
+};
 use collect::validators_sandwiches::{ValidatorSandwich, ValidatorsSandwichesSnapshot};
 use rust_decimal::Decimal;
+use std::collections::HashMap;
+use store::close_epoch::{close_epoch, CloseEpochParams};
+use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
+use store::commissions::{store_commissions, StoreCommissionsParams};
 use store::directory::Directory;
 use store::docs::{
-    epoch_doc_path, EpochDoc, MevEntry, ReleasesDoc, SandwichesDoc, ValidatorRewardsDoc,
-    RELEASES_PATH, SANDWICHES_DIR, VALIDATOR_REWARDS_DIR,
+    epoch_doc_path, EpochDoc, MevEntry, PriorityFeeEntry, ReleasesDoc, SandwichesDoc,
+    ValidatorRewardsDoc, ValidatorRewardsEntry, RELEASES_PATH, SANDWICHES_DIR,
+    VALIDATOR_REWARDS_DIR,
 };
 use store::releases::{
     load_feature_gate_floors, load_releases, load_sfdp_floors, store_releases, StoreReleasesParams,
@@ -18,10 +31,14 @@ use store::take_rates::{
     get_take_rate_series, load_epoch_reward_mix, load_epoch_take_rates, store_take_rates,
     StoreTakeRatesParams,
 };
+use store::uptime::{store_uptime, StoreUptimeParams};
 use store::utils::RewardMixShares;
+use store::validators::{store_validators, StoreValidatorsParams};
+use store::validators_jito::{store_jito, StoreJitoParams};
 use store::validators_sandwiches::{
     load_validator_sandwiches, store_sandwiches, StoreSandwichesParams,
 };
+use store::versions::{store_versions, StoreVersionsParams};
 use store::warehouse::Warehouse;
 
 mod common;
@@ -636,4 +653,354 @@ fn sandwich_incidents_are_read_with_the_epoch_boundaries_and_the_cluster_median(
         "the median over the four validators of the epoch"
     );
     assert_eq!(loaded["voteC"][0].cluster_median_rate, 1.5);
+}
+
+fn warehouse_with_take_rates(epochs: &[u64]) -> Warehouse {
+    let mut warehouse = Warehouse::default();
+    for &epoch in epochs {
+        let mut validator = common::validator(VOTE_ACCOUNT, epoch);
+        validator.commission_advertised = Some(10);
+        warehouse
+            .snapshots
+            .entry(epoch)
+            .or_default()
+            .insert(VOTE_ACCOUNT.into(), validator);
+        warehouse
+            .validator_rewards
+            .entry(epoch)
+            .or_default()
+            .insert(
+                VOTE_ACCOUNT.into(),
+                ValidatorRewardsEntry {
+                    validator_rewards: 10.into(),
+                    total_rewards: 100.into(),
+                    inflation_rewards: 90.into(),
+                    mev_rewards: 4.into(),
+                    block_rewards: 6.into(),
+                    take_rate: 0.1,
+                    created_at: at("2026-01-07T00:00:00Z"),
+                    updated_at: at("2026-01-07T00:00:00Z"),
+                },
+            );
+        warehouse.mev.entry(epoch).or_default().insert(
+            VOTE_ACCOUNT.into(),
+            MevEntry {
+                vote_account: VOTE_ACCOUNT.into(),
+                mev_commission: 800,
+                total_epoch_rewards: None,
+                claimed_epoch_rewards: None,
+                total_epoch_claimants: None,
+                epoch_active_claimants: None,
+                epoch_slot: Decimal::ZERO,
+                epoch: epoch.into(),
+                created_at: at("2026-01-07T00:00:00Z"),
+            },
+        );
+        warehouse.priority_fees.entry(epoch).or_default().insert(
+            VOTE_ACCOUNT.into(),
+            PriorityFeeEntry {
+                vote_account: VOTE_ACCOUNT.into(),
+                priority_commission: 2000,
+                total_lamports_transferred: Decimal::ZERO,
+                total_epoch_rewards: None,
+                claimed_epoch_rewards: None,
+                total_epoch_claimants: None,
+                epoch_active_claimants: None,
+                epoch_slot: Decimal::ZERO,
+                epoch: epoch.into(),
+                created_at: at("2026-01-07T00:00:00Z"),
+            },
+        );
+    }
+    warehouse
+}
+
+#[test]
+fn the_take_rate_series_keeps_the_oldest_expected_rate_when_cluster_info_is_ahead() {
+    let epochs: Vec<_> = (EPOCH - 89..=EPOCH).collect();
+    let mut warehouse = warehouse_with_take_rates(&epochs);
+    warehouse.live.cluster_info.epoch = EPOCH + 1;
+    let mut rates = load_epoch_take_rates(&warehouse, 90);
+    assert!(!rates.contains_key(&(VOTE_ACCOUNT.to_string(), EPOCH - 89)));
+    rates
+        .get_mut(&(VOTE_ACCOUNT.to_string(), EPOCH))
+        .unwrap()
+        .expected = None;
+    let series = get_take_rate_series(&warehouse, VOTE_ACCOUNT, None, &rates);
+    assert_eq!(series.len(), 90);
+    assert_eq!(series[0].epoch, EPOCH - 89);
+    assert!(
+        series[0]
+            .expected_take_rate
+            .is_some_and(|rate| (rate - 0.1052).abs() < 1e-12),
+        "oldest expected rate: {:?}",
+        series[0].expected_take_rate
+    );
+    assert_eq!(
+        series[89].expected_take_rate, None,
+        "a cached unknown rate remains authoritative"
+    );
+}
+
+#[test]
+fn epoch_take_rates_compute_each_rows_commissions_from_documents() {
+    let mut warehouse = warehouse_with_take_rates(&[EPOCH]);
+    warehouse.live.cluster_info.epoch = EPOCH;
+    let rates = load_epoch_take_rates(&warehouse, 3);
+    let rate = &rates[&(VOTE_ACCOUNT.to_string(), EPOCH)];
+    assert_eq!(rate.realized, 0.1);
+    assert!((rate.expected.unwrap() - 0.1052).abs() < 1e-12);
+}
+
+#[test]
+fn another_validators_rewards_reweight_the_expected_take_rate() {
+    let mut warehouse = warehouse_with_take_rates(&[EPOCH]);
+    warehouse.live.cluster_info.epoch = EPOCH;
+    warehouse.validator_rewards.get_mut(&EPOCH).unwrap().insert(
+        "voteOther".into(),
+        ValidatorRewardsEntry {
+            validator_rewards: 100.into(),
+            total_rewards: 100.into(),
+            inflation_rewards: Decimal::ZERO,
+            mev_rewards: Decimal::ZERO,
+            block_rewards: 100.into(),
+            take_rate: 1.0,
+            created_at: at("2026-01-07T00:00:00Z"),
+            updated_at: at("2026-01-07T00:00:00Z"),
+        },
+    );
+    let rates = load_epoch_take_rates(&warehouse, 3);
+    assert!((rates[&(VOTE_ACCOUNT.to_string(), EPOCH)].expected.unwrap() - 0.1526).abs() < 1e-12);
+}
+
+#[test]
+fn epoch_take_rates_cover_three_epochs_anchored_to_cluster_info() {
+    let mut warehouse = warehouse_with_take_rates(&[EPOCH - 3, EPOCH - 2, EPOCH - 1, EPOCH]);
+    warehouse.live.cluster_info.epoch = EPOCH;
+    warehouse.snapshots.remove(&EPOCH);
+    let rates = load_epoch_take_rates(&warehouse, 3);
+    assert_eq!(warehouse.last_epoch(), EPOCH - 1);
+    assert_eq!(rates.len(), 3);
+    assert!(!rates.contains_key(&(VOTE_ACCOUNT.to_string(), EPOCH - 3)));
+    for epoch in EPOCH - 2..EPOCH {
+        let rate = &rates[&(VOTE_ACCOUNT.to_string(), epoch)];
+        assert_eq!(rate.realized, 0.1);
+        assert!((rate.expected.unwrap() - 0.1052).abs() < 1e-12);
+    }
+    assert_eq!(rates[&(VOTE_ACCOUNT.to_string(), EPOCH)].expected, None);
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedRateWriter {
+    TakeRates,
+    JitoMev,
+    JitoPriority,
+    CloseEpoch,
+}
+
+async fn run_expected_rate_writer(directory: &Directory, writer: ExpectedRateWriter) {
+    match writer {
+        ExpectedRateWriter::TakeRates => {
+            run_store_take_rates(
+                directory,
+                "expected-rate-rewards",
+                "2026-01-07T00:00:00Z",
+                vec![ValidatorEpochRewards {
+                    epoch: EPOCH,
+                    vote_account: VOTE_ACCOUNT.into(),
+                    validator_rewards: 10,
+                    total_rewards: 100,
+                    inflation_rewards: 90,
+                    mev_rewards: 4,
+                    block_rewards: 6,
+                }],
+            )
+            .await;
+        }
+        ExpectedRateWriter::JitoMev | ExpectedRateWriter::JitoPriority => {
+            let (account_type, validator) = match writer {
+                ExpectedRateWriter::JitoMev => (
+                    JitoAccountType::MevTipDistribution,
+                    collect::validators_jito::ValidatorSnapshot::MevTipDistribution(
+                        MevTipDistributionValidatorSnapshot {
+                            vote_account: VOTE_ACCOUNT.into(),
+                            mev_commission: 800,
+                            epoch: EPOCH,
+                            total_epoch_rewards: None,
+                            claimed_epoch_rewards: None,
+                            total_epoch_claimants: None,
+                            epoch_active_claimants: None,
+                        },
+                    ),
+                ),
+                _ => (
+                    JitoAccountType::PriorityFeeDistribution,
+                    collect::validators_jito::ValidatorSnapshot::PriorityFeeDistribution(
+                        PriorityFeeDistributionValidatorSnapshot {
+                            vote_account: VOTE_ACCOUNT.into(),
+                            priority_commission: 2000,
+                            total_lamports_transferred: 0,
+                            merkle_root_upload_authority: "authority".into(),
+                            epoch: EPOCH,
+                            total_epoch_rewards: None,
+                            claimed_epoch_rewards: None,
+                            total_epoch_claimants: None,
+                            epoch_active_claimants: None,
+                        },
+                    ),
+                ),
+            };
+            let snapshot = JitoSnapshot {
+                epoch: EPOCH,
+                version: 1,
+                account_type: account_type.clone(),
+                loaded_at_epoch: EPOCH + 1,
+                loaded_at_slot_index: 0,
+                created_at: "2026-01-07T00:00:00Z".into(),
+                validators: HashMap::from([(VOTE_ACCOUNT.to_string(), validator)]),
+            };
+            let path = common::write_yaml("expected-rate-jito", &snapshot);
+            store_jito(
+                StoreJitoParams::parse_from(["store", "--snapshot-file", &path]),
+                directory,
+                account_type,
+            )
+            .await
+            .expect("store Jito commissions");
+            std::fs::remove_file(path).expect("remove snapshot");
+        }
+        ExpectedRateWriter::CloseEpoch => {
+            let mut performance = common::validator_performance();
+            performance.commission = 10;
+            let snapshot = ValidatorsPerformanceSnapshot {
+                epoch: EPOCH,
+                epoch_slot: 432000,
+                transaction_count: 200,
+                created_at: "2026-01-07T00:02:00Z".into(),
+                slots_per_year: baseline_slots_per_year(),
+                cluster_inflation: Some(ClusterInflation {
+                    sol_total_supply: 500_000_000,
+                    inflation: 0.045,
+                    inflation_taper: 0.15,
+                }),
+                validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance)]),
+                rewards: Some(HashMap::from([(
+                    VOTE_ACCOUNT.to_string(),
+                    ValidatorRewards {
+                        commission_effective: Some(10),
+                    },
+                )])),
+                nodes: Default::default(),
+            };
+            let path = common::write_yaml("expected-rate-close", &snapshot);
+            close_epoch(
+                CloseEpochParams::parse_from(["store", "--snapshot-file", &path]),
+                directory,
+            )
+            .await
+            .expect("close epoch");
+            std::fs::remove_file(path).expect("remove snapshot");
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_document_writer_order_converges_to_the_same_expected_take_rate() {
+    for (name, order) in [
+        (
+            "expected-rate-rewards-first",
+            [
+                ExpectedRateWriter::TakeRates,
+                ExpectedRateWriter::JitoMev,
+                ExpectedRateWriter::JitoPriority,
+                ExpectedRateWriter::CloseEpoch,
+            ],
+        ),
+        (
+            "expected-rate-rewards-last",
+            [
+                ExpectedRateWriter::CloseEpoch,
+                ExpectedRateWriter::JitoPriority,
+                ExpectedRateWriter::JitoMev,
+                ExpectedRateWriter::TakeRates,
+            ],
+        ),
+    ] {
+        let Some(store) = common::directory_store(name).await else {
+            return;
+        };
+        let directory = store.client();
+        let mut performance = common::validator_performance();
+        performance.commission = 10;
+        let snapshot = Snapshot {
+            epoch: EPOCH,
+            created_at: "2026-01-07T00:00:00Z".into(),
+            validators: vec![common::validator_snapshot(
+                "identityExpectedRate",
+                VOTE_ACCOUNT,
+                performance.clone(),
+            )],
+        };
+        let path = common::write_yaml("expected-rate-validators", &snapshot);
+        store_validators(
+            StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
+            &directory,
+        )
+        .await
+        .expect("store validators");
+        std::fs::remove_file(path).expect("remove snapshot");
+        for (epoch_slot, created_at) in [(0, "2026-01-07T00:00:00Z"), (1, "2026-01-07T00:01:00Z")] {
+            let snapshot = ValidatorsPerformanceSnapshot {
+                epoch: EPOCH,
+                epoch_slot,
+                transaction_count: epoch_slot * 100,
+                created_at: created_at.into(),
+                slots_per_year: baseline_slots_per_year(),
+                cluster_inflation: None,
+                validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance.clone())]),
+                rewards: None,
+                nodes: Default::default(),
+            };
+            let path = common::write_yaml("expected-rate-streams", &snapshot);
+            store_uptime(
+                StoreUptimeParams::parse_from(["store", "--snapshot-file", &path]),
+                &directory,
+            )
+            .await
+            .unwrap();
+            store_commissions(
+                StoreCommissionsParams::parse_from(["store", "--snapshot-file", &path]),
+                &directory,
+            )
+            .await
+            .unwrap();
+            store_versions(
+                StoreVersionsParams::parse_from(["store", "--snapshot-file", &path]),
+                &directory,
+            )
+            .await
+            .unwrap();
+            store_cluster_info(
+                StoreClusterInfoParams::parse_from(["store", "--snapshot-file", &path]),
+                &directory,
+            )
+            .await
+            .unwrap();
+            std::fs::remove_file(path).expect("remove snapshot");
+        }
+        for writer in order {
+            run_expected_rate_writer(&directory, writer).await;
+        }
+        let mut warehouse = Warehouse::default();
+        warehouse.warm(&directory, 3).await.expect("warm documents");
+        let rates = load_epoch_take_rates(&warehouse, 3);
+        let rate = &rates[&(VOTE_ACCOUNT.to_string(), EPOCH)];
+        assert_eq!(rate.realized, 0.1);
+        assert!(
+            (rate.expected.unwrap() - 0.1052).abs() < 1e-12,
+            "writer order: {name}"
+        );
+        let series = get_take_rate_series(&warehouse, VOTE_ACCOUNT, None, &rates);
+        assert!((series[0].expected_take_rate.unwrap() - 0.1052).abs() < 1e-12);
+    }
 }
