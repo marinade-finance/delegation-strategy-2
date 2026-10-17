@@ -247,3 +247,58 @@ fn validators_flat_grace_average_ignores_an_epoch_without_any_known_rate() {
     assert_eq!(validators[0].avg_skip_rate, 1.0);
     assert_eq!(validators[0].avg_grace_skip_rate, 1.0);
 }
+
+#[test]
+fn validators_flat_reads_an_unknown_skip_rate_as_unknown() {
+    let mut warehouse = Warehouse::default();
+    for epoch in (LAST_EPOCH - EPOCHS + 1)..=LAST_EPOCH {
+        let partly_skip_rate = (epoch != LAST_EPOCH).then_some(0.1);
+        for (vote_account, stake, leader_slots, blocks_produced, skip_rate) in [
+            ("graced", 100, 100, 50, Some(0.5)),
+            ("steady", 100, 300, 240, Some(0.2)),
+            ("unknown", 1000, 0, 0, None),
+            ("partly", 100, 300, 270, partly_skip_rate),
+        ] {
+            let validator = Validator {
+                activated_stake: stake.into(),
+                credits: Some(10.into()),
+                leader_slots: leader_slots.into(),
+                blocks_produced: blocks_produced.into(),
+                skip_rate,
+                ..common::validator(vote_account, epoch)
+            };
+            warehouse
+                .snapshots
+                .entry(epoch)
+                .or_default()
+                .insert(vote_account.to_string(), validator);
+        }
+    }
+
+    let validators = load_validators_aggregated_flat(&warehouse, LAST_EPOCH, EPOCHS).unwrap();
+    assert_eq!(validators.len(), 4);
+    let flat = |vote_account: &str| {
+        validators
+            .iter()
+            .find(|v| v.vote_account == vote_account)
+            .unwrap()
+    };
+    let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
+    let cluster_with_partly = (0.5 * 100.0 + 0.2 * 100.0 + 0.1 * 100.0) / 300.0;
+    let cluster_without_partly = (0.5 * 100.0 + 0.2 * 100.0) / 200.0;
+    let graced_expected =
+        ((EPOCHS - 1) as f64 * cluster_with_partly + cluster_without_partly) / EPOCHS as f64;
+    let partly_grace_expected =
+        ((EPOCHS - 1) as f64 * 0.1 + cluster_without_partly) / EPOCHS as f64;
+
+    assert!(close(flat("partly").avg_skip_rate, 0.1));
+    assert!(close(
+        flat("partly").avg_grace_skip_rate,
+        partly_grace_expected
+    ));
+    assert!(close(flat("graced").avg_skip_rate, 0.5));
+    assert!(close(flat("graced").avg_grace_skip_rate, graced_expected));
+    assert!(close(flat("steady").avg_grace_skip_rate, 0.2));
+    assert_eq!(flat("unknown").avg_skip_rate, 1.0);
+    assert!(close(flat("unknown").avg_grace_skip_rate, graced_expected));
+}

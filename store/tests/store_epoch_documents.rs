@@ -78,7 +78,11 @@ fn performance(client: &ClientFields) -> ValidatorPerformance {
     }
 }
 
-async fn run_store_validators(directory: &Directory, name: &str, client: &ClientFields) {
+async fn run_store_validators(
+    directory: &Directory,
+    name: &str,
+    performance: ValidatorPerformance,
+) {
     let snapshot = Snapshot {
         epoch: EPOCH,
         created_at: CREATED_AT.into(),
@@ -87,7 +91,7 @@ async fn run_store_validators(directory: &Directory, name: &str, client: &Client
                 coordinates: Some((LON, LAT)),
                 ..Default::default()
             }),
-            ..common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, performance(client))
+            ..common::validator_snapshot(IDENTITY, VOTE_ACCOUNT, performance)
         }],
     };
     let path = common::write_yaml(name, &snapshot);
@@ -130,7 +134,7 @@ async fn store_validators_round_trips_coordinates_without_swapping_them() {
     };
     let directory = store.client();
 
-    run_store_validators(&directory, "coordinates-create", &agave()).await;
+    run_store_validators(&directory, "coordinates-create", performance(&agave())).await;
     let created = stored_snapshot(&directory).await;
     assert_eq!(
         (
@@ -141,7 +145,7 @@ async fn store_validators_round_trips_coordinates_without_swapping_them() {
         "create path"
     );
 
-    run_store_validators(&directory, "coordinates-merge", &agave()).await;
+    run_store_validators(&directory, "coordinates-merge", performance(&agave())).await;
     let merged = stored_snapshot(&directory).await;
     assert_eq!(merged.len(), 1, "the second run must merge, not duplicate");
     assert_eq!(
@@ -161,8 +165,8 @@ async fn store_validators_keeps_the_last_known_client_when_gossip_reports_none()
     };
     let directory = store.client();
 
-    run_store_validators(&directory, "gossip-gap-seed", &agave()).await;
-    run_store_validators(&directory, "gossip-gap-empty", &no_client()).await;
+    run_store_validators(&directory, "gossip-gap-seed", performance(&agave())).await;
+    run_store_validators(&directory, "gossip-gap-empty", performance(&no_client())).await;
 
     assert_client(
         &stored_snapshot(&directory).await,
@@ -180,8 +184,13 @@ async fn store_validators_clears_a_stale_classification_when_the_client_becomes_
     };
     let directory = store.client();
 
-    run_store_validators(&directory, "unrecognized-seed", &agave()).await;
-    run_store_validators(&directory, "unrecognized-switch", &unrecognized()).await;
+    run_store_validators(&directory, "unrecognized-seed", performance(&agave())).await;
+    run_store_validators(
+        &directory,
+        "unrecognized-switch",
+        performance(&unrecognized()),
+    )
+    .await;
 
     assert_client(
         &stored_snapshot(&directory).await,
@@ -197,31 +206,18 @@ async fn store_validators_keeps_the_version_a_snapshot_cannot_see() {
     };
     let directory = store.client();
 
-    run_store_validators(&directory, "version-seed", &agave()).await;
+    run_store_validators(&directory, "version-seed", performance(&agave())).await;
     let mut blind = no_client();
     blind.client_id_raw = None;
-    let path = common::write_yaml(
-        "version-blind",
-        &Snapshot {
-            epoch: EPOCH,
-            created_at: CREATED_AT.into(),
-            validators: vec![common::validator_snapshot(
-                IDENTITY,
-                VOTE_ACCOUNT,
-                ValidatorPerformance {
-                    version: None,
-                    ..performance(&blind)
-                },
-            )],
-        },
-    );
-    store_validators(
-        StoreValidatorsParams::parse_from(["store", "--snapshot-file", &path]),
+    run_store_validators(
         &directory,
+        "version-blind",
+        ValidatorPerformance {
+            version: None,
+            ..performance(&blind)
+        },
     )
-    .await
-    .expect("store validators");
-    std::fs::remove_file(path).expect("remove snapshot");
+    .await;
 
     let stored = stored_snapshot(&directory).await;
     assert_eq!(
@@ -468,5 +464,33 @@ async fn store_block_rewards_merges_on_identity_and_vote_account() {
     assert_eq!(
         stored.created_at, stored.updated_at,
         "both runs carry the same snapshot time"
+    );
+}
+
+#[tokio::test]
+async fn an_unresolved_snapshot_stores_an_unknown_skip_rate() {
+    let Some(store) = common::directory_store("unresolved-skip-rate-snapshot").await else {
+        return;
+    };
+    let directory = store.client();
+    run_store_validators(
+        &directory,
+        "unresolved-skip-rate",
+        ValidatorPerformance {
+            leader_slots: 0,
+            blocks_produced: 0,
+            skip_rate: None,
+            ..performance(&agave())
+        },
+    )
+    .await;
+
+    let stored = stored_snapshot(&directory).await;
+    assert_eq!(
+        (
+            stored[VOTE_ACCOUNT].leader_slots,
+            stored[VOTE_ACCOUNT].skip_rate
+        ),
+        (Decimal::ZERO, None),
     );
 }

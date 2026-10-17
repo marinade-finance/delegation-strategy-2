@@ -521,3 +521,51 @@ async fn an_unstaked_epoch_keeps_no_reward_through_the_close() {
 
     assert_eq!(finalized(&directory).await, (None, None));
 }
+
+#[tokio::test]
+async fn close_epoch_overwrites_a_skip_rate_with_unknown() {
+    let Some(store) = common::directory_store("unresolved-skip-rate-close").await else {
+        return;
+    };
+    let directory = store.client();
+    seed_validators(&directory).await;
+    seed_streams(&directory).await;
+    let before: SnapshotDoc = directory
+        .get(&epoch_doc_path(SNAPSHOT_DIR, EPOCH))
+        .await
+        .expect("get snapshot")
+        .expect("snapshot document")
+        .body;
+    assert_eq!(
+        (
+            before[VOTE_ACCOUNT].leader_slots,
+            before[VOTE_ACCOUNT].skip_rate
+        ),
+        (Decimal::from(100), Some(0.0)),
+    );
+
+    run_close_epoch_with(
+        &directory,
+        ValidatorPerformance {
+            leader_slots: 0,
+            blocks_produced: 0,
+            skip_rate: None,
+            ..performance(ADVERTISED, false)
+        },
+    )
+    .await;
+
+    let after: SnapshotDoc = directory
+        .get(&epoch_doc_path(SNAPSHOT_DIR, EPOCH))
+        .await
+        .expect("get snapshot")
+        .expect("snapshot document")
+        .body;
+    assert_eq!(
+        (
+            after[VOTE_ACCOUNT].leader_slots,
+            after[VOTE_ACCOUNT].skip_rate
+        ),
+        (Decimal::ZERO, None),
+    );
+}
