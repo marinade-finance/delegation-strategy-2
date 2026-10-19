@@ -122,7 +122,6 @@ pub async fn get_events_with_context(
     psql_client: &Client,
     vote_account: &str,
     from_epoch: Option<u64>,
-    vote_performance: &HashMap<u64, f64>,
 ) -> anyhow::Result<Vec<EventEpochRecord>> {
     let from_epoch = match from_epoch {
         Some(from_epoch) => from_epoch,
@@ -198,7 +197,6 @@ pub async fn get_events_with_context(
                         .get::<_, Option<Decimal>>("credits")
                         .map(u64::try_from)
                         .transpose()?,
-                    vote_performance: vote_performance.get(&epoch).copied(),
                 }),
                 uptime_pct: row.get("uptime_pct"),
                 downtime: row
