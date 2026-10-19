@@ -76,7 +76,7 @@ enum CreditsRegime {
     Alpenglow,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EpochCredits {
     pub tower_credits: Option<u64>,
     pub vote_reward_lamports: Option<u64>,
@@ -167,6 +167,52 @@ pub fn split_epoch_credits(
         tower_credits: tower.flatten(),
         vote_reward_lamports: alpenglow.flatten(),
     })
+}
+
+// jsonParsed gives the epochs as numbers and the credits as strings
+fn parse_epoch_credits(account: &Value) -> Option<Vec<EpochCreditsEntry>> {
+    account["data"]["parsed"]["info"]["epochCredits"]
+        .as_array()?
+        .iter()
+        .map(|entry| {
+            let field = |name: &str| {
+                entry[name]
+                    .as_u64()
+                    .or_else(|| entry[name].as_str()?.parse().ok())
+            };
+            Some((
+                field("epoch")?,
+                field("credits")?,
+                field("previousCredits")?,
+            ))
+        })
+        .collect()
+}
+
+/// The whole `epochCredits` of each vote account, up to 64 entries. `getVoteAccounts` gives only the last 5.
+pub fn get_full_epoch_credits(
+    client: &RpcClient,
+    vote_pubkeys: &[String],
+) -> anyhow::Result<HashMap<String, Vec<EpochCreditsEntry>>> {
+    let mut histories = HashMap::with_capacity(vote_pubkeys.len());
+    for chunk in vote_pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS) {
+        let response: Value = client.send(
+            RpcRequest::GetMultipleAccounts,
+            json!([chunk, {"encoding": "jsonParsed"}]),
+        )?;
+        let accounts = response["value"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("getMultipleAccounts gave no value array"))?;
+        for (vote_pubkey, account) in chunk.iter().zip(accounts) {
+            match parse_epoch_credits(account) {
+                Some(history) => {
+                    histories.insert(vote_pubkey.clone(), history);
+                }
+                None => warn!("No epochCredits in the account data of {vote_pubkey}"),
+            }
+        }
+    }
+    Ok(histories)
 }
 
 pub fn latest_credits_total(history: &[EpochCreditsEntry]) -> Option<u64> {
@@ -2068,6 +2114,28 @@ mod epoch_credits_tests {
             (1043, 590625720152, 291696003588),
             (1044, 899173572261, 590625720152),
         ]
+    }
+
+    #[test]
+    fn parses_the_json_parsed_epoch_credits_with_the_marker() {
+        // testnet CsE3MdkQXYwEFuNsEkLajgqSEiLqN6aH7eBzhCdJecar, getMultipleAccounts jsonParsed at epoch 1064
+        let account = json!({"data": {"parsed": {"info": {"epochCredits": [
+            {"credits": "2363493328", "epoch": 1041, "previousCredits": "2356776777"},
+            {"credits": "2363558355", "epoch": 1042, "previousCredits": "2363493328"},
+            {"credits": "18446744073709551615", "epoch": 18446744073709551615u64, "previousCredits": "18446744073709551615"},
+            {"credits": "40737913671544", "epoch": 1042, "previousCredits": "2363558355"},
+            {"credits": "83016211702098", "epoch": 1043, "previousCredits": "40737913671544"},
+        ]}}}});
+        let history = parse_epoch_credits(&account).unwrap();
+        assert_eq!(history[2], (M, M, M));
+        assert_eq!(
+            split_epoch_credits(&vote_account(&history, 1), 1042, None),
+            Some(EpochCredits {
+                tower_credits: Some(65_027),
+                vote_reward_lamports: Some(40_735_550_113_189),
+            })
+        );
+        assert_eq!(parse_epoch_credits(&json!({"data": ["", "base64"]})), None);
     }
 
     #[test]
