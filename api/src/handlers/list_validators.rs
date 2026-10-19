@@ -805,7 +805,6 @@ mod tests {
             stake_to_become_superminority: Decimal::ZERO,
             credits: Some(1),
             vote_reward_lamports: None,
-            vote_performance: None,
             epoch_stake: None,
             leader_slots: 0,
             blocks_produced: 0,

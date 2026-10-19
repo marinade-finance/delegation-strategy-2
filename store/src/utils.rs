@@ -1696,7 +1696,6 @@ pub async fn load_validators(
                     .get::<_, Decimal>("stake_to_become_superminority"),
                 credits: tower_credits,
                 vote_reward_lamports,
-                vote_performance: epoch_vote_performance,
                 epoch_stake: row.get("epoch_stake"),
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),

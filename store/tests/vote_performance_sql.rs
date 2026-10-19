@@ -5,7 +5,6 @@ use rust_decimal::Decimal;
 use store::dto::UnstakeHint;
 use store::scoring::load_unstake_hints;
 use store::utils::{load_validators, load_validators_aggregated_flat, ValidatorOverlays};
-use store::validators_events::get_events_with_context;
 use store::vote_performance::load_vote_performance;
 use tokio_postgres::Client;
 
@@ -219,7 +218,7 @@ async fn the_flat_aggregate_adds_the_adjusted_vote_performance() {
 }
 
 #[tokio::test]
-async fn validators_and_events_serve_the_vote_performance() {
+async fn validators_and_epochs_get_the_vote_performance() {
     let schema = "ds_test_vote_performance_records";
     if skip_without_database(schema) {
         return;
@@ -236,47 +235,23 @@ async fn validators_and_events_serve_the_vote_performance() {
     )
     .await
     .unwrap();
+    let performance = load_vote_performance(&client, TOWER_EPOCHS[0], LAST_EPOCH)
+        .await
+        .unwrap();
     for row in ROWS.iter() {
-        let record = &records[row.vote_account];
-        assert_close(record.vote_performance.unwrap(), alpenglow_performance(row));
+        assert_close(
+            records[row.vote_account].vote_performance.unwrap(),
+            alpenglow_performance(row),
+        );
         let by_epoch = |epoch| {
-            record
-                .epoch_stats
-                .iter()
-                .find(|stats| stats.epoch == epoch)
-                .unwrap()
-                .vote_performance
+            performance
+                .get(&(epoch, row.vote_account.to_string()))
+                .copied()
         };
         assert_close(by_epoch(TOWER_EPOCHS[0]).unwrap(), tower_performance(row));
         assert_eq!(by_epoch(MIGRATION_EPOCH), None);
         assert_close(by_epoch(LAST_EPOCH).unwrap(), alpenglow_performance(row));
     }
-
-    let vote_performance = records["down"]
-        .epoch_stats
-        .iter()
-        .filter_map(|stats| Some((stats.epoch, stats.vote_performance?)))
-        .collect();
-    let events = get_events_with_context(&client, "down", Some(TOWER_EPOCHS[0]), &vote_performance)
-        .await
-        .unwrap();
-    let performance = |epoch| {
-        events
-            .iter()
-            .find(|event| event.epoch == epoch)
-            .and_then(|event| event.performance.as_ref())
-            .unwrap()
-            .vote_performance
-    };
-    assert_close(
-        performance(TOWER_EPOCHS[0]).unwrap(),
-        tower_performance(row("down")),
-    );
-    assert_eq!(performance(MIGRATION_EPOCH), None);
-    assert_close(
-        performance(LAST_EPOCH).unwrap(),
-        alpenglow_performance(row("down")),
-    );
 }
 
 #[tokio::test]

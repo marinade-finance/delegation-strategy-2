@@ -371,8 +371,6 @@ pub struct ValidatorEpochStats {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
-    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
-    pub vote_performance: Option<f64>,
     /// Alpenglow reward-committee stake: prior epoch's `activated_stake`. Null if none or no data.
     pub epoch_stake: Option<Decimal>,
     pub leader_slots: u64,
@@ -484,6 +482,7 @@ pub struct ValidatorRecord {
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
     /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    #[serde(skip_serializing)]
     pub vote_performance: Option<f64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
@@ -753,8 +752,6 @@ pub struct PerformanceRecord {
     pub skip_rate: Option<f64>,
     /// Tower vote credits. Null in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
-    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch, without data, and before the last 90 epochs.
-    pub vote_performance: Option<f64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
@@ -894,6 +891,7 @@ pub struct ValidatorGroupRecord {
     /// Stake-weighted mean of the members' `vote_reward_lamports` over the `activated_stake` of the previous epoch. Null before Alpenglow.
     pub vote_reward_per_stake: Option<f64>,
     /// Stake-weighted mean of the members' `vote_performance`.
+    #[serde(skip_serializing)]
     pub vote_performance: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
