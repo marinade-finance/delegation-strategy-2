@@ -3,8 +3,8 @@ use crate::utils::response::response_error;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use store::rewards::{
-    get_block_rewards, get_estimated_inflation_rewards, get_jito_priority_rewards, get_mev_rewards,
-    get_unclosed_epochs_slots_per_year,
+    get_block_rewards, get_inflation_rewards_with_slots_per_year, get_jito_priority_rewards,
+    get_mev_rewards,
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -47,12 +47,11 @@ pub async fn handler(
 
     let context_guard = context.read().await;
     let psql_client = &context_guard.psql_client;
-    let (inflation_result, mev_result, jito_result, block_result, unclosed_epochs_result) = tokio::join!(
-        get_estimated_inflation_rewards(psql_client, epochs),
+    let (inflation_result, mev_result, jito_result, block_result) = tokio::join!(
+        get_inflation_rewards_with_slots_per_year(psql_client, epochs),
         get_mev_rewards(psql_client, epochs),
         get_jito_priority_rewards(psql_client, epochs),
         get_block_rewards(psql_client, epochs),
-        get_unclosed_epochs_slots_per_year(psql_client),
     );
 
     let inflation_with_provenance = match inflation_result {
@@ -97,21 +96,12 @@ pub async fn handler(
         }
     };
 
-    let unclosed_epochs = match unclosed_epochs_result {
-        Ok(r) => r,
-        Err(err) => {
-            error!("Failed to fetch the unclosed epochs' slots per year: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch slots per year!".into(),
-            ));
-        }
-    };
-
     let mut rewards_inflation_est = Vec::with_capacity(inflation_with_provenance.len());
-    let mut slots_per_year = unclosed_epochs;
+    let mut slots_per_year = Vec::with_capacity(inflation_with_provenance.len());
     for (epoch, amount, epoch_slots_per_year) in inflation_with_provenance {
-        rewards_inflation_est.push((epoch, amount));
+        if let Some(amount) = amount {
+            rewards_inflation_est.push((epoch, amount));
+        }
         slots_per_year.push((epoch, epoch_slots_per_year));
     }
 

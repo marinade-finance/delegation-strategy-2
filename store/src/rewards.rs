@@ -69,13 +69,22 @@ pub async fn get_jito_priority_rewards(
     get_jito_rewards_by_table(psql_client, "jito_priority_fee", epochs, 1).await
 }
 
-/// Each estimate carries the nominal it was divided by, from one scan, so the two can never disagree.
-pub async fn get_estimated_inflation_rewards(
+/// One snapshot: closed epochs with their estimate, then epochs past the last closed one from `cluster_info`.
+pub async fn get_inflation_rewards_with_slots_per_year(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<Vec<(u64, f64, f64)>> {
+) -> anyhow::Result<Vec<(u64, Option<f64>, f64)>> {
     let query = format!(
-        "SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount, slots_per_year FROM epochs ORDER BY epoch DESC LIMIT $1"
+        "
+        (SELECT epoch, supply * inflation / 1e9 / (slots_per_year / {SLOTS_IN_EPOCH}) AS amount, slots_per_year
+         FROM epochs ORDER BY epoch DESC LIMIT $1)
+        UNION ALL
+        (SELECT DISTINCT ON (epoch) epoch, NULL, slots_per_year FROM cluster_info
+         WHERE slots_per_year IS NOT NULL
+           AND epoch > COALESCE((SELECT MAX(epoch) FROM epochs), 0)
+         ORDER BY epoch DESC, epoch_slot DESC)
+        ORDER BY epoch DESC
+    "
     );
     let rows = psql_client
         .query(&query, &[&i64::try_from(epochs)?])
@@ -86,34 +95,7 @@ pub async fn get_estimated_inflation_rewards(
         .map(|row| {
             (
                 row.get::<_, Decimal>("epoch").try_into().unwrap(),
-                row.get::<_, f64>("amount"),
-                row.get::<_, f64>("slots_per_year"),
-            )
-        })
-        .collect())
-}
-
-/// Epochs past the last closed one have no `epochs` row, so `cluster_info` is their only regime record.
-pub async fn get_unclosed_epochs_slots_per_year(
-    psql_client: &Client,
-) -> anyhow::Result<Vec<(u64, f64)>> {
-    let rows = psql_client
-        .query(
-            "
-        SELECT DISTINCT ON (epoch) epoch, slots_per_year FROM cluster_info
-        WHERE slots_per_year IS NOT NULL
-          AND epoch > COALESCE((SELECT MAX(epoch) FROM epochs), 0)
-        ORDER BY epoch DESC, epoch_slot DESC
-    ",
-            &[],
-        )
-        .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.get::<_, Decimal>("epoch").try_into().unwrap(),
+                row.get::<_, Option<f64>>("amount"),
                 row.get::<_, f64>("slots_per_year"),
             )
         })
