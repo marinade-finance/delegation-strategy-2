@@ -84,6 +84,7 @@ mod tests {
                 client_vendor: "unknown".into(),
                 client_lineage: "unknown".into(),
                 max_inflation_rewards_commission_bps: None,
+                avg_adjusted_vote_performance: Some(0.5),
             })
             .unwrap();
         let content = String::from_utf8(csv_content.into_inner().unwrap()).unwrap();
@@ -93,10 +94,11 @@ mod tests {
             header,
             "vote_account,minimum_stake,avg_stake,avg_dc_concentration,avg_skip_rate,\
              avg_grace_skip_rate,max_commission,avg_adjusted_credits,dc_aso,marinade_stake,\
-             version,client_vendor,client_lineage,max_inflation_rewards_commission_bps"
+             version,client_vendor,client_lineage,max_inflation_rewards_commission_bps,\
+             avg_adjusted_vote_performance"
         );
         assert!(
-            row.ends_with(",unknown,unknown,\n"),
+            row.ends_with(",unknown,unknown,,0.5\n"),
             "an unknown bps is an empty cell, not a zero: {row}"
         );
     }

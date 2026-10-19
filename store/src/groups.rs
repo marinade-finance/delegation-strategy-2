@@ -380,6 +380,7 @@ struct Accumulator<B> {
     take_rate: StakeWeighted,
     credits: StakeWeighted,
     vote_reward_per_stake: StakeWeighted,
+    vote_performance: StakeWeighted,
     marinade_score: StakeWeighted,
     apy: StakeWeighted,
     commission: StakeWeighted,
@@ -402,6 +403,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             take_rate: Default::default(),
             credits: Default::default(),
             vote_reward_per_stake: Default::default(),
+            vote_performance: Default::default(),
             marinade_score: Default::default(),
             apy: Default::default(),
             commission: Default::default(),
@@ -452,6 +454,8 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
                 .and_then(|rate| rate.to_f64()),
             weight,
         );
+        self.vote_performance
+            .add(validator.vote_performance, weight);
         self.marinade_score.add(validator.score, weight);
         self.apy.add(validator.avg_apy, weight);
         // Left out when unknown on both sides, where the per-validator column reads the worst case.
@@ -506,6 +510,7 @@ impl<B: EpochStatBreakdowns> Accumulator<B> {
             take_rate: self.take_rate.mean(),
             credits: self.credits.mean(),
             vote_reward_per_stake: self.vote_reward_per_stake.mean(),
+            vote_performance: self.vote_performance.mean(),
             marinade_score: self.marinade_score.mean(),
             apy: self.apy.mean(),
             commission: self.commission.mean(),
@@ -577,6 +582,7 @@ pub fn singleton_group(validator: &ValidatorRecord) -> ValidatorGroupRecord {
         vote_reward_per_stake: validator
             .vote_reward_per_stake()
             .and_then(|rate| rate.to_f64()),
+        vote_performance: validator.vote_performance,
         marinade_score: finite(validator.score),
         apy: finite(validator.avg_apy),
         commission: worst_known_commission(

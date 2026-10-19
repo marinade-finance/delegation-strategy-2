@@ -76,6 +76,7 @@ pub mod utils;
 pub mod validators;
 pub mod validators_jito;
 pub mod versions;
+pub mod vote_performance;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
