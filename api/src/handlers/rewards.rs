@@ -18,8 +18,7 @@ pub struct ResponseRewards {
     /// block production rewards based on signature count and priority fees
     rewards_block: Vec<(u64, f64)>,
     /// nominal slots per year in force in each epoch, the divisor behind rewards_inflation_est;
-    /// includes unclosed epochs (the running one, plus any ended ones awaiting close), which have no
-    /// rewards_inflation_est entry yet
+    /// includes unclosed epochs, which have no rewards_inflation_est entry yet
     slots_per_year: Vec<(u64, f64)>,
 }
 

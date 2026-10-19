@@ -121,7 +121,7 @@ async fn the_running_epoch_reports_its_own_regime_before_it_closes() {
         .unwrap();
 }
 
-// Past a boundary the auction still targets the ended epoch until it closes, so its regime must not drop out.
+// The auction targets the ended epoch until it closes.
 #[tokio::test]
 async fn an_ended_epoch_awaiting_close_keeps_its_regime_next_to_the_running_one() {
     let schema = "ds_test_unclosed_epochs_slots_per_year";
