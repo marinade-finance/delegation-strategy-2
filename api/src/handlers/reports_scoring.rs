@@ -119,7 +119,7 @@ fn md_latest(ui_id: &String) -> String {
         ```\n\
         Generate scores:\n\
         ```bash\n\
-        wget https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring.R\n\
+        wget https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/f4f4447/scripts/scoring.R\n\
         export SCORING_WORKING_DIRECTORY=.\n\
         export SCORING_R=./scoring.R\n\
         bash -c \"$(curl -sSfL https://raw.githubusercontent.com/marinade-finance/delegation-strategy-2/master/scripts/scoring-run.bash)\"\n\
