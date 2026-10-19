@@ -25,7 +25,7 @@ for FILE in ./migrations/*.sql; do
 done
 ```
 
-The API applies the same files at start, so starting the API against an empty database also works.
+`scripts/migrate.bash` applies the same files and records them, so it also works against an empty database.
 
 The PostgreSQL URL is then `host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy`.
 Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file,
@@ -50,12 +50,14 @@ On Podman, start the container with `podman run` and export
 
 # 3. Add a migration
 
-Add the next file in `migrations/`, for example `0040-what-it-does.sql`. At start, the API runs
-each file that the `migrations` table does not list, in name order, and records its name. Each
-file runs in one transaction, and the first error stops the start.
+Add the next file in `migrations/`, for example `0040-what-it-does.sql`. `store migrate`
+(`scripts/migrate.bash`) runs each file that the `migrations` table does not list, in name order,
+and records its name. Each file runs in one transaction, and the first error stops the run.
+In Kubernetes, an Argo CD PreSync job runs it before the sync. A failed run stops the sync, and
+the old pods stay. The API does not apply migrations.
 
 - Never edit a file after it ran in production. Add a new file.
 - Do not write `BEGIN`, `COMMIT` or `ROLLBACK` in a file. `CREATE INDEX CONCURRENTLY` cannot run
   in a transaction, so it cannot be a migration.
-- Collectors get the new image at the same time as the API. A collector that runs before the
-  API start can fail one time on the old schema.
+- The schema changes before the new API and collectors start, so the old API and collectors
+  run on the new schema for a short time. Make each migration work with the previous release.

@@ -59,6 +59,7 @@ enum StoreCommand {
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
+    Migrate,
 }
 
 pub mod cluster_info;
@@ -151,5 +152,6 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
+        StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }
 }

@@ -1,4 +1,4 @@
--- Databases that got 0000 to 0038 by hand before the API applied migrations at start.
+-- Databases that got 0000 to 0038 by hand, before `store migrate` recorded them.
 -- validators_rewards.expected_take_rate comes from 0038.
 DO $adopt$
 BEGIN
@@ -11,7 +11,7 @@ BEGIN
           AND table_name = 'validators_rewards'
           AND column_name = 'expected_take_rate'
     ) THEN
-        RAISE EXCEPTION 'apply migrations up to 0038 by hand before the API can adopt this database';
+        RAISE EXCEPTION 'apply migrations up to 0038 by hand before store migrate can adopt this database';
     END IF;
     INSERT INTO migrations (name) VALUES
         ('0000-init.sql'),
