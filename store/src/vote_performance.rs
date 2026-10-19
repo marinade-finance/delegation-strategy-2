@@ -121,33 +121,6 @@ fn vote_performance(rows: &[VotePerformanceInput]) -> HashMap<String, f64> {
         .collect()
 }
 
-// epoch_stake is the activated_stake of the previous epoch
-const VOTE_PERFORMANCE_ROWS: &str =
-    "SELECT validators.epoch, validators.vote_account, validators.activated_stake,
-        NULLIF(previous.activated_stake, 0) AS epoch_stake,
-        validators.leader_slots, validators.credits, validators.vote_reward_lamports
-    FROM validators
-        LEFT JOIN validators previous ON previous.vote_account = validators.vote_account
-            AND previous.epoch = validators.epoch - 1
-    WHERE validators.epoch BETWEEN $1 AND $2";
-
-fn input_from_row(row: &tokio_postgres::Row) -> anyhow::Result<VotePerformanceInput> {
-    Ok(VotePerformanceInput {
-        vote_account: row.get("vote_account"),
-        activated_stake: row.get("activated_stake"),
-        epoch_stake: row.get("epoch_stake"),
-        leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
-        credits: row
-            .get::<_, Option<Decimal>>("credits")
-            .map(u64::try_from)
-            .transpose()?,
-        vote_reward_lamports: row
-            .get::<_, Option<Decimal>>("vote_reward_lamports")
-            .map(u64::try_from)
-            .transpose()?,
-    })
-}
-
 /// `vote_performance` keyed by (epoch, vote account) for the epochs `from_epoch..=to_epoch`.
 pub async fn load_vote_performance(
     psql_client: &Client,
@@ -156,7 +129,14 @@ pub async fn load_vote_performance(
 ) -> anyhow::Result<HashMap<(u64, String), f64>> {
     let rows = psql_client
         .query(
-            VOTE_PERFORMANCE_ROWS,
+            // epoch_stake is the activated_stake of the previous epoch
+            "SELECT validators.epoch, validators.vote_account, validators.activated_stake,
+                NULLIF(previous.activated_stake, 0) AS epoch_stake,
+                validators.leader_slots, validators.credits, validators.vote_reward_lamports
+            FROM validators
+                LEFT JOIN validators previous ON previous.vote_account = validators.vote_account
+                    AND previous.epoch = validators.epoch - 1
+            WHERE validators.epoch BETWEEN $1 AND $2",
             &[&Decimal::from(from_epoch), &Decimal::from(to_epoch)],
         )
         .await?;
@@ -167,7 +147,20 @@ pub async fn load_vote_performance(
         by_epoch
             .entry(epoch)
             .or_default()
-            .push(input_from_row(&row)?);
+            .push(VotePerformanceInput {
+                vote_account: row.get("vote_account"),
+                activated_stake: row.get("activated_stake"),
+                epoch_stake: row.get("epoch_stake"),
+                leader_slots: row.get::<_, Decimal>("leader_slots").try_into()?,
+                credits: row
+                    .get::<_, Option<Decimal>>("credits")
+                    .map(u64::try_from)
+                    .transpose()?,
+                vote_reward_lamports: row
+                    .get::<_, Option<Decimal>>("vote_reward_lamports")
+                    .map(u64::try_from)
+                    .transpose()?,
+            });
     }
 
     Ok(by_epoch
@@ -178,63 +171,6 @@ pub async fn load_vote_performance(
                 .map(move |(vote_account, ratio)| ((epoch, vote_account), ratio))
         })
         .collect())
-}
-
-/// `vote_performance` of one vote account keyed by epoch.
-pub async fn load_vote_performance_of(
-    psql_client: &Client,
-    vote_account: &str,
-    from_epoch: u64,
-    to_epoch: u64,
-) -> anyhow::Result<HashMap<u64, f64>> {
-    let query = format!(
-        "WITH input AS ({VOTE_PERFORMANCE_ROWS}),
-        totals AS (
-            SELECT epoch,
-                bool_or(credits IS NOT NULL) AS has_credits,
-                bool_or(vote_reward_lamports IS NOT NULL) AS has_rewards,
-                COALESCE(SUM(activated_stake) FILTER (WHERE credits IS NOT NULL), 0) AS tower_stake,
-                COALESCE(SUM(activated_stake * credits), 0) AS tower_weighted_credits,
-                COALESCE(SUM(epoch_stake) FILTER (WHERE vote_reward_lamports IS NOT NULL), 0) AS alpenglow_stake,
-                COALESCE(SUM(leader_slots) FILTER (WHERE vote_reward_lamports IS NOT NULL AND epoch_stake IS NOT NULL), 0) AS alpenglow_leader_slots,
-                COALESCE(SUM(vote_reward_lamports) FILTER (WHERE epoch_stake IS NOT NULL), 0) AS alpenglow_reward
-            FROM input
-            GROUP BY epoch
-        )
-        SELECT input.*, totals.has_credits, totals.has_rewards, totals.tower_stake,
-            totals.tower_weighted_credits, totals.alpenglow_stake,
-            totals.alpenglow_leader_slots, totals.alpenglow_reward
-        FROM input JOIN totals ON totals.epoch = input.epoch
-        WHERE input.vote_account = $3"
-    );
-    let rows = psql_client
-        .query(
-            &query,
-            &[
-                &Decimal::from(from_epoch),
-                &Decimal::from(to_epoch),
-                &vote_account,
-            ],
-        )
-        .await?;
-
-    let mut result: HashMap<u64, f64> = Default::default();
-    for row in rows {
-        let epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
-        let totals = EpochTotals {
-            has_credits: row.get("has_credits"),
-            has_rewards: row.get("has_rewards"),
-            tower_stake: row.get("tower_stake"),
-            tower_weighted_credits: row.get("tower_weighted_credits"),
-            alpenglow_stake: row.get("alpenglow_stake"),
-            alpenglow_leader_slots: row.get("alpenglow_leader_slots"),
-            alpenglow_reward: row.get("alpenglow_reward"),
-        };
-        if let Some(ratio) = totals.performance(&input_from_row(&row)?) {
-            result.insert(epoch, ratio);
-        }
-    }
-    Ok(result)
 }
 
 #[cfg(test)]

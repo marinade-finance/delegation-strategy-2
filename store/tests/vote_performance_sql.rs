@@ -6,7 +6,7 @@ use store::dto::UnstakeHint;
 use store::scoring::load_unstake_hints;
 use store::utils::{load_validators, load_validators_aggregated_flat, ValidatorOverlays};
 use store::validators_events::get_events_with_context;
-use store::vote_performance::{load_vote_performance, load_vote_performance_of};
+use store::vote_performance::load_vote_performance;
 use tokio_postgres::Client;
 
 const LAST_EPOCH: u64 = 1000;
@@ -252,7 +252,12 @@ async fn validators_and_events_serve_the_vote_performance() {
         assert_close(by_epoch(LAST_EPOCH).unwrap(), alpenglow_performance(row));
     }
 
-    let events = get_events_with_context(&client, "down", Some(TOWER_EPOCHS[0]))
+    let vote_performance = records["down"]
+        .epoch_stats
+        .iter()
+        .filter_map(|stats| Some((stats.epoch, stats.vote_performance?)))
+        .collect();
+    let events = get_events_with_context(&client, "down", Some(TOWER_EPOCHS[0]), &vote_performance)
         .await
         .unwrap();
     let performance = |epoch| {
@@ -304,86 +309,4 @@ async fn alpenglow_reads_the_stake_of_the_previous_epoch() {
     assert_close(performance[&(epoch, "grown".to_string())], 1.0);
     assert_close(performance[&(epoch, "steady".to_string())], 1.0);
     assert_eq!(performance.get(&(epoch, "new".to_string())), None);
-}
-
-async fn assert_one_account_matches_the_full_load(client: &Client, from_epoch: u64, to_epoch: u64) {
-    let all = load_vote_performance(client, from_epoch, to_epoch)
-        .await
-        .unwrap();
-    let vote_accounts: std::collections::HashSet<String> = client
-        .query("SELECT DISTINCT vote_account FROM validators", &[])
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| row.get(0))
-        .collect();
-    for vote_account in vote_accounts {
-        let one = load_vote_performance_of(client, &vote_account, from_epoch, to_epoch)
-            .await
-            .unwrap();
-        let expected: std::collections::HashMap<u64, f64> = all
-            .iter()
-            .filter(|((_, account), _)| *account == vote_account)
-            .map(|((epoch, _), ratio)| (*epoch, *ratio))
-            .collect();
-        assert_eq!(
-            one.keys().collect::<std::collections::BTreeSet<_>>(),
-            expected.keys().collect(),
-            "{vote_account}"
-        );
-        for (epoch, ratio) in one {
-            assert_close(ratio, expected[&epoch]);
-        }
-    }
-}
-
-#[tokio::test]
-async fn one_account_matches_the_full_load_in_every_epoch_kind() {
-    let schema = "ds_test_vote_performance_one_account";
-    if skip_without_database(schema) {
-        return;
-    }
-    let client = migrated_client(schema).await.unwrap();
-    seed(&client).await;
-    assert_one_account_matches_the_full_load(&client, TOWER_EPOCHS[0], LAST_EPOCH).await;
-}
-
-#[tokio::test]
-async fn one_account_matches_the_full_load_on_a_stake_change() {
-    let schema = "ds_test_vote_performance_one_account_stake_change";
-    if skip_without_database(schema) {
-        return;
-    }
-    let client = migrated_client(schema).await.unwrap();
-    let [previous, epoch] = [ALPENGLOW_EPOCHS[0], ALPENGLOW_EPOCHS[1]];
-    for (vote_account, stake, slots, reward) in [
-        ("grown", 300, 10, 1000),
-        ("steady", 100, 30, 1000),
-        ("down", 100, 10, 200),
-    ] {
-        insert_validator(
-            &client,
-            vote_account,
-            previous,
-            100,
-            slots,
-            0,
-            None,
-            Some(reward),
-        )
-        .await;
-        insert_validator(
-            &client,
-            vote_account,
-            epoch,
-            stake,
-            slots,
-            0,
-            None,
-            Some(reward),
-        )
-        .await;
-    }
-    insert_validator(&client, "new", epoch, 100, 10, 0, None, Some(1000)).await;
-    assert_one_account_matches_the_full_load(&client, previous, epoch).await;
 }

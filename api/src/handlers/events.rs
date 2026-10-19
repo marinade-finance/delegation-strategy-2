@@ -3,6 +3,7 @@ use crate::utils::response::{resolve_from_epoch, response_error};
 use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use store::dto::EventEpochRecord;
 use store::validators_events::get_events_with_context;
 use tokio_postgres::Client;
@@ -57,8 +58,16 @@ pub async fn handler(
         record.identity == vote_account || record.vote_account == vote_account
     });
 
-    let vote_key = match validator {
-        Some((vote_key, _validator)) => vote_key.clone(),
+    // The cache holds the last DEFAULT_CACHE_EPOCHS epochs, older epochs get no vote_performance
+    let (vote_key, vote_performance) = match validator {
+        Some((vote_key, validator)) => (
+            vote_key.clone(),
+            validator
+                .epoch_stats
+                .iter()
+                .filter_map(|stats| Some((stats.epoch, stats.vote_performance?)))
+                .collect::<HashMap<_, _>>(),
+        ),
         None => {
             error!("No validator found for {}", &vote_account);
             return Ok(response_error(
@@ -75,16 +84,19 @@ pub async fn handler(
         Err((status, message)) => return Ok(response_error(status, message)),
     };
 
-    let events = match get_events_with_context(&ctx.psql_client, &vote_key, from_epoch).await {
-        Ok(events) => events,
-        Err(err) => {
-            error!("Failed to fetch events for {vote_account}: {err}");
-            return Ok(response_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch records!".into(),
-            ));
-        }
-    };
+    let events =
+        match get_events_with_context(&ctx.psql_client, &vote_key, from_epoch, &vote_performance)
+            .await
+        {
+            Ok(events) => events,
+            Err(err) => {
+                error!("Failed to fetch events for {vote_account}: {err}");
+                return Ok(response_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch records!".into(),
+                ));
+            }
+        };
 
     Ok(warp::reply::with_status(
         json(&ResponseEvents { events }),

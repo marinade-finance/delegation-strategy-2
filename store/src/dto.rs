@@ -753,7 +753,7 @@ pub struct PerformanceRecord {
     pub skip_rate: Option<f64>,
     /// Tower vote credits. Null in an Alpenglow epoch after the migration epoch.
     pub credits: Option<u64>,
-    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch, without data, and before the last 90 epochs.
     pub vote_performance: Option<f64>,
 }
 

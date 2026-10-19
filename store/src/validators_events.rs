@@ -1,6 +1,5 @@
 use crate::dto::{EventEpochRecord, PerformanceRecord, SettlementRecord};
 use crate::utils::DEFAULT_CACHE_EPOCHS;
-use crate::vote_performance::load_vote_performance_of;
 use chrono::{DateTime, Utc};
 use collect::validators_events::ValidatorsEventsSnapshot;
 use log::info;
@@ -123,6 +122,7 @@ pub async fn get_events_with_context(
     psql_client: &Client,
     vote_account: &str,
     from_epoch: Option<u64>,
+    vote_performance: &HashMap<u64, f64>,
 ) -> anyhow::Result<Vec<EventEpochRecord>> {
     let from_epoch = match from_epoch {
         Some(from_epoch) => from_epoch,
@@ -138,7 +138,6 @@ pub async fn get_events_with_context(
                 .saturating_sub(DEFAULT_CACHE_EPOCHS)
         }
     };
-    let first_epoch = from_epoch;
     let from_epoch = Decimal::from(from_epoch);
 
     let settlement_rows = psql_client
@@ -182,16 +181,6 @@ pub async fn get_events_with_context(
             &[&vote_account, &from_epoch],
         )
         .await?;
-
-    let last_epoch = perf_rows
-        .iter()
-        .map(|row| row.get::<_, Decimal>("epoch").try_into())
-        .collect::<Result<Vec<u64>, _>>()?
-        .into_iter()
-        .max()
-        .unwrap_or(first_epoch);
-    let vote_performance =
-        load_vote_performance_of(psql_client, vote_account, first_epoch, last_epoch).await?;
 
     let mut by_epoch: HashMap<u64, EventEpochRecord> = Default::default();
     for row in perf_rows {
