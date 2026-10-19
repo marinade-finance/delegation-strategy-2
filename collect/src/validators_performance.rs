@@ -12,12 +12,10 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_rpc_client_api::config::RpcGetVoteAccountsConfig;
-use solana_rpc_client_api::response::{RpcVoteAccountInfo, RpcVoteAccountStatus};
+use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::clock::Epoch;
 use solana_sdk::epoch_info::EpochInfo;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ops::RangeInclusive;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -27,14 +25,6 @@ pub struct ValidatorsPerformanceParams {
 
     #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
-
-    #[arg(
-        long = "backfill-credits",
-        num_args = 2,
-        value_names = ["START", "END"],
-        help = "Only output the tower credits and vote reward lamports of the epochs START..=END, read from the whole epochCredits history of each vote account."
-    )]
-    backfill_credits: Option<Vec<Epoch>>,
 
     #[arg(
         long = "rpc-attempts",
@@ -128,97 +118,6 @@ pub struct ValidatorsPerformanceSnapshot {
     #[serde(default)]
     pub nodes: HashMap<String, NodeContact>,
     pub rewards: Option<HashMap<String, ValidatorRewards>>,
-}
-
-/// Input of `store close-epoch --backfill-credits`.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreditsBackfill {
-    pub epochs: BTreeMap<Epoch, HashMap<String, EpochCredits>>,
-}
-
-/// Each vote account with a history gets an entry in each epoch, (None, None) where it has no value.
-pub fn credits_backfill(
-    vote_accounts: &RpcVoteAccountStatus,
-    histories: &HashMap<String, Vec<EpochCreditsEntry>>,
-    epochs: RangeInclusive<Epoch>,
-    alpenglow_migration_epoch: Option<Epoch>,
-) -> CreditsBackfill {
-    let mut backfill = CreditsBackfill {
-        epochs: epochs
-            .clone()
-            .map(|epoch| (epoch, HashMap::new()))
-            .collect(),
-    };
-    for vote_account in vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-    {
-        let Some(history) = histories.get(&vote_account.vote_pubkey) else {
-            continue;
-        };
-        // store checks the stake of the row in place of the current stake
-        let vote_account = RpcVoteAccountInfo {
-            epoch_credits: history.clone(),
-            activated_stake: 1,
-            ..vote_account.clone()
-        };
-        for epoch in epochs.clone() {
-            let credits = split_epoch_credits(&vote_account, epoch, alpenglow_migration_epoch)
-                .unwrap_or(EpochCredits {
-                    tower_credits: None,
-                    vote_reward_lamports: None,
-                });
-            backfill
-                .epochs
-                .get_mut(&epoch)
-                .unwrap()
-                .insert(vote_account.vote_pubkey.clone(), credits);
-        }
-    }
-    backfill
-}
-
-fn collect_credits_backfill(client: &RpcClient, start: Epoch, end: Epoch) -> anyhow::Result<()> {
-    info!("Collecting the credits backfill of epochs {start}..={end}");
-    let vote_accounts = client.get_vote_accounts_with_config(RpcGetVoteAccountsConfig {
-        keep_unstaked_delinquents: Some(true),
-        ..Default::default()
-    })?;
-    let vote_pubkeys: Vec<String> = vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .map(|vote_account| vote_account.vote_pubkey.clone())
-        .collect();
-    let histories = get_full_epoch_credits(client, &vote_pubkeys)?;
-    info!(
-        "Read the epochCredits of {} of {} vote accounts",
-        histories.len(),
-        vote_pubkeys.len()
-    );
-    let backfill = credits_backfill(
-        &vote_accounts,
-        &histories,
-        start..=end,
-        is_alpenglow_active(client)?,
-    );
-    for (epoch, credits) in &backfill.epochs {
-        let tower = credits
-            .values()
-            .filter(|c| c.tower_credits.is_some())
-            .count();
-        let rewards = credits
-            .values()
-            .filter(|c| c.vote_reward_lamports.is_some())
-            .count();
-        info!(
-            "Epoch {epoch}: {} vote accounts, {tower} with tower credits, {rewards} with vote reward lamports",
-            credits.len()
-        );
-    }
-    serde_yaml::to_writer(std::io::stdout(), &backfill)?;
-    Ok(())
 }
 
 /// A mistyped gate pubkey reads exactly like "not activated", and only the clock can tell them apart.
@@ -414,10 +313,6 @@ pub fn collect_validators_performance_info(
         Duration::from_secs(performance_params.rpc_timeout),
         common_params.commitment,
     );
-
-    if let Some(epochs) = performance_params.backfill_credits {
-        return collect_credits_backfill(&client, epochs[0], epochs[1]);
-    }
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;

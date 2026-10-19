@@ -1,11 +1,11 @@
 mod common;
 
+use collect::credits_backfill::CreditsBackfill;
 use collect::solana_service::EpochCredits;
-use collect::validators_performance::CreditsBackfill;
 use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, HashMap};
-use store::close_epoch::backfill_credits;
+use store::credits_backfill::backfill_credits;
 use tokio_postgres::Client;
 
 // Testnet epochs 1042-1053 were stored with the vote reward lamports in `credits`
@@ -17,7 +17,7 @@ async fn seed(client: &mut Client, epoch: u64, vote_account: &str, stake: u64, c
     snapshot.validators[0].performance.credits = Some(credits);
     store_snapshot(
         client,
-        &format!("backfill_credits_{vote_account}_{epoch}"),
+        &format!("credits_backfill_{vote_account}_{epoch}"),
         &snapshot,
     )
     .await;
@@ -47,7 +47,7 @@ async fn read(
 
 #[tokio::test]
 async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
-    let schema = "backfill_credits_sql";
+    let schema = "credits_backfill_sql";
     if skip_without_database(schema) {
         return;
     }
@@ -99,7 +99,7 @@ async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
         read(&client, "unstaked", 1043).await,
         (None, None, leader_slots)
     );
-    // Paid on the stake of epoch 1042
+    // No stake in 1043, but the reward of 1043 is paid on the stake of 1042, so it stays
     assert_eq!(
         read(&client, "unstakedRewarded", 1043).await,
         (None, lamports, leader_slots)
@@ -108,7 +108,7 @@ async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
         read(&client, "noValue", 1043).await,
         (None, None, leader_slots)
     );
-    // Not on the chain anymore, so not in the backfill
+    // A vote account that is not in the file keeps its stored values
     assert_eq!(
         read(&client, "closed", 1043).await,
         (lamports, None, leader_slots)

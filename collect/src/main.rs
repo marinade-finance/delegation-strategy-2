@@ -1,5 +1,6 @@
 use clap::Parser;
 use collect::common::*;
+use collect::credits_backfill::{collect_credits_backfill, CreditsBackfillParams};
 use collect::releases::{collect_releases_info, ReleasesParams};
 use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
 use collect::validators::*;
@@ -34,6 +35,7 @@ enum CollectCommand {
     ValidatorsSandwiches(SandwichesParams),
     TakeRates(TakeRatesParams),
     Releases(ReleasesParams),
+    CreditsBackfill(CreditsBackfillParams),
 }
 
 impl Display for CollectCommand {
@@ -48,6 +50,7 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsSandwiches(_) => write!(f, "validators-sandwiches"),
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
             CollectCommand::Releases(_) => write!(f, "releases"),
+            CollectCommand::CreditsBackfill(_) => write!(f, "credits-backfill"),
         }
     }
 }
@@ -89,6 +92,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::Releases(releases_params) => {
             collect_releases_info(params.common, releases_params)
+        }
+        CollectCommand::CreditsBackfill(backfill_params) => {
+            collect_credits_backfill(params.common, backfill_params)
         }
     };
 
