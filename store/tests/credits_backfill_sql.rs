@@ -60,6 +60,10 @@ async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
     seed(&mut client, 1043, "unstakedRewarded", 0, LAMPORTS).await;
     seed(&mut client, 1043, "noValue", 100, 0).await;
     seed(&mut client, 1043, "closed", 100, LAMPORTS).await;
+    seed(&mut client, 1043, "closedNoEntry", 100, 0).await;
+    seed(&mut client, 1043, "closedUnstaked", 0, 0).await;
+    seed(&mut client, 1042, "closedTower", 100, 65_000).await;
+    seed(&mut client, 1042, "closedRewarded", 100, LAMPORTS).await;
 
     let backfill = CreditsBackfill {
         epochs: BTreeMap::from([
@@ -108,9 +112,26 @@ async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
         read(&client, "noValue", 1043).await,
         (None, None, leader_slots)
     );
-    // A vote account that is not in the file keeps its stored values
+    // A vote account that is not in the file gets its credits moved to vote_reward_lamports
     assert_eq!(
         read(&client, "closed", 1043).await,
-        (lamports, None, leader_slots)
+        (None, lamports, leader_slots)
+    );
+    assert_eq!(
+        read(&client, "closedNoEntry", 1043).await,
+        (None, Some(Decimal::ZERO), leader_slots)
+    );
+    assert_eq!(
+        read(&client, "closedUnstaked", 1043).await,
+        (None, None, leader_slots)
+    );
+    // 1042 has tower credits, so only a value above the tower limit moves
+    assert_eq!(
+        read(&client, "closedTower", 1042).await,
+        (Some(Decimal::from(65_000)), None, leader_slots)
+    );
+    assert_eq!(
+        read(&client, "closedRewarded", 1042).await,
+        (None, lamports, leader_slots)
     );
 }

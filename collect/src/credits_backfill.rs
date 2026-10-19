@@ -27,6 +27,9 @@ pub struct CreditsBackfillParams {
     rpc_timeout: u64,
 }
 
+// agave MAX_EPOCH_CREDITS_HISTORY, the migration marker takes one of the entries
+const MAX_EPOCH_CREDITS_HISTORY: usize = 64;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreditsBackfill {
     pub epochs: BTreeMap<Epoch, HashMap<String, EpochCredits>>,
@@ -76,6 +79,23 @@ pub fn credits_backfill(
     backfill
 }
 
+/// Vote accounts whose history is full and starts after `from_epoch`, so their entries of `from_epoch` are gone.
+pub fn truncated_histories(
+    histories: &HashMap<String, Vec<EpochCreditsEntry>>,
+    from_epoch: Epoch,
+) -> Vec<&String> {
+    histories
+        .iter()
+        .filter(|(_, history)| {
+            history.len() >= MAX_EPOCH_CREDITS_HISTORY
+                && history
+                    .first()
+                    .is_some_and(|(first_epoch, _, _)| *first_epoch > from_epoch)
+        })
+        .map(|(vote_pubkey, _)| vote_pubkey)
+        .collect()
+}
+
 fn get_all_vote_accounts(client: &RpcClient) -> anyhow::Result<RpcVoteAccountStatus> {
     Ok(
         client.get_vote_accounts_with_config(RpcGetVoteAccountsConfig {
@@ -91,10 +111,24 @@ pub fn collect_credits_backfill(
 ) -> anyhow::Result<()> {
     let (from_epoch, to_epoch) = (params.from_epoch, params.to_epoch);
     info!("Collecting the credits backfill of epochs {from_epoch}..={to_epoch}");
+    anyhow::ensure!(
+        from_epoch <= to_epoch,
+        "--from-epoch {from_epoch} is after --to-epoch {to_epoch}"
+    );
     let client = solana_client_with_timeout(
         common_params.rpc_url,
         Duration::from_secs(params.rpc_timeout),
         common_params.commitment,
+    );
+    let current_epoch = client.get_epoch_info()?.epoch;
+    anyhow::ensure!(
+        to_epoch < current_epoch,
+        "--to-epoch {to_epoch} is not closed, the current epoch is {current_epoch}"
+    );
+    let oldest_epoch = current_epoch.saturating_sub(MAX_EPOCH_CREDITS_HISTORY as Epoch - 1);
+    anyhow::ensure!(
+        from_epoch >= oldest_epoch,
+        "--from-epoch {from_epoch} is older than {oldest_epoch}, the oldest epoch that epochCredits can still hold"
     );
     let vote_accounts = get_all_vote_accounts(&client)?;
     let vote_pubkeys: Vec<String> = vote_accounts
@@ -108,6 +142,15 @@ pub fn collect_credits_backfill(
         "Read the epochCredits of {} of {} vote accounts",
         histories.len(),
         vote_pubkeys.len()
+    );
+    let truncated = truncated_histories(&histories, from_epoch);
+    anyhow::ensure!(
+        truncated.is_empty(),
+        "{} vote accounts no longer hold the epochCredits of epoch {from_epoch}, for example {}",
+        truncated.len(),
+        truncated
+            .first()
+            .map_or("", |vote_pubkey| vote_pubkey.as_str())
     );
     let backfill = credits_backfill(
         &vote_accounts,
@@ -131,4 +174,32 @@ pub fn collect_credits_backfill(
     }
     serde_yaml::to_writer(std::io::stdout(), &backfill)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history(first_epoch: Epoch, len: usize) -> Vec<EpochCreditsEntry> {
+        (0..len as Epoch)
+            .map(|i| (first_epoch + i, 100 * (i + 1), 100 * i))
+            .collect()
+    }
+
+    #[test]
+    fn a_full_history_that_starts_after_from_epoch_is_truncated() {
+        let histories = HashMap::from([
+            (
+                "full_after".to_string(),
+                history(1043, MAX_EPOCH_CREDITS_HISTORY),
+            ),
+            (
+                "full_before".to_string(),
+                history(1003, MAX_EPOCH_CREDITS_HISTORY),
+            ),
+            // A vote account created after from_epoch has no older entries to lose
+            ("young".to_string(), history(1050, 10)),
+        ]);
+        assert_eq!(truncated_histories(&histories, 1042), vec!["full_after"]);
+    }
 }

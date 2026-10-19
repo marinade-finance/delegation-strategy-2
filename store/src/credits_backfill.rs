@@ -6,7 +6,7 @@ use collect::solana_service::MAX_TOWER_CREDITS_IN_EPOCH;
 use log::{info, warn};
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
-use tokio_postgres::{types::ToSql, Client};
+use tokio_postgres::{types::ToSql, Client, Transaction};
 
 const DEFAULT_CHUNK_SIZE: usize = 500;
 
@@ -25,8 +25,36 @@ pub async fn store_credits_backfill(
     backfill_credits(psql_client, &backfill).await
 }
 
+/// Moves credits to vote_reward_lamports in the rows of `epoch` whose vote account is not in the backfill (closed, or no epochCredits).
+/// Their credits hold the vote reward in lamports or 0 for no entry, except values below the tower limit in an epoch with tower credits.
+async fn move_credits_to_reward(
+    transaction: &Transaction<'_>,
+    epoch: &Decimal,
+    vote_accounts: &[&String],
+    alpenglow_epoch: bool,
+) -> anyhow::Result<u64> {
+    Ok(transaction
+        .execute(
+            "UPDATE validators
+            SET vote_reward_lamports = CASE WHEN credits = 0 AND activated_stake = 0 THEN NULL ELSE credits END,
+                credits = NULL
+            WHERE epoch = $1
+              AND vote_account <> ALL($2)
+              AND credits IS NOT NULL
+              AND vote_reward_lamports IS NULL
+              AND ($3 OR credits > $4)",
+            &[
+                epoch,
+                &vote_accounts,
+                &alpenglow_epoch,
+                &Decimal::from(MAX_TOWER_CREDITS_IN_EPOCH),
+            ],
+        )
+        .await?)
+}
+
 /// Sets credits and vote_reward_lamports of each row in the file to the file values, also when both are None.
-/// Rows that are not in the file stay as they are.
+/// A row whose vote account is not in the file gets its credits moved to vote_reward_lamports, see `move_credits_to_reward`.
 pub async fn backfill_credits(
     psql_client: &mut Client,
     backfill: &CreditsBackfill,
@@ -86,9 +114,12 @@ pub async fn backfill_credits(
             )
             .await?
             .get(0);
+        let vote_accounts: Vec<&String> = credits.keys().collect();
+        let alpenglow_epoch = credits.values().all(|c| c.tower_credits.is_none());
+        let moved =
+            move_credits_to_reward(&transaction, &epoch, &vote_accounts, alpenglow_epoch).await?;
         info!(
-            "Epoch {epoch}: updated {updated} of {rows} validator rows, {} rows have no vote account in the backfill",
-            rows - updated as i64
+            "Epoch {epoch}: updated {updated} of {rows} validator rows from the backfill, moved credits to vote_reward_lamports in {moved} rows not in the backfill"
         );
     }
     let epochs: Vec<Decimal> = backfill.epochs.keys().map(|e| Decimal::from(*e)).collect();

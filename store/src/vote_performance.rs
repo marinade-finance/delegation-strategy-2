@@ -1,4 +1,5 @@
 use collect::solana_service::MAX_TOWER_CREDITS_IN_EPOCH;
+use log::warn;
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
 use tokio_postgres::Client;
@@ -170,6 +171,18 @@ pub async fn load_vote_performance(
                     .map(u64::try_from)
                     .transpose()?,
             });
+    }
+
+    for (epoch, rows) in &by_epoch {
+        let left_out = rows
+            .iter()
+            .filter(|row| row.credits.is_some() && row.tower_credits().is_none())
+            .count();
+        if left_out > 0 {
+            warn!(
+                "Epoch {epoch}: {left_out} rows hold credits above {MAX_TOWER_CREDITS_IN_EPOCH}, left out of vote_performance. Run the credits backfill for this epoch."
+            );
+        }
     }
 
     Ok(by_epoch
