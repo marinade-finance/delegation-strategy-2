@@ -93,28 +93,32 @@ pub async fn get_estimated_inflation_rewards(
         .collect())
 }
 
-/// The running epoch has no `epochs` row yet, so `cluster_info` is the only record of its regime.
-pub async fn get_running_epoch_slots_per_year(
+/// Unclosed epochs (the running one, plus any ended ones awaiting close) have no `epochs` row yet,
+/// so `cluster_info` is the only record of their regime.
+pub async fn get_unclosed_epochs_slots_per_year(
     psql_client: &Client,
-) -> anyhow::Result<Option<(u64, f64)>> {
-    let row = psql_client
-        .query_opt(
+) -> anyhow::Result<Vec<(u64, f64)>> {
+    let rows = psql_client
+        .query(
             "
-        SELECT epoch, slots_per_year FROM cluster_info
+        SELECT DISTINCT ON (epoch) epoch, slots_per_year FROM cluster_info
         WHERE slots_per_year IS NOT NULL
           AND epoch > COALESCE((SELECT MAX(epoch) FROM epochs), 0)
-        ORDER BY epoch DESC, epoch_slot DESC LIMIT 1
+        ORDER BY epoch DESC, epoch_slot DESC
     ",
             &[],
         )
         .await?;
 
-    Ok(row.map(|row| {
-        (
-            row.get::<_, Decimal>("epoch").try_into().unwrap(),
-            row.get::<_, f64>("slots_per_year"),
-        )
-    }))
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, Decimal>("epoch").try_into().unwrap(),
+                row.get::<_, f64>("slots_per_year"),
+            )
+        })
+        .collect())
 }
 
 pub async fn get_block_rewards(
