@@ -308,11 +308,12 @@ mod tests {
                 ..group(key, 100)
             };
         let sorted = sort_groups(
+            // Tower epoch: equal credits give equal vote_performance
             vec![
                 with_credits("missing", None, None),
-                with_credits("low", Some(10.0), Some(0.5)),
-                with_credits("tied_low", Some(20.0), Some(0.1)),
-                with_credits("tied_high", Some(20.0), Some(0.9)),
+                with_credits("low", Some(10.0), Some(0.4)),
+                with_credits("tied_b", Some(20.0), Some(0.8)),
+                with_credits("tied_a", Some(20.0), Some(0.8)),
             ],
             OrderField::Credits,
             &OrderDirection::DESC,
@@ -322,7 +323,7 @@ mod tests {
                 .iter()
                 .map(|group| group.key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["tied_high", "tied_low", "low", "missing"]
+            vec!["tied_a", "tied_b", "low", "missing"]
         );
     }
 

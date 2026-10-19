@@ -2246,16 +2246,17 @@ mod tests {
             };
         assert_eq!(
             order(sort_validators(
+                // Tower epoch: equal credits give equal vote_performance
                 vec![
-                    with_credits("zero", Some(0), None),
-                    with_credits("low", Some(10), Some(0.5)),
-                    with_credits("tied_low", Some(20), Some(0.1)),
-                    with_credits("tied_high", Some(20), Some(0.9)),
+                    with_credits("zero", Some(0), Some(0.0)),
+                    with_credits("low", Some(10), Some(0.4)),
+                    with_credits("tied_b", Some(20), Some(0.8)),
+                    with_credits("tied_a", Some(20), Some(0.8)),
                 ],
                 OrderField::Credits,
                 &OrderDirection::DESC
             )),
-            vec!["tied_high", "tied_low", "low", "zero"]
+            vec!["tied_a", "tied_b", "low", "zero"]
         );
         assert_eq!(
             order(sort_validators(
