@@ -1354,12 +1354,13 @@ pub async fn load_validators(
             &[&Decimal::from(display_epochs)],
         )
         .await?;
-    let first_epoch = rows
+    let row_epochs = rows
         .iter()
-        .map(|row| row.get::<_, Decimal>("epoch").try_into().unwrap())
-        .min()
-        .unwrap_or(last_epoch);
-    let vote_performance = load_vote_performance(psql_client, first_epoch, last_epoch).await?;
+        .map(|row| -> u64 { row.get::<_, Decimal>("epoch").try_into().unwrap() });
+    // The rows can hold an epoch newer than last_epoch when the collector writes in between
+    let first_epoch = row_epochs.clone().min().unwrap_or(last_epoch);
+    let max_epoch = row_epochs.max().unwrap_or(last_epoch);
+    let vote_performance = load_vote_performance(psql_client, first_epoch, max_epoch).await?;
 
     let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
         log::info!("Aggregating validator records...");
