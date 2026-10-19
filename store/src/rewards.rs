@@ -93,7 +93,7 @@ pub async fn get_estimated_inflation_rewards(
         .collect())
 }
 
-/// Unclosed epochs have no `epochs` row yet, so `cluster_info` is their only regime record.
+/// Epochs past the last closed one have no `epochs` row, so `cluster_info` is their only regime record.
 pub async fn get_unclosed_epochs_slots_per_year(
     psql_client: &Client,
 ) -> anyhow::Result<Vec<(u64, f64)>> {
