@@ -229,7 +229,7 @@ mod tests {
             ("ValidatorEpochStats", "inflation_rewards_collector_healthy"),
             ("ValidatorEpochStats", "block_revenue_collector_healthy"),
             ("ValidatorEpochStats", "vote_account_lamports"),
-            ("ResponseValidators", "vat_minimum_balance"),
+            ("ResponseValidators", "vat_minimum_balances"),
             ("ValidatorEpochStats", "vat_eligible"),
             ("ValidatorRecord", "vat_eligible"),
         ] {
