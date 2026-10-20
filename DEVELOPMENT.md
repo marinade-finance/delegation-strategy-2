@@ -19,18 +19,17 @@ docker run -d --name postgresql-${DB} --rm --network none \
   -e POSTGRES_PASSWORD=${DB} \
   postgres:17.4
 
-for FILE in ./migrations/*.sql; do
-  echo "Migration SQL init execution: $FILE"
-  docker exec -i postgresql-${DB} psql -v ON_ERROR_STOP=1 -U ${DB} -d ${DB} < "$FILE"
-done
+cargo build --bin store
+export POSTGRES_URL="host=$PG_SOCKET_DIR user=${DB} password=${DB} dbname=${DB}"
+export PG_SSLROOTCERT=/etc/ssl/certs/ca-certificates.crt
+./scripts/migrate.bash
 ```
 
-`scripts/migrate.bash` applies the same files and records them, so it also works against an empty database.
+`scripts/migrate.bash` runs `store migrate`, which applies each file in `migrations/` and
+records it in the `migrations` table. Run it again after you pull new migration files.
 
-The PostgreSQL URL is then `host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy`.
-Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file,
-e.g. `/etc/ssl/certs/ca-certificates.crt`. Keep the socket directory path short: a Unix socket
-path is capped at 107 bytes.
+Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file.
+Keep the socket directory path short: a Unix socket path is capped at 107 bytes.
 
 # 2. Run the SQL loader tests
 

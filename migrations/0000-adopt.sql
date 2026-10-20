@@ -1,5 +1,5 @@
--- Databases that got 0000 to 0038 by hand, before `store migrate` recorded them.
--- validators_rewards.expected_take_rate comes from 0038.
+-- Until `store migrate` existed, each environment had to run migrations by hand.
+-- On such a database, this file records 0000 to 0038 as applied, and `store migrate` runs only later files.
 DO $adopt$
 BEGIN
     IF to_regclass('validators') IS NULL THEN
