@@ -1,5 +1,5 @@
 -- Until `store migrate` existed, each environment had to run migrations by hand.
--- On such a database, this file records 0000 to 0038 as applied, and `store migrate` runs only later files.
+-- On such a database, this file records 0000 to 0040 as applied, and `store migrate` runs only later files.
 DO $adopt$
 BEGIN
     IF to_regclass('validators') IS NULL THEN
@@ -8,10 +8,10 @@ BEGIN
     IF NOT EXISTS (
         SELECT FROM information_schema.columns
         WHERE table_schema = current_schema()
-          AND table_name = 'validators_rewards'
-          AND column_name = 'expected_take_rate'
+          AND table_name = 'validators'
+          AND column_name = 'vote_account_lamports'
     ) THEN
-        RAISE EXCEPTION 'apply migrations up to 0038 by hand before store migrate can adopt this database';
+        RAISE EXCEPTION 'apply migrations up to 0040 by hand before store migrate can adopt this database';
     END IF;
     INSERT INTO migrations (name) VALUES
         ('0000-init.sql'),
@@ -52,6 +52,8 @@ BEGIN
         ('0035-commission-effective-vintage-backfill.sql'),
         ('0036-validators-vote-reward-lamports.sql'),
         ('0037-validators-client-id-source.sql'),
-        ('0038-validators-rewards-expected-take-rate.sql');
+        ('0038-validators-rewards-expected-take-rate.sql'),
+        ('0039-validators-skip-rate-nullable.sql'),
+        ('0040-validators-vat-balance.sql');
 END;
 $adopt$;

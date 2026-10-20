@@ -89,13 +89,9 @@ async fn apply_by_hand_through(client: &Client, last_by_hand: &str) {
     }
 }
 
-// Prod on 2026-10-15 without 0039, and a database with every file.
 #[tokio::test]
 async fn database_migrated_by_hand_is_adopted() {
-    for last_by_hand in [
-        "0038-validators-rewards-expected-take-rate.sql",
-        "0039-validators-skip-rate-nullable.sql",
-    ] {
+    for last_by_hand in ["0040-validators-vat-balance.sql"] {
         let schema = "ds_test_migrations_adopt";
         if skip_without_database(schema) {
             return;
@@ -122,17 +118,17 @@ async fn database_migrated_by_hand_is_adopted() {
 }
 
 #[tokio::test]
-async fn database_without_0038_is_not_adopted() {
-    let schema = "ds_test_migrations_adopt_without_0038";
+async fn database_without_0040_is_not_adopted() {
+    let schema = "ds_test_migrations_adopt_without_0040";
     if skip_without_database(schema) {
         return;
     }
     let mut client = empty_schema(schema).await;
-    apply_by_hand_through(&client, "0037-validators-client-id-source.sql").await;
+    apply_by_hand_through(&client, "0039-validators-skip-rate-nullable.sql").await;
 
     let err = migrate(&mut client).await.unwrap_err();
 
-    assert!(format!("{err:#}").contains("up to 0038"), "{err:#}");
+    assert!(format!("{err:#}").contains("up to 0040"), "{err:#}");
     assert!(recorded_names(&client).await.is_empty());
 
     client
