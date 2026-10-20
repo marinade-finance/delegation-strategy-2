@@ -3,7 +3,7 @@ use crate::metrics;
 use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use rust_decimal::Decimal;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +88,8 @@ pub struct Cache {
     pub history_net_apy_updated_at: Option<SystemTime>,
     pub epoch_take_rates: CachedEpochTakeRates,
     pub validators: CachedValidators,
+    /// `cluster_info.vat_minimum_balance` by epoch, for the epochs of `validators`.
+    pub vat_minimum_balances: BTreeMap<u64, Decimal>,
     pub validator_incidents: CachedValidatorIncidents,
     pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
@@ -462,12 +464,18 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         protected: bond_flags.protected.vote_accounts.clone(),
     };
 
+    let vat_minimum_balances = store::utils::load_vat_minimum_balances(
+        &context.read().await.psql_client,
+        DEFAULT_CACHE_EPOCHS,
+    )
+    .await?;
     let mut validators = store::utils::load_validators(
         &context.read().await.psql_client,
         scoring_url,
         DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
         &overlays,
+        &vat_minimum_balances,
     )
     .await?;
 
@@ -538,6 +546,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
+        ctx.cache.vat_minimum_balances = vat_minimum_balances;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
         ctx.cache.history_net_apy_updated_at = history_net_apy_updated_at;

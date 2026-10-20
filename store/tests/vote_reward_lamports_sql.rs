@@ -50,6 +50,7 @@ fn performance_snapshot(created_at: &str, performance: ValidatorPerformance) -> 
             inflation: 0f64,
             inflation_taper: 0f64,
         }),
+        vat_minimum_balance: None,
         validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance)]),
         nodes: Default::default(),
         rewards: Some(HashMap::from([(
@@ -148,6 +149,7 @@ async fn load_record(client: &Client) -> ValidatorRecord {
         1,
         1,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap()
