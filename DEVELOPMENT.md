@@ -19,16 +19,17 @@ docker run -d --name postgresql-${DB} --rm --network none \
   -e POSTGRES_PASSWORD=${DB} \
   postgres:17.4
 
-for FILE in ./migrations/*.sql; do
-  echo "Migration SQL init execution: $FILE"
-  docker exec -i postgresql-${DB} psql -v ON_ERROR_STOP=1 -U ${DB} -d ${DB} < "$FILE"
-done
+cargo build --bin store
+export POSTGRES_URL="host=$PG_SOCKET_DIR user=${DB} password=${DB} dbname=${DB}"
+export PG_SSLROOTCERT=/etc/ssl/certs/ca-certificates.crt
+./scripts/migrate.bash
 ```
 
-The PostgreSQL URL is then `host=/tmp/ds-pg user=delegation-strategy password=delegation-strategy dbname=delegation-strategy`.
-Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file,
-e.g. `/etc/ssl/certs/ca-certificates.crt`. Keep the socket directory path short: a Unix socket
-path is capped at 107 bytes.
+`scripts/migrate.bash` runs `store migrate`, which applies each file in `migrations/` and
+records it in the `migrations` table. Run it again after you pull new migration files.
+
+Socket connections skip TLS, so `PG_SSLROOTCERT` only needs to name an existing CA file.
+Keep the socket directory path short: a Unix socket path is capped at 107 bytes.
 
 # 2. Run the SQL loader tests
 
@@ -45,3 +46,18 @@ cargo test --all-features
 Without `DS_TEST_POSTGRES_URL` the tests report why they are skipped and pass.
 On Podman, start the container with `podman run` and export
 `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`.
+
+# 3. Add a migration
+
+Add the next file in `migrations/`, for example `0040-what-it-does.sql`. `store migrate`
+(`scripts/migrate.bash`) runs each file that the `migrations` table does not list, in number order,
+and records its name. Each file runs in one transaction, and the first error stops the run.
+In Kubernetes, an Argo CD PreSync job runs it before the sync. A failed run stops the sync, and
+the old pods stay. The API does not apply migrations.
+
+- Name each file `<number>-<name>.sql`, with a number of 4 digits, for example `0040-what-it-does.sql`
+- Never edit a file after it ran in production. Add a new file.
+- Do not write `BEGIN`, `COMMIT` or `ROLLBACK` in a file. `CREATE INDEX CONCURRENTLY` cannot run
+  in a transaction, so it cannot be a migration.
+- The schema changes before the new API and collectors start, so the old API and collectors
+  run on the new schema for a short time. Make each migration work with the previous release.
