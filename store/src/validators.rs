@@ -131,7 +131,11 @@ pub async fn store_validators(
             inflation_rewards_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.inflation_rewards_collector_healthy ELSE validators.inflation_rewards_collector_healthy END,
             block_revenue_collector_owner = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_owner ELSE validators.block_revenue_collector_owner END,
             block_revenue_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_lamports ELSE validators.block_revenue_collector_lamports END,
-            block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END
+            block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END,
+            bls_pubkey = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.bls_pubkey ELSE validators.bls_pubkey END,
+            vote_account_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.vote_account_lamports ELSE validators.vote_account_lamports END,
+            vat_admitted = CASE WHEN u.vat_admitted IS NOT NULL THEN u.vat_admitted ELSE validators.vat_admitted END,
+            vat_admission_reason = CASE WHEN u.vat_admitted IS NOT NULL THEN u.vat_admission_reason ELSE validators.vat_admission_reason END
             "
             .to_string(),
             "u(
@@ -191,7 +195,11 @@ pub async fn store_validators(
                 block_revenue_collector_owner,
                 block_revenue_collector_lamports,
                 block_revenue_collector_healthy,
-                vote_reward_lamports
+                vote_reward_lamports,
+                bls_pubkey,
+                vote_account_lamports,
+                vat_admitted,
+                vat_admission_reason
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -258,6 +266,10 @@ pub async fn store_validators(
                     &v.block_revenue_collector_lamports,
                     &v.block_revenue_collector_healthy,
                     &v.credits.vote_reward_lamports,
+                    &v.bls_pubkey,
+                    &v.vote_account_lamports,
+                    &v.vat_admitted,
+                    &v.vat_admission_reason,
                 ];
                 query.add(
                     &mut params,
@@ -307,6 +319,10 @@ pub async fn store_validators(
                         (54, "NUMERIC".into()), // block_revenue_collector_lamports
                         (55, "BOOL".into()), // block_revenue_collector_healthy
                         (56, "NUMERIC".into()), // vote_reward_lamports
+                        (57, "TEXT".into()), // bls_pubkey
+                        (58, "NUMERIC".into()), // vote_account_lamports
+                        (59, "BOOL".into()), // vat_admitted
+                        (60, "TEXT".into()), // vat_admission_reason
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -393,7 +409,11 @@ pub async fn store_validators(
         block_revenue_collector_owner,
         block_revenue_collector_lamports,
         block_revenue_collector_healthy,
-        vote_reward_lamports
+        vote_reward_lamports,
+        bls_pubkey,
+        vote_account_lamports,
+        vat_admitted,
+        vat_admission_reason
         "
             .to_string(),
         );
@@ -465,6 +485,10 @@ pub async fn store_validators(
                 &v.block_revenue_collector_lamports,
                 &v.block_revenue_collector_healthy,
                 &v.credits.vote_reward_lamports,
+                &v.bls_pubkey,
+                &v.vote_account_lamports,
+                &v.vat_admitted,
+                &v.vat_admission_reason,
             ];
             query.add(&mut params);
             if !v.dc_resolved {

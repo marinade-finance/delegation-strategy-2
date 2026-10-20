@@ -17,5 +17,6 @@ pub mod validators_block_rewards;
 pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_sandwiches;
+pub mod vat_admission_check;
 pub mod versions;
 pub mod vote_performance;

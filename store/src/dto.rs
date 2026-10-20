@@ -210,6 +210,10 @@ pub struct Validator {
     pub block_revenue_collector_owner: Option<String>,
     pub block_revenue_collector_lamports: Option<Decimal>,
     pub block_revenue_collector_healthy: Option<bool>,
+    pub bls_pubkey: Option<String>,
+    pub vote_account_lamports: Option<Decimal>,
+    pub vat_admitted: Option<bool>,
+    pub vat_admission_reason: Option<String>,
 }
 
 impl Validator {
@@ -262,6 +266,12 @@ impl Validator {
             block_revenue_collector_owner: v.block_revenue_collector_owner.clone(),
             block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
             block_revenue_collector_healthy: v.block_revenue_collector_healthy,
+            bls_pubkey: v.bls_pubkey.clone(),
+            vote_account_lamports: v.vote_account_lamports.map(Decimal::from),
+            vat_admitted: v.vat_admitted,
+            vat_admission_reason: v
+                .vat_admission_reason
+                .map(|reason| reason.as_str().to_string()),
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -332,6 +342,12 @@ pub struct ValidatorEpochStats {
     pub block_revenue_commission_bps: Option<i32>,
     /// Inflation rewards accrued to this vote account and not yet distributed to its delegators. Null on a pre-v4 vote state.
     pub pending_delegator_rewards: Option<Decimal>,
+    /// Base58 compressed BLS public key from the v4 vote state. Null on a pre-v4 state and on a v4 state without a key.
+    pub bls_pubkey: Option<String>,
+    /// SIMD-0357 admission for the inflation rewards of this epoch: agave's filter applied to the last snapshot before the epoch closed. False means the stakers get no inflation rewards for this epoch. Null where the vote state did not parse, and on rows stored before DS2 collected it.
+    pub vat_admitted: Option<bool>,
+    /// Why `vat_admitted` is false: `no_bls_key`, `no_stake`, `low_balance` (balance less pending delegator rewards is below rent, plus the VAT once Alpenglow is active) or `below_stake_cutoff` (outside the top 2000 by stake, ties at the cut-off dropped). Null when admitted.
+    pub vat_admission_reason: Option<String>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,

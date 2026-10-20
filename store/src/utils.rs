@@ -1285,6 +1285,9 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
+                bls_pubkey,
+                vat_admitted,
+                vat_admission_reason,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1664,6 +1667,9 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                bls_pubkey: row.get::<_, Option<String>>("bls_pubkey"),
+                vat_admitted: row.get::<_, Option<bool>>("vat_admitted"),
+                vat_admission_reason: row.get::<_, Option<String>>("vat_admission_reason"),
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),
