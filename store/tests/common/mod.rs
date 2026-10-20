@@ -15,10 +15,10 @@ use tokio_postgres::{Client, NoTls};
 
 pub const POSTGRES_URL_ENV: &str = "DS_TEST_POSTGRES_URL";
 
-pub async fn migrated_client(schema: &str) -> Option<Client> {
+pub async fn empty_client(schema: &str) -> Option<Client> {
     let url = std::env::var(POSTGRES_URL_ENV).ok()?;
 
-    let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move {
         if let Err(err) = connection.await {
             panic!("postgres connection error: {err}");
@@ -34,8 +34,12 @@ pub async fn migrated_client(schema: &str) -> Option<Client> {
         .await
         .unwrap();
 
-    store::migrations::migrate(&mut client).await.unwrap();
+    Some(client)
+}
 
+pub async fn migrated_client(schema: &str) -> Option<Client> {
+    let mut client = empty_client(schema).await?;
+    store::migrations::migrate(&mut client).await.unwrap();
     Some(client)
 }
 

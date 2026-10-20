@@ -1,8 +1,8 @@
 mod common;
 
-use common::{migrated_client, skip_without_database, POSTGRES_URL_ENV};
+use common::{empty_client, migrated_client, skip_without_database};
 use store::migrations::{migrate, migration_files};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 const ADOPT: &str = "0000-adopt.sql";
 
@@ -34,25 +34,6 @@ async fn skip_rate_is_nullable(client: &Client) -> bool {
         .await
         .unwrap()
         .get(0)
-}
-
-async fn empty_schema(schema: &str) -> Client {
-    let url = std::env::var(POSTGRES_URL_ENV).unwrap();
-    let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            panic!("postgres connection error: {err}");
-        }
-    });
-    client
-        .batch_execute(&format!(
-            "DROP SCHEMA IF EXISTS {schema} CASCADE;
-             CREATE SCHEMA {schema};
-             SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    client
 }
 
 #[tokio::test]
@@ -96,7 +77,7 @@ async fn database_migrated_by_hand_is_adopted() {
         if skip_without_database(schema) {
             return;
         }
-        let mut client = empty_schema(schema).await;
+        let mut client = empty_client(schema).await.unwrap();
         apply_by_hand_through(&client, last_by_hand).await;
 
         migrate(&mut client)
@@ -123,7 +104,7 @@ async fn database_without_0040_is_not_adopted() {
     if skip_without_database(schema) {
         return;
     }
-    let mut client = empty_schema(schema).await;
+    let mut client = empty_client(schema).await.unwrap();
     apply_by_hand_through(&client, "0039-validators-skip-rate-nullable.sql").await;
 
     let err = migrate(&mut client).await.unwrap_err();
