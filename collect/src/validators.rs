@@ -171,6 +171,8 @@ pub struct ValidatorSnapshot {
     pub block_revenue_collector_lamports: Option<u64>,
     #[serde(default)]
     pub block_revenue_collector_healthy: Option<bool>,
+    #[serde(default)]
+    pub vote_account_lamports: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -397,6 +399,7 @@ pub fn collect_validators_info(
                 .map(|owner| owner.to_string()),
             block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
             block_revenue_collector_healthy: block_revenue_health.and_then(|h| h.healthy),
+            vote_account_lamports: vote_state.and_then(|state| state.lamports),
         });
     }
 

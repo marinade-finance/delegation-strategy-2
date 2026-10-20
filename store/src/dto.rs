@@ -210,6 +210,7 @@ pub struct Validator {
     pub block_revenue_collector_owner: Option<String>,
     pub block_revenue_collector_lamports: Option<Decimal>,
     pub block_revenue_collector_healthy: Option<bool>,
+    pub vote_account_lamports: Option<Decimal>,
 }
 
 impl Validator {
@@ -262,6 +263,7 @@ impl Validator {
             block_revenue_collector_owner: v.block_revenue_collector_owner.clone(),
             block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
             block_revenue_collector_healthy: v.block_revenue_collector_healthy,
+            vote_account_lamports: v.vote_account_lamports.map(Decimal::from),
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -332,6 +334,10 @@ pub struct ValidatorEpochStats {
     pub block_revenue_commission_bps: Option<i32>,
     /// Inflation rewards accrued to this vote account and not yet distributed to its delegators. Null on a pre-v4 vote state.
     pub pending_delegator_rewards: Option<Decimal>,
+    /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
+    pub vote_account_lamports: Option<Decimal>,
+    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active. Only the balance check applies for now: `vote_account_lamports` against the `vat_minimum_balance` of the epoch at the top level of `/validators`. Null when an input is null.
+    pub vat_eligible: Option<bool>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
@@ -443,6 +449,10 @@ pub struct ValidatorRecord {
     pub block_revenue_commission_bps: Option<i32>,
     /// See `ValidatorEpochStats::pending_delegator_rewards`.
     pub pending_delegator_rewards: Option<Decimal>,
+    /// See `ValidatorEpochStats::vote_account_lamports`.
+    pub vote_account_lamports: Option<Decimal>,
+    /// See `ValidatorEpochStats::vat_eligible`.
+    pub vat_eligible: Option<bool>,
     pub commission_aggregated: Option<i32>,
     pub rugged_commission_occurrences: u64,
     pub rugged_commission: bool,

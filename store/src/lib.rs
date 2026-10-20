@@ -1,4 +1,5 @@
 pub mod close_epoch;
+pub mod cluster_info;
 pub mod dto;
 pub mod groups;
 pub mod incidents;

@@ -144,6 +144,7 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             block_revenue_collector_owner: None,
             block_revenue_collector_lamports: None,
             block_revenue_collector_healthy: None,
+            vote_account_lamports: None,
         }],
     }
 }
@@ -175,6 +176,7 @@ pub fn performance_snapshot(
             inflation: 0f64,
             inflation_taper: 0f64,
         }),
+        vat_minimum_balance: None,
         validators,
         nodes: Default::default(),
         rewards: Some(rewards),

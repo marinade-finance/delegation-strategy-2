@@ -650,6 +650,8 @@ pub struct VoteStateFields {
     pub block_revenue_collector: Option<Pubkey>,
     pub block_revenue_commission_bps: Option<u16>,
     pub pending_delegator_rewards: Option<u64>,
+    // Set by the scan, not by the parser, which sees only the account data.
+    pub lamports: Option<u64>,
 }
 
 fn read_array<const N: usize>(data: &[u8], offset: usize, field: &str) -> anyhow::Result<[u8; N]> {
@@ -692,6 +694,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 block_revenue_collector: None,
                 block_revenue_commission_bps: None,
                 pending_delegator_rewards: None,
+                lamports: None,
             })
         }
         VOTE_STATE_VERSION_V4 => Ok(VoteStateFields {
@@ -722,6 +725,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET,
                 "pending_delegator_rewards",
             )?)),
+            lamports: None,
         }),
         // An unknown version still yields the withdrawer; its SIMD-0185 offsets may have moved.
         _ => Ok(VoteStateFields {
@@ -732,6 +736,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
             block_revenue_collector: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            lamports: None,
         }),
     }
 }
@@ -751,7 +756,13 @@ pub fn get_vote_account_states(
         .map(|(account_pubkey, account)| (account_pubkey.to_string(), account.data.as_slice()))
         .collect();
 
-    parse_vote_account_states(&accounts)
+    let mut states = parse_vote_account_states(&accounts)?;
+    for (account_pubkey, account) in vote_accounts.iter() {
+        if let Some(state) = states.get_mut(&account_pubkey.to_string()) {
+            state.lamports = Some(account.lamports);
+        }
+    }
+    Ok(states)
 }
 
 fn parse_vote_account_states(
@@ -1716,6 +1727,7 @@ mod vote_state_tests {
                 block_revenue_collector: Some(Pubkey::new_from_array(BLOCK_COLLECTOR)),
                 block_revenue_commission_bps: Some(1234),
                 pending_delegator_rewards: Some(42),
+                lamports: None,
             }
         );
     }
@@ -2331,6 +2343,7 @@ mod collector_health_tests {
             block_revenue_collector: block_revenue,
             block_revenue_commission_bps: Some(10_000),
             pending_delegator_rewards: Some(0),
+            lamports: None,
         }
     }
 
