@@ -1,7 +1,14 @@
 mod common;
 
-use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
+use clap::Parser;
+use collect::validators_performance::ValidatorsPerformanceSnapshot;
+use common::{
+    migrated_client, performance_snapshot, skip_without_database, store_snapshot,
+    validator_snapshot, write_yaml,
+};
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
+use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use store::dto::ValidatorRecord;
 use store::utils::{load_validators, load_vat_minimum_balances, ValidatorOverlays};
 use tokio_postgres::Client;
@@ -128,4 +135,29 @@ async fn an_epoch_without_a_minimum_has_no_verdict() {
         .unwrap()
         .is_empty());
     assert_eq!(record(&client).await.vat_eligible, None);
+}
+
+#[tokio::test]
+async fn store_cluster_info_writes_the_minimum_of_the_snapshot() {
+    let schema = "ds_test_vat_balance_cluster_info";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let snapshot = ValidatorsPerformanceSnapshot {
+        vat_minimum_balance: Some(MINIMUM),
+        ..performance_snapshot(EPOCH, Default::default(), Default::default())
+    };
+    let path = write_yaml(schema, &serde_yaml::to_string(&snapshot).unwrap());
+    store_cluster_info(
+        StoreClusterInfoParams::parse_from(["store", "--snapshot-file", &path]),
+        &mut client,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        load_vat_minimum_balances(&client, 3).await.unwrap(),
+        BTreeMap::from([(EPOCH, Decimal::from(MINIMUM))])
+    );
 }
