@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use include_dir::{include_dir, Dir, File};
-use log::{info, warn};
+use log::info;
 use tokio_postgres::Client;
 
 pub static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../migrations");
@@ -8,6 +8,10 @@ pub static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../migrations
 /// Runs every file in `migrations/` that the `migrations` table does not list, in number order,
 /// each file in its own transaction. Stops at the first error and keeps the files before it.
 pub async fn migrate(client: &mut Client) -> Result<()> {
+    let files = migration_files()?;
+    if files.is_empty() {
+        bail!("no migration files found");
+    }
     let tx = client.transaction().await?;
     tx.batch_execute(
         "SELECT pg_advisory_xact_lock(hashtext('migrations'));
@@ -19,10 +23,6 @@ pub async fn migrate(client: &mut Client) -> Result<()> {
     .await?;
     tx.commit().await?;
 
-    let files = migration_files()?;
-    if files.is_empty() {
-        warn!("No migration files found");
-    }
     for file in files {
         let name = file.path().to_string_lossy();
         let sql = file
