@@ -228,6 +228,10 @@ mod tests {
             ("ValidatorRecord", "block_revenue_collector_healthy"),
             ("ValidatorEpochStats", "inflation_rewards_collector_healthy"),
             ("ValidatorEpochStats", "block_revenue_collector_healthy"),
+            ("ValidatorEpochStats", "vote_account_lamports"),
+            ("ResponseValidators", "vat_minimum_balance"),
+            ("ValidatorEpochStats", "vat_eligible"),
+            ("ValidatorRecord", "vat_eligible"),
         ] {
             let description = spec["components"]["schemas"][schema]["properties"][field]
                 ["description"]

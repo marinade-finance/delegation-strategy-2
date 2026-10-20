@@ -3,7 +3,7 @@ use crate::metrics;
 use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use rust_decimal::Decimal;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +88,8 @@ pub struct Cache {
     pub history_net_apy_updated_at: Option<SystemTime>,
     pub epoch_take_rates: CachedEpochTakeRates,
     pub validators: CachedValidators,
+    /// `cluster_info.vat_minimum_balance` by epoch, for the epochs of `validators`.
+    pub vat_minimum_balances: BTreeMap<u64, Decimal>,
     pub validator_incidents: CachedValidatorIncidents,
     pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,
@@ -481,6 +483,22 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         warn!("No validators in DB, caching an empty set");
     }
 
+    let record_epochs: Vec<u64> = validators
+        .values()
+        .flat_map(|record| record.epoch_stats.iter().map(|stats| stats.epoch))
+        .collect();
+    let vat_minimum_balances = match (record_epochs.iter().min(), record_epochs.iter().max()) {
+        (Some(&first_epoch), Some(&last_epoch)) => {
+            store::utils::load_vat_minimum_balances(
+                &context.read().await.psql_client,
+                first_epoch,
+                last_epoch,
+            )
+            .await?
+        }
+        _ => Default::default(),
+    };
+
     // The window ends at the newest epoch the validator records report, which is the same epoch the
     // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.
     let last_epoch = store::utils::last_reported_epoch(validators.values()).unwrap_or(0);
@@ -538,6 +556,7 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         ctx.cache.bond_flags = bond_flags;
         ctx.cache.net_apy = net_apy;
         ctx.cache.validators = validators;
+        ctx.cache.vat_minimum_balances = vat_minimum_balances;
         ctx.cache.validator_incidents = validator_incidents;
         ctx.cache.validator_groups = validator_groups;
         ctx.cache.history_net_apy_updated_at = history_net_apy_updated_at;

@@ -20,7 +20,7 @@ use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
 use std::sync::Arc;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::RangeInclusive,
     time::Duration,
 };
@@ -1224,6 +1224,31 @@ pub struct ValidatorOverlays {
     pub protected: HashSet<String>,
 }
 
+/// The newest `cluster_info.vat_minimum_balance` of each epoch in `from_epoch..=to_epoch`.
+pub async fn load_vat_minimum_balances(
+    psql_client: &Client,
+    from_epoch: u64,
+    to_epoch: u64,
+) -> anyhow::Result<BTreeMap<u64, Decimal>> {
+    let rows = psql_client
+        .query(
+            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance
+            FROM cluster_info
+            WHERE epoch BETWEEN $1 AND $2 AND vat_minimum_balance IS NOT NULL
+            ORDER BY epoch, created_at DESC",
+            &[&Decimal::from(from_epoch), &Decimal::from(to_epoch)],
+        )
+        .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.get::<_, Decimal>("epoch").try_into()?,
+                row.get("vat_minimum_balance"),
+            ))
+        })
+        .collect()
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
@@ -1285,6 +1310,7 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
+                vote_account_lamports,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1361,6 +1387,8 @@ pub async fn load_validators(
     let first_epoch = row_epochs.clone().min().unwrap_or(last_epoch);
     let max_epoch = row_epochs.max().unwrap_or(last_epoch);
     let vote_performance = load_vote_performance(psql_client, first_epoch, max_epoch).await?;
+    let vat_minimum_balances =
+        load_vat_minimum_balances(psql_client, first_epoch, max_epoch).await?;
 
     let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
         log::info!("Aggregating validator records...");
@@ -1373,6 +1401,16 @@ pub async fn load_validators(
             let epoch_vote_performance = vote_performance
                 .get(&(epoch, vote_account.clone()))
                 .copied();
+            let vote_account_lamports: Option<Decimal> = row.get("vote_account_lamports");
+            let vat_minimum_balance = vat_minimum_balances.get(&epoch).copied();
+            // TODO: SIMD-0357 checks not applied yet:
+            // - BLS key present
+            // - next-epoch stake > 0
+            // - top 2000 by stake, ties at the cut-off dropped
+            // - balance less pending_delegator_rewards once block revenue sharing is active
+            let vat_eligible = vote_account_lamports
+                .zip(vat_minimum_balance)
+                .map(|(lamports, minimum)| lamports >= minimum);
             let starting_epoch_date: Option<DateTime<Utc>> =
                 row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
             let mut epoch_start_at: Option<DateTime<Utc>> =
@@ -1504,6 +1542,8 @@ pub async fn load_validators(
                         .get::<_, Option<i32>>("block_revenue_commission_bps"),
                     pending_delegator_rewards: row
                         .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                    vote_account_lamports,
+                    vat_eligible,
                     commission_aggregated: None,
                     version: version.clone(),
                     client_id,
@@ -1664,6 +1704,8 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                vote_account_lamports,
+                vat_eligible,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),

@@ -79,6 +79,7 @@ async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFiel
         created_at: "2026-07-31T00:00:00Z".into(),
         slots_per_year: baseline_slots_per_year(),
         cluster_inflation: None,
+        vat_minimum_balance: None,
         validators,
         nodes: Default::default(),
         rewards: None,

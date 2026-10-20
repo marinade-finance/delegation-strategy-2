@@ -38,6 +38,7 @@ fn snapshot(
         created_at: created_at.into(),
         slots_per_year: baseline_slots_per_year(),
         cluster_inflation: None,
+        vat_minimum_balance: None,
         validators: Default::default(),
         nodes: nodes
             .into_iter()

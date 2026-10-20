@@ -10,6 +10,7 @@ pub const SLOTS_IN_EPOCH: u64 = 432_000;
 const BASELINE_SLOT_PARAMS: SlotParams = SlotParams {
     slot_time_ms: 400,
     slots_per_year: 78_892_314.984,
+    vat_lamports_per_epoch: 1_600_000_000,
 };
 
 /// Transcribed from agave `runtime/src/slot_params.rs`, which stores explicit rows rather than deriving them.
@@ -19,6 +20,7 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
         SlotParams {
             slot_time_ms: 350,
             slots_per_year: 90_162_645.696,
+            vat_lamports_per_epoch: 1_400_000_000,
         },
     ),
     (
@@ -26,6 +28,7 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
         SlotParams {
             slot_time_ms: 300,
             slots_per_year: 105_189_753.312,
+            vat_lamports_per_epoch: 1_200_000_000,
         },
     ),
     (
@@ -33,6 +36,7 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
         SlotParams {
             slot_time_ms: 250,
             slots_per_year: 126_227_703.974,
+            vat_lamports_per_epoch: 1_000_000_000,
         },
     ),
     (
@@ -40,6 +44,7 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
         SlotParams {
             slot_time_ms: 200,
             slots_per_year: 157_784_629.968,
+            vat_lamports_per_epoch: 800_000_000,
         },
     ),
 ];
@@ -48,6 +53,8 @@ const SLOT_TIME_GATES: [(Pubkey, SlotParams); 4] = [
 pub struct SlotParams {
     pub slot_time_ms: u64,
     pub slots_per_year: f64,
+    /// SIMD-0357 VAT that agave burns from each admitted vote account at each epoch boundary.
+    pub vat_lamports_per_epoch: u64,
 }
 
 /// Reachable only from snapshots that predate the gate read, which are all pre-SIMD-0525 epochs.
