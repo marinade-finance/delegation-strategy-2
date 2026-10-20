@@ -1224,19 +1224,19 @@ pub struct ValidatorOverlays {
     pub protected: HashSet<String>,
 }
 
-/// The newest `cluster_info.vat_minimum_balance` of each epoch in `from_epoch..=to_epoch`.
+/// The newest `cluster_info.vat_minimum_balance` of each of the last `epochs` epochs.
 pub async fn load_vat_minimum_balances(
     psql_client: &Client,
-    from_epoch: u64,
-    to_epoch: u64,
+    epochs: u64,
 ) -> anyhow::Result<BTreeMap<u64, Decimal>> {
     let rows = psql_client
         .query(
             "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance
             FROM cluster_info
-            WHERE epoch BETWEEN $1 AND $2 AND vat_minimum_balance IS NOT NULL
+            WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+                AND vat_minimum_balance IS NOT NULL
             ORDER BY epoch, created_at DESC",
-            &[&Decimal::from(from_epoch), &Decimal::from(to_epoch)],
+            &[&Decimal::from(epochs)],
         )
         .await?;
     rows.iter()
@@ -1255,6 +1255,7 @@ pub async fn load_validators(
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
+    vat_minimum_balances: &BTreeMap<u64, Decimal>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1387,8 +1388,7 @@ pub async fn load_validators(
     let first_epoch = row_epochs.clone().min().unwrap_or(last_epoch);
     let max_epoch = row_epochs.max().unwrap_or(last_epoch);
     let vote_performance = load_vote_performance(psql_client, first_epoch, max_epoch).await?;
-    let vat_minimum_balances =
-        load_vat_minimum_balances(psql_client, first_epoch, max_epoch).await?;
+    let vat_minimum_balances = vat_minimum_balances.clone();
 
     let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
         log::info!("Aggregating validator records...");

@@ -464,12 +464,18 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         protected: bond_flags.protected.vote_accounts.clone(),
     };
 
+    let vat_minimum_balances = store::utils::load_vat_minimum_balances(
+        &context.read().await.psql_client,
+        DEFAULT_CACHE_EPOCHS,
+    )
+    .await?;
     let mut validators = store::utils::load_validators(
         &context.read().await.psql_client,
         scoring_url,
         DEFAULT_CACHE_EPOCHS,
         DEFAULT_COMPUTING_EPOCHS,
         &overlays,
+        &vat_minimum_balances,
     )
     .await?;
 
@@ -482,22 +488,6 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         );
         warn!("No validators in DB, caching an empty set");
     }
-
-    let record_epochs: Vec<u64> = validators
-        .values()
-        .flat_map(|record| record.epoch_stats.iter().map(|stats| stats.epoch))
-        .collect();
-    let vat_minimum_balances = match (record_epochs.iter().min(), record_epochs.iter().max()) {
-        (Some(&first_epoch), Some(&last_epoch)) => {
-            store::utils::load_vat_minimum_balances(
-                &context.read().await.psql_client,
-                first_epoch,
-                last_epoch,
-            )
-            .await?
-        }
-        _ => Default::default(),
-    };
 
     // The window ends at the newest epoch the validator records report, which is the same epoch the
     // API measures its incident window back from. `cluster_info` can be an epoch ahead or behind it.

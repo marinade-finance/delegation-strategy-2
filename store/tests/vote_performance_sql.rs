@@ -232,6 +232,7 @@ async fn validators_and_epochs_get_the_vote_performance() {
         EPOCHS,
         EPOCHS,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap();

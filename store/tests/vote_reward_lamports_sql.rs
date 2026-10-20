@@ -149,6 +149,7 @@ async fn load_record(client: &Client) -> ValidatorRecord {
         1,
         1,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap()

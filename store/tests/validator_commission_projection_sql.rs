@@ -50,6 +50,7 @@ async fn load(
         display_epochs,
         2,
         &overlays,
+        &Default::default(),
     )
     .await
     .unwrap()

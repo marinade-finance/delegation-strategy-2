@@ -39,6 +39,7 @@ async fn record(client: &Client) -> ValidatorRecord {
         3,
         3,
         &ValidatorOverlays::default(),
+        &load_vat_minimum_balances(client, 3).await.unwrap(),
     )
     .await
     .unwrap()
@@ -87,9 +88,7 @@ async fn the_newest_cluster_info_row_with_a_minimum_wins() {
     store_balance(&mut client, schema, Some(MINIMUM)).await;
 
     assert_eq!(
-        load_vat_minimum_balances(&client, EPOCH, EPOCH)
-            .await
-            .unwrap()[&EPOCH],
+        load_vat_minimum_balances(&client, 3).await.unwrap()[&EPOCH],
         Decimal::from(MINIMUM)
     );
     assert_eq!(record(&client).await.vat_eligible, Some(true));
@@ -124,7 +123,7 @@ async fn an_epoch_without_a_minimum_has_no_verdict() {
     store_minimum(&client, None, "2026-10-20T00:00:00Z").await;
     store_balance(&mut client, schema, Some(MINIMUM)).await;
 
-    assert!(load_vat_minimum_balances(&client, EPOCH, EPOCH)
+    assert!(load_vat_minimum_balances(&client, 3)
         .await
         .unwrap()
         .is_empty());
