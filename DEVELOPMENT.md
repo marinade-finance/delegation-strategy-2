@@ -51,11 +51,12 @@ On Podman, start the container with `podman run` and export
 # 3. Add a migration
 
 Add the next file in `migrations/`, for example `0040-what-it-does.sql`. `store migrate`
-(`scripts/migrate.bash`) runs each file that the `migrations` table does not list, in name order,
+(`scripts/migrate.bash`) runs each file that the `migrations` table does not list, in number order,
 and records its name. Each file runs in one transaction, and the first error stops the run.
 In Kubernetes, an Argo CD PreSync job runs it before the sync. A failed run stops the sync, and
 the old pods stay. The API does not apply migrations.
 
+- Name each file `<number>-<name>.sql`, with a number of 4 digits, for example `0040-what-it-does.sql`
 - Never edit a file after it ran in production. Add a new file.
 - Do not write `BEGIN`, `COMMIT` or `ROLLBACK` in a file. `CREATE INDEX CONCURRENTLY` cannot run
   in a transaction, so it cannot be a migration.

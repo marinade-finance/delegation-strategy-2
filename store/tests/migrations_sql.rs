@@ -8,6 +8,7 @@ const ADOPT: &str = "0000-adopt.sql";
 
 fn file_names() -> Vec<String> {
     migration_files()
+        .unwrap()
         .iter()
         .map(|file| file.path().to_string_lossy().into_owned())
         .collect()
@@ -73,7 +74,7 @@ async fn empty_database_records_every_file_and_a_second_run_changes_nothing() {
 }
 
 async fn apply_by_hand_through(client: &Client, last_by_hand: &str) {
-    for file in migration_files() {
+    for file in migration_files().unwrap() {
         let name = file.path().to_string_lossy();
         if name == ADOPT {
             continue;
