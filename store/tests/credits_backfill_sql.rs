@@ -1,14 +1,10 @@
 mod common;
 
-use collect::credits_backfill::CreditsBackfill;
-use collect::solana_service::EpochCredits;
 use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
 use rust_decimal::Decimal;
-use std::collections::{BTreeMap, HashMap};
-use store::credits_backfill::backfill_credits;
+use store::credits_backfill::{store_credits_backfill, TESTNET_LAMPORTS_IN_CREDITS_EPOCHS};
 use tokio_postgres::Client;
 
-// Testnet epochs 1042-1053 were stored with the vote reward lamports in `credits`
 const LAMPORTS: u64 = 300_000_000_000;
 
 async fn seed(client: &mut Client, epoch: u64, vote_account: &str, stake: u64, credits: u64) {
@@ -21,13 +17,6 @@ async fn seed(client: &mut Client, epoch: u64, vote_account: &str, stake: u64, c
         &snapshot,
     )
     .await;
-}
-
-fn credits(tower_credits: Option<u64>, vote_reward_lamports: Option<u64>) -> EpochCredits {
-    EpochCredits {
-        tower_credits,
-        vote_reward_lamports,
-    }
 }
 
 async fn read(
@@ -46,54 +35,36 @@ async fn read(
 }
 
 #[tokio::test]
-async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
+async fn backfill_moves_credits_to_vote_reward_lamports() {
     let schema = "credits_backfill_sql";
     if skip_without_database(schema) {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
 
-    seed(&mut client, 1042, "migration", 100, LAMPORTS).await;
-    seed(&mut client, 1043, "rewarded", 100, LAMPORTS).await;
+    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+        seed(&mut client, epoch, "rewarded", 100, LAMPORTS).await;
+    }
+    // Testnet 1050 holds rewards of 48 lamports, below the tower limit
+    seed(&mut client, 1050, "smallReward", 100, 48).await;
     seed(&mut client, 1043, "zeroReward", 100, 0).await;
     seed(&mut client, 1043, "unstaked", 0, 0).await;
     seed(&mut client, 1043, "unstakedRewarded", 0, LAMPORTS).await;
-    seed(&mut client, 1043, "noValue", 100, 0).await;
-    seed(&mut client, 1043, "closed", 100, LAMPORTS).await;
-    seed(&mut client, 1043, "closedNoEntry", 100, 0).await;
-    seed(&mut client, 1043, "closedUnstaked", 0, 0).await;
-    seed(&mut client, 1042, "closedTower", 100, 65_000).await;
-    seed(&mut client, 1042, "closedRewarded", 100, LAMPORTS).await;
+    seed(&mut client, 1041, "tower", 100, 65_000).await;
 
-    let backfill = CreditsBackfill {
-        epochs: BTreeMap::from([
-            (
-                1042,
-                HashMap::from([("migration".into(), credits(Some(65_027), Some(LAMPORTS)))]),
-            ),
-            (
-                1043,
-                HashMap::from([
-                    ("rewarded".into(), credits(None, Some(LAMPORTS))),
-                    ("zeroReward".into(), credits(None, Some(0))),
-                    ("unstaked".into(), credits(None, Some(0))),
-                    ("unstakedRewarded".into(), credits(None, Some(LAMPORTS))),
-                    ("noValue".into(), credits(None, None)),
-                ]),
-            ),
-        ]),
-    };
-    backfill_credits(&mut client, &backfill).await.unwrap();
+    store_credits_backfill(&mut client).await.unwrap();
 
     let lamports = Some(Decimal::from(LAMPORTS));
     let leader_slots = Decimal::from(100);
+    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+        assert_eq!(
+            read(&client, "rewarded", epoch).await,
+            (None, lamports, leader_slots)
+        );
+    }
     assert_eq!(
-        read(&client, "migration", 1042).await,
-        (Some(Decimal::from(65_027)), lamports, leader_slots)
-    );
-    assert_eq!(
-        read(&client, "rewarded", 1043).await,
-        (None, lamports, leader_slots)
+        read(&client, "smallReward", 1050).await,
+        (None, Some(Decimal::from(48)), leader_slots)
     );
     assert_eq!(
         read(&client, "zeroReward", 1043).await,
@@ -103,35 +74,41 @@ async fn backfill_rewrites_only_credits_and_vote_reward_lamports() {
         read(&client, "unstaked", 1043).await,
         (None, None, leader_slots)
     );
-    // No stake in 1043, but the reward of 1043 is paid on the stake of 1042, so it stays
+    // No stake in 1043, but the reward of 1043 is paid on the stake of 1042
     assert_eq!(
         read(&client, "unstakedRewarded", 1043).await,
         (None, lamports, leader_slots)
     );
     assert_eq!(
-        read(&client, "noValue", 1043).await,
-        (None, None, leader_slots)
-    );
-    // A vote account that is not in the file gets its credits moved to vote_reward_lamports
-    assert_eq!(
-        read(&client, "closed", 1043).await,
-        (None, lamports, leader_slots)
-    );
-    assert_eq!(
-        read(&client, "closedNoEntry", 1043).await,
-        (None, Some(Decimal::ZERO), leader_slots)
-    );
-    assert_eq!(
-        read(&client, "closedUnstaked", 1043).await,
-        (None, None, leader_slots)
-    );
-    // 1042 has tower credits, so only a value above the tower limit moves
-    assert_eq!(
-        read(&client, "closedTower", 1042).await,
+        read(&client, "tower", 1041).await,
         (Some(Decimal::from(65_000)), None, leader_slots)
     );
+
+    assert!(store_credits_backfill(&mut client).await.is_err());
+}
+
+#[tokio::test]
+async fn backfill_fails_without_lamports_in_credits() {
+    let schema = "credits_backfill_tower_sql";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+        seed(&mut client, epoch, "notTestnet", 100, LAMPORTS).await;
+    }
+    client
+        .execute(
+            "UPDATE validators SET credits = 65000 WHERE epoch = 1053",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    assert!(store_credits_backfill(&mut client).await.is_err());
     assert_eq!(
-        read(&client, "closedRewarded", 1042).await,
-        (None, lamports, leader_slots)
+        read(&client, "notTestnet", 1042).await,
+        (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
     );
 }

@@ -140,10 +140,6 @@ impl<'a> UpdateQueryCombiner<'a> {
     }
 
     pub async fn execute(&mut self, client: &mut Client) -> anyhow::Result<Option<u64>> {
-        self.execute_in(&*client).await
-    }
-
-    pub async fn execute_in(&mut self, client: &impl GenericClient) -> anyhow::Result<Option<u64>> {
         if self.updates == 0 {
             return Ok(None);
         }
