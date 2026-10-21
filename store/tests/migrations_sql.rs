@@ -1,7 +1,7 @@
 mod common;
 
 use common::{empty_client, migrated_client, skip_without_database};
-use store::migrations::{migrate, migration_files};
+use store::migrations::{apply, migrate, migration_files};
 use tokio_postgres::Client;
 
 const ADOPT: &str = "0000-adopt.sql";
@@ -111,6 +111,39 @@ async fn database_without_0040_is_not_adopted() {
 
     assert!(format!("{err:#}").contains("up to 0040"), "{err:#}");
     assert!(recorded_names(&client).await.is_empty());
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn failed_file_rolls_back_every_file_of_the_run() {
+    let schema = "ds_test_migrations_one_transaction";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let before = recorded_names(&client).await;
+
+    let files = [
+        (
+            "9998-create.sql".to_string(),
+            "CREATE TABLE one_transaction (id INT)",
+        ),
+        ("9999-fail.sql".to_string(), "SELECT 1 / 0"),
+    ];
+    let err = apply(&mut client, &files).await.unwrap_err();
+
+    assert!(format!("{err:#}").contains("9999-fail.sql"), "{err:#}");
+    assert_eq!(recorded_names(&client).await, before);
+    let table: Option<String> = client
+        .query_one("SELECT to_regclass('one_transaction')::TEXT", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(table, None);
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
