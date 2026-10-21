@@ -112,7 +112,66 @@ fn number_prefix(name: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::sort_migration_filenames_by_number;
+    use super::{migration_files, sort_migration_filenames_by_number};
+
+    /// A top-level one of these ends the transaction of `apply`, and the files after it run
+    /// without one. `BEGIN` and `END;` of a `DO` block do not match.
+    const TRANSACTION_CONTROL: [&str; 7] = [
+        "BEGIN;",
+        "BEGIN TRANSACTION",
+        "BEGIN WORK",
+        "START TRANSACTION",
+        "COMMIT",
+        "ROLLBACK",
+        "ABORT",
+    ];
+
+    fn transaction_control(line: &str) -> Option<&'static str> {
+        let line = line.trim_start().to_ascii_uppercase();
+        TRANSACTION_CONTROL.into_iter().find(|keyword| {
+            line.strip_prefix(keyword).is_some_and(|rest| {
+                !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+    }
+
+    #[test]
+    fn no_file_controls_the_transaction() {
+        for file in migration_files().unwrap() {
+            let name = file.path().display();
+            for (number, line) in file.contents_utf8().unwrap().lines().enumerate() {
+                if let Some(keyword) = transaction_control(line) {
+                    panic!(
+                        "{name}:{}: {keyword} ends the migrate transaction",
+                        number + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finds_transaction_control_only_as_a_statement() {
+        for line in [
+            "COMMIT;",
+            "  commit",
+            "ROLLBACK;",
+            "BEGIN;",
+            "begin transaction;",
+            "ABORT;",
+        ] {
+            assert!(transaction_control(line).is_some(), "{line:?}");
+        }
+        for line in [
+            "BEGIN",
+            "END;",
+            "committed_at TIMESTAMPTZ,",
+            "-- COMMIT",
+            "rollback_epoch INT",
+        ] {
+            assert!(transaction_control(line).is_none(), "{line:?}");
+        }
+    }
 
     #[test]
     fn sorts_by_number_then_name() {
