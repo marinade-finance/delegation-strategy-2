@@ -49,15 +49,24 @@ On Podman, start the container with `podman run` and export
 
 # 3. Add a migration
 
-Add the next file in `migrations/`, for example `0040-what-it-does.sql`. `store migrate`
+Add the next file in `migrations/`, for example `0041-what-it-does.sql`. `store migrate`
 (`scripts/migrate.bash`) runs each file that the `migrations` table does not list, in number order,
-and records its name. Each file runs in one transaction, and the first error stops the run.
+and records its name. All pending files run in one transaction (`store/src/migrations.rs`).
+If one file fails, every file of that run rolls back, and the `migrations` table is unchanged.
 In Kubernetes, an Argo CD PreSync job runs it before the sync. A failed run stops the sync, and
 the old pods stay. The API does not apply migrations.
 
-- Name each file `<number>-<name>.sql`, with a number of 4 digits, for example `0040-what-it-does.sql`
-- Never edit a file after it ran in production. Add a new file.
-- Do not write `BEGIN`, `COMMIT` or `ROLLBACK` in a file. `CREATE INDEX CONCURRENTLY` cannot run
-  in a transaction, so it cannot be a migration.
+- Name each file `NNNN-what-it-does.sql`, with the next free 4-digit number.
+- Never edit a file after it ran in an environment. Add a new file.
+- Never write a top-level `BEGIN`, `COMMIT`, `END`, `ROLLBACK` or `ABORT` in a file.
+  A `COMMIT` or `END` fails the run and rolls it back. A `ROLLBACK` or `ABORT` fails the run,
+  but the statements after it in that file stay committed. A `BEGIN ... END;` inside a `DO`
+  block is allowed.
+- Never use `CREATE INDEX CONCURRENTLY` or `VACUUM`. They cannot run in a transaction, so the
+  run fails.
+- After `ALTER TYPE ... ADD VALUE`, the new value is not usable until the run commits. Do not
+  use it in a later file of the same release.
+- The run holds all its locks until the last file commits. Keep a long backfill out of a
+  release that also locks a table the API reads.
 - The schema changes before the new API and collectors start, so the old API and collectors
   run on the new schema for a short time. Make each migration work with the previous release.

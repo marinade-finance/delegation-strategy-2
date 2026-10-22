@@ -1,17 +1,32 @@
 use anyhow::{bail, Context, Result};
 use include_dir::{include_dir, Dir, File};
 use log::info;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, Transaction};
 
 pub static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../migrations");
 
 /// Runs every file in `migrations/` that the `migrations` table does not list, in number order,
-/// each file in its own transaction. Stops at the first error and keeps the files before it.
+/// all in one transaction. An error rolls back every file of the run.
 pub async fn migrate(client: &mut Client) -> Result<()> {
-    let files = migration_files()?;
+    let files = migration_files()?
+        .into_iter()
+        .map(|file| {
+            let name = file.path().to_string_lossy().into_owned();
+            let sql = file
+                .contents_utf8()
+                .with_context(|| format!("migration {name} is not UTF-8"))?;
+            Ok((name, sql))
+        })
+        .collect::<Result<Vec<_>>>()?;
     if files.is_empty() {
         bail!("no migration files found");
     }
+    apply(client, &files).await
+}
+
+/// Runs the `(name, sql)` pairs that the `migrations` table does not list, in the given order,
+/// all in one transaction.
+pub async fn apply(client: &mut Client, files: &[(String, &str)]) -> Result<()> {
     let tx = client.transaction().await?;
     tx.batch_execute(
         "SELECT pg_advisory_xact_lock(hashtext('migrations'));
@@ -23,29 +38,55 @@ pub async fn migrate(client: &mut Client) -> Result<()> {
     .await?;
     tx.commit().await?;
 
-    for file in files {
-        let name = file.path().to_string_lossy();
-        let sql = file
-            .contents_utf8()
-            .with_context(|| format!("migration {name} is not UTF-8"))?;
-        let tx = client.transaction().await?;
-        tx.batch_execute("SELECT pg_advisory_xact_lock(hashtext('migrations'))")
-            .await?;
+    let tx = client.transaction().await?;
+    // The deferred trigger fires at every commit, and only the last commit below sets
+    // `migrate.commit`. A top-level COMMIT or END in a file fails and rolls back the run.
+    tx.batch_execute(
+        "SELECT pg_advisory_xact_lock(hashtext('migrations'));
+         CREATE OR REPLACE FUNCTION pg_temp.migrate_commit_guard() RETURNS trigger
+         LANGUAGE plpgsql AS $$
+         BEGIN
+             IF current_setting('migrate.commit', true) IS DISTINCT FROM 'on' THEN
+                 RAISE EXCEPTION 'a migration file commits the migrate transaction';
+             END IF;
+             RETURN NULL;
+         END $$;
+         CREATE TEMP TABLE migrate_commit_guard (id INT) ON COMMIT DROP;
+         CREATE CONSTRAINT TRIGGER migrate_commit_guard AFTER INSERT ON migrate_commit_guard
+             DEFERRABLE INITIALLY DEFERRED
+             FOR EACH ROW EXECUTE FUNCTION pg_temp.migrate_commit_guard();
+         INSERT INTO migrate_commit_guard VALUES (1)",
+    )
+    .await?;
+    let xid = current_xid(&tx).await?;
+    for (name, sql) in files {
         let applied = tx
-            .query_opt("SELECT 1 FROM migrations WHERE name = $1", &[&name])
+            .query_opt("SELECT 1 FROM migrations WHERE name = $1", &[name])
             .await?
             .is_some();
-        if !applied {
-            info!("Applying migration {name}");
-            tx.batch_execute(sql)
-                .await
-                .with_context(|| format!("applying migration {name}"))?;
-            tx.execute("INSERT INTO migrations (name) VALUES ($1)", &[&name])
-                .await?;
+        if applied {
+            continue;
         }
-        tx.commit().await?;
+        info!("Applying migration {name}");
+        tx.batch_execute(sql)
+            .await
+            .with_context(|| format!("applying migration {name}"))?;
+        if current_xid(&tx).await? != xid {
+            bail!(
+                "migration {name} ends the migrate transaction with a top-level ROLLBACK or ABORT, \
+                 and the statements after it in {name} are committed"
+            );
+        }
+        tx.execute("INSERT INTO migrations (name) VALUES ($1)", &[name])
+            .await?;
     }
+    tx.batch_execute("SET LOCAL migrate.commit = 'on'").await?;
+    tx.commit().await?;
     Ok(())
+}
+
+async fn current_xid(tx: &Transaction<'_>) -> Result<i64> {
+    Ok(tx.query_one("SELECT txid_current()", &[]).await?.get(0))
 }
 
 pub fn migration_files() -> Result<Vec<&'static File<'static>>> {
