@@ -299,14 +299,19 @@ impl PublishedFloor {
                 continue;
             };
             // Empty while no floor is published for that client.
-            let floor = match published.parse::<ValidatorVersion>() {
-                Ok(floor) => Some(floor),
-                Err(err) => {
-                    debug!("No published {lineage} floor ({published:?}): {err}");
-                    None
+            if published.trim().is_empty() {
+                floors.insert(lineage, None);
+                continue;
+            }
+            // Read as no floor, an unparseable one would re-derive the lineage's whole history.
+            match published.parse::<ValidatorVersion>() {
+                Ok(floor) => {
+                    floors.insert(lineage, Some(floor));
                 }
-            };
-            floors.insert(lineage, floor);
+                Err(err) => warn!(
+                    "Published {lineage} floor {published:?} is not a version, skipping the lineage: {err}"
+                ),
+            }
         }
 
         floors
@@ -420,6 +425,18 @@ mod tests {
                 ("firedancer", None),
                 ("frankendancer", Some("0.1106.40201".parse().unwrap())),
             ])
+        );
+    }
+
+    #[test]
+    fn an_unparseable_published_floor_skips_the_lineage() {
+        let floors = published_floors(
+            r#"{"Mainnet Beta": {"current": {"Agave": "v4.3", "FD": "v26.10.4"}}}"#,
+        );
+
+        assert_eq!(
+            floors,
+            BTreeMap::from([("firedancer", Some("26.10.4".parse().unwrap()))])
         );
     }
 
