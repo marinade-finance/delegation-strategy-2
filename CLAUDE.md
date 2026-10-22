@@ -6,11 +6,10 @@
 (`store/src/migrations.rs`). If one file fails, every file of that run rolls
 back.
 
-- NEVER write a top-level `BEGIN;`, `COMMIT`, `ROLLBACK`, `ABORT` or
-  `START TRANSACTION` in a migration file. It ends the run's transaction,
-  and the files after it run without one. A `BEGIN ... END;` inside a `DO`
-  block is not transaction control and is allowed.
-  `no_file_controls_the_transaction` checks every file.
+- NEVER write a top-level `BEGIN`, `COMMIT`, `END`, `ROLLBACK` or `ABORT`
+  in a migration file. A `COMMIT` or `END` fails the run and rolls it back.
+  A `ROLLBACK` or `ABORT` fails the run, but the statements after it in that
+  file stay committed. A `BEGIN ... END;` inside a `DO` block is allowed.
 - NEVER use `CREATE INDEX CONCURRENTLY` or `VACUUM`. They cannot run in a
   transaction, so the run fails.
 - After `ALTER TYPE ... ADD VALUE`, the new value is not usable until the run

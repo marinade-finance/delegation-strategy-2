@@ -150,3 +150,119 @@ async fn failed_file_rolls_back_every_file_of_the_run() {
         .await
         .unwrap();
 }
+
+async fn table_exists(client: &Client, table: &str) -> bool {
+    client
+        .query_one("SELECT to_regclass($1) IS NOT NULL", &[&table])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+async fn file_that_commits_rolls_back_every_file_of_the_run() {
+    let schema = "ds_test_migrations_commit";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let before = recorded_names(&client).await;
+
+    for commit in [
+        "COMMIT;",
+        "commit",
+        "END;",
+        "END TRANSACTION;",
+        "COMMIT AND CHAIN;",
+        "SELECT 1; COMMIT; SELECT 2;",
+    ] {
+        let files = [
+            (
+                "9998-create.sql".to_string(),
+                "CREATE TABLE before_commit (id INT)",
+            ),
+            (
+                "9999-commit.sql".to_string(),
+                &*format!("CREATE TABLE in_commit (id INT); {commit}"),
+            ),
+        ];
+        let err = apply(&mut client, &files).await.unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("9999-commit.sql"),
+            "{commit}: {err:#}"
+        );
+        assert_eq!(recorded_names(&client).await, before, "{commit}");
+        assert!(!table_exists(&client, "before_commit").await, "{commit}");
+        assert!(!table_exists(&client, "in_commit").await, "{commit}");
+    }
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn file_that_rolls_back_fails_the_run() {
+    let schema = "ds_test_migrations_rollback";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let before = recorded_names(&client).await;
+
+    for rollback in ["ROLLBACK;", "ABORT;", "SELECT 1; ROLLBACK AND CHAIN;"] {
+        let files = [
+            (
+                "9998-create.sql".to_string(),
+                "CREATE TABLE before_rollback (id INT)",
+            ),
+            ("9999-rollback.sql".to_string(), rollback),
+            (
+                "9999-z-after.sql".to_string(),
+                "CREATE TABLE after_rollback (id INT)",
+            ),
+        ];
+        let err = apply(&mut client, &files).await.unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("9999-rollback.sql"),
+            "{rollback}: {err:#}"
+        );
+        assert_eq!(recorded_names(&client).await, before, "{rollback}");
+        assert!(
+            !table_exists(&client, "before_rollback").await,
+            "{rollback}"
+        );
+        assert!(!table_exists(&client, "after_rollback").await, "{rollback}");
+    }
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn second_run_on_one_connection_succeeds() {
+    let schema = "ds_test_migrations_second_run";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    let files = [(
+        "9999-create.sql".to_string(),
+        "CREATE TABLE second_run (id INT)",
+    )];
+    apply(&mut client, &files).await.unwrap();
+    migrate(&mut client).await.unwrap();
+
+    assert!(table_exists(&client, "second_run").await);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
