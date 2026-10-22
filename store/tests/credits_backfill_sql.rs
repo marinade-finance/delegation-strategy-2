@@ -1,7 +1,7 @@
 mod common;
 
-use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
 use collect::solana_service::EpochCredits;
+use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use store::credits_backfill::{apply_credits_backfill, TESTNET_LAMPORTS_IN_CREDITS_EPOCHS};
@@ -78,7 +78,9 @@ async fn backfill_moves_credits_to_vote_reward_lamports() {
         ("noVote", Some(0), None),
     ]);
 
-    apply_credits_backfill(&mut client, &on_chain).await.unwrap();
+    apply_credits_backfill(&mut client, &on_chain)
+        .await
+        .unwrap();
 
     let lamports = Some(Decimal::from(LAMPORTS));
     let leader_slots = Decimal::from(100);
@@ -122,7 +124,9 @@ async fn backfill_moves_credits_to_vote_reward_lamports() {
         (Some(Decimal::from(65_000)), None, leader_slots)
     );
 
-    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert!(apply_credits_backfill(&mut client, &on_chain)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -145,7 +149,9 @@ async fn backfill_fails_without_lamports_in_credits() {
         .unwrap();
 
     let on_chain = migration_credits(&[("notTestnet", Some(64_638), Some(LAMPORTS))]);
-    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert!(apply_credits_backfill(&mut client, &on_chain)
+        .await
+        .is_err());
     assert_eq!(
         read(&client, "notTestnet", 1042).await,
         (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
@@ -161,13 +167,15 @@ async fn backfill_fails_when_the_stored_reward_is_not_on_chain() {
     let mut client = migrated_client(schema).await.unwrap();
 
     for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
-        seed(&mut client, epoch, "rewarded", 100, LAMPORTS).await;
+        seed(&mut client, epoch, "mismatch", 100, LAMPORTS).await;
     }
-    let on_chain = migration_credits(&[("rewarded", Some(64_638), Some(LAMPORTS + 1))]);
+    let on_chain = migration_credits(&[("mismatch", Some(64_638), Some(LAMPORTS + 1))]);
 
-    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert!(apply_credits_backfill(&mut client, &on_chain)
+        .await
+        .is_err());
     assert_eq!(
-        read(&client, "rewarded", 1042).await,
+        read(&client, "mismatch", 1042).await,
         (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
     );
 }
@@ -181,13 +189,15 @@ async fn backfill_fails_without_tower_credits_on_chain() {
     let mut client = migrated_client(schema).await.unwrap();
 
     for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
-        seed(&mut client, epoch, "rewarded", 100, LAMPORTS).await;
+        seed(&mut client, epoch, "noTower", 100, LAMPORTS).await;
     }
-    let on_chain = migration_credits(&[("rewarded", None, Some(LAMPORTS))]);
+    let on_chain = migration_credits(&[("noTower", None, Some(LAMPORTS))]);
 
-    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert!(apply_credits_backfill(&mut client, &on_chain)
+        .await
+        .is_err());
     assert_eq!(
-        read(&client, "rewarded", 1042).await,
+        read(&client, "noTower", 1042).await,
         (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
     );
 }
