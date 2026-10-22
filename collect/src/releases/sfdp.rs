@@ -10,9 +10,8 @@ use std::time::Duration;
 
 pub const SFDP_API: &str = "https://api.solana.org";
 const REQUIRED_VERSIONS_PATH: &str = "/api/community/v1/sfdp_required_versions";
-/// One request per epoch, and the endpoint starts answering 429 a few hundred requests in, so a
-/// full backfill has to pace itself.
-const REQUEST_INTERVAL: Duration = Duration::from_millis(300);
+/// One request per epoch, and the endpoint answers 429 past roughly ten requests a minute.
+const REQUEST_INTERVAL: Duration = Duration::from_secs(6);
 
 /// Long enough to outlast a per-minute quota; a quadratic few seconds is not.
 const FETCH_BACKOFF: [Duration; 5] = [

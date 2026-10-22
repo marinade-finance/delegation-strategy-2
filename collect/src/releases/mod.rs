@@ -86,7 +86,7 @@ pub struct ReleasesParams {
     #[arg(
         long = "epochs-back",
         help = "How many epochs back from the current epoch to (re-)query for version floors.",
-        default_value = "20"
+        default_value = "8"
     )]
     epochs_back: u64,
 
