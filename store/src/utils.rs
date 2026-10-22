@@ -1263,51 +1263,6 @@ pub async fn load_vat_minimum_balances(
         .collect()
 }
 
-/// The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
-/// A row without `vote_account_lamports` gets no verdict and stays out of the rank.
-fn vat_verdicts(
-    rows: &[tokio_postgres::Row],
-    vat_minimum_balances: &BTreeMap<u64, EpochVatMinimum>,
-) -> HashMap<(u64, String), Option<VatRejection>> {
-    let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
-    for row in rows {
-        let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
-            continue;
-        };
-        let stake = |column: &str| -> u64 {
-            row.get::<_, Option<Decimal>>(column)
-                .map_or(0, |stake| stake.try_into().unwrap())
-        };
-        candidates
-            .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
-            .or_default()
-            .insert(
-                row.get("vote_account"),
-                VatCandidate {
-                    // A row stored before the key was collected skips the BLS check.
-                    has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
-                        || !row.get::<_, bool>("bls_pubkey_collected"),
-                    // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
-                    stake: (stake("activated_stake") + stake("activating_stake"))
-                        .saturating_sub(stake("deactivating_stake")),
-                    lamports: lamports.try_into().unwrap(),
-                },
-            );
-    }
-    candidates
-        .into_iter()
-        .filter_map(|(epoch, candidates)| {
-            let minimum = vat_minimum_balances.get(&epoch)?;
-            Some(
-                vat_admissions(&candidates, minimum.balance.try_into().unwrap())
-                    .into_iter()
-                    .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
-            )
-        })
-        .flatten()
-        .collect()
-}
-
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
@@ -1459,7 +1414,47 @@ pub async fn load_validators(
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
         let mut projected_node_metadata: HashSet<String> = Default::default();
-        let vat_verdicts = vat_verdicts(&rows, &vat_minimum_balances);
+        // The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
+        // A row without `vote_account_lamports` gets no verdict and stays out of the rank.
+        let vat_verdicts: HashMap<(u64, String), Option<VatRejection>> = {
+            let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
+            for row in &rows {
+                let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
+                    continue;
+                };
+                let stake = |column: &str| -> u64 {
+                    row.get::<_, Option<Decimal>>(column)
+                        .map_or(0, |stake| stake.try_into().unwrap())
+                };
+                candidates
+                    .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
+                    .or_default()
+                    .insert(
+                        row.get("vote_account"),
+                        VatCandidate {
+                            // A row stored before the key was collected skips the BLS check.
+                            has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
+                                || !row.get::<_, bool>("bls_pubkey_collected"),
+                            // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
+                            stake: (stake("activated_stake") + stake("activating_stake"))
+                                .saturating_sub(stake("deactivating_stake")),
+                            lamports: lamports.try_into().unwrap(),
+                        },
+                    );
+            }
+            candidates
+                .into_iter()
+                .filter_map(|(epoch, candidates)| {
+                    let minimum = vat_minimum_balances.get(&epoch)?;
+                    Some(
+                        vat_admissions(&candidates, minimum.balance.try_into().unwrap())
+                            .into_iter()
+                            .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
+                    )
+                })
+                .flatten()
+                .collect()
+        };
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
