@@ -1,8 +1,8 @@
 mod common;
 
-use common::{empty_client, migrated_client, skip_without_database};
+use common::{empty_client, migrated_client, skip_without_database, POSTGRES_URL_ENV};
 use store::migrations::{apply, migrate, migration_files};
-use tokio_postgres::Client;
+use tokio_postgres::{Client, NoTls};
 
 const ADOPT: &str = "0000-adopt.sql";
 
@@ -260,6 +260,95 @@ async fn second_run_on_one_connection_succeeds() {
     migrate(&mut client).await.unwrap();
 
     assert!(table_exists(&client, "second_run").await);
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+fn files() -> Vec<(String, &'static str)> {
+    migration_files()
+        .unwrap()
+        .into_iter()
+        .map(|file| {
+            (
+                file.path().to_string_lossy().into_owned(),
+                file.contents_utf8().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn every_partly_migrated_database_finishes() {
+    let schema = "ds_test_migrations_partly";
+    if skip_without_database(schema) {
+        return;
+    }
+    let files = files();
+    for applied in 0..=files.len() {
+        let mut client = empty_client(schema).await.unwrap();
+        apply(&mut client, &files[..applied]).await.unwrap();
+        assert_eq!(
+            recorded_names(&client).await,
+            file_names()[..applied],
+            "{applied} files"
+        );
+
+        migrate(&mut client)
+            .await
+            .unwrap_or_else(|err| panic!("after {applied} files: {err:#}"));
+
+        assert_eq!(
+            recorded_names(&client).await,
+            file_names(),
+            "{applied} files"
+        );
+        assert!(skip_rate_is_nullable(&client).await, "{applied} files");
+    }
+
+    empty_client(schema)
+        .await
+        .unwrap()
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+async fn connect(schema: &str) -> Client {
+    let url = std::env::var(POSTGRES_URL_ENV).unwrap();
+    let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(connection);
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await
+        .unwrap();
+    client
+}
+
+#[tokio::test]
+async fn concurrent_runs_apply_each_file_once() {
+    let schema = "ds_test_migrations_concurrent";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = empty_client(schema).await.unwrap();
+
+    let mut clients = Vec::new();
+    for _ in 0..8 {
+        clients.push(connect(schema).await);
+    }
+    let runs: Vec<_> = clients
+        .into_iter()
+        .map(|mut client| tokio::spawn(async move { migrate(&mut client).await }))
+        .collect();
+    for run in runs {
+        run.await.unwrap().unwrap();
+    }
+
+    assert_eq!(recorded_names(&client).await, file_names());
+    assert!(skip_rate_is_nullable(&client).await);
 
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
