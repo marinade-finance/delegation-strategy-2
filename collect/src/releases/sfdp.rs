@@ -1,6 +1,7 @@
 use super::{firedancer_lineage, ReleaseEntry, ReleaseFetcher, ReleaseSource};
 use crate::common::retry_blocking;
 use crate::validator_version::ValidatorVersion;
+use anyhow::Context;
 use log::{debug, info, warn};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -9,9 +10,8 @@ use std::time::Duration;
 
 pub const SFDP_API: &str = "https://api.solana.org";
 const REQUIRED_VERSIONS_PATH: &str = "/api/community/v1/sfdp_required_versions";
-/// One request per epoch, and the endpoint starts answering 429 a few hundred requests in, so a
-/// full backfill has to pace itself.
-const REQUEST_INTERVAL: Duration = Duration::from_millis(300);
+/// One request per epoch, and the endpoint answers 429 past roughly ten requests a minute.
+const REQUEST_INTERVAL: Duration = Duration::from_secs(6);
 
 /// Long enough to outlast a per-minute quota; a quadratic few seconds is not.
 const FETCH_BACKOFF: [Duration; 5] = [
@@ -32,9 +32,10 @@ struct SfdpResponse {
 #[derive(Debug, Deserialize)]
 struct SfdpRow {
     agave_min_version: Option<String>,
-    /// SFDP's historical field name: the numbering it carries is Frankendancer's. Firedancer proper
-    /// has no SFDP floor of its own yet.
+    /// Despite the name, Frankendancer (Firedancer networking on the Agave runtime), `0.x` versions.
     firedancer_min_version: Option<String>,
+    /// "Full" is Firedancer proper, with no Agave parts, on calendar versions like `26.10.4`.
+    firedancer_full_min_version: Option<String>,
 }
 
 pub struct SfdpFetcher {
@@ -72,7 +73,10 @@ impl SfdpFetcher {
             debug!("No floor for epoch {epoch}");
             return Ok(None);
         }
-        let response: SfdpResponse = response.error_for_status()?.json()?;
+        let response: SfdpResponse = response
+            .error_for_status()?
+            .json()
+            .with_context(|| format!("decoding {url}"))?;
         if let Some(message) = response.message {
             debug!("No floor for epoch {epoch}: {message}");
             return Ok(None);
@@ -119,7 +123,9 @@ fn collapse_runs(
 impl ReleaseFetcher for SfdpFetcher {
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>> {
         let mut agave: BTreeMap<u64, ValidatorVersion> = BTreeMap::new();
+        // SFDP's `firedancer` is Frankendancer; `firedancer_full` is Firedancer proper.
         let mut firedancer: BTreeMap<u64, ValidatorVersion> = BTreeMap::new();
+        let mut firedancer_full: BTreeMap<u64, ValidatorVersion> = BTreeMap::new();
         // One epoch of context: a floor already in force here is one whose own start is outside the
         // window, and must not be reported as starting at the window's edge.
         let anchor_epoch = self.from_epoch.saturating_sub(1);
@@ -134,7 +140,7 @@ impl ReleaseFetcher for SfdpFetcher {
                 || self.fetch_epoch(epoch),
                 FETCH_BACKOFF.into_iter(),
                 |err, attempt, backoff| {
-                    warn!("Failed to fetch the SFDP floor for epoch {epoch} (attempt {attempt}), retrying in {backoff:?}: {err}")
+                    warn!("Failed to fetch the SFDP floor for epoch {epoch} (attempt {attempt}), retrying in {backoff:?}: {err:#}")
                 },
             )?;
             thread::sleep(REQUEST_INTERVAL);
@@ -143,6 +149,7 @@ impl ReleaseFetcher for SfdpFetcher {
             for (versions, min_version) in [
                 (&mut agave, row.agave_min_version),
                 (&mut firedancer, row.firedancer_min_version),
+                (&mut firedancer_full, row.firedancer_full_min_version),
             ] {
                 // The same spelling GitHub tags parse to, or one version becomes two rows.
                 match min_version
@@ -163,6 +170,10 @@ impl ReleaseFetcher for SfdpFetcher {
             (&agave, None),
             (
                 &firedancer,
+                Some(firedancer_lineage as fn(&ValidatorVersion) -> &str),
+            ),
+            (
+                &firedancer_full,
                 Some(firedancer_lineage as fn(&ValidatorVersion) -> &str),
             ),
         ] {
@@ -208,6 +219,24 @@ mod tests {
         rows.iter()
             .map(|(version, epoch)| (version.parse().unwrap(), *epoch))
             .collect()
+    }
+
+    #[test]
+    fn a_row_carries_a_floor_per_client() {
+        // The endpoint's answer for epoch 1067.
+        let response: SfdpResponse = serde_json::from_str(
+            r#"{"data":[{"cluster":"mainnet-beta","epoch":1067,"agave_max_version":null,"agave_min_version":"4.3.2","firedancer_min_version":"0.1300.0","firedancer_max_version":null,"firedancer_full_min_version":"26.10.4","firedancer_full_max_version":null,"inherited_from_prev_epoch":false}]}"#,
+        )
+        .unwrap();
+        let row = response.data.unwrap().into_iter().next().unwrap();
+
+        let lineage_of = |version: Option<String>| {
+            let version: ValidatorVersion = version.unwrap().parse().unwrap();
+            firedancer_lineage(&version).to_string()
+        };
+        assert_eq!(row.agave_min_version.as_deref(), Some("4.3.2"));
+        assert_eq!(lineage_of(row.firedancer_min_version), "frankendancer");
+        assert_eq!(lineage_of(row.firedancer_full_min_version), "firedancer");
     }
 
     #[test]
