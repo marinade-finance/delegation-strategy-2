@@ -1,6 +1,7 @@
 use super::{firedancer_lineage, ReleaseEntry, ReleaseFetcher, ReleaseSource};
 use crate::common::retry_blocking;
 use crate::validator_version::ValidatorVersion;
+use anyhow::Context;
 use log::{debug, info, warn};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -72,7 +73,10 @@ impl SfdpFetcher {
             debug!("No floor for epoch {epoch}");
             return Ok(None);
         }
-        let response: SfdpResponse = response.error_for_status()?.json()?;
+        let response: SfdpResponse = response
+            .error_for_status()?
+            .json()
+            .with_context(|| format!("decoding {url}"))?;
         if let Some(message) = response.message {
             debug!("No floor for epoch {epoch}: {message}");
             return Ok(None);
@@ -134,7 +138,7 @@ impl ReleaseFetcher for SfdpFetcher {
                 || self.fetch_epoch(epoch),
                 FETCH_BACKOFF.into_iter(),
                 |err, attempt, backoff| {
-                    warn!("Failed to fetch the SFDP floor for epoch {epoch} (attempt {attempt}), retrying in {backoff:?}: {err}")
+                    warn!("Failed to fetch the SFDP floor for epoch {epoch} (attempt {attempt}), retrying in {backoff:?}: {err:#}")
                 },
             )?;
             thread::sleep(REQUEST_INTERVAL);

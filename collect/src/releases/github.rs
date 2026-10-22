@@ -1,6 +1,7 @@
 use super::{firedancer_lineage, ReleaseEntry, ReleaseFetcher, ReleaseSource};
 use crate::common::{retry_blocking, QuadraticBackoffStrategy};
 use crate::validator_version::ValidatorVersion;
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::Deserialize;
@@ -55,7 +56,11 @@ impl GithubFetcher {
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
-        Ok(request.send()?.error_for_status()?.json()?)
+        request
+            .send()?
+            .error_for_status()?
+            .json()
+            .with_context(|| format!("decoding {url}"))
     }
 
     fn fetch_repo(&self, repo: &str, lineage: Option<&str>) -> anyhow::Result<Vec<ReleaseEntry>> {
@@ -67,7 +72,7 @@ impl GithubFetcher {
                 || self.fetch_page(repo, page),
                 QuadraticBackoffStrategy::iter_durations(FETCH_ATTEMPTS),
                 |err, attempt, backoff| {
-                    warn!("Failed to fetch {repo} releases page {page} (attempt {attempt}), retrying in {backoff:?}: {err}")
+                    warn!("Failed to fetch {repo} releases page {page} (attempt {attempt}), retrying in {backoff:?}: {err:#}")
                 },
             )?;
             let page_size = releases.len();

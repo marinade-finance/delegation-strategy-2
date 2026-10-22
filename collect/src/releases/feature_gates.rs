@@ -121,13 +121,13 @@ impl FeatureGatesFetcher {
     }
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> anyhow::Result<T> {
-        Ok(self
-            .http
+        self.http
             .get(url)
             .send()?
             .error_for_status()
             .with_context(|| format!("fetching {url}"))?
-            .json()?)
+            .json()
+            .with_context(|| format!("decoding {url}"))
     }
 
     /// The epoch each gate activated in, absent for one still pending.
