@@ -1,6 +1,7 @@
 mod common;
 
 use clap::Parser;
+use collect::validators::Snapshot;
 use collect::validators_performance::ValidatorsPerformanceSnapshot;
 use common::{
     migrated_client, performance_snapshot, skip_without_database, store_snapshot,
@@ -10,32 +11,50 @@ use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use store::cluster_info::{store_cluster_info, StoreClusterInfoParams};
 use store::dto::ValidatorRecord;
-use store::utils::{load_validators, load_vat_minimum_balances, ValidatorOverlays};
+use store::utils::{
+    load_validators, load_vat_minimum_balances, EpochVatMinimum, ValidatorOverlays,
+};
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1058;
 const VOTE_ACCOUNT: &str = "VatBalanceVote11111111111111111111111111111";
 const MINIMUM: u64 = 819_761_200;
+const VAT: u64 = 800_000_000;
+
+fn admissible_snapshot(lamports: Option<u64>) -> Snapshot {
+    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
+    let validator = &mut snapshot.validators[0];
+    validator.vote_account_lamports = lamports;
+    validator.inflation_rewards_commission_bps_is_v4 = Some(true);
+    validator.bls_pubkey = Some("blsKey".into());
+    snapshot
+}
 
 async fn store_balance(client: &mut Client, name: &str, lamports: Option<u64>) {
-    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
-    snapshot.validators[0].vote_account_lamports = lamports;
-    store_snapshot(client, name, &snapshot).await;
+    store_snapshot(client, name, &admissible_snapshot(lamports)).await;
 }
 
 async fn store_minimum(client: &Client, minimum: Option<u64>, created_at: &str) {
     client
         .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at, vat_minimum_balance)
-             VALUES (0, $1, 0, $2::TEXT::TIMESTAMPTZ, $3)",
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at, vat_minimum_balance, vat_lamports_per_epoch)
+             VALUES (0, $1, 0, $2::TEXT::TIMESTAMPTZ, $3, $4)",
             &[
                 &Decimal::from(EPOCH),
                 &created_at,
                 &minimum.map(Decimal::from),
+                &minimum.map(|_| Decimal::from(VAT)),
             ],
         )
         .await
         .unwrap();
+}
+
+fn epoch_minimum(balance: u64) -> EpochVatMinimum {
+    EpochVatMinimum {
+        balance: Decimal::from(balance),
+        vat_lamports_per_epoch: Some(Decimal::from(VAT)),
+    }
 }
 
 async fn record(client: &Client) -> ValidatorRecord {
@@ -96,7 +115,7 @@ async fn the_newest_cluster_info_row_with_a_minimum_wins() {
 
     assert_eq!(
         load_vat_minimum_balances(&client, 3).await.unwrap()[&EPOCH],
-        Decimal::from(MINIMUM)
+        epoch_minimum(MINIMUM)
     );
     assert_eq!(record(&client).await.vat_eligible, Some(true));
 }
@@ -146,6 +165,7 @@ async fn store_cluster_info_writes_the_minimum_of_the_snapshot() {
     let mut client = migrated_client(schema).await.unwrap();
     let snapshot = ValidatorsPerformanceSnapshot {
         vat_minimum_balance: Some(MINIMUM),
+        vat_lamports_per_epoch: Some(VAT),
         ..performance_snapshot(EPOCH, Default::default(), Default::default())
     };
     let path = write_yaml(schema, &serde_yaml::to_string(&snapshot).unwrap());
@@ -158,54 +178,60 @@ async fn store_cluster_info_writes_the_minimum_of_the_snapshot() {
 
     assert_eq!(
         load_vat_minimum_balances(&client, 3).await.unwrap(),
-        BTreeMap::from([(EPOCH, Decimal::from(MINIMUM))])
+        BTreeMap::from([(EPOCH, epoch_minimum(MINIMUM))])
     );
 }
 
 #[tokio::test]
-async fn the_collected_verdict_wins_over_the_balance_check() {
-    let schema = "ds_test_vat_admission_cutoff";
+async fn a_vote_account_without_a_bls_key_is_not_admitted() {
+    let schema = "ds_test_vat_admission_no_key";
     if skip_without_database(schema) {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
     store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
-    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
-    let validator = &mut snapshot.validators[0];
-    validator.vote_account_lamports = Some(MINIMUM);
-    validator.bls_pubkey = Some("blsKey".into());
-    validator.vat_admitted = Some(false);
-    validator.vat_rejection_reason = Some("below_cutoff".into());
-    validator.vat_runway_epochs = Some(1);
+    let mut snapshot = admissible_snapshot(Some(MINIMUM));
+    snapshot.validators[0].bls_pubkey = None;
     store_snapshot(&mut client, schema, &snapshot).await;
 
     let record = record(&client).await;
     assert_eq!(record.vat_eligible, Some(false));
-    assert_eq!(record.vat_rejection_reason.as_deref(), Some("below_cutoff"));
-    assert_eq!(record.epoch_stats[0].bls_pubkey.as_deref(), Some("blsKey"));
-    assert_eq!(
-        record.epoch_stats[0].vat_runway_epochs,
-        Some(Decimal::from(1))
-    );
+    assert_eq!(record.vat_rejection_reason.as_deref(), Some("no_bls_key"));
 }
 
 #[tokio::test]
-async fn a_later_snapshot_with_admission_clears_the_old_reason() {
-    let schema = "ds_test_vat_admission_cleared";
+async fn the_stake_projected_to_the_boundary_decides_no_stake() {
+    let schema = "ds_test_vat_admission_no_stake";
     if skip_without_database(schema) {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
     store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
-    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
-    snapshot.validators[0].vat_admitted = Some(false);
-    snapshot.validators[0].vat_rejection_reason = Some("low_balance".into());
-    store_snapshot(&mut client, &format!("{schema}-1"), &snapshot).await;
-    snapshot.validators[0].vat_admitted = Some(true);
-    snapshot.validators[0].vat_rejection_reason = None;
-    store_snapshot(&mut client, &format!("{schema}-2"), &snapshot).await;
+    let mut snapshot = admissible_snapshot(Some(MINIMUM));
+    snapshot.validators[0].deactivating_stake = Some(100);
+    store_snapshot(&mut client, schema, &snapshot).await;
+
+    let record = record(&client).await;
+    assert_eq!(record.vat_eligible, Some(false));
+    assert_eq!(record.vat_rejection_reason.as_deref(), Some("no_stake"));
+}
+
+#[tokio::test]
+async fn the_runway_uses_the_stored_vat_and_the_pending_rewards() {
+    let schema = "ds_test_vat_admission_runway";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
+    let rent = MINIMUM - VAT;
+    let mut snapshot = admissible_snapshot(Some(rent + 3 * VAT + 1));
+    snapshot.validators[0].pending_delegator_rewards = Some(2);
+    store_snapshot(&mut client, schema, &snapshot).await;
 
     let record = record(&client).await;
     assert_eq!(record.vat_eligible, Some(true));
     assert_eq!(record.vat_rejection_reason, None);
+    assert_eq!(record.epoch_stats[0].bls_pubkey.as_deref(), Some("blsKey"));
+    assert_eq!(record.vat_runway_epochs, Some(Decimal::from(2)));
 }

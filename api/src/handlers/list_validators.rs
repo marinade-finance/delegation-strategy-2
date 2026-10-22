@@ -24,7 +24,7 @@ use store::{
         IncidentFilters, IncidentType, ValidatorIncidents, DEFAULT_INCIDENT_TYPES,
         DEFAULT_MIN_INCIDENT_DOWNTIME_SECONDS, MIN_LEADER_SLOTS, MIN_MISSED_SLOTS,
     },
-    utils::{to_fixed_for_sort, worst_known_commission, DEFAULT_CACHE_EPOCHS},
+    utils::{to_fixed_for_sort, worst_known_commission, EpochVatMinimum, DEFAULT_CACHE_EPOCHS},
 };
 use warp::{http::StatusCode, reply::json, Reply};
 
@@ -158,15 +158,18 @@ pub struct ValidatorsPage {
 }
 
 fn served_vat_minimum_balances(
-    mut vat_minimum_balances: BTreeMap<u64, Decimal>,
+    vat_minimum_balances: BTreeMap<u64, EpochVatMinimum>,
     page: &[ValidatorRecord],
 ) -> BTreeMap<u64, Decimal> {
     let served_epochs: HashSet<u64> = page
         .iter()
         .flat_map(|validator| validator.epoch_stats.iter().map(|stats| stats.epoch))
         .collect();
-    vat_minimum_balances.retain(|epoch, _| served_epochs.contains(epoch));
     vat_minimum_balances
+        .into_iter()
+        .filter(|(epoch, _)| served_epochs.contains(epoch))
+        .map(|(epoch, minimum)| (epoch, minimum.balance))
+        .collect()
 }
 
 pub async fn get_validators(
@@ -1040,11 +1043,11 @@ mod tests {
 
     #[test]
     fn the_vat_minimum_map_keeps_only_the_served_epochs() {
-        let minimums = BTreeMap::from([
-            (10, Decimal::from(1)),
-            (11, Decimal::from(2)),
-            (12, Decimal::from(3)),
-        ]);
+        let minimum = |balance| EpochVatMinimum {
+            balance: Decimal::from(balance),
+            vat_lamports_per_epoch: None,
+        };
+        let minimums = BTreeMap::from([(10, minimum(1)), (11, minimum(2)), (12, minimum(3))]);
         let page = [
             ValidatorRecord {
                 epoch_stats: vec![epoch_stat(11, 100)],

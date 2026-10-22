@@ -133,10 +133,7 @@ pub async fn store_validators(
             block_revenue_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_lamports ELSE validators.block_revenue_collector_lamports END,
             block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END,
             vote_account_lamports = COALESCE(u.vote_account_lamports, validators.vote_account_lamports),
-            bls_pubkey = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.bls_pubkey ELSE validators.bls_pubkey END,
-            vat_admitted = COALESCE(u.vat_admitted, validators.vat_admitted),
-            vat_rejection_reason = CASE WHEN u.vat_admitted IS NOT NULL THEN u.vat_rejection_reason ELSE validators.vat_rejection_reason END,
-            vat_runway_epochs = COALESCE(u.vat_runway_epochs, validators.vat_runway_epochs)
+            bls_pubkey = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.bls_pubkey ELSE validators.bls_pubkey END
             "
             .to_string(),
             "u(
@@ -198,10 +195,7 @@ pub async fn store_validators(
                 block_revenue_collector_healthy,
                 vote_reward_lamports,
                 vote_account_lamports,
-                bls_pubkey,
-                vat_admitted,
-                vat_rejection_reason,
-                vat_runway_epochs
+                bls_pubkey
             )"
             .to_string(),
             "validators.vote_account = u.vote_account AND validators.epoch = u.epoch".to_string(),
@@ -270,9 +264,6 @@ pub async fn store_validators(
                     &v.credits.vote_reward_lamports,
                     &v.vote_account_lamports,
                     &v.bls_pubkey,
-                    &v.vat_admitted,
-                    &v.vat_rejection_reason,
-                    &v.vat_runway_epochs,
                 ];
                 query.add(
                     &mut params,
@@ -324,9 +315,6 @@ pub async fn store_validators(
                         (56, "NUMERIC".into()), // vote_reward_lamports
                         (57, "NUMERIC".into()), // vote_account_lamports
                         (58, "TEXT".into()), // bls_pubkey
-                        (59, "BOOL".into()), // vat_admitted
-                        (60, "TEXT".into()), // vat_rejection_reason
-                        (61, "NUMERIC".into()), // vat_runway_epochs
                     ]),
                 );
                 updated_vote_accounts.insert(vote_account.to_string());
@@ -415,10 +403,7 @@ pub async fn store_validators(
         block_revenue_collector_healthy,
         vote_reward_lamports,
         vote_account_lamports,
-        bls_pubkey,
-        vat_admitted,
-        vat_rejection_reason,
-        vat_runway_epochs
+        bls_pubkey
         "
             .to_string(),
         );
@@ -492,9 +477,6 @@ pub async fn store_validators(
                 &v.credits.vote_reward_lamports,
                 &v.vote_account_lamports,
                 &v.bls_pubkey,
-                &v.vat_admitted,
-                &v.vat_rejection_reason,
-                &v.vat_runway_epochs,
             ];
             query.add(&mut params);
             if !v.dc_resolved {

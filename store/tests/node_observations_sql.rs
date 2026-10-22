@@ -39,6 +39,7 @@ fn snapshot(
         slots_per_year: baseline_slots_per_year(),
         cluster_inflation: None,
         vat_minimum_balance: None,
+        vat_lamports_per_epoch: None,
         validators: Default::default(),
         nodes: nodes
             .into_iter()

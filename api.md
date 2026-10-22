@@ -144,7 +144,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/validators/flat` gives `avg_adjusted_vote_performance`, the mean of `vote_performance × (1 - commission)` over the epochs that have a value.
 
-`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave refuses the vote account at the end of the epoch, and its stakers get no inflation rewards for that epoch. The `validators` collector applies agave `clone_and_filter_for_vat` at each snapshot. Agave keeps a vote account when all these checks pass:
+`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave refuses the vote account at the end of the epoch, and its stakers get no inflation rewards for that epoch. The API applies agave `clone_and_filter_for_vat` to the stored rows of the epoch, at the last snapshot. Agave keeps a vote account when all these checks pass:
 
 1. The v4 vote state has a BLS key.
 2. The stake at the next epoch is not 0. DS2 projects it as `activated_stake + activating - deactivating`, without the warmup limit.
@@ -153,12 +153,12 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 
 - `vat_rejection_reason` is the first check that fails: `no_bls_key`, `no_stake`, `low_balance` or `below_cutoff`. It is `null` when the account is admitted.
 - `bls_pubkey` is the base58 compressed BLS key, as solana-snapshot-parser writes it.
-- `vat_runway_epochs` is `(vote_account_lamports - pending_delegator_rewards - rent) / VAT`, in whole epochs. Under Alpenglow, a vote account at 0% commission or with an external inflation collector gets no lamports, so this value goes down by 1 each epoch.
+- `vat_runway_epochs` is `(vote_account_lamports - pending_delegator_rewards - rent) / VAT`, in whole epochs. The VAT is `cluster_info.vat_lamports_per_epoch`, and the rent is `vat_minimum_balances[epoch]` less the VAT. Under Alpenglow, a vote account at 0% commission or with an external inflation collector gets no lamports, so this value goes down by 1 each epoch.
 - `vote_account_lamports` is the balance at the last snapshot of the epoch.
 - `vat_minimum_balances` is a top-level map from epoch to lamports, with one value for each epoch the response covers. The value is the rent of a v4 vote state plus the VAT of the next epoch, 1.6 SOL at 400 ms slots down to 0.8 SOL at 200 ms. It includes the VAT also before Alpenglow, when agave burns no VAT yet. It comes from the newest `cluster_info` row of the epoch. An epoch without a value is left out.
 - `pending_delegator_rewards` is not subtracted from the balance in check 3. Agave subtracts it only once block revenue sharing is active.
 
-Rows stored before DS2 collected the full rule have only the balance check in `vat_eligible`, and `null` in the three new fields. `null` in `vat_eligible` means an input is missing: the epoch was collected before DS2 stored these values, or only a backfill ran for it. The top-level fields repeat the newest epoch.
+Rows stored before DS2 collected the BLS key have `null` in `bls_pubkey`, so their `vat_rejection_reason` is `no_bls_key`. `null` in `vat_eligible` means an input is missing: the epoch was collected before DS2 stored these values, or only a backfill ran for it. `vat_runway_epochs` is `null` also on epochs whose `cluster_info` has no VAT. The top-level fields repeat the newest epoch.
 
 ## Uptimes
 ```bash

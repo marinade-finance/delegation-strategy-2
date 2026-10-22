@@ -14,6 +14,9 @@ use crate::validators_jito::get_last_jito_info;
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
+use collect::vat::{
+    vat_admissions, vat_runway_epochs, VatCandidate, VatMinimumBalance, VatRejection,
+};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -1224,14 +1227,22 @@ pub struct ValidatorOverlays {
     pub protected: HashSet<String>,
 }
 
-/// The newest `cluster_info.vat_minimum_balance` of each of the last `epochs` epochs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EpochVatMinimum {
+    /// Rent plus VAT, in lamports.
+    pub balance: Decimal,
+    /// Null on `cluster_info` rows stored before migration 0041.
+    pub vat_lamports_per_epoch: Option<Decimal>,
+}
+
+/// The newest `cluster_info` VAT minimum of each of the last `epochs` epochs.
 pub async fn load_vat_minimum_balances(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<BTreeMap<u64, Decimal>> {
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
     let rows = psql_client
         .query(
-            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance
+            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
             FROM cluster_info
             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
                 AND vat_minimum_balance IS NOT NULL
@@ -1243,9 +1254,55 @@ pub async fn load_vat_minimum_balances(
         .map(|row| {
             Ok((
                 row.get::<_, Decimal>("epoch").try_into()?,
-                row.get("vat_minimum_balance"),
+                EpochVatMinimum {
+                    balance: row.get("vat_minimum_balance"),
+                    vat_lamports_per_epoch: row.get("vat_lamports_per_epoch"),
+                },
             ))
         })
+        .collect()
+}
+
+/// agave `clone_and_filter_for_vat` over the stored rows of each epoch, by `(epoch, vote_account)`.
+/// A row without `vote_account_lamports` gets no verdict and stays out of the rank.
+fn vat_verdicts(
+    rows: &[tokio_postgres::Row],
+    vat_minimum_balances: &BTreeMap<u64, EpochVatMinimum>,
+) -> HashMap<(u64, String), Option<VatRejection>> {
+    let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
+    for row in rows {
+        let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
+            continue;
+        };
+        let stake = |column: &str| -> u64 {
+            row.get::<_, Option<Decimal>>(column)
+                .map_or(0, |stake| stake.try_into().unwrap())
+        };
+        candidates
+            .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
+            .or_default()
+            .insert(
+                row.get("vote_account"),
+                VatCandidate {
+                    has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some(),
+                    // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
+                    stake: (stake("activated_stake") + stake("activating_stake"))
+                        .saturating_sub(stake("deactivating_stake")),
+                    lamports: lamports.try_into().unwrap(),
+                },
+            );
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(epoch, candidates)| {
+            let minimum = vat_minimum_balances.get(&epoch)?;
+            Some(
+                vat_admissions(&candidates, minimum.balance.try_into().unwrap())
+                    .into_iter()
+                    .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
+            )
+        })
+        .flatten()
         .collect()
 }
 
@@ -1255,7 +1312,7 @@ pub async fn load_validators(
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
-    vat_minimum_balances: &BTreeMap<u64, Decimal>,
+    vat_minimum_balances: &BTreeMap<u64, EpochVatMinimum>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1313,9 +1370,6 @@ pub async fn load_validators(
                 pending_delegator_rewards,
                 vote_account_lamports,
                 bls_pubkey,
-                vat_admitted,
-                vat_rejection_reason,
-                vat_runway_epochs,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1399,6 +1453,7 @@ pub async fn load_validators(
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
         let mut projected_node_metadata: HashSet<String> = Default::default();
+        let vat_verdicts = vat_verdicts(&rows, &vat_minimum_balances);
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1406,15 +1461,25 @@ pub async fn load_validators(
                 .get(&(epoch, vote_account.clone()))
                 .copied();
             let vote_account_lamports: Option<Decimal> = row.get("vote_account_lamports");
-            let vat_minimum_balance = vat_minimum_balances.get(&epoch).copied();
             let bls_pubkey: Option<String> = row.get("bls_pubkey");
-            let vat_rejection_reason: Option<String> = row.get("vat_rejection_reason");
-            let vat_runway_epochs: Option<Decimal> = row.get("vat_runway_epochs");
-            // Rows stored before migration 0041 have only the balance check.
-            let vat_eligible = row.get::<_, Option<bool>>("vat_admitted").or_else(|| {
-                vote_account_lamports
-                    .zip(vat_minimum_balance)
-                    .map(|(lamports, minimum)| lamports >= minimum)
+            let vat_verdict = vat_verdicts.get(&(epoch, vote_account.clone())).copied();
+            let vat_eligible = vat_verdict.map(|verdict| verdict.is_none());
+            let vat_rejection_reason = vat_verdict
+                .flatten()
+                .map(|reason| reason.as_str().to_string());
+            let vat_runway_epochs = vat_minimum_balances.get(&epoch).and_then(|minimum| {
+                let vat: u64 = minimum.vat_lamports_per_epoch?.try_into().unwrap();
+                let balance: u64 = minimum.balance.try_into().unwrap();
+                vat_runway_epochs(
+                    vote_account_lamports?.try_into().unwrap(),
+                    row.get::<_, Option<Decimal>>("pending_delegator_rewards")
+                        .map_or(0, |pending| pending.try_into().unwrap()),
+                    &VatMinimumBalance {
+                        rent: balance.saturating_sub(vat),
+                        vat,
+                    },
+                )
+                .map(Decimal::from)
             });
             let starting_epoch_date: Option<DateTime<Utc>> =
                 row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
