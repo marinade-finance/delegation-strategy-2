@@ -8,8 +8,8 @@ use crate::slot_params::{select_slot_params, SlotParams};
 /// agave `VoteStateV4::size_of()`, the size agave takes the rent of.
 const VOTE_STATE_V4_SIZE: usize = 3762;
 
-/// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`.
-pub const MAX_ALPENGLOW_VOTE_ACCOUNTS: usize = 2000;
+/// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`, the SIMD-0357 cap on the voting set.
+pub const MAX_VAT_ADMITTED_VOTE_ACCOUNTS: usize = 2000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VatMinimumBalance {
@@ -70,7 +70,7 @@ pub fn vat_admissions(
     candidates: &HashMap<String, VatCandidate>,
     minimum_balance: u64,
 ) -> HashMap<String, Option<VatRejection>> {
-    vat_admissions_with_max(candidates, minimum_balance, MAX_ALPENGLOW_VOTE_ACCOUNTS)
+    vat_admissions_with_max(candidates, minimum_balance, MAX_VAT_ADMITTED_VOTE_ACCOUNTS)
 }
 
 fn vat_admissions_with_max(
@@ -184,14 +184,14 @@ mod tests {
 
     #[test]
     fn one_more_equal_stake_than_the_max_admits_none() {
-        let candidates: Vec<(String, VatCandidate)> = (0..=MAX_ALPENGLOW_VOTE_ACCOUNTS)
+        let candidates: Vec<(String, VatCandidate)> = (0..=MAX_VAT_ADMITTED_VOTE_ACCOUNTS)
             .map(|i| (i.to_string(), candidate(true, 7, MINIMUM)))
             .collect();
         let candidates: Vec<(&str, VatCandidate)> = candidates
             .iter()
             .map(|(vote_account, candidate)| (vote_account.as_str(), *candidate))
             .collect();
-        let verdicts = admit(&candidates, MAX_ALPENGLOW_VOTE_ACCOUNTS);
+        let verdicts = admit(&candidates, MAX_VAT_ADMITTED_VOTE_ACCOUNTS);
         assert!(verdicts
             .values()
             .all(|verdict| *verdict == Some(VatRejection::BelowCutoff)));
