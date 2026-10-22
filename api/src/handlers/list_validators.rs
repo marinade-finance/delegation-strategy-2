@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::context::WrappedContext;
 use crate::metrics;
@@ -59,6 +59,8 @@ pub struct ResponseValidators {
     bond_flags_updated_at: Option<DateTime<Utc>>,
     /// When apy-api last answered for `net_apy`. Older than a few minutes means those values are being reused because that API is failing.
     net_apy_updated_at: Option<DateTime<Utc>>,
+    /// SIMD-0357 minimum balance by epoch, in lamports: rent of a v4 vote state plus the VAT of the next epoch. Includes the VAT also before Alpenglow burns it. `epoch_stats[].vat_eligible` compares `vote_account_lamports` against it. An epoch without a value is left out.
+    vat_minimum_balances: BTreeMap<u64, Decimal>,
 }
 
 #[derive(Deserialize, Serialize, Debug, utoipa::IntoParams)]
@@ -152,19 +154,33 @@ pub struct ValidatorsPage {
     pub total_count: usize,
     pub bond_flags_updated_at: Option<DateTime<Utc>>,
     pub net_apy_updated_at: Option<DateTime<Utc>>,
+    pub vat_minimum_balances: BTreeMap<u64, Decimal>,
+}
+
+fn served_vat_minimum_balances(
+    mut vat_minimum_balances: BTreeMap<u64, Decimal>,
+    page: &[ValidatorRecord],
+) -> BTreeMap<u64, Decimal> {
+    let served_epochs: HashSet<u64> = page
+        .iter()
+        .flat_map(|validator| validator.epoch_stats.iter().map(|stats| stats.epoch))
+        .collect();
+    vat_minimum_balances.retain(|epoch, _| served_epochs.contains(epoch));
+    vat_minimum_balances
 }
 
 pub async fn get_validators(
     context: WrappedContext,
     config: GetValidatorsConfig,
 ) -> anyhow::Result<ValidatorsPage> {
-    let (validators, incidents, bond_flags_updated_at, net_apy_updated_at) = {
+    let (validators, incidents, bond_flags_updated_at, net_apy_updated_at, vat_minimum_balances) = {
         let cache = &context.read().await.cache;
         (
             cache.get_validators(),
             cache.get_validator_incidents(),
             cache.bond_flags_updated_at().map(DateTime::<Utc>::from),
             cache.net_apy_updated_at().map(DateTime::<Utc>::from),
+            cache.vat_minimum_balances.clone(),
         )
     };
 
@@ -199,7 +215,7 @@ pub async fn get_validators(
         &config,
     );
 
-    let page = validators
+    let page: Vec<ValidatorRecord> = validators
         .into_iter()
         .map(|mut v| {
             match config.query_from_date {
@@ -214,12 +230,15 @@ pub async fn get_validators(
         })
         .collect();
 
+    let vat_minimum_balances = served_vat_minimum_balances(vat_minimum_balances, &page);
+
     Ok(ValidatorsPage {
         validators: page,
         operators,
         total_count,
         bond_flags_updated_at,
         net_apy_updated_at,
+        vat_minimum_balances,
     })
 }
 
@@ -729,6 +748,7 @@ pub async fn handler(
                     total_count: page.total_count,
                     bond_flags_updated_at: page.bond_flags_updated_at,
                     net_apy_updated_at: page.net_apy_updated_at,
+                    vat_minimum_balances: page.vat_minimum_balances,
                 }),
                 StatusCode::OK,
             )
@@ -774,6 +794,8 @@ mod tests {
             block_revenue_collector_healthy: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            vote_account_lamports: None,
+            vat_eligible: None,
             version: None,
             mev_commission_bps: None,
             priority_commission_bps: None,
@@ -867,6 +889,8 @@ mod tests {
             block_revenue_collector_healthy: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            vote_account_lamports: None,
+            vat_eligible: None,
             commission_aggregated: None,
             rugged_commission_occurrences: 0,
             rugged_commission: false,
@@ -1006,6 +1030,30 @@ mod tests {
             filter_validators(validators, &no_incidents(), &config()).len(),
             2
         );
+    }
+
+    #[test]
+    fn the_vat_minimum_map_keeps_only_the_served_epochs() {
+        let minimums = BTreeMap::from([
+            (10, Decimal::from(1)),
+            (11, Decimal::from(2)),
+            (12, Decimal::from(3)),
+        ]);
+        let page = [
+            ValidatorRecord {
+                epoch_stats: vec![epoch_stat(11, 100)],
+                ..validator("a", 100, vec![])
+            },
+            ValidatorRecord {
+                epoch_stats: vec![epoch_stat(12, 100), epoch_stat(13, 100)],
+                ..validator("b", 100, vec![])
+            },
+        ];
+        assert_eq!(
+            served_vat_minimum_balances(minimums.clone(), &page),
+            BTreeMap::from([(11, Decimal::from(2)), (12, Decimal::from(3))])
+        );
+        assert!(served_vat_minimum_balances(minimums, &[]).is_empty());
     }
 
     fn protected_validator(vote_account: &str) -> ValidatorRecord {

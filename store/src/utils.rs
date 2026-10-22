@@ -20,7 +20,7 @@ use google_cloud_bigquery::query::row::Row;
 use rust_decimal::prelude::*;
 use std::sync::Arc;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::RangeInclusive,
     time::Duration,
 };
@@ -1224,12 +1224,38 @@ pub struct ValidatorOverlays {
     pub protected: HashSet<String>,
 }
 
+/// The newest `cluster_info.vat_minimum_balance` of each of the last `epochs` epochs.
+pub async fn load_vat_minimum_balances(
+    psql_client: &Client,
+    epochs: u64,
+) -> anyhow::Result<BTreeMap<u64, Decimal>> {
+    let rows = psql_client
+        .query(
+            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance
+            FROM cluster_info
+            WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+                AND vat_minimum_balance IS NOT NULL
+            ORDER BY epoch, created_at DESC",
+            &[&Decimal::from(epochs)],
+        )
+        .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.get::<_, Decimal>("epoch").try_into()?,
+                row.get("vat_minimum_balance"),
+            ))
+        })
+        .collect()
+}
+
 pub async fn load_validators(
     psql_client: &Client,
     scoring_url: String,
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
+    vat_minimum_balances: &BTreeMap<u64, Decimal>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1285,6 +1311,7 @@ pub async fn load_validators(
                 block_revenue_collector,
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
+                vote_account_lamports,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1361,6 +1388,7 @@ pub async fn load_validators(
     let first_epoch = row_epochs.clone().min().unwrap_or(last_epoch);
     let max_epoch = row_epochs.max().unwrap_or(last_epoch);
     let vote_performance = load_vote_performance(psql_client, first_epoch, max_epoch).await?;
+    let vat_minimum_balances = vat_minimum_balances.clone();
 
     let mut records: HashMap<_, _> = tokio::task::spawn_blocking(move || {
         log::info!("Aggregating validator records...");
@@ -1373,6 +1401,16 @@ pub async fn load_validators(
             let epoch_vote_performance = vote_performance
                 .get(&(epoch, vote_account.clone()))
                 .copied();
+            let vote_account_lamports: Option<Decimal> = row.get("vote_account_lamports");
+            let vat_minimum_balance = vat_minimum_balances.get(&epoch).copied();
+            // TODO: SIMD-0357 checks not applied yet:
+            // - BLS key present
+            // - next-epoch stake > 0
+            // - top 2000 by stake, ties at the cut-off dropped
+            // - balance less pending_delegator_rewards once block revenue sharing is active
+            let vat_eligible = vote_account_lamports
+                .zip(vat_minimum_balance)
+                .map(|(lamports, minimum)| lamports >= minimum);
             let starting_epoch_date: Option<DateTime<Utc>> =
                 row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
             let mut epoch_start_at: Option<DateTime<Utc>> =
@@ -1504,6 +1542,8 @@ pub async fn load_validators(
                         .get::<_, Option<i32>>("block_revenue_commission_bps"),
                     pending_delegator_rewards: row
                         .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                    vote_account_lamports,
+                    vat_eligible,
                     commission_aggregated: None,
                     version: version.clone(),
                     client_id,
@@ -1664,6 +1704,8 @@ pub async fn load_validators(
                     .get::<_, Option<i32>>("block_revenue_commission_bps"),
                 pending_delegator_rewards: row
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
+                vote_account_lamports,
+                vat_eligible,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),
@@ -2480,10 +2522,10 @@ pub async fn load_validators_aggregated_flat(
     let rows = psql_client
             .query(
                 "with
-                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators group by epoch),
-                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) filter (where skip_rate is not null) stake_weighted_skip_rate from validators group by epoch),
-                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch group by validators.epoch, dc_aso, cluster_stake.stake),
-                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw, (array_agg(version order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_version from versions group by vote_account)
+                cluster_stake AS (select epoch, sum(activated_stake) as stake from validators where epoch BETWEEN $1 AND $2 group by epoch),
+                cluster_skip_rate AS (select epoch, sum(skip_rate * activated_stake) / sum(activated_stake) filter (where skip_rate is not null) stake_weighted_skip_rate from validators where epoch BETWEEN $1 AND $2 group by epoch),
+                dc AS (select validators.epoch, sum(activated_stake) / cluster_stake.stake as dc_concentration, dc_aso from validators LEFT JOIN cluster_stake ON validators.epoch = cluster_stake.epoch where validators.epoch BETWEEN $1 AND $2 group by validators.epoch, dc_aso, cluster_stake.stake),
+                agg_versions AS (select vote_account, (array_agg(version order by created_at desc, id desc) filter (where version is not null))[1] as last_version, (array_agg(client_id order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id, (array_agg(client_id_raw order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_id_raw, (array_agg(version order by created_at desc, id desc) filter (where (client_id is not null or client_id_raw is not null) and epoch <= $2))[1] as last_client_version from versions where vote_account in (select vote_account from validators where epoch BETWEEN $1 AND $2) group by vote_account)
                 select
                     validators.vote_account,
                     min(activated_stake / 1e9)::double precision AS minimum_stake,

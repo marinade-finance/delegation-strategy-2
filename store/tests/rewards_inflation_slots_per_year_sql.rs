@@ -2,7 +2,7 @@ mod common;
 
 use common::{migrated_client, skip_without_database};
 use std::collections::HashMap;
-use store::rewards::{get_estimated_inflation_rewards, get_running_epoch_slots_per_year};
+use store::rewards::get_inflation_rewards_with_slots_per_year;
 use tokio_postgres::Client;
 
 const SUPPLY_LAMPORTS: f64 = 600_000_000_000_000_000.0;
@@ -10,8 +10,9 @@ const INFLATION: f64 = 0.043;
 
 const BASELINE_SLOTS_PER_YEAR: f64 = 78_892_314.984;
 const SLOTS_PER_YEAR_350MS: f64 = 90_162_645.696;
+const SLOTS_PER_YEAR_300MS: f64 = 105_189_753.312;
 
-/// What `get_estimated_inflation_rewards` divided by before the column existed.
+/// What the inflation estimate divided by before the column existed.
 const LEGACY_EPOCHS_PER_YEAR: f64 = 365.25 / 2.0;
 
 async fn insert_epoch(client: &Client, epoch: i64, slots_per_year: f64) {
@@ -28,6 +29,16 @@ async fn insert_epoch(client: &Client, epoch: i64, slots_per_year: f64) {
         )
         .await
         .unwrap();
+}
+
+/// (epoch, has an inflation estimate, slots_per_year), newest first.
+async fn slots_per_year(client: &Client) -> Vec<(u64, bool, f64)> {
+    get_inflation_rewards_with_slots_per_year(client, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(epoch, amount, slots_per_year)| (epoch, amount.is_some(), slots_per_year))
+        .collect()
 }
 
 async fn insert_cluster_info(client: &Client, epoch: i64, epoch_slot: i64, slots_per_year: f64) {
@@ -57,10 +68,12 @@ async fn backfilled_epochs_reproduce_the_legacy_inflation_estimate() {
     insert_epoch(&client, 1000, BASELINE_SLOTS_PER_YEAR).await;
     insert_epoch(&client, 1001, SLOTS_PER_YEAR_350MS).await;
 
-    let rows = get_estimated_inflation_rewards(&client, 10).await.unwrap();
+    let rows = get_inflation_rewards_with_slots_per_year(&client, 10)
+        .await
+        .unwrap();
     let rewards: HashMap<_, _> = rows
         .iter()
-        .map(|(epoch, amount, _)| (*epoch, *amount))
+        .map(|(epoch, amount, _)| (*epoch, amount.unwrap()))
         .collect();
     let provenance: HashMap<_, _> = rows
         .iter()
@@ -102,16 +115,59 @@ async fn the_running_epoch_reports_its_own_regime_before_it_closes() {
     insert_epoch(&client, 1000, BASELINE_SLOTS_PER_YEAR).await;
     insert_cluster_info(&client, 1000, 431_000, BASELINE_SLOTS_PER_YEAR).await;
     assert_eq!(
-        get_running_epoch_slots_per_year(&client).await.unwrap(),
-        None,
+        slots_per_year(&client).await,
+        vec![(1000, true, BASELINE_SLOTS_PER_YEAR)],
         "a closed epoch is already covered by the epochs table"
     );
 
     insert_cluster_info(&client, 1001, 100, SLOTS_PER_YEAR_350MS).await;
     insert_cluster_info(&client, 1001, 20_000, SLOTS_PER_YEAR_350MS).await;
     assert_eq!(
-        get_running_epoch_slots_per_year(&client).await.unwrap(),
-        Some((1001, SLOTS_PER_YEAR_350MS))
+        slots_per_year(&client).await,
+        vec![
+            (1001, false, SLOTS_PER_YEAR_350MS),
+            (1000, true, BASELINE_SLOTS_PER_YEAR)
+        ]
+    );
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+// The auction targets the ended epoch until it closes.
+#[tokio::test]
+async fn an_ended_epoch_awaiting_close_keeps_its_regime_next_to_the_running_one() {
+    let schema = "ds_test_unclosed_epochs_slots_per_year";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    insert_epoch(&client, 1000, BASELINE_SLOTS_PER_YEAR).await;
+    insert_cluster_info(&client, 1001, 100, BASELINE_SLOTS_PER_YEAR).await;
+    insert_cluster_info(&client, 1001, 431_000, SLOTS_PER_YEAR_350MS).await;
+    insert_cluster_info(&client, 1002, 20_000, SLOTS_PER_YEAR_300MS).await;
+
+    assert_eq!(
+        slots_per_year(&client).await,
+        vec![
+            (1002, false, SLOTS_PER_YEAR_300MS),
+            (1001, false, SLOTS_PER_YEAR_350MS),
+            (1000, true, BASELINE_SLOTS_PER_YEAR)
+        ]
+    );
+
+    insert_epoch(&client, 1001, SLOTS_PER_YEAR_350MS).await;
+    assert_eq!(
+        slots_per_year(&client).await,
+        vec![
+            (1002, false, SLOTS_PER_YEAR_300MS),
+            (1001, true, SLOTS_PER_YEAR_350MS),
+            (1000, true, BASELINE_SLOTS_PER_YEAR)
+        ],
+        "closing the ended epoch moves it to the estimates without a gap"
     );
 
     client

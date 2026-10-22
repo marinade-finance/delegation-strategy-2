@@ -27,3 +27,4 @@ collect = { path = "../collect" }
 chrono = { workspace = true }
 csv = { package = "ds-csv", path = "../csv" }
 utoipa = { workspace = true }
+include_dir = { workspace = true }

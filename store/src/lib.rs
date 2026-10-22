@@ -1,9 +1,11 @@
 pub mod close_epoch;
+pub mod cluster_info;
 pub mod credits_backfill;
 pub mod dto;
 pub mod groups;
 pub mod incidents;
 pub mod ip_info;
+pub mod migrations;
 pub mod node_observations;
 pub mod operators;
 pub mod releases;

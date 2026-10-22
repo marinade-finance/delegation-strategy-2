@@ -6,6 +6,7 @@ use crate::slot_params::{
 };
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
+use crate::vat::get_vat_minimum_balance;
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
@@ -113,6 +114,9 @@ pub struct ValidatorsPerformanceSnapshot {
     #[serde(default = "baseline_slots_per_year")]
     pub slots_per_year: f64,
     pub cluster_inflation: Option<ClusterInflation>,
+    /// Rent of a v4 vote state plus the VAT of the next epoch. None for a backfilled epoch.
+    #[serde(default)]
+    pub vat_minimum_balance: Option<u64>,
     pub validators: HashMap<String, ValidatorPerformance>,
     // Every gossip node, not just the vote-account-joined subset in `validators`; absent from snapshots written before the field existed, which the backfill path still reads.
     #[serde(default)]
@@ -368,6 +372,13 @@ pub fn collect_validators_performance_info(
         None
     };
 
+    // A backfilled epoch would read today's rent and gates, which are not the ones at its end.
+    let vat_minimum_balance = if epoch == current_epoch_info.epoch {
+        Some(get_vat_minimum_balance(&client, &activations, epoch)?)
+    } else {
+        None
+    };
+
     serde_yaml::to_writer(
         std::io::stdout(),
         &ValidatorsPerformanceSnapshot {
@@ -377,6 +388,7 @@ pub fn collect_validators_performance_info(
             created_at: created_at.to_string(),
             slots_per_year: slot_params.slots_per_year,
             cluster_inflation,
+            vat_minimum_balance,
             validators,
             nodes: node_info,
             rewards,
@@ -508,6 +520,7 @@ delinquent: false
             created_at: "2026-07-31T00:00:00Z".into(),
             slots_per_year: baseline_slots_per_year(),
             cluster_inflation: None,
+            vat_minimum_balance: None,
             validators: Default::default(),
             nodes: HashMap::from([("identityRoundTrip".to_string(), node)]),
             rewards: None,

@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
     match result {
         Ok(_) => info!("Collect {command_name} finished successfully."),
         Err(err) => {
-            anyhow::bail!("Collect {command_name} processing finished with an error: {err}")
+            anyhow::bail!("Collect {command_name} processing finished with an error: {err:#}")
         }
     }
 

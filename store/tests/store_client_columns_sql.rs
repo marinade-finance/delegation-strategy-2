@@ -79,6 +79,7 @@ async fn run_store_versions(client: &mut Client, name: &str, fields: &ClientFiel
         created_at: "2026-07-31T00:00:00Z".into(),
         slots_per_year: baseline_slots_per_year(),
         cluster_inflation: None,
+        vat_minimum_balance: None,
         validators,
         nodes: Default::default(),
         rewards: None,
@@ -391,9 +392,16 @@ async fn load_validators_classifies_the_record_and_its_epoch_stats() {
         net_apy: HashMap::from([("voteRegistered".to_string(), 0.0712389)]),
         ..Default::default()
     };
-    let validators = load_validators(&client, unreachable_scoring_url, 1, 1, &overlays)
-        .await
-        .unwrap();
+    let validators = load_validators(
+        &client,
+        unreachable_scoring_url,
+        1,
+        1,
+        &overlays,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         validators.get("voteRegistered").unwrap().protected,

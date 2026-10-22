@@ -61,6 +61,7 @@ enum StoreCommand {
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
     CreditsBackfill(StoreCreditsBackfillParams),
+    Migrate,
 }
 
 pub mod cluster_info;
@@ -156,5 +157,6 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::CreditsBackfill(backfill_params) => {
             store_credits_backfill(backfill_params, &mut psql_client).await
         }
+        StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }
 }
