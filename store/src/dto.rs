@@ -338,7 +338,7 @@ pub struct ValidatorEpochStats {
     pub pending_delegator_rewards: Option<Decimal>,
     /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
     pub vote_account_lamports: Option<Decimal>,
-    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active: agave `clone_and_filter_for_vat` applied to the stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. Null when `vote_account_lamports` or the minimum is null.
+    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active: the agave VAT filter applied to the stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. Null when `vote_account_lamports` or the minimum is null.
     pub vat_eligible: Option<bool>,
     /// Base58 compressed BLS key of the v4 vote state. Null on a pre-v4 vote state, when no key is set, or on a row from a snapshot taken before DS2 collected the key. Agave admits no vote account without one, but `vat_eligible` skips this check on the older rows.
     pub bls_pubkey: Option<String>,

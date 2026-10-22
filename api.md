@@ -144,7 +144,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/validators/flat` gives `avg_adjusted_vote_performance`, the mean of `vote_performance × (1 - commission)` over the epochs that have a value.
 
-`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave refuses the vote account at the end of the epoch, and its stakers get no inflation rewards for that epoch. The API applies agave `clone_and_filter_for_vat` to the stored rows of the epoch, at the last snapshot. Agave keeps a vote account when all these checks pass:
+`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave refuses the vote account at the end of the epoch, and its stakers get no inflation rewards for that epoch. The API applies the agave VAT filter to the stored rows of the epoch, at the last snapshot. Agave keeps a vote account when all these checks pass:
 
 1. The v4 vote state has a BLS key.
 2. The stake at the next epoch is not 0. DS2 projects it as `activated_stake + activating - deactivating`, without the warmup limit.

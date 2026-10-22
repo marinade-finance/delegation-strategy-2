@@ -1263,7 +1263,7 @@ pub async fn load_vat_minimum_balances(
         .collect()
 }
 
-/// agave `clone_and_filter_for_vat` over the stored rows of each epoch, by `(epoch, vote_account)`.
+/// The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
 /// A row without `vote_account_lamports` gets no verdict and stays out of the rank.
 fn vat_verdicts(
     rows: &[tokio_postgres::Row],

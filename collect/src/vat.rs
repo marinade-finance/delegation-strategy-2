@@ -8,7 +8,7 @@ use crate::slot_params::{select_slot_params, SlotParams};
 /// agave `VoteStateV4::size_of()`, the size agave takes the rent of.
 const VOTE_STATE_V4_SIZE: usize = 3762;
 
-/// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`, the SIMD-0357 cap on the voting set.
+/// The agave SIMD-0357 cap on the voting set.
 pub const MAX_VAT_ADMITTED_VOTE_ACCOUNTS: usize = 2000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +37,7 @@ pub fn get_vat_minimum_balance(
     Ok(VatMinimumBalance { rent, vat })
 }
 
-/// The first agave `clone_and_filter_for_vat` check that drops the vote account.
+/// The first check of the agave VAT filter that drops the vote account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VatRejection {
     NoBlsKey,
@@ -65,7 +65,7 @@ pub struct VatCandidate {
     pub lamports: u64,
 }
 
-/// agave `clone_and_filter_for_vat`. `None` means admitted.
+/// The agave VAT filter. `None` means admitted.
 pub fn vat_admissions(
     candidates: &HashMap<String, VatCandidate>,
     minimum_balance: u64,
