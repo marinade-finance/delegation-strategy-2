@@ -1,8 +1,10 @@
 use crate::common::*;
 use crate::marinade_service::*;
+use crate::slot_params::get_slot_time_activations;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use crate::validators_performance::{validators_performance, ValidatorPerformance};
+use crate::vat::{get_vat_minimum_balance, vat_admissions, vat_runway_epochs, VatCandidate};
 use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
@@ -173,6 +175,15 @@ pub struct ValidatorSnapshot {
     pub block_revenue_collector_healthy: Option<bool>,
     #[serde(default)]
     pub vote_account_lamports: Option<u64>,
+    /// Base58 of the compressed key, as solana-snapshot-parser writes it.
+    #[serde(default)]
+    pub bls_pubkey: Option<String>,
+    #[serde(default)]
+    pub vat_admitted: Option<bool>,
+    #[serde(default)]
+    pub vat_rejection_reason: Option<String>,
+    #[serde(default)]
+    pub vat_runway_epochs: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -245,6 +256,8 @@ pub fn collect_validators_info(
     )?;
     let validators_info = get_validators_info(&client)?;
     let node_info = get_cluster_nodes_info(&client)?;
+    let vat_minimum_balance =
+        get_vat_minimum_balance(&client, &get_slot_time_activations(&client)?, epoch)?;
 
     info!(
         "Self stake: {}",
@@ -308,6 +321,41 @@ pub fn collect_validators_info(
             "Snapshot is labelled epoch {epoch} but the RPC was at epoch {rpc_epoch} after reading the accounts, their state may belong to either epoch"
         );
     }
+
+    // An account the scan could not parse gets no verdict and stays out of the rank.
+    let vat_candidates: HashMap<String, VatCandidate> = vote_accounts
+        .current
+        .iter()
+        .chain(vote_accounts.delinquent.iter())
+        .filter_map(|vote_account| {
+            let state = vote_account_states.get(&vote_account.vote_pubkey)?;
+            let pending = stake_account_totals
+                .get(&vote_account.vote_pubkey)
+                .copied()
+                .unwrap_or_default();
+            Some((
+                vote_account.vote_pubkey.clone(),
+                VatCandidate {
+                    has_bls_pubkey: state.bls_pubkey.is_some(),
+                    // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
+                    stake: (vote_account.activated_stake + pending.activating)
+                        .saturating_sub(pending.deactivating),
+                    lamports: state.lamports?,
+                },
+            ))
+        })
+        .collect();
+    let vat_verdicts = vat_admissions(&vat_candidates, vat_minimum_balance.total());
+    let mut vat_counts: HashMap<&str, usize> = HashMap::new();
+    for verdict in vat_verdicts.values() {
+        *vat_counts
+            .entry(verdict.map_or("admitted", |reason| reason.as_str()))
+            .or_default() += 1;
+    }
+    info!(
+        "VAT admission of {} vote accounts: {vat_counts:?}",
+        vat_verdicts.len()
+    );
 
     for vote_account in vote_accounts
         .current
@@ -400,6 +448,22 @@ pub fn collect_validators_info(
             block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
             block_revenue_collector_healthy: block_revenue_health.and_then(|h| h.healthy),
             vote_account_lamports: vote_state.and_then(|state| state.lamports),
+            bls_pubkey: vote_state
+                .and_then(|state| state.bls_pubkey)
+                .map(|key| bs58::encode(key).into_string()),
+            vat_admitted: vat_verdicts.get(&vote_pubkey).map(Option::is_none),
+            vat_rejection_reason: vat_verdicts
+                .get(&vote_pubkey)
+                .copied()
+                .flatten()
+                .map(|reason| reason.as_str().to_string()),
+            vat_runway_epochs: vote_state.and_then(|state| {
+                vat_runway_epochs(
+                    state.lamports?,
+                    state.pending_delegator_rewards.unwrap_or(0),
+                    &vat_minimum_balance,
+                )
+            }),
         });
     }
 

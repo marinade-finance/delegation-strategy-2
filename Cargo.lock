@@ -1191,6 +1191,7 @@ dependencies = [
  "anchor-lang",
  "anyhow",
  "bincode",
+ "bs58",
  "chrono",
  "clap",
  "ds-csv",

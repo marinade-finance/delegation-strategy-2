@@ -136,6 +136,10 @@ pub fn validator_snapshot(epoch: u64, identity: &str, vote_account: &str) -> Sna
             block_revenue_collector_lamports: None,
             block_revenue_collector_healthy: None,
             vote_account_lamports: None,
+            bls_pubkey: None,
+            vat_admitted: None,
+            vat_rejection_reason: None,
+            vat_runway_epochs: None,
         }],
     }
 }

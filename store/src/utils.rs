@@ -1312,6 +1312,10 @@ pub async fn load_validators(
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
                 vote_account_lamports,
+                bls_pubkey,
+                vat_admitted,
+                vat_rejection_reason,
+                vat_runway_epochs,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1403,14 +1407,15 @@ pub async fn load_validators(
                 .copied();
             let vote_account_lamports: Option<Decimal> = row.get("vote_account_lamports");
             let vat_minimum_balance = vat_minimum_balances.get(&epoch).copied();
-            // TODO: SIMD-0357 checks not applied yet:
-            // - BLS key present
-            // - next-epoch stake > 0
-            // - top 2000 by stake, ties at the cut-off dropped
-            // - balance less pending_delegator_rewards once block revenue sharing is active
-            let vat_eligible = vote_account_lamports
-                .zip(vat_minimum_balance)
-                .map(|(lamports, minimum)| lamports >= minimum);
+            let bls_pubkey: Option<String> = row.get("bls_pubkey");
+            let vat_rejection_reason: Option<String> = row.get("vat_rejection_reason");
+            let vat_runway_epochs: Option<Decimal> = row.get("vat_runway_epochs");
+            // Rows stored before migration 0041 have only the balance check.
+            let vat_eligible = row.get::<_, Option<bool>>("vat_admitted").or_else(|| {
+                vote_account_lamports
+                    .zip(vat_minimum_balance)
+                    .map(|(lamports, minimum)| lamports >= minimum)
+            });
             let starting_epoch_date: Option<DateTime<Utc>> =
                 row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
             let mut epoch_start_at: Option<DateTime<Utc>> =
@@ -1544,6 +1549,9 @@ pub async fn load_validators(
                         .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                     vote_account_lamports,
                     vat_eligible,
+                    bls_pubkey: bls_pubkey.clone(),
+                    vat_rejection_reason: vat_rejection_reason.clone(),
+                    vat_runway_epochs,
                     commission_aggregated: None,
                     version: version.clone(),
                     client_id,
@@ -1706,6 +1714,9 @@ pub async fn load_validators(
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                 vote_account_lamports,
                 vat_eligible,
+                bls_pubkey,
+                vat_rejection_reason,
+                vat_runway_epochs,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),

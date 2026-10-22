@@ -161,3 +161,51 @@ async fn store_cluster_info_writes_the_minimum_of_the_snapshot() {
         BTreeMap::from([(EPOCH, Decimal::from(MINIMUM))])
     );
 }
+
+#[tokio::test]
+async fn the_collected_verdict_wins_over_the_balance_check() {
+    let schema = "ds_test_vat_admission_cutoff";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
+    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
+    let validator = &mut snapshot.validators[0];
+    validator.vote_account_lamports = Some(MINIMUM);
+    validator.bls_pubkey = Some("blsKey".into());
+    validator.vat_admitted = Some(false);
+    validator.vat_rejection_reason = Some("below_cutoff".into());
+    validator.vat_runway_epochs = Some(1);
+    store_snapshot(&mut client, schema, &snapshot).await;
+
+    let record = record(&client).await;
+    assert_eq!(record.vat_eligible, Some(false));
+    assert_eq!(record.vat_rejection_reason.as_deref(), Some("below_cutoff"));
+    assert_eq!(record.epoch_stats[0].bls_pubkey.as_deref(), Some("blsKey"));
+    assert_eq!(
+        record.epoch_stats[0].vat_runway_epochs,
+        Some(Decimal::from(1))
+    );
+}
+
+#[tokio::test]
+async fn a_later_snapshot_with_admission_clears_the_old_reason() {
+    let schema = "ds_test_vat_admission_cleared";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
+    let mut snapshot = validator_snapshot(EPOCH, "identityVatBalance", VOTE_ACCOUNT);
+    snapshot.validators[0].vat_admitted = Some(false);
+    snapshot.validators[0].vat_rejection_reason = Some("low_balance".into());
+    store_snapshot(&mut client, &format!("{schema}-1"), &snapshot).await;
+    snapshot.validators[0].vat_admitted = Some(true);
+    snapshot.validators[0].vat_rejection_reason = None;
+    store_snapshot(&mut client, &format!("{schema}-2"), &snapshot).await;
+
+    let record = record(&client).await;
+    assert_eq!(record.vat_eligible, Some(true));
+    assert_eq!(record.vat_rejection_reason, None);
+}

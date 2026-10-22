@@ -211,6 +211,10 @@ pub struct Validator {
     pub block_revenue_collector_lamports: Option<Decimal>,
     pub block_revenue_collector_healthy: Option<bool>,
     pub vote_account_lamports: Option<Decimal>,
+    pub bls_pubkey: Option<String>,
+    pub vat_admitted: Option<bool>,
+    pub vat_rejection_reason: Option<String>,
+    pub vat_runway_epochs: Option<Decimal>,
 }
 
 impl Validator {
@@ -264,6 +268,10 @@ impl Validator {
             block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
             block_revenue_collector_healthy: v.block_revenue_collector_healthy,
             vote_account_lamports: v.vote_account_lamports.map(Decimal::from),
+            bls_pubkey: v.bls_pubkey.clone(),
+            vat_admitted: v.vat_admitted,
+            vat_rejection_reason: v.vat_rejection_reason.clone(),
+            vat_runway_epochs: v.vat_runway_epochs.map(Decimal::from),
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -336,8 +344,14 @@ pub struct ValidatorEpochStats {
     pub pending_delegator_rewards: Option<Decimal>,
     /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
     pub vote_account_lamports: Option<Decimal>,
-    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active. Only the balance check applies for now: `vote_account_lamports` against the `vat_minimum_balance` of the epoch at the top level of `/validators`. Null when an input is null.
+    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active: agave `clone_and_filter_for_vat` applied at the last snapshot of the epoch. On rows stored before DS2 collected the full rule, only the balance check: `vote_account_lamports` against `vat_minimum_balances` at the top level of `/validators`. Null when an input is null.
     pub vat_eligible: Option<bool>,
+    /// Base58 compressed BLS key of the v4 vote state. Null on a pre-v4 vote state or when no key is set. Agave admits no vote account without one.
+    pub bls_pubkey: Option<String>,
+    /// The first SIMD-0357 check that fails: `no_bls_key`, `no_stake`, `low_balance` or `below_cutoff` (outside the top 2000 by stake, ties at the cut-off included). Null when admitted and on rows stored before DS2 collected it.
+    pub vat_rejection_reason: Option<String>,
+    /// Whole epochs of VAT the vote account pays before its balance falls below rent: `(vote_account_lamports - pending_delegator_rewards - rent) / VAT`, at the VAT of the next epoch. A vote account at 0% commission or with an external inflation collector gets no lamports under Alpenglow, so this counts down by 1 each epoch. Null on rows stored before DS2 collected it.
+    pub vat_runway_epochs: Option<Decimal>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
@@ -453,6 +467,12 @@ pub struct ValidatorRecord {
     pub vote_account_lamports: Option<Decimal>,
     /// See `ValidatorEpochStats::vat_eligible`.
     pub vat_eligible: Option<bool>,
+    /// See `ValidatorEpochStats::bls_pubkey`.
+    pub bls_pubkey: Option<String>,
+    /// See `ValidatorEpochStats::vat_rejection_reason`.
+    pub vat_rejection_reason: Option<String>,
+    /// See `ValidatorEpochStats::vat_runway_epochs`.
+    pub vat_runway_epochs: Option<Decimal>,
     pub commission_aggregated: Option<i32>,
     pub rugged_commission_occurrences: u64,
     pub rugged_commission: bool,

@@ -374,7 +374,7 @@ pub fn collect_validators_performance_info(
 
     // A backfilled epoch would read today's rent and gates, which are not the ones at its end.
     let vat_minimum_balance = if epoch == current_epoch_info.epoch {
-        Some(get_vat_minimum_balance(&client, &activations, epoch)?)
+        Some(get_vat_minimum_balance(&client, &activations, epoch)?.total())
     } else {
         None
     };
