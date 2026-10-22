@@ -50,6 +50,18 @@ async fn store_minimum(client: &Client, minimum: Option<u64>, created_at: &str) 
         .unwrap();
 }
 
+// `validator_snapshot` rows carry the snapshot time 2026-07-31.
+async fn set_bls_collection_start(client: &Client, applied_at: &str) {
+    client
+        .execute(
+            "UPDATE migrations SET applied_at = $1::TEXT::TIMESTAMPTZ
+             WHERE name = '0041-validators-vat-admission.sql'",
+            &[&applied_at],
+        )
+        .await
+        .unwrap();
+}
+
 fn epoch_minimum(balance: u64) -> EpochVatMinimum {
     EpochVatMinimum {
         balance: Decimal::from(balance),
@@ -189,6 +201,7 @@ async fn a_vote_account_without_a_bls_key_is_not_admitted() {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
+    set_bls_collection_start(&client, "2026-07-30T00:00:00Z").await;
     store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
     let mut snapshot = admissible_snapshot(Some(MINIMUM));
     snapshot.validators[0].bls_pubkey = None;
@@ -197,6 +210,24 @@ async fn a_vote_account_without_a_bls_key_is_not_admitted() {
     let record = record(&client).await;
     assert_eq!(record.vat_eligible, Some(false));
     assert_eq!(record.vat_rejection_reason.as_deref(), Some("no_bls_key"));
+}
+
+#[tokio::test]
+async fn a_row_from_before_the_bls_collection_skips_the_bls_check() {
+    let schema = "ds_test_vat_admission_old_row";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    set_bls_collection_start(&client, "2026-08-01T00:00:00Z").await;
+    store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
+    let mut snapshot = admissible_snapshot(Some(MINIMUM));
+    snapshot.validators[0].bls_pubkey = None;
+    store_snapshot(&mut client, schema, &snapshot).await;
+
+    let record = record(&client).await;
+    assert_eq!(record.vat_eligible, Some(true));
+    assert_eq!(record.vat_rejection_reason, None);
 }
 
 #[tokio::test]

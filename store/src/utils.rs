@@ -1284,7 +1284,9 @@ fn vat_verdicts(
             .insert(
                 row.get("vote_account"),
                 VatCandidate {
-                    has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some(),
+                    // A row stored before the key was collected skips the BLS check.
+                    has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
+                        || !row.get::<_, bool>("bls_pubkey_collected"),
                     // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
                     stake: (stake("activated_stake") + stake("activating_stake"))
                         .saturating_sub(stake("deactivating_stake")),
@@ -1370,6 +1372,10 @@ pub async fn load_validators(
                 pending_delegator_rewards,
                 vote_account_lamports,
                 bls_pubkey,
+                -- updated_at is the snapshot time, so an older row was written without the key
+                COALESCE(validators.updated_at >= (
+                    SELECT applied_at FROM migrations WHERE name = '0041-validators-vat-admission.sql'
+                ), FALSE) AS bls_pubkey_collected,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
