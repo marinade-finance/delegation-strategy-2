@@ -61,15 +61,58 @@ fn gate_version(values: &[String]) -> Option<ValidatorVersion> {
 
 /// Whether a gate could raise the floor: only one requiring at least the published floor can, and
 /// the published floor is the maximum over every gate already activated.
-fn could_raise_floor(gate: &Gate, published: &BTreeMap<&str, ValidatorVersion>) -> bool {
+fn could_raise_floor(gate: &Gate, published: &PublishedFloors) -> bool {
     LINEAGES.iter().any(
         |lineage| match (gate.version_for(lineage), published.get(*lineage)) {
-            (Some(required), Some(floor)) => required >= *floor,
+            (Some(required), Some(Some(floor))) => required >= *floor,
             // No published floor for the lineage, so nothing rules the gate out.
-            (Some(_), None) => true,
-            (None, _) => false,
+            (Some(_), Some(None)) => true,
+            (None, _) | (_, None) => false,
         },
     )
+}
+
+/// Per lineage still tracked, its published floor; `None` while none is published yet. A lineage
+/// Anza dropped from the file is retired and absent here.
+type PublishedFloors = BTreeMap<&'static str, Option<ValidatorVersion>>;
+
+/// The release rows for each tracked lineage, reading only gates at or above its published floor.
+fn floor_entries(
+    candidates: &[&Gate],
+    activated: &BTreeMap<String, Epoch>,
+    published: &PublishedFloors,
+) -> Vec<ReleaseEntry> {
+    let mut entries = Vec::new();
+    for lineage in LINEAGES {
+        let Some(floor) = published.get(lineage) else {
+            continue;
+        };
+        let mut activations: BTreeMap<Epoch, Vec<ValidatorVersion>> = BTreeMap::new();
+        for gate in candidates {
+            let Some(epoch) = activated.get(&gate.feature_id) else {
+                continue;
+            };
+            if let Some(version) = gate.version_for(lineage) {
+                // A gate below the published floor is history the migration owns.
+                if floor.as_ref().is_none_or(|floor| version >= *floor) {
+                    activations.entry(*epoch).or_default().push(version);
+                }
+            }
+        }
+
+        for (epoch, version) in floor_timeline(&activations) {
+            entries.push(ReleaseEntry {
+                client_lineage: lineage.to_string(),
+                client_version: version,
+                released_at: None,
+                release_url: None,
+                sfdp_floor_epoch: None,
+                feature_gate_epoch: Some(epoch),
+                source: ReleaseSource::FeatureGates,
+            });
+        }
+    }
+    entries
 }
 
 /// Each epoch the floor rose, and the version it rose to: the running maximum over the gates
@@ -177,33 +220,7 @@ impl FeatureGatesFetcher {
             activated.len()
         );
 
-        let mut entries = Vec::new();
-        for lineage in LINEAGES {
-            let mut activations: BTreeMap<Epoch, Vec<ValidatorVersion>> = BTreeMap::new();
-            for gate in &candidates {
-                let Some(epoch) = activated.get(&gate.feature_id) else {
-                    continue;
-                };
-                if let Some(version) = gate.version_for(lineage) {
-                    // A gate below the published floor is history the migration owns.
-                    if published.get(lineage).is_none_or(|floor| version >= *floor) {
-                        activations.entry(*epoch).or_default().push(version);
-                    }
-                }
-            }
-
-            for (epoch, version) in floor_timeline(&activations) {
-                entries.push(ReleaseEntry {
-                    client_lineage: lineage.to_string(),
-                    client_version: version,
-                    released_at: None,
-                    release_url: None,
-                    sfdp_floor_epoch: None,
-                    feature_gate_epoch: Some(epoch),
-                    source: ReleaseSource::FeatureGates,
-                });
-            }
-        }
+        let entries = floor_entries(&candidates, &activated, &published);
 
         self.check_published_floor_was_derived(&published, &entries);
 
@@ -212,22 +229,9 @@ impl FeatureGatesFetcher {
 
     /// The floor Anza publishes per lineage, which is the maximum over every gate already
     /// activated, and so the line below which a gate cannot raise anything.
-    fn published_floors(&self) -> anyhow::Result<BTreeMap<&'static str, ValidatorVersion>> {
+    fn published_floors(&self) -> anyhow::Result<PublishedFloors> {
         let file: VersionFloorFile = self.get_json(&self.version_floor_url)?;
-        let mut floors = BTreeMap::new();
-
-        for (lineage, published) in [
-            ("agave", &file.mainnet_beta.current.agave),
-            ("frankendancer", &file.mainnet_beta.current.frd),
-            ("firedancer", &file.mainnet_beta.current.fd),
-        ] {
-            // Empty while no floor is published for that client.
-            if let Ok(published) = published.parse::<ValidatorVersion>() {
-                floors.insert(lineage, published);
-            }
-        }
-
-        Ok(floors)
+        Ok(file.mainnet_beta.current.floors())
     }
 
     /// The published floor is the version some activated gate requires, so it has to appear in what
@@ -235,10 +239,13 @@ impl FeatureGatesFetcher {
     /// silent everywhere else.
     fn check_published_floor_was_derived(
         &self,
-        published: &BTreeMap<&str, ValidatorVersion>,
+        published: &PublishedFloors,
         derived: &[ReleaseEntry],
     ) {
-        for (lineage, floor) in published {
+        for (lineage, floor) in published
+            .iter()
+            .filter_map(|(lineage, floor)| Some((lineage, floor.as_ref()?)))
+        {
             if !derived
                 .iter()
                 .any(|entry| entry.client_lineage == *lineage && entry.client_version == *floor)
@@ -260,14 +267,43 @@ struct ClusterFloor {
     current: PublishedFloor,
 }
 
+/// A key Anza dropped marks a retired client, as FRD is under Alpenglow.
 #[derive(Debug, Deserialize)]
 struct PublishedFloor {
     #[serde(rename = "Agave")]
-    agave: String,
+    agave: Option<String>,
     #[serde(rename = "FD")]
-    fd: String,
+    fd: Option<String>,
     #[serde(rename = "FRD")]
-    frd: String,
+    frd: Option<String>,
+}
+
+impl PublishedFloor {
+    fn floors(&self) -> PublishedFloors {
+        let mut floors = BTreeMap::new();
+
+        for (lineage, published) in [
+            ("agave", &self.agave),
+            ("frankendancer", &self.frd),
+            ("firedancer", &self.fd),
+        ] {
+            let Some(published) = published else {
+                debug!("No {lineage} key in the published floors, so the lineage is retired");
+                continue;
+            };
+            // Empty while no floor is published for that client.
+            let floor = match published.parse::<ValidatorVersion>() {
+                Ok(floor) => Some(floor),
+                Err(err) => {
+                    debug!("No published {lineage} floor ({published:?}): {err}");
+                    None
+                }
+            };
+            floors.insert(lineage, floor);
+        }
+
+        floors
+    }
 }
 
 impl ReleaseFetcher for FeatureGatesFetcher {
@@ -313,7 +349,7 @@ mod tests {
         // The published floor is the maximum over everything already activated, so a gate below it
         // is history the migration owns -- and reading it would restart the running maximum from
         // there, reporting a floor lower than the one in force.
-        let published = BTreeMap::from([("agave", "4.2.0".parse().unwrap())]);
+        let published = BTreeMap::from([("agave", Some("4.2.0".parse().unwrap()))]);
 
         assert!(could_raise_floor(&gate_requiring("v4.2.0"), &published));
         assert!(could_raise_floor(&gate_requiring("v4.2.2"), &published));
@@ -328,8 +364,82 @@ mod tests {
     fn a_lineage_with_no_published_floor_reads_every_gate() {
         assert!(could_raise_floor(
             &gate_requiring("v3.0.0"),
+            &BTreeMap::from([("agave", None)])
+        ));
+    }
+
+    #[test]
+    fn a_retired_lineage_reads_no_gate() {
+        assert!(!could_raise_floor(
+            &gate_requiring("v3.0.0"),
             &BTreeMap::new()
         ));
+    }
+
+    fn published_floors(json: &str) -> PublishedFloors {
+        serde_json::from_str::<VersionFloorFile>(json)
+            .unwrap()
+            .mainnet_beta
+            .current
+            .floors()
+    }
+
+    #[test]
+    fn a_client_dropped_from_the_published_floor_file_is_retired() {
+        // The file as Anza publishes it since Alpenglow retired Frankendancer.
+        let floors = published_floors(
+            r#"{"Mainnet Beta": {"current": {"Agave": "v4.3.0", "FD": "v26.10.4"}}}"#,
+        );
+
+        assert_eq!(
+            floors,
+            BTreeMap::from([
+                ("agave", Some("4.3.0".parse().unwrap())),
+                ("firedancer", Some("26.10.4".parse().unwrap())),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_empty_published_floor_keeps_the_lineage_tracked() {
+        let floors = published_floors(
+            r#"{"Mainnet Beta": {"current": {"Agave": "v4.3.0", "FD": "", "FRD": "v0.1106.40201"}}}"#,
+        );
+
+        assert_eq!(
+            floors,
+            BTreeMap::from([
+                ("agave", Some("4.3.0".parse().unwrap())),
+                ("firedancer", None),
+                ("frankendancer", Some("0.1106.40201".parse().unwrap())),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_retired_lineage_gets_no_rows_from_a_gate_that_names_it() {
+        let gate = Gate {
+            feature_id: "gate".to_string(),
+            agave: versions(&["v4.3.0"]),
+            frankendancer: versions(&["v0.1106.40201"]),
+            firedancer: vec![],
+        };
+        let activated = BTreeMap::from([("gate".to_string(), 1064)]);
+        let published = BTreeMap::from([("agave", Some("4.3.0".parse().unwrap()))]);
+
+        let entries = floor_entries(&[&gate], &activated, &published);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (
+                    e.client_lineage.as_str(),
+                    e.client_version.as_str(),
+                    e.feature_gate_epoch
+                ))
+                .collect::<Vec<_>>(),
+            vec![("agave", "4.3.0", Some(1064))]
+        );
     }
 
     #[test]
