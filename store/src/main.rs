@@ -153,8 +153,8 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
-        StoreCommand::CreditsBackfill(_backfill_params) => {
-            store_credits_backfill(&mut psql_client).await
+        StoreCommand::CreditsBackfill(backfill_params) => {
+            store_credits_backfill(backfill_params, &mut psql_client).await
         }
     }
 }

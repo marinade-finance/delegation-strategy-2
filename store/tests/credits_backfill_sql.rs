@@ -1,8 +1,10 @@
 mod common;
 
 use common::{migrated_client, skip_without_database, store_snapshot, validator_snapshot};
+use collect::solana_service::EpochCredits;
 use rust_decimal::Decimal;
-use store::credits_backfill::{store_credits_backfill, TESTNET_LAMPORTS_IN_CREDITS_EPOCHS};
+use std::collections::HashMap;
+use store::credits_backfill::{apply_credits_backfill, TESTNET_LAMPORTS_IN_CREDITS_EPOCHS};
 use tokio_postgres::Client;
 
 const LAMPORTS: u64 = 300_000_000_000;
@@ -34,6 +36,23 @@ async fn read(
     (row.get(0), row.get(1), row.get(2))
 }
 
+fn migration_credits(
+    entries: &[(&str, Option<u64>, Option<u64>)],
+) -> HashMap<String, EpochCredits> {
+    entries
+        .iter()
+        .map(|(vote_account, tower_credits, vote_reward_lamports)| {
+            (
+                vote_account.to_string(),
+                EpochCredits {
+                    tower_credits: *tower_credits,
+                    vote_reward_lamports: *vote_reward_lamports,
+                },
+            )
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn backfill_moves_credits_to_vote_reward_lamports() {
     let schema = "credits_backfill_sql";
@@ -51,17 +70,36 @@ async fn backfill_moves_credits_to_vote_reward_lamports() {
     seed(&mut client, 1043, "unstaked", 0, 0).await;
     seed(&mut client, 1043, "unstakedRewarded", 0, LAMPORTS).await;
     seed(&mut client, 1041, "tower", 100, 65_000).await;
+    // Testnet 1042: CRXYbE3W has no marker and no entry of 1042
+    seed(&mut client, 1042, "noVote", 100, 0).await;
+    seed(&mut client, 1042, "closed", 100, LAMPORTS).await;
+    let on_chain = migration_credits(&[
+        ("rewarded", Some(64_638), Some(LAMPORTS)),
+        ("noVote", Some(0), None),
+    ]);
 
-    store_credits_backfill(&mut client).await.unwrap();
+    apply_credits_backfill(&mut client, &on_chain).await.unwrap();
 
     let lamports = Some(Decimal::from(LAMPORTS));
     let leader_slots = Decimal::from(100);
-    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+    assert_eq!(
+        read(&client, "rewarded", 1042).await,
+        (Some(Decimal::from(64_638)), lamports, leader_slots)
+    );
+    for epoch in 1043..=*TESTNET_LAMPORTS_IN_CREDITS_EPOCHS.end() {
         assert_eq!(
             read(&client, "rewarded", epoch).await,
             (None, lamports, leader_slots)
         );
     }
+    assert_eq!(
+        read(&client, "noVote", 1042).await,
+        (Some(Decimal::ZERO), Some(Decimal::ZERO), leader_slots)
+    );
+    assert_eq!(
+        read(&client, "closed", 1042).await,
+        (None, lamports, leader_slots)
+    );
     assert_eq!(
         read(&client, "smallReward", 1050).await,
         (None, Some(Decimal::from(48)), leader_slots)
@@ -84,7 +122,7 @@ async fn backfill_moves_credits_to_vote_reward_lamports() {
         (Some(Decimal::from(65_000)), None, leader_slots)
     );
 
-    assert!(store_credits_backfill(&mut client).await.is_err());
+    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
 }
 
 #[tokio::test]
@@ -106,9 +144,50 @@ async fn backfill_fails_without_lamports_in_credits() {
         .await
         .unwrap();
 
-    assert!(store_credits_backfill(&mut client).await.is_err());
+    let on_chain = migration_credits(&[("notTestnet", Some(64_638), Some(LAMPORTS))]);
+    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
     assert_eq!(
         read(&client, "notTestnet", 1042).await,
+        (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
+    );
+}
+
+#[tokio::test]
+async fn backfill_fails_when_the_stored_reward_is_not_on_chain() {
+    let schema = "credits_backfill_mismatch_sql";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+        seed(&mut client, epoch, "rewarded", 100, LAMPORTS).await;
+    }
+    let on_chain = migration_credits(&[("rewarded", Some(64_638), Some(LAMPORTS + 1))]);
+
+    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert_eq!(
+        read(&client, "rewarded", 1042).await,
+        (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
+    );
+}
+
+#[tokio::test]
+async fn backfill_fails_without_tower_credits_on_chain() {
+    let schema = "credits_backfill_no_tower_sql";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    for epoch in TESTNET_LAMPORTS_IN_CREDITS_EPOCHS {
+        seed(&mut client, epoch, "rewarded", 100, LAMPORTS).await;
+    }
+    let on_chain = migration_credits(&[("rewarded", None, Some(LAMPORTS))]);
+
+    assert!(apply_credits_backfill(&mut client, &on_chain).await.is_err());
+    assert_eq!(
+        read(&client, "rewarded", 1042).await,
         (Some(Decimal::from(LAMPORTS)), None, Decimal::from(100))
     );
 }
