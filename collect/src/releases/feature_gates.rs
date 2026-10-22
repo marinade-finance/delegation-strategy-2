@@ -288,7 +288,14 @@ impl PublishedFloor {
             ("firedancer", &self.fd),
         ] {
             let Some(published) = published else {
-                debug!("No {lineage} key in the published floors, so the lineage is retired");
+                // Alpenglow retired Frankendancer; any other client going missing is unexpected.
+                if lineage == "frankendancer" {
+                    debug!("No {lineage} key in the published floors, so the lineage is retired");
+                } else {
+                    warn!(
+                        "No {lineage} key in the published floors, skipping the lineage as retired"
+                    );
+                }
                 continue;
             };
             // Empty while no floor is published for that client.
@@ -429,17 +436,61 @@ mod tests {
 
         let entries = floor_entries(&[&gate], &activated, &published);
 
-        assert_eq!(
-            entries
-                .iter()
-                .map(|e| (
+        assert_eq!(entry_rows(&entries), vec![("agave", "4.3.0", Some(1064))]);
+    }
+
+    fn entry_rows(entries: &[ReleaseEntry]) -> Vec<(&str, &str, Option<Epoch>)> {
+        entries
+            .iter()
+            .map(|e| {
+                (
                     e.client_lineage.as_str(),
                     e.client_version.as_str(),
-                    e.feature_gate_epoch
-                ))
-                .collect::<Vec<_>>(),
-            vec![("agave", "4.3.0", Some(1064))]
+                    e.feature_gate_epoch,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tracked_lineage_without_a_floor_yet_reads_a_gate_at_any_version() {
+        let gate = Gate {
+            feature_id: "gate".to_string(),
+            agave: vec![],
+            frankendancer: vec![],
+            firedancer: versions(&["v0.1.4"]),
+        };
+        let activated = BTreeMap::from([("gate".to_string(), 900)]);
+        let published = BTreeMap::from([("firedancer", None)]);
+
+        let entries = floor_entries(&[&gate], &activated, &published);
+
+        assert_eq!(
+            entry_rows(&entries),
+            vec![("firedancer", "0.1.4", Some(900))]
         );
+    }
+
+    #[test]
+    fn an_activated_gate_below_the_published_floor_gets_no_row() {
+        let below = Gate {
+            feature_id: "below".to_string(),
+            agave: versions(&["v4.2.0"]),
+            frankendancer: vec![],
+            firedancer: vec![],
+        };
+        let at = Gate {
+            feature_id: "at".to_string(),
+            agave: versions(&["v4.3.0"]),
+            frankendancer: vec![],
+            firedancer: vec![],
+        };
+        let activated = BTreeMap::from([("below".to_string(), 1070), ("at".to_string(), 1064)]);
+        let published = BTreeMap::from([("agave", Some("4.3.0".parse().unwrap()))]);
+
+        let entries = floor_entries(&[&below, &at], &activated, &published);
+
+        assert_eq!(entry_rows(&entries), vec![("agave", "4.3.0", Some(1064))]);
     }
 
     #[test]
