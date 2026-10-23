@@ -9,7 +9,6 @@ use node_observations::{store_node_observations, StoreNodeObservationsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use store::close_epoch::{close_epoch, CloseEpochParams};
-use store::credits_backfill::{store_credits_backfill, StoreCreditsBackfillParams};
 use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{
     refresh_stored_expected_take_rates, store_take_rates, RefreshExpectedTakeRatesParams,
@@ -60,7 +59,6 @@ enum StoreCommand {
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
-    CreditsBackfill(StoreCreditsBackfillParams),
     Migrate,
 }
 
@@ -154,9 +152,6 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
-        StoreCommand::CreditsBackfill(backfill_params) => {
-            store_credits_backfill(backfill_params, &psql_client).await
-        }
         StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }
 }

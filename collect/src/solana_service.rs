@@ -169,47 +169,6 @@ pub fn split_epoch_credits(
     })
 }
 
-/// `epochCredits` of a vote account read with `getMultipleAccounts` and `jsonParsed`, up to 64 entries.
-pub fn parse_epoch_credits(account: &Value) -> Option<Vec<EpochCreditsEntry>> {
-    account["data"]["parsed"]["info"]["epochCredits"]
-        .as_array()?
-        .iter()
-        .map(|entry| {
-            let field = |name: &str| {
-                entry[name]
-                    .as_u64()
-                    .or_else(|| entry[name].as_str()?.parse().ok())
-            };
-            Some((
-                field("epoch")?,
-                field("credits")?,
-                field("previousCredits")?,
-            ))
-        })
-        .collect()
-}
-
-pub fn migration_epoch_credits(
-    history: Vec<EpochCreditsEntry>,
-    alpenglow_migration_epoch: Epoch,
-) -> Option<EpochCredits> {
-    let vote_account = RpcVoteAccountInfo {
-        vote_pubkey: String::new(),
-        node_pubkey: String::new(),
-        activated_stake: 0,
-        commission: 0,
-        epoch_vote_account: true,
-        epoch_credits: history,
-        last_vote: 0,
-        root_slot: 0,
-    };
-    split_epoch_credits(
-        &vote_account,
-        alpenglow_migration_epoch,
-        Some(alpenglow_migration_epoch),
-    )
-}
-
 pub fn latest_credits_total(history: &[EpochCreditsEntry]) -> Option<u64> {
     history
         .iter()
