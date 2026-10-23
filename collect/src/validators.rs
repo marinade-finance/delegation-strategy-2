@@ -405,7 +405,7 @@ pub fn collect_validators_info(
             vote_account_lamports: vote_state.and_then(|state| state.lamports),
             bls_pubkey: vote_state
                 .and_then(|state| state.bls_pubkey)
-                .map(|key| bs58::encode(key).into_string()),
+                .map(|key| solana_sdk::bs58::encode(key).into_string()),
         });
     }
 

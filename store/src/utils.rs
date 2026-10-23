@@ -1417,13 +1417,22 @@ pub async fn load_validators(
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
         let mut projected_node_metadata: HashSet<String> = Default::default();
         // The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
-        // A row without `vote_account_lamports` gets no verdict and stays out of the rank.
+        // A row without `vote_account_lamports`, or with a vote state the collector could not decode, gets no verdict and stays out of the rank.
         let vat_verdicts: HashMap<(u64, String), Option<VatRejection>> = {
             let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
             for row in &rows {
                 let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
                     continue;
                 };
+                let bls_pubkey_collected: bool = row.get("bls_pubkey_collected");
+                // An unknown vote-state version leaves this NULL and decodes no key.
+                if bls_pubkey_collected
+                    && row
+                        .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4")
+                        .is_none()
+                {
+                    continue;
+                }
                 let lamports_or_zero = |column: &str| -> u64 {
                     row.get::<_, Option<Decimal>>(column)
                         .map_or(0, |lamports| lamports.try_into().unwrap())
@@ -1436,7 +1445,7 @@ pub async fn load_validators(
                         VatCandidate {
                             // A row stored before the key was collected skips the BLS check.
                             has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
-                                || !row.get::<_, bool>("bls_pubkey_collected"),
+                                || !bls_pubkey_collected,
                             // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
                             stake: (lamports_or_zero("activated_stake")
                                 + lamports_or_zero("activating_stake"))
