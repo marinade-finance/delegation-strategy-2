@@ -7,6 +7,7 @@ use rust_decimal::prelude::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio_postgres::Client;
 
@@ -22,8 +23,14 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Parser)]
 pub struct StoreCreditsBackfillParams {
-    #[arg(long = "rpc-url", env = "RPC_URL")]
+    #[arg(long = "rpc-url")]
     rpc_url: String,
+
+    #[arg(
+        long = "output-dir",
+        default_value = "scripts/testnet-credits-backfill"
+    )]
+    output_dir: PathBuf,
 }
 
 async fn migration_epoch_vote_accounts(psql_client: &Client) -> anyhow::Result<Vec<String>> {
@@ -86,7 +93,7 @@ async fn fetch_migration_epoch_credits(
 
 pub async fn store_credits_backfill(
     params: StoreCreditsBackfillParams,
-    psql_client: &mut Client,
+    psql_client: &Client,
 ) -> anyhow::Result<()> {
     let vote_accounts = migration_epoch_vote_accounts(psql_client).await?;
     let migration_credits = fetch_migration_epoch_credits(&params.rpc_url, &vote_accounts).await?;
@@ -95,93 +102,98 @@ pub async fn store_credits_backfill(
         migration_credits.len(),
         vote_accounts.len()
     );
-    apply_credits_backfill(psql_client, &migration_credits).await
+    let sql = credits_backfill_sql(&migration_credits)?;
+    std::fs::create_dir_all(&params.output_dir)?;
+    let path = params.output_dir.join("backfill.sql");
+    std::fs::write(&path, sql)?;
+    info!("Wrote {}", path.display());
+    Ok(())
 }
 
-/// Fails and changes nothing if one of the epochs has no credits above the tower limit,
+/// The SQL fails and changes nothing if one of the epochs has no credits above the tower limit,
 /// or if an on-chain reward of the migration epoch is not the stored `credits`.
-pub async fn apply_credits_backfill(
-    psql_client: &mut Client,
+pub fn credits_backfill_sql(
     migration_credits: &HashMap<String, EpochCredits>,
-) -> anyhow::Result<()> {
-    let epochs: Vec<Decimal> = TESTNET_LAMPORTS_IN_CREDITS_EPOCHS
-        .map(Decimal::from)
-        .collect();
-    let migration_epoch = Decimal::from(TESTNET_ALPENGLOW_MIGRATION_EPOCH);
-    let transaction = psql_client.transaction().await?;
-    for epoch in &epochs {
-        let lamports_rows: i64 = transaction
-            .query_one(
-                "SELECT COUNT(*) FROM validators WHERE epoch = $1 AND credits > $2",
-                &[epoch, &Decimal::from(MAX_TOWER_CREDITS_IN_EPOCH)],
+) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        migration_credits
+            .values()
+            .any(|credits| credits.tower_credits.is_some()),
+        "The RPC gave no tower credits of epoch {TESTNET_ALPENGLOW_MIGRATION_EPOCH}: epochCredits no longer holds the epoch"
+    );
+    let mut on_chain: Vec<_> = migration_credits.iter().collect();
+    on_chain.sort_by_key(|(vote_account, _)| vote_account.as_str());
+    let number = |value: Option<u64>| value.map_or("NULL".to_string(), |value| value.to_string());
+    let rows = on_chain
+        .iter()
+        .map(|(vote_account, credits)| {
+            format!(
+                "    ('{}', {}, {})",
+                vote_account.replace('\'', "''"),
+                number(credits.tower_credits),
+                number(credits.vote_reward_lamports)
             )
-            .await?
-            .get(0);
-        anyhow::ensure!(
-            lamports_rows > 0,
-            "Epoch {epoch} has no credits above {MAX_TOWER_CREDITS_IN_EPOCH}: the database is not testnet, or the backfill already ran"
-        );
-    }
-
-    let stored = transaction
-        .query(
-            "SELECT vote_account, credits FROM validators WHERE epoch = $1",
-            &[&migration_epoch],
-        )
-        .await?;
-    let mismatches: Vec<String> = stored
-        .iter()
-        .filter_map(|row| {
-            let vote_account: String = row.get(0);
-            let credits: Option<Decimal> = row.get(1);
-            let lamports = migration_credits.get(&vote_account)?.vote_reward_lamports?;
-            (credits != Some(Decimal::from(lamports)))
-                .then(|| format!("{vote_account}: stored {credits:?}, on chain {lamports}"))
         })
-        .collect();
-    anyhow::ensure!(
-        mismatches.is_empty(),
-        "{} rows of epoch {migration_epoch} hold credits that are not the on-chain reward, for example {}",
-        mismatches.len(),
-        mismatches[..mismatches.len().min(3)].join(", ")
-    );
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let first_epoch = TESTNET_LAMPORTS_IN_CREDITS_EPOCHS.start();
+    let last_epoch = TESTNET_LAMPORTS_IN_CREDITS_EPOCHS.end();
+    let migration_epoch = TESTNET_ALPENGLOW_MIGRATION_EPOCH;
+    Ok(format!(
+        r#"-- On-chain epochCredits of epoch {migration_epoch}, read on {generated_at}.
+BEGIN;
 
-    let moved = transaction
-        .execute(
-            "UPDATE validators
-            SET vote_reward_lamports = CASE WHEN credits = 0 AND activated_stake = 0 THEN NULL ELSE credits END,
-                credits = NULL
-            WHERE epoch = ANY($1)
-              AND credits IS NOT NULL
-              AND vote_reward_lamports IS NULL",
-            &[&epochs],
-        )
-        .await?;
+CREATE TEMP TABLE credits_backfill_on_chain (
+    vote_account TEXT PRIMARY KEY,
+    tower_credits NUMERIC,
+    vote_reward_lamports NUMERIC
+) ON COMMIT DROP;
 
-    let (tower_vote_accounts, tower_credits): (Vec<String>, Vec<Decimal>) = migration_credits
-        .iter()
-        .filter_map(|(vote_account, credits)| {
-            Some((vote_account.clone(), Decimal::from(credits.tower_credits?)))
-        })
-        .unzip();
-    anyhow::ensure!(
-        !tower_credits.is_empty(),
-        "The RPC gave no tower credits of epoch {migration_epoch}: epochCredits no longer holds the epoch"
-    );
-    let restored = transaction
-        .execute(
-            "UPDATE validators
-            SET credits = u.credits
-            FROM UNNEST($2::TEXT[], $3::NUMERIC[]) AS u(vote_account, credits)
-            WHERE validators.epoch = $1
-              AND validators.vote_account = u.vote_account",
-            &[&migration_epoch, &tower_vote_accounts, &tower_credits],
-        )
-        .await?;
-    transaction.commit().await?;
-    info!(
-        "Moved credits to vote_reward_lamports in {moved} rows of epochs {TESTNET_LAMPORTS_IN_CREDITS_EPOCHS:?}"
-    );
-    info!("Restored the tower credits of {restored} rows of epoch {migration_epoch}");
-    Ok(())
+INSERT INTO credits_backfill_on_chain (vote_account, tower_credits, vote_reward_lamports) VALUES
+{rows};
+
+DO $$
+DECLARE
+    epoch_without_lamports NUMERIC;
+    mismatches BIGINT;
+BEGIN
+    SELECT e INTO epoch_without_lamports
+    FROM generate_series({first_epoch}, {last_epoch}) AS e
+    WHERE NOT EXISTS (
+        SELECT 1 FROM validators WHERE epoch = e AND credits > {MAX_TOWER_CREDITS_IN_EPOCH}
+    )
+    LIMIT 1;
+    IF epoch_without_lamports IS NOT NULL THEN
+        RAISE EXCEPTION 'Epoch % has no credits above {MAX_TOWER_CREDITS_IN_EPOCH}: the database is not testnet, or the backfill already ran', epoch_without_lamports;
+    END IF;
+
+    SELECT COUNT(*) INTO mismatches
+    FROM validators v
+    JOIN credits_backfill_on_chain c USING (vote_account)
+    WHERE v.epoch = {migration_epoch}
+      AND c.vote_reward_lamports IS NOT NULL
+      AND v.credits IS DISTINCT FROM c.vote_reward_lamports;
+    IF mismatches > 0 THEN
+        RAISE EXCEPTION '% rows of epoch {migration_epoch} hold credits that are not the on-chain reward', mismatches;
+    END IF;
+END $$;
+
+UPDATE validators
+SET vote_reward_lamports = CASE WHEN credits = 0 AND activated_stake = 0 THEN NULL ELSE credits END,
+    credits = NULL
+WHERE epoch BETWEEN {first_epoch} AND {last_epoch}
+  AND credits IS NOT NULL
+  AND vote_reward_lamports IS NULL;
+
+UPDATE validators v
+SET credits = c.tower_credits
+FROM credits_backfill_on_chain c
+WHERE v.epoch = {migration_epoch}
+  AND v.vote_account = c.vote_account
+  AND c.tower_credits IS NOT NULL;
+
+COMMIT;
+"#,
+        generated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC"),
+    ))
 }
