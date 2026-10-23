@@ -180,7 +180,7 @@ pub async fn load_vote_performance(
             .count();
         if left_out > 0 {
             warn!(
-                "Epoch {epoch}: {left_out} rows hold credits above {MAX_TOWER_CREDITS_IN_EPOCH}, left out of vote_performance. See scripts/testnet-credits-backfill/README.md."
+                "Epoch {epoch}: {left_out} rows hold credits above {MAX_TOWER_CREDITS_IN_EPOCH}."
             );
         }
     }
