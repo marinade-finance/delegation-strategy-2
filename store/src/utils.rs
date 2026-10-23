@@ -1289,7 +1289,12 @@ pub async fn load_validators(
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
+                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch),
+                -- The epoch running when 0041 was applied. Its rows and older ones may lack the key, whatever later writes touch them.
+                bls_uncollected AS (
+                    SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) AS last_epoch
+                    FROM migrations WHERE name = '0041-validators-vat-admission.sql'
+                )
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -1327,10 +1332,7 @@ pub async fn load_validators(
                 pending_delegator_rewards,
                 vote_account_lamports,
                 bls_pubkey,
-                -- updated_at is the snapshot time, so an older row was written without the key
-                COALESCE(validators.updated_at >= (
-                    SELECT applied_at FROM migrations WHERE name = '0041-validators-vat-admission.sql'
-                ), FALSE) AS bls_pubkey_collected,
+                COALESCE(validators.epoch > (SELECT last_epoch FROM bls_uncollected), FALSE) AS bls_pubkey_collected,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect

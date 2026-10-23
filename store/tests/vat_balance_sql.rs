@@ -50,7 +50,7 @@ async fn store_minimum(client: &Client, minimum: Option<u64>, created_at: &str) 
         .unwrap();
 }
 
-// `validator_snapshot` rows carry the snapshot time 2026-07-31.
+// `store_minimum` writes the `cluster_info` rows of `EPOCH` on 2026-10-20.
 async fn set_bls_collection_start(client: &Client, applied_at: &str) {
     client
         .execute(
@@ -219,11 +219,16 @@ async fn a_row_from_before_the_bls_collection_skips_the_bls_check() {
         return;
     }
     let mut client = migrated_client(schema).await.unwrap();
-    set_bls_collection_start(&client, "2026-08-01T00:00:00Z").await;
+    set_bls_collection_start(&client, "2026-10-21T00:00:00Z").await;
     store_minimum(&client, Some(MINIMUM), "2026-10-20T00:00:00Z").await;
     let mut snapshot = admissible_snapshot(Some(MINIMUM));
     snapshot.validators[0].bls_pubkey = None;
     store_snapshot(&mut client, schema, &snapshot).await;
+    // close_epoch writes updated_at but never bls_pubkey.
+    client
+        .execute("UPDATE validators SET updated_at = '2026-10-25'", &[])
+        .await
+        .unwrap();
 
     let record = record(&client).await;
     assert_eq!(record.vat_eligible, Some(true));

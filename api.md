@@ -158,7 +158,7 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 - `vat_minimum_balances` is a top-level map from epoch to lamports, with one value for each epoch the response covers. The value is the rent of a v4 vote state plus the VAT of the next epoch, 1.6 SOL at 400 ms slots down to 0.8 SOL at 200 ms. It includes the VAT also before Alpenglow, when agave burns no VAT yet. It comes from the newest `cluster_info` row of the epoch. An epoch without a value is left out.
 - `pending_delegator_rewards` is not subtracted from the balance in check 3. Agave subtracts it only once block revenue sharing is active.
 
-Rows from snapshots taken before migration 0041 have `null` in `bls_pubkey`, and the API skips check 1 for them. `null` in `vat_eligible` means an input is missing: the epoch was collected before DS2 stored these values, or only a backfill ran for it. `vat_runway_epochs` is `null` also on epochs whose `cluster_info` has no VAT. The top-level fields repeat the newest epoch.
+`bls_pubkey` can be `null` in epochs before Alpenglow, or shortly after it, before DS2 collected the key. The API skips check 1 for those epochs. `null` in `vat_eligible` or `vat_runway_epochs` means an input is missing. The top-level fields repeat the newest epoch.
 
 ## Uptimes
 ```bash
