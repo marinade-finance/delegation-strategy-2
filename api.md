@@ -148,7 +148,7 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 
 1. The v4 vote state has a BLS key.
 2. The stake at the next epoch is not 0. DS2 projects it as `activated_stake + activating - deactivating`, without the warmup limit.
-3. `vote_account_lamports >= vat_minimum_balances[epoch]`.
+3. `vote_account_lamports - pending_delegator_rewards >= vat_minimum_balances[epoch]`. `pending_delegator_rewards` is 0 while block revenue sharing is off.
 4. When more than 2000 accounts pass checks 1–3, the stake is greater than the stake of the first account after the top 2000. Accounts tied with it are also dropped.
 
 - `vat_rejection_reason` is the first check that fails: `no_bls_key`, `no_stake`, `low_balance` or `below_cutoff`. It is `null` when the account is admitted.
@@ -156,7 +156,6 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 - `vat_runway_epochs` is `(vote_account_lamports - pending_delegator_rewards - rent) / VAT`, in whole epochs. The VAT is `cluster_info.vat_lamports_per_epoch`, and the rent is `vat_minimum_balances[epoch]` less the VAT. Under Alpenglow, a vote account at 0% commission or with an external inflation collector gets no lamports, so this value goes down by 1 each epoch.
 - `vote_account_lamports` is the balance at the last snapshot of the epoch.
 - `vat_minimum_balances` is a top-level map from epoch to lamports, with one value for each epoch the response covers. The value is the rent of a v4 vote state plus the VAT of the next epoch, 1.6 SOL at 400 ms slots down to 0.8 SOL at 200 ms. It includes the VAT also before Alpenglow, when agave burns no VAT yet. It comes from the newest `cluster_info` row of the epoch. An epoch without a value is left out.
-- `pending_delegator_rewards` is not subtracted from the balance in check 3. Agave subtracts it only once block revenue sharing is active.
 
 `bls_pubkey` can be `null` in epochs before Alpenglow, or shortly after it, before DS2 collected the key. The API skips check 1 for those epochs. `null` in `vat_eligible` or `vat_runway_epochs` means an input is missing. The top-level fields repeat the newest epoch.
 

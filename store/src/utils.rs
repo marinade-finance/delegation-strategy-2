@@ -1424,9 +1424,9 @@ pub async fn load_validators(
                 let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
                     continue;
                 };
-                let stake = |column: &str| -> u64 {
+                let lamports_or_zero = |column: &str| -> u64 {
                     row.get::<_, Option<Decimal>>(column)
-                        .map_or(0, |stake| stake.try_into().unwrap())
+                        .map_or(0, |lamports| lamports.try_into().unwrap())
                 };
                 candidates
                     .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
@@ -1438,9 +1438,13 @@ pub async fn load_validators(
                             has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
                                 || !row.get::<_, bool>("bls_pubkey_collected"),
                             // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
-                            stake: (stake("activated_stake") + stake("activating_stake"))
-                                .saturating_sub(stake("deactivating_stake")),
+                            stake: (lamports_or_zero("activated_stake")
+                                + lamports_or_zero("activating_stake"))
+                            .saturating_sub(lamports_or_zero("deactivating_stake")),
                             lamports: lamports.try_into().unwrap(),
+                            pending_delegator_rewards: lamports_or_zero(
+                                "pending_delegator_rewards",
+                            ),
                         },
                     );
             }

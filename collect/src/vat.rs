@@ -63,6 +63,8 @@ pub struct VatCandidate {
     /// Stake projected to the next epoch boundary.
     pub stake: u64,
     pub lamports: u64,
+    /// 0 while block revenue sharing is off.
+    pub pending_delegator_rewards: u64,
 }
 
 /// The agave VAT filter. `None` means admitted.
@@ -85,7 +87,11 @@ fn vat_admissions_with_max(
             VatRejection::NoBlsKey
         } else if candidate.stake == 0 {
             VatRejection::NoStake
-        } else if candidate.lamports < minimum_balance {
+        } else if candidate
+            .lamports
+            .saturating_sub(candidate.pending_delegator_rewards)
+            < minimum_balance
+        {
             VatRejection::LowBalance
         } else {
             passed.push((vote_account, candidate.stake));
@@ -132,6 +138,7 @@ mod tests {
             has_bls_pubkey,
             stake,
             lamports,
+            pending_delegator_rewards: 0,
         }
     }
 
@@ -161,6 +168,21 @@ mod tests {
         assert_eq!(verdicts["no_bls"], Some(VatRejection::NoBlsKey));
         assert_eq!(verdicts["no_stake"], Some(VatRejection::NoStake));
         assert_eq!(verdicts["low_balance"], Some(VatRejection::LowBalance));
+    }
+
+    #[test]
+    fn the_balance_check_leaves_out_the_pending_delegator_rewards() {
+        let verdicts = admit(
+            &[(
+                "pending",
+                VatCandidate {
+                    pending_delegator_rewards: 1,
+                    ..candidate(true, 10, MINIMUM)
+                },
+            )],
+            10,
+        );
+        assert_eq!(verdicts["pending"], Some(VatRejection::LowBalance));
     }
 
     #[test]
