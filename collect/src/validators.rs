@@ -38,6 +38,12 @@ pub struct ValidatorsParams {
     pub allow_zero_funded_bonds: bool,
 
     #[arg(
+        long = "allow-skipped-stake-pages",
+        help = "When set, a stake account page still too large for one RPC response at the finest split is left out of the totals with a warning instead of failing."
+    )]
+    pub allow_skipped_stake_pages: bool,
+
+    #[arg(
         long = "rpc-attempts",
         help = "How many times to retry the operation.",
         default_value = "10"
@@ -242,6 +248,7 @@ pub fn collect_validators_info(
         allow_zero_funded_bonds,
         validator_params.rpc_attempts,
         Duration::from_secs(validator_params.rpc_timeout),
+        validator_params.allow_skipped_stake_pages,
         &vote_account_states,
     )?;
     let validators_info = get_validators_info(&client)?;
