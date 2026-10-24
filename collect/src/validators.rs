@@ -241,6 +241,7 @@ pub fn collect_validators_info(
         &validator_params.bonds_url,
         allow_zero_funded_bonds,
         validator_params.rpc_attempts,
+        Duration::from_secs(validator_params.rpc_timeout),
         &vote_account_states,
     )?;
     let validators_info = get_validators_info(&client)?;
