@@ -15,8 +15,8 @@ use solana_sdk::{
 use std::collections::{HashMap, HashSet};
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
-const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
-const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
+pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
 
 /// Vote account -> absolute slots it leads in the epoch.
 pub type VoteLeaderSlots = HashMap<String, Vec<Slot>>;
