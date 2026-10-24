@@ -56,9 +56,8 @@ const STAKE_FIELDS: UiDataSliceConfig = UiDataSliceConfig {
     offset: WITHDRAW_AUTHORITY_OFFSET,
     length: DEACTIVATION_EPOCH_OFFSET + 8 - WITHDRAW_AUTHORITY_OFFSET,
 };
-const MAX_STAKE_ACCOUNTS_RESPONSE_BYTES: u64 = 64 << 20;
-const MAX_STAKE_ACCOUNTS_PER_FETCH: u64 = MAX_STAKE_ACCOUNTS_RESPONSE_BYTES / 1024;
 const MAX_STAKE_ACCOUNTS_STREAM_BYTES: u64 = 1 << 30;
+const MAX_STAKE_ACCOUNTS_PER_FETCH: u64 = MAX_STAKE_ACCOUNTS_STREAM_BYTES / 1024;
 const MAX_WITHDRAWER_PREFIX_LEN: usize = 4;
 const MAX_VOTER_PREFIX_LEN: usize = 1;
 const MAX_GET_INFLATION_REWARD_ADDRESSES: usize = 32;
@@ -1210,14 +1209,14 @@ impl StakeAccountsSlice {
         (0..=u8::MAX).map(|byte| self.child(byte)).collect()
     }
 
-    fn plan(&self, counts: &KeyCounts, max_accounts: u64) -> Vec<PendingSlice> {
+    fn plan(&self, counts: &KeyCounts, max_accounts: u64) -> Vec<Self> {
         let keys: Vec<(&[u8], u64)> = counts.iter().map(|(k, n)| (k.as_slice(), *n)).collect();
         let mut planned = vec![];
         self.plan_into(&keys, max_accounts, &mut planned);
         planned
     }
 
-    fn plan_into(&self, keys: &[(&[u8], u64)], max_accounts: u64, planned: &mut Vec<PendingSlice>) {
+    fn plan_into(&self, keys: &[(&[u8], u64)], max_accounts: u64, planned: &mut Vec<Self>) {
         let mut by_byte: BTreeMap<u8, Vec<(&[u8], u64)>> = BTreeMap::new();
         for (key, count) in keys {
             if let Some((byte, rest)) = key.split_first() {
@@ -1227,10 +1226,8 @@ impl StakeAccountsSlice {
         for (byte, rests) in by_byte {
             let child = self.child(byte);
             let total: u64 = rests.iter().map(|(_, count)| count).sum();
-            if total <= max_accounts {
-                planned.push(PendingSlice::Fetch(child));
-            } else if rests.iter().all(|(rest, _)| rest.is_empty()) {
-                planned.push(PendingSlice::Split(child));
+            if total <= max_accounts || rests.iter().all(|(rest, _)| rest.is_empty()) {
+                planned.push(child);
             } else {
                 child.plan_into(&rests, max_accounts, planned);
             }
@@ -1256,12 +1253,6 @@ impl std::fmt::Display for StakeAccountsSlice {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PendingSlice {
-    Fetch(StakeAccountsSlice),
-    Split(StakeAccountsSlice),
-}
-
-#[derive(Debug, PartialEq, Eq)]
 enum SliceFetch<T> {
     Fetched(T),
     TooLarge,
@@ -1271,47 +1262,27 @@ type KeyCounts = HashMap<Vec<u8>, u64>;
 
 fn walk_stake_account_slices<T>(
     max_accounts_per_fetch: u64,
-    mut fetch: impl FnMut(&StakeAccountsSlice, u64) -> anyhow::Result<SliceFetch<T>>,
+    mut fetch: impl FnMut(&StakeAccountsSlice) -> anyhow::Result<SliceFetch<T>>,
     mut probe: impl FnMut(
         &StakeAccountsSlice,
         UiDataSliceConfig,
     ) -> anyhow::Result<SliceFetch<KeyCounts>>,
     mut visit: impl FnMut(&StakeAccountsSlice, T),
 ) -> anyhow::Result<Vec<StakeAccountsSlice>> {
-    let mut pending: Vec<_> = (0..=u8::MAX)
-        .rev()
-        .map(|page| PendingSlice::Fetch(StakeAccountsSlice::page(page)))
-        .collect();
+    let mut pending: Vec<_> = (0..=u8::MAX).rev().map(StakeAccountsSlice::page).collect();
     let mut skipped = vec![];
-    while let Some(next) = pending.pop() {
-        let (slice, caps) = match next {
-            PendingSlice::Fetch(slice) => (
-                slice,
-                &[
-                    MAX_STAKE_ACCOUNTS_RESPONSE_BYTES,
-                    MAX_STAKE_ACCOUNTS_STREAM_BYTES,
-                ][..],
-            ),
-            PendingSlice::Split(slice) => (slice, &[MAX_STAKE_ACCOUNTS_STREAM_BYTES][..]),
-        };
-        let mut fetched = None;
-        for &cap in caps {
-            match fetch(&slice, cap)
-                .with_context(|| format!("Failed to fetch stake accounts on page {slice}"))?
-            {
-                SliceFetch::Fetched(accounts) => {
-                    fetched = Some(accounts);
-                    break;
-                }
-                SliceFetch::TooLarge => info!(
-                    "Stake accounts on page {slice} exceed the {} MiB RPC response limit",
-                    cap >> 20
-                ),
+    while let Some(slice) = pending.pop() {
+        match fetch(&slice)
+            .with_context(|| format!("Failed to fetch stake accounts on page {slice}"))?
+        {
+            SliceFetch::Fetched(accounts) => {
+                visit(&slice, accounts);
+                continue;
             }
-        }
-        if let Some(accounts) = fetched {
-            visit(&slice, accounts);
-            continue;
+            SliceFetch::TooLarge => info!(
+                "Stake accounts on page {slice} exceed the {} MiB RPC response limit",
+                MAX_STAKE_ACCOUNTS_STREAM_BYTES >> 20
+            ),
         }
         let Some(range) = slice.split_range() else {
             skipped.push(slice);
@@ -1331,7 +1302,7 @@ fn walk_stake_account_slices<T>(
             }
             SliceFetch::TooLarge => {
                 warn!("Stake accounts on page {slice} exceed the RPC response limit even as a probe, splitting it into every next byte");
-                slice.split().into_iter().map(PendingSlice::Fetch).collect()
+                slice.split()
             }
         };
         pending.extend(children.into_iter().rev());
@@ -1559,7 +1530,6 @@ impl StakeAccountsRpc {
         &mut self,
         slice: &StakeAccountsSlice,
         data_slice: UiDataSliceConfig,
-        cap: u64,
         init: impl Fn() -> A,
         fold: impl Fn(&mut A, Vec<u8>) -> anyhow::Result<()>,
     ) -> anyhow::Result<SliceFetch<A>> {
@@ -1590,12 +1560,21 @@ impl StakeAccountsRpc {
                     .json(&request)
                     .send()?
                     .error_for_status()?;
+                let cap = MAX_STAKE_ACCOUNTS_STREAM_BYTES;
                 if response.content_length().is_some_and(|length| length > cap) {
                     return Ok(SliceFetch::TooLarge);
                 }
                 let mut acc = init();
                 Ok(
-                    match fold_rpc_accounts(response, cap, |data| fold(&mut acc, data))? {
+                    match fold_rpc_accounts(response, cap, |data| {
+                        anyhow::ensure!(
+                            data.len() == data_slice.length,
+                            "RPC returned {} bytes for a {}-byte data slice",
+                            data.len(),
+                            data_slice.length
+                        );
+                        fold(&mut acc, data)
+                    })? {
                         SliceFetch::Fetched(()) => SliceFetch::Fetched(acc),
                         SliceFetch::TooLarge => SliceFetch::TooLarge,
                     },
@@ -1644,19 +1623,11 @@ fn fetch_stake_account_totals(
     let mut totals: HashMap<String, StakeAccountTotals> = HashMap::default();
     let skipped = walk_stake_account_slices(
         MAX_STAKE_ACCOUNTS_PER_FETCH,
-        |slice, cap| {
+        |slice| {
             rpc.borrow_mut()
-                .scan(slice, STAKE_FIELDS, cap, SliceTotals::default, add)
+                .scan(slice, STAKE_FIELDS, SliceTotals::default, add)
         },
-        |slice, range| {
-            rpc.borrow_mut().scan(
-                slice,
-                range,
-                MAX_STAKE_ACCOUNTS_STREAM_BYTES,
-                KeyCounts::new,
-                count,
-            )
-        },
+        |slice, range| rpc.borrow_mut().scan(slice, range, KeyCounts::new, count),
         |slice, slice_totals| {
             info!(
                 "Processed {} self stakes on page {slice}",
@@ -2978,19 +2949,10 @@ mod stake_accounts_slice_tests {
             })
         }
 
-        fn fetch(
-            &mut self,
-            slice: &StakeAccountsSlice,
-            cap: u64,
-        ) -> anyhow::Result<SliceFetch<u64>> {
+        fn fetch(&mut self, slice: &StakeAccountsSlice) -> anyhow::Result<SliceFetch<u64>> {
             self.fetches += 1;
-            let limit = if cap == MAX_STAKE_ACCOUNTS_RESPONSE_BYTES {
-                LIMIT
-            } else {
-                self.stream_limit
-            };
             let matching = self.matching(slice).count() as u64;
-            Ok(if matching > limit {
+            Ok(if matching > self.stream_limit {
                 SliceFetch::TooLarge
             } else {
                 SliceFetch::Fetched(matching)
@@ -3041,7 +3003,7 @@ mod stake_accounts_slice_tests {
         let mut counted = 0;
         let skipped = walk_stake_account_slices(
             LIMIT,
-            |slice, cap| rpc.borrow_mut().fetch(slice, cap),
+            |slice| rpc.borrow_mut().fetch(slice),
             |slice, range| rpc.borrow_mut().probe(slice, range),
             |_, matching| counted += matching,
         )
@@ -3094,12 +3056,12 @@ mod stake_accounts_slice_tests {
     }
 
     #[test]
-    fn an_oversized_page_is_streamed_whole_under_the_larger_limit() {
+    fn a_page_within_the_stream_limit_is_fetched_whole_in_one_request() {
         let mut accounts = two_accounts_per_page();
         let withdrawer = key(&[79, 1, 2, 3, 4], 9);
         accounts.extend((0..1000).map(|_| stake_account_data(withdrawer, key(&[7], 7))));
         let walk = walk_with_limits(&accounts, u64::MAX, u64::MAX);
-        assert_eq!((walk.fetches, walk.probes), (256 + 1, 0));
+        assert_eq!((walk.fetches, walk.probes), (256, 0));
         assert_eq!(walk.counted, accounts.len() as u64);
         assert!(walk.skipped.is_empty());
     }
@@ -3112,8 +3074,8 @@ mod stake_accounts_slice_tests {
         }));
         let walk = walk(&accounts);
         assert_eq!(walk.probes, 1);
-        // The streamed retry of the page, its probe and the 20 populated sub-pages.
-        assert_eq!(walk.requests_beyond_the_pages(), 1 + 1 + 20);
+        // The page's probe and the 20 populated sub-pages.
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 20);
         assert_eq!(walk.counted, accounts.len() as u64);
         assert!(walk.skipped.is_empty());
     }
@@ -3125,9 +3087,9 @@ mod stake_accounts_slice_tests {
         accounts
             .extend((0..1000).map(|i| stake_account_data(withdrawer, key(&[(i % 40) as u8], 0))));
         let walk = walk(&accounts);
-        // Page: streamed retry and probe. Its two neighbours. The withdrawer: streamed retry,
-        // voter probe and its 40 voter sub-pages.
-        assert_eq!(walk.requests_beyond_the_pages(), 2 + 2 + 2 + 40);
+        // Page: probe. Its two neighbours. The withdrawer: its fetch, voter probe and its 40
+        // voter sub-pages.
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 2 + 2 + 40);
         assert!(walk.requests_beyond_the_pages() < 50);
         assert_eq!(walk.counted, accounts.len() as u64);
         assert!(walk.skipped.is_empty());
@@ -3139,7 +3101,7 @@ mod stake_accounts_slice_tests {
         let withdrawer = key(&[79, 1, 2, 3, 4], 9);
         accounts.extend((0..50).map(|_| stake_account_data(withdrawer, key(&[7], 7))));
         let walk = walk(&accounts);
-        assert_eq!(walk.requests_beyond_the_pages(), 2 + 2 + 2 + 1);
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 2 + 2 + 1);
         assert_eq!(walk.counted, accounts.len() as u64 - 50);
         assert_eq!(
             walk.skipped,
@@ -3158,7 +3120,7 @@ mod stake_accounts_slice_tests {
         accounts.extend((0..50).map(|v| stake_account_data(withdrawer, key(&[v], v))));
         let walk = walk_with_limits(&accounts, LIMIT, LIMIT);
         assert_eq!(walk.probes, 4);
-        assert_eq!(walk.fetches, 256 + 3 * 256 + 256 + 4);
+        assert_eq!(walk.fetches, 256 + 3 * 256 + 256);
         assert_eq!(walk.counted, accounts.len() as u64);
         assert!(walk.skipped.is_empty());
     }
@@ -3167,7 +3129,7 @@ mod stake_accounts_slice_tests {
     fn a_failed_fetch_names_its_page() {
         let err = walk_stake_account_slices(
             LIMIT,
-            |slice, _| {
+            |slice| {
                 if slice.withdrawer_prefix == [3] {
                     anyhow::bail!("connection reset")
                 }
