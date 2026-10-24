@@ -14,6 +14,9 @@ use crate::validators_jito::get_last_jito_info;
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
 use collect::take_rates::query_validator_rewards;
+use collect::vat::{
+    vat_admissions, vat_runway_epochs, VatCandidate, VatMinimumBalance, VatRejection,
+};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
@@ -1224,14 +1227,22 @@ pub struct ValidatorOverlays {
     pub protected: HashSet<String>,
 }
 
-/// The newest `cluster_info.vat_minimum_balance` of each of the last `epochs` epochs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EpochVatMinimum {
+    /// Rent plus VAT, in lamports.
+    pub balance: Decimal,
+    /// Null on `cluster_info` rows stored before migration 0041.
+    pub vat_lamports_per_epoch: Option<Decimal>,
+}
+
+/// The newest `cluster_info` VAT minimum of each of the last `epochs` epochs.
 pub async fn load_vat_minimum_balances(
     psql_client: &Client,
     epochs: u64,
-) -> anyhow::Result<BTreeMap<u64, Decimal>> {
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
     let rows = psql_client
         .query(
-            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance
+            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
             FROM cluster_info
             WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
                 AND vat_minimum_balance IS NOT NULL
@@ -1243,7 +1254,10 @@ pub async fn load_vat_minimum_balances(
         .map(|row| {
             Ok((
                 row.get::<_, Decimal>("epoch").try_into()?,
-                row.get("vat_minimum_balance"),
+                EpochVatMinimum {
+                    balance: row.get("vat_minimum_balance"),
+                    vat_lamports_per_epoch: row.get("vat_lamports_per_epoch"),
+                },
             ))
         })
         .collect()
@@ -1255,7 +1269,7 @@ pub async fn load_validators(
     display_epochs: u64,
     computing_epochs: u64,
     overlays: &ValidatorOverlays,
-    vat_minimum_balances: &BTreeMap<u64, Decimal>,
+    vat_minimum_balances: &BTreeMap<u64, EpochVatMinimum>,
 ) -> anyhow::Result<HashMap<String, ValidatorRecord>> {
     let last_epoch = match get_last_epoch(psql_client).await? {
         Some(last_epoch) => last_epoch,
@@ -1275,7 +1289,12 @@ pub async fn load_validators(
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
+                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch),
+                -- The epoch running when 0041 was applied. Its rows and older ones may lack the key, whatever later writes touch them.
+                bls_uncollected AS (
+                    SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) AS last_epoch
+                    FROM migrations WHERE name = '0041-validators-vat-admission.sql'
+                )
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -1312,6 +1331,8 @@ pub async fn load_validators(
                 block_revenue_commission_bps,
                 pending_delegator_rewards,
                 vote_account_lamports,
+                bls_pubkey,
+                COALESCE(validators.epoch > (SELECT last_epoch FROM bls_uncollected), FALSE) AS bls_pubkey_collected,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1395,6 +1416,60 @@ pub async fn load_validators(
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
         let mut projected_node_metadata: HashSet<String> = Default::default();
+        // The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
+        // A row without `vote_account_lamports`, or with a vote state the collector could not decode, gets no verdict and stays out of the rank.
+        let vat_verdicts: HashMap<(u64, String), Option<VatRejection>> = {
+            let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
+            for row in &rows {
+                let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
+                    continue;
+                };
+                let bls_pubkey_collected: bool = row.get("bls_pubkey_collected");
+                // An unknown vote-state version leaves this NULL and decodes no key.
+                if bls_pubkey_collected
+                    && row
+                        .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4")
+                        .is_none()
+                {
+                    continue;
+                }
+                let lamports_or_zero = |column: &str| -> u64 {
+                    row.get::<_, Option<Decimal>>(column)
+                        .map_or(0, |lamports| lamports.try_into().unwrap())
+                };
+                candidates
+                    .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
+                    .or_default()
+                    .insert(
+                        row.get("vote_account"),
+                        VatCandidate {
+                            // A row stored before the key was collected skips the BLS check.
+                            has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
+                                || !bls_pubkey_collected,
+                            // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
+                            stake: (lamports_or_zero("activated_stake")
+                                + lamports_or_zero("activating_stake"))
+                            .saturating_sub(lamports_or_zero("deactivating_stake")),
+                            lamports: lamports.try_into().unwrap(),
+                            pending_delegator_rewards: lamports_or_zero(
+                                "pending_delegator_rewards",
+                            ),
+                        },
+                    );
+            }
+            candidates
+                .into_iter()
+                .filter_map(|(epoch, candidates)| {
+                    let minimum = vat_minimum_balances.get(&epoch)?;
+                    Some(
+                        vat_admissions(&candidates, minimum.balance.try_into().unwrap())
+                            .into_iter()
+                            .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
+                    )
+                })
+                .flatten()
+                .collect()
+        };
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1402,15 +1477,26 @@ pub async fn load_validators(
                 .get(&(epoch, vote_account.clone()))
                 .copied();
             let vote_account_lamports: Option<Decimal> = row.get("vote_account_lamports");
-            let vat_minimum_balance = vat_minimum_balances.get(&epoch).copied();
-            // TODO: SIMD-0357 checks not applied yet:
-            // - BLS key present
-            // - next-epoch stake > 0
-            // - top 2000 by stake, ties at the cut-off dropped
-            // - balance less pending_delegator_rewards once block revenue sharing is active
-            let vat_eligible = vote_account_lamports
-                .zip(vat_minimum_balance)
-                .map(|(lamports, minimum)| lamports >= minimum);
+            let bls_pubkey: Option<String> = row.get("bls_pubkey");
+            let vat_verdict = vat_verdicts.get(&(epoch, vote_account.clone())).copied();
+            let vat_eligible = vat_verdict.map(|verdict| verdict.is_none());
+            let vat_rejection_reason = vat_verdict
+                .flatten()
+                .map(|reason| reason.as_str().to_string());
+            let vat_runway_epochs = vat_minimum_balances.get(&epoch).and_then(|minimum| {
+                let vat: u64 = minimum.vat_lamports_per_epoch?.try_into().unwrap();
+                let balance: u64 = minimum.balance.try_into().unwrap();
+                vat_runway_epochs(
+                    vote_account_lamports?.try_into().unwrap(),
+                    row.get::<_, Option<Decimal>>("pending_delegator_rewards")
+                        .map_or(0, |pending| pending.try_into().unwrap()),
+                    &VatMinimumBalance {
+                        rent: balance.saturating_sub(vat),
+                        vat,
+                    },
+                )
+                .map(Decimal::from)
+            });
             let starting_epoch_date: Option<DateTime<Utc>> =
                 row.get::<_, Option<DateTime<Utc>>>("starting_epoch_date");
             let mut epoch_start_at: Option<DateTime<Utc>> =
@@ -1544,6 +1630,9 @@ pub async fn load_validators(
                         .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                     vote_account_lamports,
                     vat_eligible,
+                    bls_pubkey: bls_pubkey.clone(),
+                    vat_rejection_reason: vat_rejection_reason.clone(),
+                    vat_runway_epochs,
                     commission_aggregated: None,
                     version: version.clone(),
                     client_id,
@@ -1706,6 +1795,9 @@ pub async fn load_validators(
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                 vote_account_lamports,
                 vat_eligible,
+                bls_pubkey,
+                vat_rejection_reason,
+                vat_runway_epochs,
                 mev_commission_bps: row.get::<_, Option<i32>>("mev_commission_bps"),
                 priority_commission_bps: row.get::<_, Option<i32>>("priority_commission_bps"),
                 dc_asn: row.get::<_, Option<i32>>("dc_asn"),

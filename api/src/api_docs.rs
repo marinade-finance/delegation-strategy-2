@@ -232,6 +232,10 @@ mod tests {
             ("ResponseValidators", "vat_minimum_balances"),
             ("ValidatorEpochStats", "vat_eligible"),
             ("ValidatorRecord", "vat_eligible"),
+            ("ValidatorEpochStats", "bls_pubkey"),
+            ("ValidatorEpochStats", "vat_rejection_reason"),
+            ("ValidatorEpochStats", "vat_runway_epochs"),
+            ("ValidatorRecord", "vat_rejection_reason"),
         ] {
             let description = spec["components"]["schemas"][schema]["properties"][field]
                 ["description"]

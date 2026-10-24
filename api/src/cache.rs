@@ -88,8 +88,8 @@ pub struct Cache {
     pub history_net_apy_updated_at: Option<SystemTime>,
     pub epoch_take_rates: CachedEpochTakeRates,
     pub validators: CachedValidators,
-    /// `cluster_info.vat_minimum_balance` by epoch, for the epochs of `validators`.
-    pub vat_minimum_balances: BTreeMap<u64, Decimal>,
+    /// `cluster_info` VAT minimum by epoch, for the epochs of `validators`.
+    pub vat_minimum_balances: BTreeMap<u64, store::utils::EpochVatMinimum>,
     pub validator_incidents: CachedValidatorIncidents,
     pub validator_groups: CachedValidatorGroups,
     pub commissions: CachedCommissions,

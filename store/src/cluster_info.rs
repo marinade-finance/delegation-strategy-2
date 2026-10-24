@@ -27,8 +27,8 @@ pub async fn store_cluster_info(
         .execute(
             // todo add supply, inflation and active stake
             "
-        INSERT INTO cluster_info (epoch, epoch_slot, transaction_count, created_at, slots_per_year, vat_minimum_balance)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO cluster_info (epoch, epoch_slot, transaction_count, created_at, slots_per_year, vat_minimum_balance, vat_lamports_per_epoch)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
     ",
             &[
                 &(Decimal::from(snapshot.epoch)),
@@ -37,6 +37,7 @@ pub async fn store_cluster_info(
                 &snapshot.created_at.parse::<DateTime<Utc>>().unwrap(),
                 &snapshot.slots_per_year,
                 &snapshot.vat_minimum_balance.map(Decimal::from),
+                &snapshot.vat_lamports_per_epoch.map(Decimal::from),
             ],
         )
         .await?;

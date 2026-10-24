@@ -646,6 +646,9 @@ const VOTE_V4_BLOCK_REVENUE_COLLECTOR_OFFSET: usize = 100;
 const VOTE_V4_INFLATION_REWARDS_COMMISSION_BPS_OFFSET: usize = 132;
 const VOTE_V4_BLOCK_REVENUE_COMMISSION_BPS_OFFSET: usize = 134;
 const VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET: usize = 136;
+// Bincode `Option` tag of 1 byte, then the key.
+const VOTE_V4_BLS_PUBKEY_COMPRESSED_OFFSET: usize = 144;
+pub const BLS_PUBKEY_COMPRESSED_SIZE: usize = 48;
 
 // Names and null semantics match solana-snapshot-parser's ValidatorMeta so both stay reconcilable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -658,6 +661,7 @@ pub struct VoteStateFields {
     pub block_revenue_collector: Option<Pubkey>,
     pub block_revenue_commission_bps: Option<u16>,
     pub pending_delegator_rewards: Option<u64>,
+    pub bls_pubkey: Option<[u8; BLS_PUBKEY_COMPRESSED_SIZE]>,
     // Set by the scan, not by the parser, which sees only the account data.
     pub lamports: Option<u64>,
 }
@@ -677,6 +681,23 @@ fn read_pubkey(data: &[u8], offset: usize, field: &str) -> anyhow::Result<Pubkey
     Ok(Pubkey::new_from_array(read_array::<32>(
         data, offset, field,
     )?))
+}
+
+fn read_bls_pubkey(data: &[u8]) -> anyhow::Result<Option<[u8; BLS_PUBKEY_COMPRESSED_SIZE]>> {
+    match read_array::<1>(
+        data,
+        VOTE_V4_BLS_PUBKEY_COMPRESSED_OFFSET,
+        "bls_pubkey_compressed",
+    )?[0]
+    {
+        0 => Ok(None),
+        1 => Ok(Some(read_array::<BLS_PUBKEY_COMPRESSED_SIZE>(
+            data,
+            VOTE_V4_BLS_PUBKEY_COMPRESSED_OFFSET + 1,
+            "bls_pubkey_compressed",
+        )?)),
+        tag => anyhow::bail!("bls_pubkey_compressed holds the Option tag {tag}"),
+    }
 }
 
 pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
@@ -702,6 +723,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 block_revenue_collector: None,
                 block_revenue_commission_bps: None,
                 pending_delegator_rewards: None,
+                bls_pubkey: None,
                 lamports: None,
             })
         }
@@ -733,6 +755,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
                 VOTE_V4_PENDING_DELEGATOR_REWARDS_OFFSET,
                 "pending_delegator_rewards",
             )?)),
+            bls_pubkey: read_bls_pubkey(data)?,
             lamports: None,
         }),
         // An unknown version still yields the withdrawer; its SIMD-0185 offsets may have moved.
@@ -744,6 +767,7 @@ pub fn parse_vote_state(data: &[u8]) -> anyhow::Result<VoteStateFields> {
             block_revenue_collector: None,
             block_revenue_commission_bps: None,
             pending_delegator_rewards: None,
+            bls_pubkey: None,
             lamports: None,
         }),
     }
@@ -1919,9 +1943,24 @@ mod vote_state_tests {
                 block_revenue_collector: Some(Pubkey::new_from_array(BLOCK_COLLECTOR)),
                 block_revenue_commission_bps: Some(1234),
                 pending_delegator_rewards: Some(42),
+                bls_pubkey: None,
                 lamports: None,
             }
         );
+    }
+
+    #[test]
+    fn a_v4_state_reads_the_bls_key_after_the_pending_rewards() {
+        let mut data = v4_account(733, 1234, 42, 0);
+        data.push(1);
+        data.extend_from_slice(&[7; BLS_PUBKEY_COMPRESSED_SIZE]);
+        data.resize(3762, 0);
+        let state = parse_vote_state(&data).unwrap();
+        assert_eq!(state.bls_pubkey, Some([7; BLS_PUBKEY_COMPRESSED_SIZE]));
+        assert_eq!(state.pending_delegator_rewards, Some(42));
+
+        data[VOTE_V4_BLS_PUBKEY_COMPRESSED_OFFSET] = 2;
+        assert!(parse_vote_state(&data).is_err());
     }
 
     #[test]
@@ -2535,6 +2574,7 @@ mod collector_health_tests {
             block_revenue_collector: block_revenue,
             block_revenue_commission_bps: Some(10_000),
             pending_delegator_rewards: Some(0),
+            bls_pubkey: None,
             lamports: None,
         }
     }

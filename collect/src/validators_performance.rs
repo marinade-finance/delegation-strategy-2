@@ -117,6 +117,9 @@ pub struct ValidatorsPerformanceSnapshot {
     /// Rent of a v4 vote state plus the VAT of the next epoch. None for a backfilled epoch.
     #[serde(default)]
     pub vat_minimum_balance: Option<u64>,
+    /// The VAT part of `vat_minimum_balance`. None for a backfilled epoch.
+    #[serde(default)]
+    pub vat_lamports_per_epoch: Option<u64>,
     pub validators: HashMap<String, ValidatorPerformance>,
     // Every gossip node, not just the vote-account-joined subset in `validators`; absent from snapshots written before the field existed, which the backfill path still reads.
     #[serde(default)]
@@ -388,7 +391,8 @@ pub fn collect_validators_performance_info(
             created_at: created_at.to_string(),
             slots_per_year: slot_params.slots_per_year,
             cluster_inflation,
-            vat_minimum_balance,
+            vat_minimum_balance: vat_minimum_balance.map(|minimum| minimum.total()),
+            vat_lamports_per_epoch: vat_minimum_balance.map(|minimum| minimum.vat),
             validators,
             nodes: node_info,
             rewards,
@@ -521,6 +525,7 @@ delinquent: false
             slots_per_year: baseline_slots_per_year(),
             cluster_inflation: None,
             vat_minimum_balance: None,
+            vat_lamports_per_epoch: None,
             validators: Default::default(),
             nodes: HashMap::from([("identityRoundTrip".to_string(), node)]),
             rewards: None,
