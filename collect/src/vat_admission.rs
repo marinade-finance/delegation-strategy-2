@@ -7,16 +7,14 @@ use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::slot_params::get_slot_time_activations;
-use crate::vat::{get_vote_state_rent, vat_at_end_of_epoch};
+use crate::vat::get_vat_minimum_balance;
 
 /// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`.
 pub const MAX_ALPENGLOW_VOTE_ACCOUNTS: usize = 2000;
 
-const ALPENGLOW_GATE: Pubkey =
-    Pubkey::from_str_const("A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS");
-// The id of agave 4.3, which mainnet runs. agave master declares a different id.
+// The id of agave master, the first version that subtracts. agave 4.3 declares a different id.
 const BLOCK_REVENUE_SHARING_GATE: Pubkey =
-    Pubkey::from_str_const("B1ockRevenueSharing111111111111111111111111");
+    Pubkey::from_str_const("Crbnc267wkJvFhYakqwWWX57sx5bkrftJLekzy6yWKLT");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VatParams {
@@ -24,7 +22,7 @@ pub struct VatParams {
     pub subtract_pending_delegator_rewards: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VatAdmissionReason {
     NoBlsKey,
@@ -52,31 +50,23 @@ pub struct VatAdmissionInput {
     pub has_bls_pubkey: bool,
 }
 
-/// The parameters of the filter at the end of `epoch`, agave `minimum_vote_account_balance_for_vat`.
+/// The parameters of the filter at the end of `epoch`.
 pub fn get_vat_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<VatParams> {
-    let rent = get_vote_state_rent(client)?;
-    let gates = client.get_multiple_accounts(&[ALPENGLOW_GATE, BLOCK_REVENUE_SHARING_GATE])?;
-    let mut active = Vec::with_capacity(gates.len());
-    for (gate_id, account) in [ALPENGLOW_GATE, BLOCK_REVENUE_SHARING_GATE]
-        .iter()
-        .zip(gates)
+    let minimum_balance =
+        get_vat_minimum_balance(client, &get_slot_time_activations(client)?, epoch)?;
+    let block_revenue_sharing = match client
+        .get_account_with_commitment(&BLOCK_REVENUE_SHARING_GATE, client.commitment())?
+        .value
     {
-        let activated = match account {
-            None => false,
-            Some(account) => solana_feature_gate_interface::from_account(&account)
-                .ok_or_else(|| anyhow::anyhow!("Account {gate_id} is not a feature account"))?
-                .activated_at
-                .is_some(),
-        };
-        active.push(activated);
-    }
-    let (alpenglow, block_revenue_sharing) = (active[0], active[1]);
-
-    let vat = vat_at_end_of_epoch(&get_slot_time_activations(client)?, epoch);
-    let minimum_balance = if alpenglow { rent + vat } else { rent };
-    info!(
-        "VAT admission: minimum balance {minimum_balance} (rent {rent}, VAT {vat}, alpenglow {alpenglow}), pending delegator rewards subtracted {block_revenue_sharing}"
-    );
+        None => false,
+        Some(account) => solana_feature_gate_interface::from_account(&account)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Account {BLOCK_REVENUE_SHARING_GATE} is not a feature account")
+            })?
+            .activated_at
+            .is_some(),
+    };
+    info!("VAT admission: pending delegator rewards subtracted {block_revenue_sharing}");
 
     Ok(VatParams {
         minimum_balance,

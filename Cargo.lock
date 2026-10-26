@@ -1191,6 +1191,7 @@ dependencies = [
  "solana-stake-interface",
  "solana-vote-program",
  "tokio",
+ "utoipa",
 ]
 
 [[package]]

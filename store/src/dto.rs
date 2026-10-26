@@ -6,6 +6,7 @@ use collect::validators_jito::{
     MevTipDistributionValidatorSnapshot, PriorityFeeDistributionValidatorSnapshot,
 };
 use collect::validators_performance::ValidatorPerformance;
+use collect::vat_admission::VatAdmissionReason;
 use rust_decimal::prelude::*;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -350,7 +351,8 @@ pub struct ValidatorEpochStats {
     pub bls_pubkey: Option<String>,
     /// SIMD-0357 admission for the inflation rewards of this epoch: agave's filter applied to the last snapshot before the epoch closed. False means the stakers get no inflation rewards for this epoch. Null where the vote state did not parse, and on rows stored before DS2 collected it.
     pub vat_admitted: Option<bool>,
-    /// Why `vat_admitted` is false: `no_bls_key`, `no_stake`, `low_balance` (balance less pending delegator rewards is below rent, plus the VAT once Alpenglow is active) or `below_stake_cutoff` (outside the top 2000 by stake, ties at the cut-off dropped). Null when admitted.
+    /// Why `vat_admitted` is false.
+    #[schema(value_type = Option<VatAdmissionReason>)]
     pub vat_admission_reason: Option<String>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
