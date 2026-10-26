@@ -12,9 +12,9 @@ use crate::vat::get_vat_minimum_balance;
 /// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`.
 pub const MAX_ALPENGLOW_VOTE_ACCOUNTS: usize = 2000;
 
-// The id of agave master, the first version that subtracts. agave 4.3 declares a different id.
+// Placeholder id of agave 4.3, which never subtracts. agave 4.4.0-beta.1 declares
 const BLOCK_REVENUE_SHARING_GATE: Pubkey =
-    Pubkey::from_str_const("Crbnc267wkJvFhYakqwWWX57sx5bkrftJLekzy6yWKLT");
+    Pubkey::from_str_const("B1ockRevenueSharing111111111111111111111111");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VatParams {
