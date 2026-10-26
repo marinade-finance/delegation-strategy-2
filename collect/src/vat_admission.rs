@@ -163,6 +163,7 @@ fn filter_for_vat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_rpc_client_api::response::RpcVoteAccountInfo;
 
     const PARAMS: VatParams = VatParams {
         minimum_balance: 1_000,
@@ -268,6 +269,67 @@ mod tests {
         assert_eq!(
             verdicts["big_but_poor"],
             Some(VatAdmissionReason::LowBalance)
+        );
+    }
+
+    fn vote_account(vote_pubkey: &str) -> RpcVoteAccountInfo {
+        RpcVoteAccountInfo {
+            vote_pubkey: vote_pubkey.to_string(),
+            node_pubkey: String::new(),
+            activated_stake: 5,
+            commission: 0,
+            epoch_vote_account: true,
+            epoch_credits: vec![],
+            last_vote: 0,
+            root_slot: 0,
+        }
+    }
+
+    fn vote_state(is_v4: Option<bool>, lamports: Option<u64>) -> VoteStateFields {
+        VoteStateFields {
+            authorized_withdrawer: Pubkey::default(),
+            inflation_rewards_commission_bps: Some(0),
+            inflation_rewards_commission_bps_is_v4: is_v4,
+            inflation_rewards_collector: None,
+            block_revenue_collector: None,
+            block_revenue_commission_bps: None,
+            pending_delegator_rewards: is_v4.filter(|v4| *v4).map(|_| 0),
+            bls_pubkey: is_v4.filter(|v4| *v4).map(|_| "key".to_string()),
+            lamports,
+        }
+    }
+
+    #[test]
+    fn only_vote_accounts_with_a_known_version_and_balance_get_a_verdict() {
+        let vote_accounts = RpcVoteAccountStatus {
+            current: [
+                "current",
+                "pre_v4",
+                "unknown_version",
+                "no_lamports",
+                "no_state",
+            ]
+            .map(vote_account)
+            .to_vec(),
+            delinquent: vec![vote_account("delinquent")],
+        };
+        let vote_account_states = HashMap::from([
+            ("current".to_string(), vote_state(Some(true), Some(1_000))),
+            (
+                "delinquent".to_string(),
+                vote_state(Some(true), Some(1_000)),
+            ),
+            ("pre_v4".to_string(), vote_state(Some(false), Some(1_000))),
+            ("unknown_version".to_string(), vote_state(None, Some(1_000))),
+            ("no_lamports".to_string(), vote_state(Some(true), None)),
+        ]);
+        assert_eq!(
+            compute_vat_admission(&vote_accounts, &vote_account_states, PARAMS),
+            HashMap::from([
+                ("current".to_string(), None),
+                ("delinquent".to_string(), None),
+                ("pre_v4".to_string(), Some(VatAdmissionReason::NoBlsKey)),
+            ])
         );
     }
 
