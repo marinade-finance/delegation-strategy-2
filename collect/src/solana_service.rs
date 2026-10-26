@@ -13,14 +13,15 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use solana_account_decoder::validator_info;
-use solana_account_decoder::UiAccountEncoding;
+use solana_account_decoder::{UiAccountData, UiAccountEncoding, UiDataSliceConfig};
 use solana_commitment_config::CommitmentConfig;
 use solana_config_program_client::{get_config_data, ConfigKeys};
 use solana_program::{
     stake_history::{StakeHistory, StakeHistoryEntry},
     sysvar::stake_history,
 };
-use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client::http_sender::HttpSender;
+use solana_rpc_client::rpc_client::{RpcClient, RpcClientConfig};
 use solana_rpc_client_api::config::{
     RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
 };
@@ -28,24 +29,35 @@ use solana_rpc_client_api::custom_error::JSON_RPC_SCAN_ERROR;
 use solana_rpc_client_api::error_object::RpcErrorObject;
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
-use solana_rpc_client_api::response::{RpcKeyedAccount, RpcVoteAccountInfo, RpcVoteAccountStatus};
+use solana_rpc_client_api::response::{RpcVoteAccountInfo, RpcVoteAccountStatus};
 use solana_sdk::clock::{Epoch, Slot};
 use solana_sdk::{account::Account, pubkey::Pubkey};
-use solana_stake_interface::{self as stake, state::StakeStateV2};
+use solana_stake_interface as stake;
 use std::{
-    collections::{HashMap, HashSet},
-    io::Read,
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, HashSet},
+    io::{BufReader, Read},
     str::FromStr,
     sync::OnceLock,
     thread::sleep,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS: u64 = 200;
+// The blocking client polls its sockets only during a call, so it cannot notice a server closing an idle one.
+const RPC_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const WITHDRAW_AUTHORITY_OFFSET: usize = 4 + 8 + 32;
 const STAKE_VARIANT_TAG: [u8; 4] = 2u32.to_le_bytes();
 const VOTER_OFFSET: usize = WITHDRAW_AUTHORITY_OFFSET + 32 + 8 + 8 + 32;
-const MAX_STAKE_ACCOUNTS_RESPONSE_BYTES: u64 = 64 << 20;
+const STAKE_OFFSET: usize = VOTER_OFFSET + 32;
+const ACTIVATION_EPOCH_OFFSET: usize = STAKE_OFFSET + 8;
+const DEACTIVATION_EPOCH_OFFSET: usize = ACTIVATION_EPOCH_OFFSET + 8;
+const STAKE_FIELDS: UiDataSliceConfig = UiDataSliceConfig {
+    offset: WITHDRAW_AUTHORITY_OFFSET,
+    length: DEACTIVATION_EPOCH_OFFSET + 8 - WITHDRAW_AUTHORITY_OFFSET,
+};
+const MAX_STAKE_ACCOUNTS_STREAM_BYTES: u64 = 1 << 30;
+const MAX_STAKE_ACCOUNTS_PER_FETCH: u64 = MAX_STAKE_ACCOUNTS_STREAM_BYTES / 1024;
 const MAX_WITHDRAWER_PREFIX_LEN: usize = 4;
 const MAX_VOTER_PREFIX_LEN: usize = 1;
 const MAX_GET_INFLATION_REWARD_ADDRESSES: usize = 32;
@@ -55,10 +67,15 @@ pub fn solana_client(url: String, commitment: String) -> RpcClient {
 }
 
 pub fn solana_client_with_timeout(url: String, timeout: Duration, commitment: String) -> RpcClient {
-    RpcClient::new_with_timeout_and_commitment(
-        url,
-        timeout,
-        CommitmentConfig::from_str(&commitment).unwrap(),
+    let http = reqwest::Client::builder()
+        .default_headers(HttpSender::default_headers())
+        .timeout(timeout)
+        .pool_idle_timeout(RPC_POOL_IDLE_TIMEOUT)
+        .build()
+        .expect("RPC HTTP client must build");
+    RpcClient::new_sender(
+        HttpSender::new_with_client(url, http),
+        RpcClientConfig::with_commitment(CommitmentConfig::from_str(&commitment).unwrap()),
     )
 }
 
@@ -607,9 +624,21 @@ fn parse_validator_info(
 }
 pub fn get_validators_info(
     rpc_client: &RpcClient,
+    rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
     info!("Getting validator info");
-    let validator_info = rpc_client.get_program_accounts(&solana_config_program_client::ID)?;
+    let validator_info = retry_blocking(
+        || rpc_client.get_program_accounts(&solana_config_program_client::ID),
+        QuadraticBackoffStrategy::iter_durations(rpc_attempts),
+        |err, attempt, backoff| {
+            warn!(
+                "Attempt {} to get validator info has failed: {}, retrying in {:?} seconds",
+                attempt,
+                err,
+                backoff.as_secs()
+            )
+        },
+    )?;
 
     let mut validator_info_map = HashMap::new();
     if validator_info.is_empty() {
@@ -1149,21 +1178,60 @@ impl StakeAccountsSlice {
         filters
     }
 
-    fn split(&self) -> Option<Vec<Self>> {
-        let extend_withdrawer = self.withdrawer_prefix.len() < MAX_WITHDRAWER_PREFIX_LEN;
-        if !extend_withdrawer && self.voter_prefix.len() >= MAX_VOTER_PREFIX_LEN {
-            return None;
-        }
-        let children = (0..=u8::MAX).map(|byte| {
-            let mut child = self.clone();
-            if extend_withdrawer {
-                child.withdrawer_prefix.push(byte);
+    fn split_range(&self) -> Option<UiDataSliceConfig> {
+        let (offset, prefix_len, max_len) =
+            if self.withdrawer_prefix.len() < MAX_WITHDRAWER_PREFIX_LEN {
+                (
+                    WITHDRAW_AUTHORITY_OFFSET,
+                    self.withdrawer_prefix.len(),
+                    MAX_WITHDRAWER_PREFIX_LEN,
+                )
             } else {
-                child.voter_prefix.push(byte);
+                (VOTER_OFFSET, self.voter_prefix.len(), MAX_VOTER_PREFIX_LEN)
+            };
+        (prefix_len < max_len).then_some(UiDataSliceConfig {
+            offset: offset + prefix_len,
+            length: max_len - prefix_len,
+        })
+    }
+
+    fn child(&self, byte: u8) -> Self {
+        let mut child = self.clone();
+        if child.withdrawer_prefix.len() < MAX_WITHDRAWER_PREFIX_LEN {
+            child.withdrawer_prefix.push(byte);
+        } else {
+            child.voter_prefix.push(byte);
+        }
+        child
+    }
+
+    fn split(&self) -> Vec<Self> {
+        (0..=u8::MAX).map(|byte| self.child(byte)).collect()
+    }
+
+    fn plan(&self, counts: &KeyCounts, max_accounts: u64) -> Vec<Self> {
+        let keys: Vec<(&[u8], u64)> = counts.iter().map(|(k, n)| (k.as_slice(), *n)).collect();
+        let mut planned = vec![];
+        self.plan_into(&keys, max_accounts, &mut planned);
+        planned
+    }
+
+    fn plan_into(&self, keys: &[(&[u8], u64)], max_accounts: u64, planned: &mut Vec<Self>) {
+        let mut by_byte: BTreeMap<u8, Vec<(&[u8], u64)>> = BTreeMap::new();
+        for (key, count) in keys {
+            if let Some((byte, rest)) = key.split_first() {
+                by_byte.entry(*byte).or_default().push((rest, *count));
             }
-            child
-        });
-        Some(children.collect())
+        }
+        for (byte, rests) in by_byte {
+            let child = self.child(byte);
+            let total: u64 = rests.iter().map(|(_, count)| count).sum();
+            if total <= max_accounts || rests.iter().all(|(rest, _)| rest.is_empty()) {
+                planned.push(child);
+            } else {
+                child.plan_into(&rests, max_accounts, planned);
+            }
+        }
     }
 }
 
@@ -1190,8 +1258,15 @@ enum SliceFetch<T> {
     TooLarge,
 }
 
+type KeyCounts = HashMap<Vec<u8>, u64>;
+
 fn walk_stake_account_slices<T>(
+    max_accounts_per_fetch: u64,
     mut fetch: impl FnMut(&StakeAccountsSlice) -> anyhow::Result<SliceFetch<T>>,
+    mut probe: impl FnMut(
+        &StakeAccountsSlice,
+        UiDataSliceConfig,
+    ) -> anyhow::Result<SliceFetch<KeyCounts>>,
     mut visit: impl FnMut(&StakeAccountsSlice, T),
 ) -> anyhow::Result<Vec<StakeAccountsSlice>> {
     let mut pending: Vec<_> = (0..=u8::MAX).rev().map(StakeAccountsSlice::page).collect();
@@ -1200,15 +1275,37 @@ fn walk_stake_account_slices<T>(
         match fetch(&slice)
             .with_context(|| format!("Failed to fetch stake accounts on page {slice}"))?
         {
-            SliceFetch::Fetched(accounts) => visit(&slice, accounts),
-            SliceFetch::TooLarge => match slice.split() {
-                Some(children) => {
-                    warn!("Stake accounts on page {slice} exceed the RPC response limit, splitting it by the next byte");
-                    pending.extend(children.into_iter().rev());
-                }
-                None => skipped.push(slice),
-            },
+            SliceFetch::Fetched(accounts) => {
+                visit(&slice, accounts);
+                continue;
+            }
+            SliceFetch::TooLarge => info!(
+                "Stake accounts on page {slice} exceed the {} MiB RPC response limit",
+                MAX_STAKE_ACCOUNTS_STREAM_BYTES >> 20
+            ),
         }
+        let Some(range) = slice.split_range() else {
+            skipped.push(slice);
+            continue;
+        };
+        let children = match probe(&slice, range)
+            .with_context(|| format!("Failed to probe stake accounts on page {slice}"))?
+        {
+            SliceFetch::Fetched(counts) => {
+                let children = slice.plan(&counts, max_accounts_per_fetch);
+                info!(
+                    "Probed {} stake accounts on page {slice} into {} sub-pages",
+                    counts.values().sum::<u64>(),
+                    children.len()
+                );
+                children
+            }
+            SliceFetch::TooLarge => {
+                warn!("Stake accounts on page {slice} exceed the RPC response limit even as a probe, splitting it into every next byte");
+                slice.split()
+            }
+        };
+        pending.extend(children.into_iter().rev());
     }
     Ok(skipped)
 }
@@ -1238,146 +1335,264 @@ fn check_skipped_slices(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct ProgramAccountsResponse {
-    result: Option<Vec<RpcKeyedAccount>>,
-    error: Option<RpcErrorObject>,
+#[derive(Default)]
+struct SliceTotals {
+    totals: HashMap<String, StakeAccountTotals>,
+    self_stakes: u64,
 }
 
-fn parse_program_accounts_response(
-    body: &[u8],
-) -> anyhow::Result<SliceFetch<Vec<(Pubkey, Account)>>> {
-    let response: ProgramAccountsResponse = serde_json::from_slice(body)?;
-    match (response.result, response.error) {
-        (_, Some(error)) if error.code == JSON_RPC_SCAN_ERROR => Ok(SliceFetch::TooLarge),
-        (_, Some(error)) => anyhow::bail!("RPC error {}: {}", error.code, error.message),
-        (Some(accounts), None) => accounts
-            .into_iter()
-            .map(|keyed| {
-                let account = keyed
-                    .account
-                    .decode()
-                    .with_context(|| format!("Undecodable stake account {}", keyed.pubkey))?;
-                Ok((Pubkey::from_str(&keyed.pubkey)?, account))
+impl SliceTotals {
+    fn add(
+        &mut self,
+        stake_fields: &[u8],
+        withdraw_authorities: &HashSet<(String, String)>,
+        epoch: Epoch,
+        stake_history: &StakeHistory,
+    ) -> anyhow::Result<()> {
+        let field = |offset: usize, length: usize| {
+            let start = offset - STAKE_FIELDS.offset;
+            stake_fields.get(start..start + length).with_context(|| {
+                format!(
+                    "Stake fields hold {} bytes, too few to read offset {offset}",
+                    stake_fields.len()
+                )
             })
-            .collect::<anyhow::Result<_>>()
-            .map(SliceFetch::Fetched),
-        (None, None) => anyhow::bail!("RPC response holds neither a result nor an error"),
+        };
+        let pubkey =
+            |offset| -> anyhow::Result<Pubkey> { Ok(Pubkey::try_from(field(offset, 32)?)?) };
+        let number = |offset| -> anyhow::Result<u64> {
+            Ok(u64::from_le_bytes(field(offset, 8)?.try_into()?))
+        };
+        let withdrawer = pubkey(WITHDRAW_AUTHORITY_OFFSET)?;
+        let voter = pubkey(VOTER_OFFSET)?;
+        let mut delegation = stake::state::Delegation::new(
+            &voter,
+            number(STAKE_OFFSET)?,
+            number(ACTIVATION_EPOCH_OFFSET)?,
+        );
+        delegation.deactivation_epoch = number(DEACTIVATION_EPOCH_OFFSET)?;
+        let StakeHistoryEntry {
+            effective,
+            activating,
+            deactivating,
+        } = delegation.stake_activating_and_deactivating(epoch, stake_history, None);
+        let vote_key = voter.to_string();
+        let is_self_stake = effective != 0
+            && withdraw_authorities.contains(&(withdrawer.to_string(), vote_key.clone()));
+        if !is_self_stake && activating == 0 && deactivating == 0 {
+            return Ok(());
+        }
+        let totals = self.totals.entry(vote_key).or_default();
+        totals.activating += activating;
+        totals.deactivating += deactivating;
+        if is_self_stake {
+            self.self_stakes += 1;
+            totals.self_stake += effective;
+        }
+        Ok(())
+    }
+
+    fn merge_into(self, totals: &mut HashMap<String, StakeAccountTotals>) {
+        for (vote_key, slice_totals) in self.totals {
+            let entry = totals.entry(vote_key).or_default();
+            entry.self_stake += slice_totals.self_stake;
+            entry.activating += slice_totals.activating;
+            entry.deactivating += slice_totals.deactivating;
+        }
     }
 }
 
-fn read_capped(reader: impl Read, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
-    let mut body = Vec::new();
-    reader.take(cap + 1).read_to_end(&mut body)?;
-    Ok((body.len() as u64 <= cap).then_some(body))
+#[derive(Deserialize)]
+struct KeyedAccountData {
+    account: AccountData,
 }
 
-fn fetch_stake_accounts_slice(
-    http: &reqwest::blocking::Client,
-    rpc_url: &str,
-    commitment: CommitmentConfig,
-    slice: &StakeAccountsSlice,
-    rpc_attempts: usize,
-    rpc_timeout: Duration,
-) -> anyhow::Result<SliceFetch<Vec<(Pubkey, Account)>>> {
-    let request = RpcRequest::GetProgramAccounts.build_request_json(
-        1,
-        json!([
-            stake::program::ID.to_string(),
-            RpcProgramAccountsConfig {
-                filters: Some(slice.filters()),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    commitment: Some(commitment),
-                    data_slice: None,
-                    min_context_slot: None,
-                },
-                with_context: None,
-                sort_results: None,
-            }
-        ]),
-    );
-
-    retry_blocking(
-        || {
-            let response = http
-                .post(rpc_url)
-                .timeout(rpc_timeout)
-                .json(&request)
-                .send()?
-                .error_for_status()?;
-            if response
-                .content_length()
-                .is_some_and(|length| length > MAX_STAKE_ACCOUNTS_RESPONSE_BYTES)
-            {
-                return Ok(SliceFetch::TooLarge);
-            }
-            match read_capped(response, MAX_STAKE_ACCOUNTS_RESPONSE_BYTES)? {
-                Some(body) => parse_program_accounts_response(&body),
-                None => Ok(SliceFetch::TooLarge),
-            }
-        },
-        QuadraticBackoffStrategy::iter_durations(rpc_attempts),
-        |err, attempt, backoff| {
-            warn!(
-                "Attempt {} has failed: {}, retrying in {:?} seconds",
-                attempt,
-                err,
-                backoff.as_secs()
-            )
-        },
-    )
+#[derive(Deserialize)]
+struct AccountData {
+    data: UiAccountData,
 }
 
-fn process_stake_accounts(
-    accounts: Vec<(Pubkey, Account)>,
-    totals: &mut HashMap<String, StakeAccountTotals>,
-    withdraw_authorities: &HashSet<(String, String)>,
-    epoch: Epoch,
-    stake_history: &StakeHistory,
-) -> u64 {
-    let mut self_stake_assigned = 0;
-    for (_pubkey, account) in accounts.iter() {
-        if let Ok(stake_account) = bincode::deserialize(&account.data) {
-            if let Some((withdrawer_key, vote_key)) = get_withdrawer_and_vote_keys(&stake_account) {
-                let StakeHistoryEntry {
-                    effective,
-                    activating,
-                    deactivating,
-                } = stake_account
-                    .stake()
-                    .unwrap()
-                    .delegation
-                    .stake_activating_and_deactivating(epoch, stake_history, None);
-                let is_self_stake = withdraw_authorities
-                    .contains(&(withdrawer_key, vote_key.clone()))
-                    && effective != 0;
-                if !is_self_stake && activating == 0 && deactivating == 0 {
-                    continue;
+struct AccountsFold<'f, F>(&'f mut F);
+
+impl<'de, F: FnMut(Vec<u8>) -> anyhow::Result<()>> serde::de::DeserializeSeed<'de>
+    for AccountsFold<'_, F>
+{
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de, F: FnMut(Vec<u8>) -> anyhow::Result<()>> serde::de::Visitor<'de> for AccountsFold<'_, F> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an array of keyed accounts")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        use serde::de::Error;
+        while let Some(KeyedAccountData { account }) = seq.next_element()? {
+            let data = account
+                .data
+                .decode()
+                .ok_or_else(|| A::Error::custom("undecodable account data"))?;
+            (self.0)(data).map_err(|err| A::Error::custom(format!("{err:#}")))?;
+        }
+        Ok(())
+    }
+}
+
+struct RpcResultFold<'f, F>(&'f mut F);
+
+impl<'de, F: FnMut(Vec<u8>) -> anyhow::Result<()>> serde::de::DeserializeSeed<'de>
+    for RpcResultFold<'_, F>
+{
+    type Value = Option<RpcErrorObject>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de, F: FnMut(Vec<u8>) -> anyhow::Result<()>> serde::de::Visitor<'de>
+    for RpcResultFold<'_, F>
+{
+    type Value = Option<RpcErrorObject>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON-RPC response")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let fold = self.0;
+        let mut folded = false;
+        let mut error = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "result" => {
+                    map.next_value_seed(AccountsFold(&mut *fold))?;
+                    folded = true;
                 }
-                let totals = totals.entry(vote_key).or_default();
-                totals.activating += activating;
-                totals.deactivating += deactivating;
-                if is_self_stake {
-                    self_stake_assigned += 1;
-                    totals.self_stake += effective;
+                "error" => error = Some(map.next_value()?),
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
                 }
             }
         }
+        if !folded && error.is_none() {
+            return Err(serde::de::Error::custom(
+                "RPC response holds neither a result nor an error",
+            ));
+        }
+        Ok(error)
     }
-
-    self_stake_assigned
 }
 
-fn get_withdrawer_and_vote_keys(stake_account: &StakeStateV2) -> Option<(String, String)> {
-    stake_account.delegation().and_then(|vote_account| {
-        stake_account.authorized().map(|withdrawer| {
-            (
-                withdrawer.withdrawer.to_string(),
-                vote_account.voter_pubkey.to_string(),
-            )
-        })
-    })
+fn fold_rpc_accounts(
+    body: impl Read,
+    cap: u64,
+    mut fold: impl FnMut(Vec<u8>) -> anyhow::Result<()>,
+) -> anyhow::Result<SliceFetch<()>> {
+    use serde::de::DeserializeSeed;
+    let mut reader = BufReader::new(body.take(cap + 1));
+    let parsed = {
+        let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
+        RpcResultFold(&mut fold)
+            .deserialize(&mut deserializer)
+            .and_then(|error| deserializer.end().map(|()| error))
+    };
+    if reader.get_ref().limit() == 0 {
+        return Ok(SliceFetch::TooLarge);
+    }
+    match parsed? {
+        None => Ok(SliceFetch::Fetched(())),
+        Some(error) if error.code == JSON_RPC_SCAN_ERROR => Ok(SliceFetch::TooLarge),
+        Some(error) => anyhow::bail!("RPC error {}: {}", error.code, error.message),
+    }
+}
+
+struct StakeAccountsRpc {
+    http: reqwest::blocking::Client,
+    rpc_url: String,
+    commitment: CommitmentConfig,
+    rpc_attempts: usize,
+    rpc_timeout: Duration,
+    requests: usize,
+}
+
+impl StakeAccountsRpc {
+    fn scan<A>(
+        &mut self,
+        slice: &StakeAccountsSlice,
+        data_slice: UiDataSliceConfig,
+        init: impl Fn() -> A,
+        fold: impl Fn(&mut A, Vec<u8>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<SliceFetch<A>> {
+        let request = RpcRequest::GetProgramAccounts.build_request_json(
+            1,
+            json!([
+                stake::program::ID.to_string(),
+                RpcProgramAccountsConfig {
+                    filters: Some(slice.filters()),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        commitment: Some(self.commitment),
+                        data_slice: Some(data_slice),
+                        min_context_slot: None,
+                    },
+                    with_context: None,
+                    sort_results: None,
+                }
+            ]),
+        );
+        self.requests += 1;
+        let scanned = retry_blocking(
+            || {
+                let response = self
+                    .http
+                    .post(&self.rpc_url)
+                    .timeout(self.rpc_timeout)
+                    .json(&request)
+                    .send()?
+                    .error_for_status()?;
+                let cap = MAX_STAKE_ACCOUNTS_STREAM_BYTES;
+                if response.content_length().is_some_and(|length| length > cap) {
+                    return Ok(SliceFetch::TooLarge);
+                }
+                let mut acc = init();
+                Ok(
+                    match fold_rpc_accounts(response, cap, |data| {
+                        anyhow::ensure!(
+                            data.len() == data_slice.length,
+                            "RPC returned {} bytes for a {}-byte data slice",
+                            data.len(),
+                            data_slice.length
+                        );
+                        fold(&mut acc, data)
+                    })? {
+                        SliceFetch::Fetched(()) => SliceFetch::Fetched(acc),
+                        SliceFetch::TooLarge => SliceFetch::TooLarge,
+                    },
+                )
+            },
+            QuadraticBackoffStrategy::iter_durations(self.rpc_attempts),
+            |err, attempt, backoff| {
+                warn!(
+                    "Attempt {} has failed: {}, retrying in {:?} seconds",
+                    attempt,
+                    err,
+                    backoff.as_secs()
+                )
+            },
+        );
+        sleep(Duration::from_millis(RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS));
+        scanned
+    }
 }
 
 fn fetch_stake_account_totals(
@@ -1389,33 +1604,43 @@ fn fetch_stake_account_totals(
     rpc_attempts: usize,
     allow_skipped_stake_pages: bool,
 ) -> anyhow::Result<HashMap<String, StakeAccountTotals>> {
-    let http = reqwest::blocking::Client::builder().build()?;
-    let rpc_url = rpc_client.url();
+    let started = Instant::now();
+    let rpc = RefCell::new(StakeAccountsRpc {
+        http: reqwest::blocking::Client::builder().build()?,
+        rpc_url: rpc_client.url(),
+        commitment: rpc_client.commitment(),
+        rpc_attempts,
+        rpc_timeout,
+        requests: 0,
+    });
+    let add = |slice_totals: &mut SliceTotals, stake_fields: Vec<u8>| {
+        slice_totals.add(&stake_fields, &withdraw_authorities, epoch, stake_history)
+    };
+    let count = |counts: &mut KeyCounts, key: Vec<u8>| {
+        *counts.entry(key).or_default() += 1;
+        Ok(())
+    };
     let mut totals: HashMap<String, StakeAccountTotals> = HashMap::default();
     let skipped = walk_stake_account_slices(
+        MAX_STAKE_ACCOUNTS_PER_FETCH,
         |slice| {
-            let fetched = fetch_stake_accounts_slice(
-                &http,
-                &rpc_url,
-                rpc_client.commitment(),
-                slice,
-                rpc_attempts,
-                rpc_timeout,
-            );
-            sleep(Duration::from_millis(RPC_STAKE_ACCOUNTS_FETCH_BACKOFF_MS));
-            fetched
+            rpc.borrow_mut()
+                .scan(slice, STAKE_FIELDS, SliceTotals::default, add)
         },
-        |slice, accounts| {
-            let processed = process_stake_accounts(
-                accounts,
-                &mut totals,
-                &withdraw_authorities,
-                epoch,
-                stake_history,
+        |slice, range| rpc.borrow_mut().scan(slice, range, KeyCounts::new, count),
+        |slice, slice_totals| {
+            info!(
+                "Processed {} self stakes on page {slice}",
+                slice_totals.self_stakes
             );
-            info!("Processed {processed} self stakes on page {slice}");
+            slice_totals.merge_into(&mut totals);
         },
     )?;
+    info!(
+        "Scanned stake accounts with {} getProgramAccounts requests in {:?}",
+        rpc.borrow().requests,
+        started.elapsed()
+    );
     check_skipped_slices(&skipped, allow_skipped_stake_pages)?;
 
     Ok(totals)
@@ -2111,6 +2336,7 @@ mod vote_state_tests {
 #[cfg(test)]
 mod stake_account_tests {
     use super::*;
+    use solana_stake_interface::state::StakeStateV2;
 
     const WITHDRAWER: [u8; 32] = [2; 32];
     const EPOCH: Epoch = 900;
@@ -2164,14 +2390,22 @@ mod stake_account_tests {
     // An empty history sends every settled account down the "dropped out of history" path, which
     // reports the delegation as fully effective. No path below reads an entry.
     fn process(accounts: Vec<(Pubkey, Account)>) -> (HashMap<String, StakeAccountTotals>, u64) {
+        let mut slice_totals = SliceTotals::default();
+        for (_, account) in accounts {
+            let fields =
+                &account.data[STAKE_FIELDS.offset..STAKE_FIELDS.offset + STAKE_FIELDS.length];
+            slice_totals
+                .add(
+                    fields,
+                    &self_stake_authorities(),
+                    EPOCH,
+                    &StakeHistory::default(),
+                )
+                .unwrap();
+        }
         let mut totals = HashMap::default();
-        let assigned = process_stake_accounts(
-            accounts,
-            &mut totals,
-            &self_stake_authorities(),
-            EPOCH,
-            &StakeHistory::default(),
-        );
+        let assigned = slice_totals.self_stakes;
+        slice_totals.merge_into(&mut totals);
         (totals, assigned)
     }
 
@@ -2642,10 +2876,12 @@ mod validator_info_tests {
 mod stake_accounts_slice_tests {
     use super::*;
     use solana_account_decoder::encode_ui_account;
+    use solana_rpc_client_api::response::RpcKeyedAccount;
     use solana_stake_interface::stake_flags::StakeFlags;
+    use solana_stake_interface::state::StakeStateV2;
     use solana_stake_interface::state::{Authorized, Delegation, Lockup, Meta, Stake};
 
-    const LIMIT: usize = 10;
+    const LIMIT: u64 = 30;
 
     fn key(prefix: &[u8], fill: u8) -> Pubkey {
         let mut bytes = [fill; 32];
@@ -2653,39 +2889,36 @@ mod stake_accounts_slice_tests {
         Pubkey::new_from_array(bytes)
     }
 
-    fn stake_account_data(withdrawer: Pubkey, voter: Pubkey) -> Vec<u8> {
-        let state = StakeStateV2::Stake(
-            Meta {
-                rent_exempt_reserve: 0,
-                authorized: Authorized {
-                    staker: Pubkey::new_unique(),
-                    withdrawer,
-                },
-                lockup: Lockup::default(),
-            },
-            Stake {
-                delegation: Delegation::new(&voter, 1, 0),
-                credits_observed: 0,
-            },
-            StakeFlags::empty(),
-        );
-        let mut data = bincode::serialize(&state).unwrap();
-        data.resize(200, 0);
-        data
-    }
-
-    fn initialized_account_data(withdrawer: Pubkey) -> Vec<u8> {
-        let state = StakeStateV2::Initialized(Meta {
+    fn meta(withdrawer: Pubkey) -> Meta {
+        Meta {
             rent_exempt_reserve: 0,
             authorized: Authorized {
                 staker: Pubkey::new_unique(),
                 withdrawer,
             },
             lockup: Lockup::default(),
-        });
+        }
+    }
+
+    fn padded(state: StakeStateV2) -> Vec<u8> {
         let mut data = bincode::serialize(&state).unwrap();
         data.resize(200, 0);
         data
+    }
+
+    fn stake_account_data(withdrawer: Pubkey, voter: Pubkey) -> Vec<u8> {
+        padded(StakeStateV2::Stake(
+            meta(withdrawer),
+            Stake {
+                delegation: Delegation::new(&voter, 1, 0),
+                credits_observed: 0,
+            },
+            StakeFlags::empty(),
+        ))
+    }
+
+    fn initialized_account_data(withdrawer: Pubkey) -> Vec<u8> {
+        padded(StakeStateV2::Initialized(meta(withdrawer)))
     }
 
     fn two_accounts_per_page() -> Vec<Vec<u8>> {
@@ -2696,49 +2929,96 @@ mod stake_accounts_slice_tests {
             .collect()
     }
 
+    struct FakeRpc<'a> {
+        accounts: &'a [Vec<u8>],
+        stream_limit: u64,
+        probe_limit: u64,
+        fetches: usize,
+        probes: usize,
+    }
+
+    impl FakeRpc<'_> {
+        fn matching(&self, slice: &StakeAccountsSlice) -> impl Iterator<Item = &Vec<u8>> {
+            let filters = slice.filters();
+            self.accounts.iter().filter(move |data| {
+                filters.iter().all(|filter| match filter {
+                    RpcFilterType::DataSize(size) => data.len() as u64 == *size,
+                    RpcFilterType::Memcmp(memcmp) => memcmp.bytes_match(data),
+                    other => panic!("Unexpected filter {other:?}"),
+                })
+            })
+        }
+
+        fn fetch(&mut self, slice: &StakeAccountsSlice) -> anyhow::Result<SliceFetch<u64>> {
+            self.fetches += 1;
+            let matching = self.matching(slice).count() as u64;
+            Ok(if matching > self.stream_limit {
+                SliceFetch::TooLarge
+            } else {
+                SliceFetch::Fetched(matching)
+            })
+        }
+
+        fn probe(
+            &mut self,
+            slice: &StakeAccountsSlice,
+            range: UiDataSliceConfig,
+        ) -> anyhow::Result<SliceFetch<KeyCounts>> {
+            self.probes += 1;
+            let mut counts = KeyCounts::new();
+            for data in self.matching(slice) {
+                *counts
+                    .entry(data[range.offset..range.offset + range.length].to_vec())
+                    .or_default() += 1;
+            }
+            Ok(if counts.values().sum::<u64>() > self.probe_limit {
+                SliceFetch::TooLarge
+            } else {
+                SliceFetch::Fetched(counts)
+            })
+        }
+    }
+
     struct Walk {
         fetches: usize,
-        counted: usize,
-        visited: Vec<StakeAccountsSlice>,
+        probes: usize,
+        counted: u64,
         skipped: Vec<StakeAccountsSlice>,
     }
 
-    fn walk(accounts: &[Vec<u8>]) -> Walk {
-        let mut fetches = 0;
+    impl Walk {
+        fn requests_beyond_the_pages(&self) -> usize {
+            self.fetches + self.probes - 256
+        }
+    }
+
+    fn walk_with_limits(accounts: &[Vec<u8>], stream_limit: u64, probe_limit: u64) -> Walk {
+        let rpc = RefCell::new(FakeRpc {
+            accounts,
+            stream_limit,
+            probe_limit,
+            fetches: 0,
+            probes: 0,
+        });
         let mut counted = 0;
-        let mut visited = vec![];
         let skipped = walk_stake_account_slices(
-            |slice| {
-                fetches += 1;
-                let filters = slice.filters();
-                let matching = accounts
-                    .iter()
-                    .filter(|data| {
-                        filters.iter().all(|filter| match filter {
-                            RpcFilterType::DataSize(size) => data.len() as u64 == *size,
-                            RpcFilterType::Memcmp(memcmp) => memcmp.bytes_match(data),
-                            other => panic!("Unexpected filter {other:?}"),
-                        })
-                    })
-                    .count();
-                Ok(if matching > LIMIT {
-                    SliceFetch::TooLarge
-                } else {
-                    SliceFetch::Fetched(matching)
-                })
-            },
-            |slice, matching| {
-                counted += matching;
-                visited.push(slice.clone());
-            },
+            LIMIT,
+            |slice| rpc.borrow_mut().fetch(slice),
+            |slice, range| rpc.borrow_mut().probe(slice, range),
+            |_, matching| counted += matching,
         )
         .unwrap();
+        let rpc = rpc.into_inner();
         Walk {
-            fetches,
+            fetches: rpc.fetches,
+            probes: rpc.probes,
             counted,
-            visited,
             skipped,
         }
+    }
+
+    fn walk(accounts: &[Vec<u8>]) -> Walk {
+        walk_with_limits(accounts, LIMIT, u64::MAX)
     }
 
     #[test]
@@ -2756,14 +3036,110 @@ mod stake_accounts_slice_tests {
     }
 
     #[test]
+    fn every_page_is_fetched_once_when_none_exceeds_the_limit() {
+        let accounts = two_accounts_per_page();
+        let walk = walk(&accounts);
+        assert_eq!((walk.fetches, walk.probes), (256, 0));
+        assert_eq!(walk.counted, accounts.len() as u64);
+        assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
     fn undelegated_accounts_are_filtered_out_before_they_can_force_a_split() {
         let mut accounts = two_accounts_per_page();
         let withdrawer = key(&[79, 1, 2, 3, 4], 9);
-        accounts.extend((0..50).map(|_| initialized_account_data(withdrawer)));
+        accounts.extend((0..500).map(|_| initialized_account_data(withdrawer)));
         let walk = walk(&accounts);
-        assert_eq!(walk.fetches, 256);
-        assert_eq!(walk.counted, accounts.len() - 50);
+        assert_eq!((walk.fetches, walk.probes), (256, 0));
+        assert_eq!(walk.counted, accounts.len() as u64 - 500);
         assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_page_within_the_stream_limit_is_fetched_whole_in_one_request() {
+        let mut accounts = two_accounts_per_page();
+        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
+        accounts.extend((0..1000).map(|_| stake_account_data(withdrawer, key(&[7], 7))));
+        let walk = walk_with_limits(&accounts, u64::MAX, u64::MAX);
+        assert_eq!((walk.fetches, walk.probes), (256, 0));
+        assert_eq!(walk.counted, accounts.len() as u64);
+        assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_page_shared_by_many_withdrawers_fetches_only_the_populated_next_bytes() {
+        let mut accounts = two_accounts_per_page();
+        accounts.extend((0..20).flat_map(|i| {
+            (0..3).map(move |_| stake_account_data(key(&[79, i], 0), Pubkey::new_unique()))
+        }));
+        let walk = walk(&accounts);
+        assert_eq!(walk.probes, 1);
+        // The page's probe and the 20 populated sub-pages.
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 20);
+        assert_eq!(walk.counted, accounts.len() as u64);
+        assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
+    fn one_withdrawer_spread_over_voters_takes_a_few_dozen_requests_not_a_thousand() {
+        let mut accounts = two_accounts_per_page();
+        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
+        accounts
+            .extend((0..1000).map(|i| stake_account_data(withdrawer, key(&[(i % 40) as u8], 0))));
+        let walk = walk(&accounts);
+        // Page: probe. Its two neighbours. The withdrawer: its fetch, voter probe and its 40
+        // voter sub-pages.
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 2 + 2 + 40);
+        assert!(walk.requests_beyond_the_pages() < 50);
+        assert_eq!(walk.counted, accounts.len() as u64);
+        assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
+    fn one_withdrawer_on_one_voter_is_skipped_and_everything_else_counted() {
+        let mut accounts = two_accounts_per_page();
+        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
+        accounts.extend((0..50).map(|_| stake_account_data(withdrawer, key(&[7], 7))));
+        let walk = walk(&accounts);
+        assert_eq!(walk.requests_beyond_the_pages(), 1 + 2 + 2 + 1);
+        assert_eq!(walk.counted, accounts.len() as u64 - 50);
+        assert_eq!(
+            walk.skipped,
+            vec![StakeAccountsSlice {
+                withdrawer_prefix: vec![79, 1, 2, 3],
+                voter_prefix: vec![7],
+            }]
+        );
+        assert_eq!(walk.skipped[0].to_string(), "79/1/2/3 voter 7");
+    }
+
+    #[test]
+    fn a_probe_over_its_own_limit_falls_back_to_splitting_into_every_next_byte() {
+        let mut accounts = two_accounts_per_page();
+        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
+        accounts.extend((0..50).map(|v| stake_account_data(withdrawer, key(&[v], v))));
+        let walk = walk_with_limits(&accounts, LIMIT, LIMIT);
+        assert_eq!(walk.probes, 4);
+        assert_eq!(walk.fetches, 256 + 3 * 256 + 256);
+        assert_eq!(walk.counted, accounts.len() as u64);
+        assert!(walk.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_failed_fetch_names_its_page() {
+        let err = walk_stake_account_slices(
+            LIMIT,
+            |slice| {
+                if slice.withdrawer_prefix == [3] {
+                    anyhow::bail!("connection reset")
+                }
+                Ok(SliceFetch::Fetched(()))
+            },
+            |_, _| unreachable!(),
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "Failed to fetch stake accounts on page 3");
     }
 
     #[test]
@@ -2783,113 +3159,112 @@ mod stake_accounts_slice_tests {
         assert!(check_skipped_slices(&[], false).is_ok());
     }
 
-    #[test]
-    fn every_page_is_fetched_once_when_none_exceeds_the_limit() {
-        let accounts = two_accounts_per_page();
-        let walk = walk(&accounts);
-        assert_eq!(walk.fetches, 256);
-        assert_eq!(walk.counted, accounts.len());
-        assert!(walk.skipped.is_empty());
-    }
-
-    #[test]
-    fn a_page_shared_by_many_withdrawers_splits_by_the_next_byte() {
-        let mut accounts = two_accounts_per_page();
-        accounts
-            .extend((0..20).map(|i| stake_account_data(key(&[79, i], 0), Pubkey::new_unique())));
-        let walk = walk(&accounts);
-        assert_eq!(walk.fetches, 256 + 256);
-        assert_eq!(walk.counted, accounts.len());
-        assert!(walk.skipped.is_empty());
-        assert!(!walk.visited.contains(&StakeAccountsSlice::page(79)));
-    }
-
-    #[test]
-    fn one_withdrawer_spread_over_voters_splits_down_to_the_voter() {
-        let mut accounts = two_accounts_per_page();
-        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
-        accounts.extend((0..50).map(|v| stake_account_data(withdrawer, key(&[v], v))));
-        let walk = walk(&accounts);
-        assert_eq!(walk.fetches, 256 + 3 * 256 + 256);
-        assert_eq!(walk.counted, accounts.len());
-        assert!(walk.skipped.is_empty());
-    }
-
-    #[test]
-    fn one_withdrawer_on_one_voter_is_skipped_and_everything_else_counted() {
-        let mut accounts = two_accounts_per_page();
-        let withdrawer = key(&[79, 1, 2, 3, 4], 9);
-        accounts.extend((0..50).map(|_| stake_account_data(withdrawer, key(&[7], 7))));
-        let walk = walk(&accounts);
-        assert_eq!(walk.fetches, 256 + 3 * 256 + 256);
-        assert_eq!(walk.counted, accounts.len() - 50);
-        assert_eq!(
-            walk.skipped,
-            vec![StakeAccountsSlice {
-                withdrawer_prefix: vec![79, 1, 2, 3],
-                voter_prefix: vec![7],
-            }]
-        );
-        assert_eq!(walk.skipped[0].to_string(), "79/1/2/3 voter 7");
-    }
-
-    #[test]
-    fn a_failed_fetch_names_its_page() {
-        let err = walk_stake_account_slices(
-            |slice| {
-                if slice.withdrawer_prefix == [3] {
-                    anyhow::bail!("connection reset")
-                }
-                Ok(SliceFetch::Fetched(()))
+    fn collect_data(body: &[u8], cap: u64) -> anyhow::Result<SliceFetch<Vec<Vec<u8>>>> {
+        let mut collected = vec![];
+        Ok(
+            match fold_rpc_accounts(body, cap, |data| {
+                collected.push(data);
+                Ok(())
+            })? {
+                SliceFetch::Fetched(()) => SliceFetch::Fetched(collected),
+                SliceFetch::TooLarge => SliceFetch::TooLarge,
             },
-            |_, _| {},
         )
-        .unwrap_err();
-        assert_eq!(err.to_string(), "Failed to fetch stake accounts on page 3");
     }
 
     #[test]
     fn an_rpc_scan_error_reads_as_too_large() {
         let body =
             br#"{"jsonrpc":"2.0","error":{"code":-32012,"message":"page too large"},"id":1}"#;
-        assert_eq!(
-            parse_program_accounts_response(body).unwrap(),
-            SliceFetch::TooLarge
-        );
+        assert_eq!(collect_data(body, 1 << 20).unwrap(), SliceFetch::TooLarge);
     }
 
     #[test]
     fn other_rpc_errors_fail() {
         let body =
             br#"{"jsonrpc":"2.0","error":{"code":-32005,"message":"Node is behind"},"id":1}"#;
-        assert!(parse_program_accounts_response(body).is_err());
+        assert!(collect_data(body, 1 << 20).is_err());
+    }
+
+    fn keyed_accounts_body(
+        accounts: &[(Pubkey, Account)],
+        data_slice: UiDataSliceConfig,
+    ) -> Vec<u8> {
+        let keyed: Vec<_> = accounts
+            .iter()
+            .map(|(pubkey, account)| RpcKeyedAccount {
+                pubkey: pubkey.to_string(),
+                account: encode_ui_account(
+                    pubkey,
+                    account,
+                    UiAccountEncoding::Base64,
+                    None,
+                    Some(data_slice),
+                ),
+            })
+            .collect();
+        serde_json::to_vec(&json!({"jsonrpc": "2.0", "result": keyed, "id": 1})).unwrap()
+    }
+
+    fn stake_account(withdrawer: Pubkey, voter: Pubkey) -> (Pubkey, Account) {
+        (
+            Pubkey::new_unique(),
+            Account {
+                lamports: 42,
+                data: stake_account_data(withdrawer, voter),
+                owner: stake::program::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
     }
 
     #[test]
-    fn a_result_decodes_into_accounts() {
-        let pubkey = Pubkey::new_unique();
-        let account = Account {
-            lamports: 42,
-            data: stake_account_data(Pubkey::new_unique(), Pubkey::new_unique()),
-            owner: stake::program::ID,
-            executable: false,
-            rent_epoch: 0,
+    fn a_streamed_result_folds_the_stake_fields_into_totals() {
+        let withdrawer = Pubkey::new_unique();
+        let voter = Pubkey::new_unique();
+        let accounts = vec![
+            stake_account(withdrawer, voter),
+            stake_account(Pubkey::new_unique(), voter),
+        ];
+        let body = keyed_accounts_body(&accounts, STAKE_FIELDS);
+        let authorities = HashSet::from([(withdrawer.to_string(), voter.to_string())]);
+        let mut slice_totals = SliceTotals::default();
+        let fetched = fold_rpc_accounts(&body[..], 1 << 20, |fields| {
+            slice_totals.add(&fields, &authorities, 1, &StakeHistory::default())
+        })
+        .unwrap();
+        assert_eq!(fetched, SliceFetch::Fetched(()));
+        assert_eq!(slice_totals.self_stakes, 1);
+        assert_eq!(slice_totals.totals[&voter.to_string()].self_stake, 1);
+    }
+
+    #[test]
+    fn a_body_over_the_cap_reads_as_too_large() {
+        let accounts = vec![stake_account(Pubkey::new_unique(), Pubkey::new_unique())];
+        let body = keyed_accounts_body(&accounts, STAKE_FIELDS);
+        let cap = body.len() as u64;
+        assert!(matches!(
+            collect_data(&body, cap).unwrap(),
+            SliceFetch::Fetched(_)
+        ));
+        assert_eq!(collect_data(&body, cap - 1).unwrap(), SliceFetch::TooLarge);
+    }
+
+    #[test]
+    fn a_probe_reads_the_sliced_bytes_of_each_account() {
+        let accounts: Vec<_> = [7, 7, 9]
+            .iter()
+            .map(|&v| stake_account(Pubkey::new_unique(), key(&[v], 0)))
+            .collect();
+        let range = UiDataSliceConfig {
+            offset: VOTER_OFFSET,
+            length: 1,
         };
-        let keyed = RpcKeyedAccount {
-            pubkey: pubkey.to_string(),
-            account: encode_ui_account(&pubkey, &account, UiAccountEncoding::Base64, None, None),
-        };
-        let body =
-            serde_json::to_vec(&json!({"jsonrpc": "2.0", "result": [keyed], "id": 1})).unwrap();
+        let body = keyed_accounts_body(&accounts, range);
         assert_eq!(
-            parse_program_accounts_response(&body).unwrap(),
-            SliceFetch::Fetched(vec![(pubkey, account)])
+            collect_data(&body, 1 << 20).unwrap(),
+            SliceFetch::Fetched(vec![vec![7], vec![7], vec![9]])
         );
-    }
-
-    #[test]
-    fn a_body_over_the_cap_is_not_read_into_memory() {
-        assert_eq!(read_capped(&[0u8; 8][..], 8).unwrap(), Some(vec![0u8; 8]));
-        assert_eq!(read_capped(&[0u8; 9][..], 8).unwrap(), None);
     }
 }

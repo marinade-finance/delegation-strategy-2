@@ -251,7 +251,7 @@ pub fn collect_validators_info(
         validator_params.allow_skipped_stake_pages,
         &vote_account_states,
     )?;
-    let validators_info = get_validators_info(&client)?;
+    let validators_info = get_validators_info(&client, validator_params.rpc_attempts)?;
     let node_info = get_cluster_nodes_info(&client)?;
 
     info!(
