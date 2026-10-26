@@ -200,10 +200,10 @@ pub struct Snapshot {
 }
 
 // Only accounts with a known vote state version and balance take part, so the rest get no verdict.
-fn vat_admission_inputs(
-    vote_accounts: &RpcVoteAccountStatus,
-    vote_account_states: &HashMap<String, VoteStateFields>,
-) -> HashMap<String, VatAdmissionInput> {
+fn vat_admission_inputs<'a>(
+    vote_accounts: &'a RpcVoteAccountStatus,
+    vote_account_states: &'a HashMap<String, VoteStateFields>,
+) -> impl Iterator<Item = VatAdmissionInput> + 'a {
     vote_accounts
         .current
         .iter()
@@ -211,17 +211,14 @@ fn vat_admission_inputs(
         .filter_map(|vote_account| {
             let state = vote_account_states.get(&vote_account.vote_pubkey)?;
             state.inflation_rewards_commission_bps_is_v4?;
-            Some((
-                vote_account.vote_pubkey.clone(),
-                VatAdmissionInput {
-                    stake: vote_account.activated_stake,
-                    lamports: state.lamports?,
-                    pending_delegator_rewards: state.pending_delegator_rewards.unwrap_or(0),
-                    has_bls_pubkey: state.bls_pubkey.is_some(),
-                },
-            ))
+            Some(VatAdmissionInput {
+                vote_account: vote_account.vote_pubkey.clone(),
+                stake: vote_account.activated_stake,
+                lamports: state.lamports?,
+                pending_delegator_rewards: state.pending_delegator_rewards.unwrap_or(0),
+                has_bls_pubkey: state.bls_pubkey.is_some(),
+            })
         })
-        .collect()
 }
 
 pub fn collect_validators_info(
@@ -277,7 +274,7 @@ pub fn collect_validators_info(
     let vote_account_states = get_vote_account_states(&client)?;
     let collector_health = get_collector_health(&client, &vote_account_states)?;
     let vat_admission = compute_vat_admission(
-        &vat_admission_inputs(&vote_accounts, &vote_account_states),
+        vat_admission_inputs(&vote_accounts, &vote_account_states),
         get_vat_params(&client, epoch)?,
     );
     let stake_account_totals = get_stake_account_totals(
