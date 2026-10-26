@@ -1974,7 +1974,7 @@ mod vote_state_tests {
         );
     }
 
-    // Mainnet vote account data at slot 461648323.
+    // Mainnet vote account data.
     const MAINNET_V4_BLS_KEY: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/vote-v4-bls-key.bin"
@@ -1989,27 +1989,75 @@ mod vote_state_tests {
     ));
 
     #[test]
-    fn a_mainnet_v4_account_with_a_bls_key_yields_the_key_the_rpc_shows() {
-        let state = parse_vote_state(MAINNET_V4_BLS_KEY).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
+    fn a_mainnet_v4_account_with_a_bls_key_yields_what_the_rpc_shows() {
         assert_eq!(
-            state.bls_pubkey.as_deref(),
-            Some("76LeAGQoqbrHuZz3Eo9HsaPXhLyEpXCeXSprRVwY6hJEayCq9C7sbUMwDRAHUHPqh9")
+            parse_vote_state(MAINNET_V4_BLS_KEY).unwrap(),
+            VoteStateFields {
+                authorized_withdrawer: Pubkey::from_str_const(
+                    "FAAPD22VmDFMU1GAFiFb6bdqoLi9ALpMgG5uWh7WAtJg"
+                ),
+                inflation_rewards_commission_bps: Some(500),
+                inflation_rewards_commission_bps_is_v4: Some(true),
+                inflation_rewards_collector: Some(Pubkey::from_str_const(
+                    "23HHeLNoi82XXUu3Xu8Xepp7cHkT7K9T4nZDY7m2u1Rz"
+                )),
+                block_revenue_collector: Some(Pubkey::from_str_const(
+                    "9Wmaz9VPpEnH67ZqrvYd9bcH66DtsGaEKcSQE1ac5wkf"
+                )),
+                block_revenue_commission_bps: Some(10_000),
+                pending_delegator_rewards: Some(0),
+                bls_pubkey: Some(
+                    "5ke2aAR9FRfaKM2b1VVKR3JZxUdADLZ4n6xLmGm22U6WC5NytBbHeZxtNpVeptRczL"
+                        .to_string()
+                ),
+                lamports: None,
+            }
         );
     }
 
     #[test]
-    fn a_mainnet_v4_account_without_a_bls_key_yields_none() {
-        let state = parse_vote_state(MAINNET_V4_NO_BLS_KEY).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
-        assert_eq!(state.bls_pubkey, None);
+    fn a_mainnet_v4_account_without_a_bls_key_yields_what_the_rpc_shows() {
+        assert_eq!(
+            parse_vote_state(MAINNET_V4_NO_BLS_KEY).unwrap(),
+            VoteStateFields {
+                authorized_withdrawer: Pubkey::from_str_const(
+                    "5uXynqRxXyyuZQKiPxtHv5xM2d7hds7YPidAjp4o4ufz"
+                ),
+                inflation_rewards_commission_bps: Some(10_000),
+                inflation_rewards_commission_bps_is_v4: Some(true),
+                inflation_rewards_collector: Some(Pubkey::from_str_const(
+                    "F3Bv6jaD8dAK8UwTshyKbji58fUDWUP36oee8hu53pRP"
+                )),
+                block_revenue_collector: Some(Pubkey::from_str_const(
+                    "FdPyYztZ3DoKAiXxQKXzrbAXHH81kw6JWfG3JyiJy35E"
+                )),
+                block_revenue_commission_bps: Some(10_000),
+                pending_delegator_rewards: Some(0),
+                bls_pubkey: None,
+                lamports: None,
+            }
+        );
     }
 
+    // The RPC shows v4 defaults for the collectors of a v3 state. The parser gives None instead.
     #[test]
-    fn a_mainnet_v3_account_yields_no_bls_key() {
-        let state = parse_vote_state(MAINNET_V3).unwrap();
-        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(false));
-        assert_eq!(state.bls_pubkey, None);
+    fn a_mainnet_v3_account_yields_the_withdrawer_and_commission_the_rpc_shows() {
+        assert_eq!(
+            parse_vote_state(MAINNET_V3).unwrap(),
+            VoteStateFields {
+                authorized_withdrawer: Pubkey::from_str_const(
+                    "94Bcawtto962NFH5k3LcSz5b4ytVwyfMQVUW5guD8yaS"
+                ),
+                inflation_rewards_commission_bps: Some(500),
+                inflation_rewards_commission_bps_is_v4: Some(false),
+                inflation_rewards_collector: None,
+                block_revenue_collector: None,
+                block_revenue_commission_bps: None,
+                pending_delegator_rewards: None,
+                bls_pubkey: None,
+                lamports: None,
+            }
+        );
     }
 
     #[test]
