@@ -179,6 +179,9 @@ pub struct ValidatorSnapshot {
     pub block_revenue_collector_healthy: Option<bool>,
     #[serde(default)]
     pub vote_account_lamports: Option<u64>,
+    /// Base58 of the compressed key, as solana-snapshot-parser writes it.
+    #[serde(default)]
+    pub bls_pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -408,6 +411,9 @@ pub fn collect_validators_info(
             block_revenue_collector_lamports: block_revenue_health.map(|h| h.lamports),
             block_revenue_collector_healthy: block_revenue_health.and_then(|h| h.healthy),
             vote_account_lamports: vote_state.and_then(|state| state.lamports),
+            bls_pubkey: vote_state
+                .and_then(|state| state.bls_pubkey)
+                .map(|key| solana_sdk::bs58::encode(key).into_string()),
         });
     }
 

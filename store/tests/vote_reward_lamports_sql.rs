@@ -51,6 +51,7 @@ fn performance_snapshot(created_at: &str, performance: ValidatorPerformance) -> 
             inflation_taper: 0f64,
         }),
         vat_minimum_balance: None,
+        vat_lamports_per_epoch: None,
         validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance)]),
         nodes: Default::default(),
         rewards: Some(HashMap::from([(

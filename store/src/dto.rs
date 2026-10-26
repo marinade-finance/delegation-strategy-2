@@ -211,6 +211,7 @@ pub struct Validator {
     pub block_revenue_collector_lamports: Option<Decimal>,
     pub block_revenue_collector_healthy: Option<bool>,
     pub vote_account_lamports: Option<Decimal>,
+    pub bls_pubkey: Option<String>,
 }
 
 impl Validator {
@@ -264,6 +265,7 @@ impl Validator {
             block_revenue_collector_lamports: v.block_revenue_collector_lamports.map(Decimal::from),
             block_revenue_collector_healthy: v.block_revenue_collector_healthy,
             vote_account_lamports: v.vote_account_lamports.map(Decimal::from),
+            bls_pubkey: v.bls_pubkey.clone(),
             version: v.performance.version.clone(),
             client_id: v.performance.client_id.map(|id| id as i32),
             client_id_raw: v.performance.client_id_raw.clone(),
@@ -336,8 +338,14 @@ pub struct ValidatorEpochStats {
     pub pending_delegator_rewards: Option<Decimal>,
     /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
     pub vote_account_lamports: Option<Decimal>,
-    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active. Only the balance check applies for now: `vote_account_lamports` against the `vat_minimum_balance` of the epoch at the top level of `/validators`. Null when an input is null.
+    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active: the agave VAT filter applied to the stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. Null when `vote_account_lamports` or the minimum is null.
     pub vat_eligible: Option<bool>,
+    /// Base58 compressed BLS key of the vote account. Null in epochs before Alpenglow.
+    pub bls_pubkey: Option<String>,
+    /// The first SIMD-0357 check that fails: `no_bls_key`, `no_stake`, `low_balance` or `below_cutoff` (outside the top 2000 by stake, ties at the cut-off included). Null when admitted or when `vat_eligible` is null.
+    pub vat_rejection_reason: Option<String>,
+    /// Whole epochs of VAT the vote account pays before its balance falls below rent: `(vote_account_lamports - pending_delegator_rewards - rent) / VAT`, at the VAT of the next epoch. A vote account at 0% commission or with an external inflation collector gets no lamports under Alpenglow, so this counts down by 1 each epoch. Null when the `cluster_info` of the epoch has no VAT.
+    pub vat_runway_epochs: Option<Decimal>,
     pub version: Option<String>,
     pub mev_commission_bps: Option<i32>,
     pub priority_commission_bps: Option<i32>,
@@ -453,6 +461,12 @@ pub struct ValidatorRecord {
     pub vote_account_lamports: Option<Decimal>,
     /// See `ValidatorEpochStats::vat_eligible`.
     pub vat_eligible: Option<bool>,
+    /// See `ValidatorEpochStats::bls_pubkey`.
+    pub bls_pubkey: Option<String>,
+    /// See `ValidatorEpochStats::vat_rejection_reason`.
+    pub vat_rejection_reason: Option<String>,
+    /// See `ValidatorEpochStats::vat_runway_epochs`.
+    pub vat_runway_epochs: Option<Decimal>,
     pub commission_aggregated: Option<i32>,
     pub rugged_commission_occurrences: u64,
     pub rugged_commission: bool,
