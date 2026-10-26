@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use log::info;
 use serde::{Deserialize, Serialize};
 use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::clock::Epoch;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::slot_params::get_slot_time_activations;
+use crate::solana_service::VoteStateFields;
 use crate::vat::get_vat_minimum_balance;
 
 /// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`.
@@ -43,12 +45,12 @@ impl VatAdmissionReason {
 }
 
 #[derive(Clone, Debug)]
-pub struct VatAdmissionInput {
-    pub vote_account: String,
-    pub stake: u64,
-    pub lamports: u64,
-    pub pending_delegator_rewards: u64,
-    pub has_bls_pubkey: bool,
+struct VatCandidate {
+    vote_account: String,
+    stake: u64,
+    lamports: u64,
+    pending_delegator_rewards: u64,
+    has_bls_pubkey: bool,
 }
 
 /// The parameters of the filter at the end of `epoch`.
@@ -77,10 +79,27 @@ pub fn get_vat_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<VatPar
 
 /// agave `VoteAccounts::clone_and_filter_for_vat`. None is admitted.
 pub fn compute_vat_admission(
-    inputs: impl IntoIterator<Item = VatAdmissionInput>,
+    vote_accounts: &RpcVoteAccountStatus,
+    vote_account_states: &HashMap<String, VoteStateFields>,
     params: VatParams,
 ) -> HashMap<String, Option<VatAdmissionReason>> {
-    let verdicts = filter_for_vat(inputs, params, MAX_ALPENGLOW_VOTE_ACCOUNTS);
+    // Only accounts with a known vote state version and balance take part, so the rest get no verdict.
+    let candidates = vote_accounts
+        .current
+        .iter()
+        .chain(vote_accounts.delinquent.iter())
+        .filter_map(|vote_account| {
+            let state = vote_account_states.get(&vote_account.vote_pubkey)?;
+            state.inflation_rewards_commission_bps_is_v4?;
+            Some(VatCandidate {
+                vote_account: vote_account.vote_pubkey.clone(),
+                stake: vote_account.activated_stake,
+                lamports: state.lamports?,
+                pending_delegator_rewards: state.pending_delegator_rewards.unwrap_or(0),
+                has_bls_pubkey: state.bls_pubkey.is_some(),
+            })
+        });
+    let verdicts = filter_for_vat(candidates, params, MAX_ALPENGLOW_VOTE_ACCOUNTS);
     let mut counts: HashMap<&'static str, usize> = HashMap::new();
     for reason in verdicts.values() {
         *counts
@@ -92,44 +111,44 @@ pub fn compute_vat_admission(
 }
 
 fn filter_for_vat(
-    inputs: impl IntoIterator<Item = VatAdmissionInput>,
+    candidates: impl IntoIterator<Item = VatCandidate>,
     params: VatParams,
     max_vote_accounts: usize,
 ) -> HashMap<String, Option<VatAdmissionReason>> {
-    let mut checked: Vec<(VatAdmissionInput, Option<VatAdmissionReason>)> = inputs
+    let mut checked: Vec<(VatCandidate, Option<VatAdmissionReason>)> = candidates
         .into_iter()
-        .map(|input| {
+        .map(|candidate| {
             let available_balance = if params.subtract_pending_delegator_rewards {
-                input
+                candidate
                     .lamports
-                    .saturating_sub(input.pending_delegator_rewards)
+                    .saturating_sub(candidate.pending_delegator_rewards)
             } else {
-                input.lamports
+                candidate.lamports
             };
-            let reason = if !input.has_bls_pubkey {
+            let reason = if !candidate.has_bls_pubkey {
                 Some(VatAdmissionReason::NoBlsKey)
-            } else if input.stake == 0 {
+            } else if candidate.stake == 0 {
                 Some(VatAdmissionReason::NoStake)
             } else if available_balance < params.minimum_balance {
                 Some(VatAdmissionReason::LowBalance)
             } else {
                 None
             };
-            (input, reason)
+            (candidate, reason)
         })
         .collect();
 
     let mut passed_stakes: Vec<u64> = checked
         .iter()
         .filter(|(_, reason)| reason.is_none())
-        .map(|(input, _)| input.stake)
+        .map(|(candidate, _)| candidate.stake)
         .collect();
     if passed_stakes.len() > max_vote_accounts {
         passed_stakes.sort_unstable_by(|a, b| b.cmp(a));
         // The first truncated account: agave drops every account with this stake or less, ties included.
         let floor_stake = passed_stakes[max_vote_accounts];
-        for (input, reason) in &mut checked {
-            if reason.is_none() && input.stake <= floor_stake {
+        for (candidate, reason) in &mut checked {
+            if reason.is_none() && candidate.stake <= floor_stake {
                 *reason = Some(VatAdmissionReason::BelowStakeCutoff);
             }
         }
@@ -137,7 +156,7 @@ fn filter_for_vat(
 
     checked
         .into_iter()
-        .map(|(input, reason)| (input.vote_account, reason))
+        .map(|(candidate, reason)| (candidate.vote_account, reason))
         .collect()
 }
 
@@ -150,14 +169,14 @@ mod tests {
         subtract_pending_delegator_rewards: true,
     };
 
-    fn input(
+    fn candidate(
         vote_account: &str,
         stake: u64,
         lamports: u64,
         pending: u64,
         has_bls_pubkey: bool,
-    ) -> VatAdmissionInput {
-        VatAdmissionInput {
+    ) -> VatCandidate {
+        VatCandidate {
             vote_account: vote_account.to_string(),
             stake,
             lamports,
@@ -166,8 +185,8 @@ mod tests {
         }
     }
 
-    fn admitted(vote_account: &str, stake: u64) -> VatAdmissionInput {
-        input(vote_account, stake, 1_000, 0, true)
+    fn admitted(vote_account: &str, stake: u64) -> VatCandidate {
+        candidate(vote_account, stake, 1_000, 0, true)
     }
 
     #[test]
@@ -175,9 +194,9 @@ mod tests {
         let verdicts = filter_for_vat(
             vec![
                 admitted("ok", 5),
-                input("no_key", 0, 0, 0, false),
-                input("no_stake", 0, 0, 0, true),
-                input("poor", 5, 999, 0, true),
+                candidate("no_key", 0, 0, 0, false),
+                candidate("no_stake", 0, 0, 0, true),
+                candidate("poor", 5, 999, 0, true),
             ],
             PARAMS,
             10,
@@ -190,7 +209,7 @@ mod tests {
 
     #[test]
     fn pending_delegator_rewards_count_only_once_block_revenue_sharing_is_active() {
-        let rows = vec![input("v", 5, 1_500, 600, true)];
+        let rows = vec![candidate("v", 5, 1_500, 600, true)];
         assert_eq!(
             filter_for_vat(rows.clone(), PARAMS, 10)["v"],
             Some(VatAdmissionReason::LowBalance)
@@ -204,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_balance_equal_to_the_minimum_passes() {
-        let rows = vec![input("v", 5, 1_600, 600, true)];
+        let rows = vec![candidate("v", 5, 1_600, 600, true)];
         assert_eq!(filter_for_vat(rows, PARAMS, 10)["v"], None);
     }
 
@@ -241,7 +260,7 @@ mod tests {
         let rows = vec![
             admitted("a", 30),
             admitted("b", 20),
-            input("big_but_poor", 100, 0, 0, true),
+            candidate("big_but_poor", 100, 0, 0, true),
         ];
         let verdicts = filter_for_vat(rows, PARAMS, 2);
         assert_eq!(verdicts["a"], None);

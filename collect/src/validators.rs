@@ -3,9 +3,7 @@ use crate::marinade_service::*;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use crate::validators_performance::{validators_performance, ValidatorPerformance};
-use crate::vat_admission::{
-    compute_vat_admission, get_vat_params, VatAdmissionInput, VatAdmissionReason,
-};
+use crate::vat_admission::{compute_vat_admission, get_vat_params, VatAdmissionReason};
 use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
@@ -13,7 +11,6 @@ use clap::Parser;
 use log::{info, warn};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -199,28 +196,6 @@ pub struct Snapshot {
     pub validators: Vec<ValidatorSnapshot>,
 }
 
-// Only accounts with a known vote state version and balance take part, so the rest get no verdict.
-fn vat_admission_inputs<'a>(
-    vote_accounts: &'a RpcVoteAccountStatus,
-    vote_account_states: &'a HashMap<String, VoteStateFields>,
-) -> impl Iterator<Item = VatAdmissionInput> + 'a {
-    vote_accounts
-        .current
-        .iter()
-        .chain(vote_accounts.delinquent.iter())
-        .filter_map(|vote_account| {
-            let state = vote_account_states.get(&vote_account.vote_pubkey)?;
-            state.inflation_rewards_commission_bps_is_v4?;
-            Some(VatAdmissionInput {
-                vote_account: vote_account.vote_pubkey.clone(),
-                stake: vote_account.activated_stake,
-                lamports: state.lamports?,
-                pending_delegator_rewards: state.pending_delegator_rewards.unwrap_or(0),
-                has_bls_pubkey: state.bls_pubkey.is_some(),
-            })
-        })
-}
-
 pub fn collect_validators_info(
     common_params: CommonParams,
     validator_params: ValidatorsParams,
@@ -274,7 +249,8 @@ pub fn collect_validators_info(
     let vote_account_states = get_vote_account_states(&client)?;
     let collector_health = get_collector_health(&client, &vote_account_states)?;
     let vat_admission = compute_vat_admission(
-        vat_admission_inputs(&vote_accounts, &vote_account_states),
+        &vote_accounts,
+        &vote_account_states,
         get_vat_params(&client, epoch)?,
     );
     let stake_account_totals = get_stake_account_totals(
