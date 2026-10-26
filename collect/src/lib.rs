@@ -12,5 +12,6 @@ pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_performance;
 pub mod validators_sandwiches;
+pub mod vat;
 pub mod vat_admission;
 pub mod whois_service;

@@ -61,6 +61,7 @@ enum StoreCommand {
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
     CheckVatAdmission(CheckVatAdmissionParams),
+    Migrate,
 }
 
 pub mod cluster_info;
@@ -78,6 +79,7 @@ pub mod utils;
 pub mod validators;
 pub mod validators_jito;
 pub mod versions;
+pub mod vote_performance;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -155,5 +157,6 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::CheckVatAdmission(check_params) => {
             check_vat_admission(check_params, &mut psql_client).await
         }
+        StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }
 }

@@ -78,7 +78,7 @@ STAKE_CONTROL_ALGO <- 1 - STAKE_CONTROL_VEMNDE - STAKE_CONTROL_MSOL
 # Perform min-max normalization of algo staking formula's components
 validators$normalized_dc_concentration <- normalize(1 - validators$avg_dc_concentration)
 validators$normalized_grace_skip_rate <- normalize(1 - validators$avg_grace_skip_rate)
-validators$normalized_adjusted_credits <- normalize(validators$avg_adjusted_credits)
+validators$normalized_adjusted_credits <- normalize(validators$avg_adjusted_vote_performance)
 validators$rank_dc_concentration <- rank(-validators$normalized_dc_concentration, ties.method="min")
 validators$rank_grace_skip_rate <- rank(-validators$normalized_grace_skip_rate, ties.method="min")
 validators$rank_adjusted_credits <- rank(-validators$normalized_adjusted_credits, ties.method="min")
@@ -277,9 +277,9 @@ validators$target_stake_msol <- round(validators$msol_power * STAKE_CONTROL_MSOL
 validators$target_stake_algo <- round(validators$score * validators$in_algo_stake_set / sum(validators$score * validators$in_algo_stake_set) * STAKE_CONTROL_ALGO_SOL)
 validators$target_stake <- validators$target_stake_vemnde + validators$target_stake_algo + validators$target_stake_msol
 
-perf_target_stake_vemnde <- sum(validators$avg_adjusted_credits * validators$target_stake_vemnde) / sum(validators$target_stake_vemnde)
-perf_target_stake_algo <- sum(validators$avg_adjusted_credits * validators$target_stake_algo) / sum(validators$target_stake_algo)
-perf_target_stake_msol <- sum(validators$avg_adjusted_credits * validators$target_stake_msol) / sum(validators$target_stake_msol)
+perf_target_stake_vemnde <- sum(validators$avg_adjusted_vote_performance * validators$target_stake_vemnde, na.rm = TRUE) / sum(validators$target_stake_vemnde)
+perf_target_stake_algo <- sum(validators$avg_adjusted_vote_performance * validators$target_stake_algo, na.rm = TRUE) / sum(validators$target_stake_algo)
+perf_target_stake_msol <- sum(validators$avg_adjusted_vote_performance * validators$target_stake_msol, na.rm = TRUE) / sum(validators$target_stake_msol)
 
 print(t(data.frame(
   TOTAL_STAKE,

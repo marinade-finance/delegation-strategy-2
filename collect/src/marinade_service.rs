@@ -1,5 +1,7 @@
+use crate::leader_schedule::{MAINNET_BETA_GENESIS_HASH, TESTNET_GENESIS_HASH};
 use crate::validators::BondsResponse;
 use crate::validators::ValidatorBond;
+use anyhow::bail;
 use solana_account_decoder::*;
 use solana_program::{
     clock::*,
@@ -70,11 +72,12 @@ pub fn get_foundation_stakes(
     epoch: Epoch,
     stake_history: &StakeHistory,
 ) -> anyhow::Result<HashMap<String, u64>> {
-    let mut foundation_authority = pubkey!("mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5");
-
-    if rpc_client.url().contains("testnet") {
-        foundation_authority = pubkey!("4UeMu1PU7goa4rYzViSiuZjDvo9px3JtsXUoinmkSrCX");
-    }
+    let genesis_hash = rpc_client.get_genesis_hash()?.to_string();
+    let foundation_authority = match genesis_hash.as_str() {
+        MAINNET_BETA_GENESIS_HASH => pubkey!("mpa4abUkjQoAvPzREkh5Mo75hZhPFQ2FSH6w7dWKuQ5"),
+        TESTNET_GENESIS_HASH => pubkey!("4UeMu1PU7goa4rYzViSiuZjDvo9px3JtsXUoinmkSrCX"),
+        _ => bail!("No foundation delegation authority known for the cluster with genesis hash {genesis_hash}"),
+    };
 
     let foundation_stakes = get_stakes_grouped_by_validator(
         rpc_client,

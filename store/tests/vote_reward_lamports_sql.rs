@@ -50,6 +50,7 @@ fn performance_snapshot(created_at: &str, performance: ValidatorPerformance) -> 
             inflation: 0f64,
             inflation_taper: 0f64,
         }),
+        vat_minimum_balance: None,
         validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance)]),
         nodes: Default::default(),
         rewards: Some(HashMap::from([(
@@ -126,7 +127,8 @@ async fn an_alpenglow_epoch_stores_null_credits() {
     assert_eq!(record.credits, None);
     assert_eq!(record.vote_reward_lamports, Some(298929716564));
     assert_eq!(record.epoch_stats[0].credits, None);
-    assert!(record.epoch_stats[0].apy.is_some());
+    // No row for EPOCH - 1, so no epoch_stake
+    assert!(record.epoch_stats[0].apy.is_none());
 
     let mut snapshot = validator_snapshot(EPOCH - 1, "identityAlpenglow", VOTE_ACCOUNT);
     snapshot.validators[0].performance = alpenglow_performance();
@@ -136,6 +138,7 @@ async fn an_alpenglow_epoch_stores_null_credits() {
     assert_eq!(record.credits, None);
     assert_eq!(record.vote_reward_lamports, Some(298929716564));
     assert_eq!(record.epoch_stats[0].credits, None);
+    assert!(record.epoch_stats[0].apy.is_some());
 }
 
 async fn load_record(client: &Client) -> ValidatorRecord {
@@ -146,6 +149,7 @@ async fn load_record(client: &Client) -> ValidatorRecord {
         1,
         1,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap()

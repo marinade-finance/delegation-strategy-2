@@ -44,6 +44,7 @@ async fn epoch_stats(client: &Client) -> ValidatorEpochStats {
         3,
         3,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap()

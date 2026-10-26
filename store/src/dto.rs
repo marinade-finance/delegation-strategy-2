@@ -342,6 +342,10 @@ pub struct ValidatorEpochStats {
     pub block_revenue_commission_bps: Option<i32>,
     /// Inflation rewards accrued to this vote account and not yet distributed to its delegators. Null on a pre-v4 vote state.
     pub pending_delegator_rewards: Option<Decimal>,
+    /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
+    pub vote_account_lamports: Option<Decimal>,
+    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active. Only the balance check applies for now: `vote_account_lamports` against the `vat_minimum_balance` of the epoch at the top level of `/validators`. Null when an input is null.
+    pub vat_eligible: Option<bool>,
     /// Base58 compressed BLS public key from the v4 vote state. Null on a pre-v4 state and on a v4 state without a key.
     pub bls_pubkey: Option<String>,
     /// SIMD-0357 admission for the inflation rewards of this epoch: agave's filter applied to the last snapshot before the epoch closed. False means the stakers get no inflation rewards for this epoch. Null where the vote state did not parse, and on rows stored before DS2 collected it.
@@ -459,6 +463,10 @@ pub struct ValidatorRecord {
     pub block_revenue_commission_bps: Option<i32>,
     /// See `ValidatorEpochStats::pending_delegator_rewards`.
     pub pending_delegator_rewards: Option<Decimal>,
+    /// See `ValidatorEpochStats::vote_account_lamports`.
+    pub vote_account_lamports: Option<Decimal>,
+    /// See `ValidatorEpochStats::vat_eligible`.
+    pub vat_eligible: Option<bool>,
     pub commission_aggregated: Option<i32>,
     pub rugged_commission_occurrences: u64,
     pub rugged_commission: bool,
@@ -497,6 +505,9 @@ pub struct ValidatorRecord {
     pub credits: Option<u64>,
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
+    /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
+    #[serde(skip_serializing)]
+    pub vote_performance: Option<f64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,
     pub epoch_stats: Vec<ValidatorEpochStats>,
@@ -530,7 +541,9 @@ pub struct ValidatorRecord {
 impl ValidatorRecord {
     pub fn vote_reward_per_stake(&self) -> Option<Decimal> {
         let lamports = self.vote_reward_lamports?;
-        (!self.activated_stake.is_zero()).then(|| Decimal::from(lamports) / self.activated_stake)
+        // The first entry is the epoch of `vote_reward_lamports`
+        let epoch_stake = self.epoch_stats.first()?.epoch_stake?;
+        (!epoch_stake.is_zero()).then(|| Decimal::from(lamports) / epoch_stake)
     }
 }
 
@@ -899,8 +912,11 @@ pub struct ValidatorGroupRecord {
     pub net_apy: Option<f64>,
     pub take_rate: Option<f64>,
     pub credits: Option<f64>,
-    /// Stake-weighted mean of the members' `vote_reward_lamports / activated_stake`. Null before Alpenglow.
+    /// Stake-weighted mean of the members' `vote_reward_lamports` over the `activated_stake` of the previous epoch. Null before Alpenglow.
     pub vote_reward_per_stake: Option<f64>,
+    /// Stake-weighted mean of the members' `vote_performance`.
+    #[serde(skip_serializing)]
+    pub vote_performance: Option<f64>,
     pub marinade_score: Option<f64>,
     pub apy: Option<f64>,
     pub commission: Option<f64>,
@@ -1162,6 +1178,8 @@ pub struct ValidatorAggregatedFlat {
     pub client_vendor: String,
     pub client_lineage: String,
     pub max_inflation_rewards_commission_bps: Option<i32>,
+    /// Mean of `vote_performance × (1 - commission)` over the epochs that have a `vote_performance`.
+    pub avg_adjusted_vote_performance: Option<f64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

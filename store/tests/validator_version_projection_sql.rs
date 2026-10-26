@@ -61,6 +61,7 @@ async fn load_validators_projects_the_newest_observed_version() {
         3,
         1,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap();

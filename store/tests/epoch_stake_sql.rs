@@ -32,6 +32,7 @@ async fn epoch_stakes(client: &Client) -> HashMap<u64, Option<Decimal>> {
         3,
         3,
         &ValidatorOverlays::default(),
+        &Default::default(),
     )
     .await
     .unwrap()

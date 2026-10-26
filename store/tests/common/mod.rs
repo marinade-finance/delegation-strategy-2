@@ -15,7 +15,7 @@ use tokio_postgres::{Client, NoTls};
 
 pub const POSTGRES_URL_ENV: &str = "DS_TEST_POSTGRES_URL";
 
-pub async fn migrated_client(schema: &str) -> Option<Client> {
+pub async fn empty_client(schema: &str) -> Option<Client> {
     let url = std::env::var(POSTGRES_URL_ENV).ok()?;
 
     let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
@@ -34,21 +34,12 @@ pub async fn migrated_client(schema: &str) -> Option<Client> {
         .await
         .unwrap();
 
-    let migrations_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../migrations");
-    let mut migrations: Vec<_> = std::fs::read_dir(migrations_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
-        .collect();
-    migrations.sort();
-    for migration in migrations {
-        let sql = std::fs::read_to_string(&migration).unwrap();
-        client
-            .batch_execute(&sql)
-            .await
-            .unwrap_or_else(|err| panic!("migration {} failed: {err}", migration.display()));
-    }
+    Some(client)
+}
 
+pub async fn migrated_client(schema: &str) -> Option<Client> {
+    let mut client = empty_client(schema).await?;
+    store::migrations::migrate(&mut client).await.unwrap();
     Some(client)
 }
 
@@ -179,6 +170,7 @@ pub fn performance_snapshot(
             inflation: 0f64,
             inflation_taper: 0f64,
         }),
+        vat_minimum_balance: None,
         validators,
         nodes: Default::default(),
         rewards: Some(rewards),

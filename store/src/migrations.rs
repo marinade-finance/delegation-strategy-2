@@ -1,0 +1,238 @@
+use anyhow::{bail, Context, Result};
+use include_dir::{include_dir, Dir, File};
+use log::info;
+use tokio_postgres::{Client, Transaction};
+
+pub static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../migrations");
+
+/// Runs every file in `migrations/` that the `migrations` table does not list, in number order,
+/// all in one transaction. An error rolls back every file of the run.
+pub async fn migrate(client: &mut Client) -> Result<()> {
+    let files = migration_files()?
+        .into_iter()
+        .map(|file| {
+            let name = file.path().to_string_lossy().into_owned();
+            let sql = file
+                .contents_utf8()
+                .with_context(|| format!("migration {name} is not UTF-8"))?;
+            Ok((name, sql))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if files.is_empty() {
+        bail!("no migration files found");
+    }
+    apply(client, &files).await
+}
+
+/// Runs the `(name, sql)` pairs that the `migrations` table does not list, in the given order,
+/// all in one transaction.
+pub async fn apply(client: &mut Client, files: &[(String, &str)]) -> Result<()> {
+    let tx = client.transaction().await?;
+    tx.batch_execute(
+        "SELECT pg_advisory_xact_lock(hashtext('migrations'));
+         CREATE TABLE IF NOT EXISTS migrations (
+             name TEXT PRIMARY KEY,
+             applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+         )",
+    )
+    .await?;
+    tx.commit().await?;
+
+    let tx = client.transaction().await?;
+    // The deferred trigger fires at every commit, and only the last commit below sets
+    // `migrate.commit`. A top-level COMMIT or END in a file fails and rolls back the run.
+    tx.batch_execute(
+        "SELECT pg_advisory_xact_lock(hashtext('migrations'));
+         CREATE OR REPLACE FUNCTION pg_temp.migrate_commit_guard() RETURNS trigger
+         LANGUAGE plpgsql AS $$
+         BEGIN
+             IF current_setting('migrate.commit', true) IS DISTINCT FROM 'on' THEN
+                 RAISE EXCEPTION 'a migration file commits the migrate transaction';
+             END IF;
+             RETURN NULL;
+         END $$;
+         CREATE TEMP TABLE migrate_commit_guard (id INT) ON COMMIT DROP;
+         CREATE CONSTRAINT TRIGGER migrate_commit_guard AFTER INSERT ON migrate_commit_guard
+             DEFERRABLE INITIALLY DEFERRED
+             FOR EACH ROW EXECUTE FUNCTION pg_temp.migrate_commit_guard();
+         INSERT INTO migrate_commit_guard VALUES (1)",
+    )
+    .await?;
+    let xid = current_xid(&tx).await?;
+    for (name, sql) in files {
+        let applied = tx
+            .query_opt("SELECT 1 FROM migrations WHERE name = $1", &[name])
+            .await?
+            .is_some();
+        if applied {
+            continue;
+        }
+        info!("Applying migration {name}");
+        tx.batch_execute(sql)
+            .await
+            .with_context(|| format!("applying migration {name}"))?;
+        if current_xid(&tx).await? != xid {
+            bail!(
+                "migration {name} ends the migrate transaction with a top-level ROLLBACK or ABORT, \
+                 and the statements after it in {name} are committed"
+            );
+        }
+        tx.execute("INSERT INTO migrations (name) VALUES ($1)", &[name])
+            .await?;
+    }
+    tx.batch_execute("SET LOCAL migrate.commit = 'on'").await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn current_xid(tx: &Transaction<'_>) -> Result<i64> {
+    Ok(tx.query_one("SELECT txid_current()", &[]).await?.get(0))
+}
+
+pub fn migration_files() -> Result<Vec<&'static File<'static>>> {
+    let names = MIGRATIONS
+        .files()
+        .map(|file| {
+            file.path()
+                .to_str()
+                .with_context(|| format!("migration {:?} is not UTF-8", file.path()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(sort_migration_filenames_by_number(names)?
+        .into_iter()
+        .filter_map(|name| MIGRATIONS.get_file(name))
+        .collect())
+}
+
+/// Each name is `<at least 4 digits>-<name>.sql`, and every name has the same digit count.
+/// Names with the same number keep name order.
+fn sort_migration_filenames_by_number<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<&'a str>> {
+    let mut numbered = names
+        .into_iter()
+        .map(|name| {
+            let digits = number_prefix(name).with_context(|| {
+                format!("migration {name} does not match <4 or more digits>-<name>.sql")
+            })?;
+            let number: u64 = digits
+                .parse()
+                .with_context(|| format!("migration {name} has a number that is too large"))?;
+            Ok((digits.len(), number, name))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if let Some(&(width, _, first)) = numbered.first() {
+        if let Some(&(other, _, name)) = numbered.iter().find(|(digits, _, _)| *digits != width) {
+            bail!("migration {name} has a {other}-digit number, but {first} has {width} digits");
+        }
+    }
+
+    numbered.sort_by_key(|&(_, number, name)| (number, name));
+    Ok(numbered.into_iter().map(|(_, _, name)| name).collect())
+}
+
+fn number_prefix(name: &str) -> Option<&str> {
+    let (digits, rest) = name.split_once('-')?;
+    let stem = rest.strip_suffix(".sql")?;
+    let is_number = digits.len() >= 4 && digits.bytes().all(|b| b.is_ascii_digit());
+    (is_number && !stem.is_empty()).then_some(digits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sort_migration_filenames_by_number;
+
+    #[test]
+    fn sorts_by_number_then_name() {
+        let cases: [(&[&str], &[&str]); 2] = [
+            (
+                &[
+                    "1000-a.sql",
+                    "0010-0001.sql",
+                    "0002-a.sql",
+                    "0100-a.sql",
+                    "0001-z.sql",
+                    "9999-a.sql",
+                    "0009-a.sql",
+                    "0000-init.sql",
+                    "0001-a-b.sql",
+                    "0000-adopt.sql",
+                ],
+                &[
+                    "0000-adopt.sql",
+                    "0000-init.sql",
+                    "0001-a-b.sql",
+                    "0001-z.sql",
+                    "0002-a.sql",
+                    "0009-a.sql",
+                    "0010-0001.sql",
+                    "0100-a.sql",
+                    "1000-a.sql",
+                    "9999-a.sql",
+                ],
+            ),
+            (
+                &["100000-a.sql", "000010-a.sql", "000002-a.sql"],
+                &["000002-a.sql", "000010-a.sql", "100000-a.sql"],
+            ),
+        ];
+        for (names, sorted) in cases {
+            assert_eq!(
+                sort_migration_filenames_by_number(names.iter().copied()).unwrap(),
+                sorted
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_mixed_digit_counts() {
+        for names in [
+            vec!["0001-a.sql", "00002-b.sql"],
+            vec!["00002-b.sql", "0001-a.sql"],
+            vec!["0001-a.sql", "0002-b.sql", "000003-c.sql"],
+        ] {
+            let err = sort_migration_filenames_by_number(names.iter().copied())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("digit"), "{names:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_name_that_does_not_match() {
+        for name in [
+            "",
+            "init.sql",
+            "001-a.sql",
+            "0001a.sql",
+            "0000something.sql",
+            "0001.sql",
+            "0001",
+            "0001-",
+            "0001-.sql",
+            "0001-a",
+            "0001-a.SQL",
+            "0001-a.sql.bak",
+            "0001-a.txt",
+            "0001_a.sql",
+            "-0001-a.sql",
+            " 0001-a.sql",
+            "a0001-a.sql",
+            "README.md",
+        ] {
+            let err = sort_migration_filenames_by_number(["0002-a.sql", name])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("does not match"), "{name:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_ascii_digits() {
+        let err = sort_migration_filenames_by_number(["\u{0661}\u{0662}\u{0663}\u{0664}-a.sql"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not match"), "{err}");
+    }
+}

@@ -15,7 +15,8 @@ use solana_sdk::{
 use std::collections::{HashMap, HashSet};
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
-const GOOGLE_BQ_DATASET: &str = "mainnet_beta_stakes";
+pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
 
 /// Vote account -> absolute slots it leads in the epoch.
 pub type VoteLeaderSlots = HashMap<String, Vec<Slot>>;
@@ -28,12 +29,13 @@ async fn create_bigquery_client() -> anyhow::Result<BqClient> {
 /// `None` while the ETL has not loaded the epoch yet.
 async fn query_vote_leader_slots(
     bq_client: &BqClient,
+    dataset: &str,
     epoch: Epoch,
     slots_in_epoch: u64,
 ) -> anyhow::Result<Option<VoteLeaderSlots>> {
     let query = format!(
         "SELECT vote_pubkey, CAST(slot AS STRING) AS slot \
-         FROM `{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}.leader_schedule` \
+         FROM `{GOOGLE_BQ_PROJECT_ID}.{dataset}.leader_schedule` \
          WHERE epoch = {epoch}"
     );
     let request = QueryRequest {
@@ -144,26 +146,49 @@ pub fn get_block_production_by_vote_account(
     let last_slot_in_epoch = epoch_schedule.get_last_slot_in_epoch(epoch);
     let slots_in_epoch = epoch_schedule.get_slots_in_epoch(epoch);
 
-    let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let bq_schedule = runtime.block_on(async {
-        let bq_client = create_bigquery_client().await?;
-        query_vote_leader_slots(&bq_client, epoch, slots_in_epoch).await
-    })?;
+    let rpc_schedule = || -> anyhow::Result<VoteLeaderSlots> {
+        let identity_schedule = rpc_client
+            .get_leader_schedule_with_commitment(
+                Some(first_slot_in_epoch),
+                CommitmentConfig::finalized(),
+            )?
+            .context(format!("RPC has no leader schedule for epoch {epoch}"))?;
+        Ok(vote_keyed_from_identity_schedule(
+            identity_schedule,
+            first_slot_in_epoch,
+            vote_accounts,
+        ))
+    };
 
-    let schedule = match bq_schedule {
-        Some(schedule) => schedule,
-        None if epoch < current_epoch => {
-            bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+    let genesis_hash = rpc_client.get_genesis_hash()?.to_string();
+    let dataset = match genesis_hash.as_str() {
+        MAINNET_BETA_GENESIS_HASH => Some("mainnet_beta_stakes"),
+        TESTNET_GENESIS_HASH => Some("testnet_stakes"),
+        _ => None,
+    };
+    let schedule = match dataset {
+        Some(dataset) => {
+            info!("Reading the leader schedule of epoch {epoch} from BigQuery dataset {dataset}");
+            let runtime =
+                tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+            let bq_schedule = runtime.block_on(async {
+                let bq_client = create_bigquery_client().await?;
+                query_vote_leader_slots(&bq_client, dataset, epoch, slots_in_epoch).await
+            })?;
+            match bq_schedule {
+                Some(schedule) => schedule,
+                None if epoch < current_epoch => {
+                    bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+                }
+                None => {
+                    warn!("Leader schedule of epoch {epoch} is not in BigQuery yet, mapping the RPC schedule by current identity");
+                    rpc_schedule()?
+                }
+            }
         }
         None => {
-            warn!("Leader schedule of epoch {epoch} is not in BigQuery yet, mapping the RPC schedule by current identity");
-            let identity_schedule = rpc_client
-                .get_leader_schedule_with_commitment(
-                    Some(first_slot_in_epoch),
-                    CommitmentConfig::finalized(),
-                )?
-                .context(format!("RPC has no leader schedule for epoch {epoch}"))?;
-            vote_keyed_from_identity_schedule(identity_schedule, first_slot_in_epoch, vote_accounts)
+            warn!("BigQuery has no leader schedule for genesis hash {genesis_hash}, mapping the RPC schedule of epoch {epoch} by current identity");
+            rpc_schedule()?
         }
     };
 

@@ -133,7 +133,7 @@ pub async fn store_validators(
             block_revenue_collector_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_lamports ELSE validators.block_revenue_collector_lamports END,
             block_revenue_collector_healthy = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.block_revenue_collector_healthy ELSE validators.block_revenue_collector_healthy END,
             bls_pubkey = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.bls_pubkey ELSE validators.bls_pubkey END,
-            vote_account_lamports = CASE WHEN u.inflation_rewards_commission_bps_is_v4 IS NOT NULL THEN u.vote_account_lamports ELSE validators.vote_account_lamports END,
+            vote_account_lamports = COALESCE(u.vote_account_lamports, validators.vote_account_lamports),
             vat_admitted = CASE WHEN u.vat_admitted IS NOT NULL THEN u.vat_admitted ELSE validators.vat_admitted END,
             vat_admission_reason = CASE WHEN u.vat_admitted IS NOT NULL THEN u.vat_admission_reason ELSE validators.vat_admission_reason END
             "
