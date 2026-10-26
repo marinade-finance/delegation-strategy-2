@@ -1974,20 +1974,41 @@ mod vote_state_tests {
         );
     }
 
+    // Mainnet vote account data at slot 461648323.
+    const MAINNET_V4_BLS_KEY: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/vote-v4-bls-key.bin"
+    ));
+    const MAINNET_V4_NO_BLS_KEY: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/vote-v4-no-bls-key.bin"
+    ));
+    const MAINNET_V3: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/vote-v3.bin"
+    ));
+
     #[test]
-    fn a_v4_bls_pubkey_reads_after_pending_delegator_rewards() {
-        let key = [7u8; BLS_PUBKEY_COMPRESSED_SIZE];
-        let state = parse_vote_state(&v4_account_with_bls(733, 1234, 42, Some(key), 3762)).unwrap();
+    fn a_mainnet_v4_account_with_a_bls_key_yields_the_key_the_rpc_shows() {
+        let state = parse_vote_state(MAINNET_V4_BLS_KEY).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
         assert_eq!(
-            state.bls_pubkey,
-            Some(solana_sdk::bs58::encode(key).into_string())
+            state.bls_pubkey.as_deref(),
+            Some("76LeAGQoqbrHuZz3Eo9HsaPXhLyEpXCeXSprRVwY6hJEayCq9C7sbUMwDRAHUHPqh9")
         );
-        assert_eq!(state.pending_delegator_rewards, Some(42));
     }
 
     #[test]
-    fn a_v4_bls_tag_of_zero_means_no_key() {
-        let state = parse_vote_state(&v4_account(733, 1234, 42, 3762)).unwrap();
+    fn a_mainnet_v4_account_without_a_bls_key_yields_none() {
+        let state = parse_vote_state(MAINNET_V4_NO_BLS_KEY).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(true));
+        assert_eq!(state.bls_pubkey, None);
+    }
+
+    #[test]
+    fn a_mainnet_v3_account_yields_no_bls_key() {
+        let state = parse_vote_state(MAINNET_V3).unwrap();
+        assert_eq!(state.inflation_rewards_commission_bps_is_v4, Some(false));
         assert_eq!(state.bls_pubkey, None);
     }
 
@@ -2018,7 +2039,6 @@ mod vote_state_tests {
             assert_eq!(state.block_revenue_collector, None);
             assert_eq!(state.block_revenue_commission_bps, None);
             assert_eq!(state.pending_delegator_rewards, None);
-            assert_eq!(state.bls_pubkey, None);
             assert_ne!(
                 state.inflation_rewards_collector,
                 Some(Pubkey::default()),
