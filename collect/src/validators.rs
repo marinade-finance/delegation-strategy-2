@@ -3,7 +3,7 @@ use crate::marinade_service::*;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use crate::validators_performance::{validators_performance, ValidatorPerformance};
-use crate::vat_admission::{compute_vat_admission, get_vat_params, VatAdmissionReason};
+use crate::vat_admission::{compute_vat_admission, VatAdmissionReason};
 use crate::whois_service::*;
 use chrono::DateTime;
 use chrono::Utc;
@@ -248,11 +248,8 @@ pub fn collect_validators_info(
     // One vote-program scan feeds both the withdraw authorities and the vote state below.
     let vote_account_states = get_vote_account_states(&client)?;
     let collector_health = get_collector_health(&client, &vote_account_states)?;
-    let vat_admission = compute_vat_admission(
-        &vote_accounts,
-        &vote_account_states,
-        get_vat_params(&client, epoch)?,
-    );
+    let vat_admission =
+        compute_vat_admission(&client, epoch, &vote_accounts, &vote_account_states)?;
     let stake_account_totals = get_stake_account_totals(
         &client,
         epoch,

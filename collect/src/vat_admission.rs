@@ -19,9 +19,9 @@ const BLOCK_REVENUE_SHARING_GATE: Pubkey =
     Pubkey::from_str_const("B1ockRevenueSharing111111111111111111111111");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VatParams {
-    pub minimum_balance: u64,
-    pub subtract_pending_delegator_rewards: bool,
+struct VatParams {
+    minimum_balance: u64,
+    subtract_pending_delegator_rewards: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -53,8 +53,14 @@ struct VatCandidate {
     has_bls_pubkey: bool,
 }
 
-/// The parameters of the filter at the end of `epoch`.
-pub fn get_vat_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<VatParams> {
+/// agave `VoteAccounts::clone_and_filter_for_vat`. None is admitted.
+/// The verdicts at the end of `epoch`.
+pub fn compute_vat_admission(
+    client: &RpcClient,
+    epoch: Epoch,
+    vote_accounts: &RpcVoteAccountStatus,
+    vote_account_states: &HashMap<String, VoteStateFields>,
+) -> anyhow::Result<HashMap<String, Option<VatAdmissionReason>>> {
     let minimum_balance =
         get_vat_minimum_balance(client, &get_slot_time_activations(client)?, epoch)?;
     let block_revenue_sharing = match client
@@ -70,19 +76,11 @@ pub fn get_vat_params(client: &RpcClient, epoch: Epoch) -> anyhow::Result<VatPar
             .is_some(),
     };
     info!("VAT admission: pending delegator rewards subtracted {block_revenue_sharing}");
-
-    Ok(VatParams {
+    let params = VatParams {
         minimum_balance,
         subtract_pending_delegator_rewards: block_revenue_sharing,
-    })
-}
+    };
 
-/// agave `VoteAccounts::clone_and_filter_for_vat`. None is admitted.
-pub fn compute_vat_admission(
-    vote_accounts: &RpcVoteAccountStatus,
-    vote_account_states: &HashMap<String, VoteStateFields>,
-    params: VatParams,
-) -> HashMap<String, Option<VatAdmissionReason>> {
     // Only accounts with a known vote state version and balance take part, so the rest get no verdict.
     let candidates = vote_accounts
         .current
@@ -107,7 +105,7 @@ pub fn compute_vat_admission(
             .or_default() += 1;
     }
     info!("VAT admission verdicts: {counts:?}");
-    verdicts
+    Ok(verdicts)
 }
 
 fn filter_for_vat(
@@ -163,6 +161,8 @@ fn filter_for_vat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use solana_rpc_client_api::request::RpcRequest;
     use solana_rpc_client_api::response::RpcVoteAccountInfo;
 
     const PARAMS: VatParams = VatParams {
@@ -206,20 +206,6 @@ mod tests {
         assert_eq!(verdicts["no_key"], Some(VatAdmissionReason::NoBlsKey));
         assert_eq!(verdicts["no_stake"], Some(VatAdmissionReason::NoStake));
         assert_eq!(verdicts["poor"], Some(VatAdmissionReason::LowBalance));
-    }
-
-    #[test]
-    fn pending_delegator_rewards_count_only_once_block_revenue_sharing_is_active() {
-        let rows = vec![candidate("v", 5, 1_500, 600, true)];
-        assert_eq!(
-            filter_for_vat(rows.clone(), PARAMS, 10)["v"],
-            Some(VatAdmissionReason::LowBalance)
-        );
-        let without = VatParams {
-            subtract_pending_delegator_rewards: false,
-            ..PARAMS
-        };
-        assert_eq!(filter_for_vat(rows, without, 10)["v"], None);
     }
 
     #[test]
@@ -285,6 +271,48 @@ mod tests {
         }
     }
 
+    const RENT: u64 = 20;
+    // Rent plus the VAT at 400 ms slots, with no slot time gate active.
+    const MINIMUM_BALANCE: u64 = RENT + 1_600_000_000;
+
+    fn mock_client(block_revenue_sharing: bool) -> RpcClient {
+        // A feature account activated at slot 5.
+        let gate = block_revenue_sharing.then(|| {
+            json!({
+                "lamports": 1,
+                "data": ["AQUAAAAAAAAA", "base64"],
+                "owner": "Feature111111111111111111111111111111111111",
+                "executable": false,
+                "rentEpoch": 0,
+                "space": 9,
+            })
+        });
+        RpcClient::new_mock_with_mocks(
+            "succeeds",
+            HashMap::from([
+                (RpcRequest::GetMinimumBalanceForRentExemption, json!(RENT)),
+                (
+                    RpcRequest::GetEpochSchedule,
+                    json!({
+                        "slotsPerEpoch": 432_000,
+                        "leaderScheduleSlotOffset": 432_000,
+                        "warmup": false,
+                        "firstNormalEpoch": 0,
+                        "firstNormalSlot": 0,
+                    }),
+                ),
+                (
+                    RpcRequest::GetMultipleAccounts,
+                    json!({"context": {"slot": 1}, "value": [null, null, null, null]}),
+                ),
+                (
+                    RpcRequest::GetAccountInfo,
+                    json!({"context": {"slot": 1}, "value": gate}),
+                ),
+            ]),
+        )
+    }
+
     fn vote_state(is_v4: Option<bool>, lamports: Option<u64>) -> VoteStateFields {
         VoteStateFields {
             authorized_withdrawer: Pubkey::default(),
@@ -314,23 +342,50 @@ mod tests {
             delinquent: vec![vote_account("delinquent")],
         };
         let vote_account_states = HashMap::from([
-            ("current".to_string(), vote_state(Some(true), Some(1_000))),
+            (
+                "current".to_string(),
+                vote_state(Some(true), Some(MINIMUM_BALANCE)),
+            ),
             (
                 "delinquent".to_string(),
-                vote_state(Some(true), Some(1_000)),
+                vote_state(Some(true), Some(MINIMUM_BALANCE)),
             ),
-            ("pre_v4".to_string(), vote_state(Some(false), Some(1_000))),
-            ("unknown_version".to_string(), vote_state(None, Some(1_000))),
+            (
+                "pre_v4".to_string(),
+                vote_state(Some(false), Some(MINIMUM_BALANCE)),
+            ),
+            (
+                "unknown_version".to_string(),
+                vote_state(None, Some(MINIMUM_BALANCE)),
+            ),
             ("no_lamports".to_string(), vote_state(Some(true), None)),
         ]);
         assert_eq!(
-            compute_vat_admission(&vote_accounts, &vote_account_states, PARAMS),
+            compute_vat_admission(&mock_client(false), 1, &vote_accounts, &vote_account_states)
+                .unwrap(),
             HashMap::from([
                 ("current".to_string(), None),
                 ("delinquent".to_string(), None),
                 ("pre_v4".to_string(), Some(VatAdmissionReason::NoBlsKey)),
             ])
         );
+    }
+
+    #[test]
+    fn the_block_revenue_sharing_gate_subtracts_pending_delegator_rewards() {
+        let vote_accounts = RpcVoteAccountStatus {
+            current: vec![vote_account("v")],
+            delinquent: vec![],
+        };
+        let mut state = vote_state(Some(true), Some(MINIMUM_BALANCE));
+        state.pending_delegator_rewards = Some(1);
+        let vote_account_states = HashMap::from([("v".to_string(), state)]);
+        let verdict = |gate| {
+            compute_vat_admission(&mock_client(gate), 1, &vote_accounts, &vote_account_states)
+                .unwrap()["v"]
+        };
+        assert_eq!(verdict(false), None);
+        assert_eq!(verdict(true), Some(VatAdmissionReason::LowBalance));
     }
 
     #[test]
