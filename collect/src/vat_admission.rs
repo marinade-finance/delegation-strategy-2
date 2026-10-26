@@ -14,7 +14,7 @@ use crate::vat::get_vat_minimum_balance;
 /// agave `MAX_ALPENGLOW_VOTE_ACCOUNTS`.
 pub const MAX_ALPENGLOW_VOTE_ACCOUNTS: usize = 2000;
 
-// Placeholder id of agave 4.3, which never subtracts. agave 4.4.0-beta.1 declares
+// Placeholder id for the revenue sharing feature gate, yet to be announced.
 const BLOCK_REVENUE_SHARING_GATE: Pubkey =
     Pubkey::from_str_const("B1ockRevenueSharing111111111111111111111111");
 
