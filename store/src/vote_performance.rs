@@ -176,6 +176,7 @@ pub async fn load_vote_performance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collect::solana_service::MAX_TOWER_CREDITS_IN_EPOCH;
 
     fn tower(vote_account: &str, stake: u64, credits: Option<u64>) -> VotePerformanceInput {
         VotePerformanceInput {
@@ -394,6 +395,15 @@ mod tests {
             &[tower("a", 100, Some(100)), tower("unknown", 900, None)],
             &[("a", Some(1.0)), ("unknown", None)],
         );
+    }
+
+    #[test]
+    fn tower_does_not_overflow_at_the_tower_credits_limit() {
+        let stake = 44_000_000_000_000_000;
+        let rows: Vec<_> = (0..500)
+            .map(|i| tower(&i.to_string(), stake, Some(MAX_TOWER_CREDITS_IN_EPOCH)))
+            .collect();
+        assert_eq!(vote_performance(&rows).get("0"), Some(&1.0));
     }
 
     #[test]
