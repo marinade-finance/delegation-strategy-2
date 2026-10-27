@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
+// 6 hours
 pub const FINALIZE_EPOCH_BIGQUERY_MAX_WAIT_SECONDS: &str = "21600";
 
 /// Vote account -> absolute slots it leads in the epoch.
