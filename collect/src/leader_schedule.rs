@@ -9,6 +9,7 @@ use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
+    epoch_info::EpochInfo,
     slot_history::{self, SlotHistory},
     sysvar,
 };
@@ -132,6 +133,13 @@ pub fn count_block_production(
         .collect()
 }
 
+/// The wait for BigQuery ends when the epoch after the closed one is half done.
+fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo) -> bool {
+    epoch_info.epoch > closed_epoch + 1
+        || (epoch_info.epoch == closed_epoch + 1
+            && epoch_info.slot_index * 2 >= epoch_info.slots_in_epoch)
+}
+
 /// Vote account -> (leader slots, blocks produced). A vote account missing from the map has no
 /// resolved slots. For the open epoch only the slots up to the newest finalized slot count.
 pub fn get_block_production_by_vote_account(
@@ -139,6 +147,7 @@ pub fn get_block_production_by_vote_account(
     epoch: Epoch,
     current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
+    finalize_epoch_rpc_fallback: bool,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
     info!("Getting block production by vote account for epoch {epoch}");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
@@ -177,8 +186,20 @@ pub fn get_block_production_by_vote_account(
             })?;
             match bq_schedule {
                 Some(schedule) => schedule,
-                None if epoch < current_epoch => {
+                None if epoch < current_epoch && !finalize_epoch_rpc_fallback => {
                     bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+                }
+                None if epoch < current_epoch => {
+                    let epoch_info = rpc_client.get_epoch_info()?;
+                    let progress = format!(
+                        "epoch {} at slot {}/{}",
+                        epoch_info.epoch, epoch_info.slot_index, epoch_info.slots_in_epoch
+                    );
+                    if !bigquery_wait_is_over(epoch, &epoch_info) {
+                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet ({progress}), the RPC fallback starts at half of the next epoch")
+                    }
+                    warn!("Leader schedule of closed epoch {epoch} is not in BigQuery ({progress}), mapping the RPC schedule by current identity");
+                    rpc_schedule()?
                 }
                 None => {
                     warn!("Leader schedule of epoch {epoch} is not in BigQuery yet, mapping the RPC schedule by current identity");
@@ -235,6 +256,33 @@ mod tests {
             current: accounts,
             delinquent: vec![],
         }
+    }
+
+    fn epoch_info(epoch: Epoch, slot_index: u64) -> EpochInfo {
+        EpochInfo {
+            epoch,
+            slot_index,
+            slots_in_epoch: 432_000,
+            absolute_slot: 0,
+            block_height: 0,
+            transaction_count: None,
+        }
+    }
+
+    #[test]
+    fn the_bigquery_wait_lasts_half_of_the_next_epoch() {
+        assert!(!bigquery_wait_is_over(10, &epoch_info(11, 215_999)));
+        assert!(bigquery_wait_is_over(10, &epoch_info(11, 216_000)));
+    }
+
+    #[test]
+    fn a_lagging_rpc_still_in_the_closed_epoch_keeps_the_wait() {
+        assert!(!bigquery_wait_is_over(10, &epoch_info(10, 300_000)));
+    }
+
+    #[test]
+    fn an_epoch_older_than_the_previous_one_is_past_the_wait() {
+        assert!(bigquery_wait_is_over(10, &epoch_info(12, 0)));
     }
 
     #[test]
