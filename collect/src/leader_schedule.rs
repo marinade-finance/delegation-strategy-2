@@ -1,3 +1,4 @@
+use crate::common::seconds_since_epoch_start;
 use anyhow::{bail, Context};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -17,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
+pub const FINALIZE_EPOCH_BIGQUERY_MAX_WAIT_SECONDS: &str = "21600";
 
 /// Vote account -> absolute slots it leads in the epoch.
 pub type VoteLeaderSlots = HashMap<String, Vec<Slot>>;
@@ -132,6 +134,15 @@ pub fn count_block_production(
         .collect()
 }
 
+/// An epoch that ended before the current one started is older than any wait limit, so it reads `u64::MAX`.
+fn seconds_since_epoch_end(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<u64> {
+    let epoch_info = rpc_client.get_epoch_info()?;
+    if epoch_info.epoch > epoch + 1 {
+        return Ok(u64::MAX);
+    }
+    seconds_since_epoch_start(rpc_client, &epoch_info)
+}
+
 /// Vote account -> (leader slots, blocks produced). A vote account missing from the map has no
 /// resolved slots. For the open epoch only the slots up to the newest finalized slot count.
 pub fn get_block_production_by_vote_account(
@@ -139,6 +150,7 @@ pub fn get_block_production_by_vote_account(
     epoch: Epoch,
     current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
+    finalize_epoch_bigquery_max_wait_seconds: u64,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
     info!("Getting block production by vote account for epoch {epoch}");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
@@ -178,7 +190,15 @@ pub fn get_block_production_by_vote_account(
             match bq_schedule {
                 Some(schedule) => schedule,
                 None if epoch < current_epoch => {
-                    bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+                    let seconds_since_epoch_end = seconds_since_epoch_end(rpc_client, epoch)
+                        .context(format!(
+                            "Leader schedule of closed epoch {epoch} is not in BigQuery yet"
+                        ))?;
+                    if seconds_since_epoch_end < finalize_epoch_bigquery_max_wait_seconds {
+                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet, {seconds_since_epoch_end}s after the epoch ended (fallback after {finalize_epoch_bigquery_max_wait_seconds}s)")
+                    }
+                    warn!("Leader schedule of closed epoch {epoch} is not in BigQuery {seconds_since_epoch_end}s after the epoch ended, mapping the RPC schedule by current identity");
+                    rpc_schedule()?
                 }
                 None => {
                     warn!("Leader schedule of epoch {epoch} is not in BigQuery yet, mapping the RPC schedule by current identity");
