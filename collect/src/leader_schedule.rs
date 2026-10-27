@@ -135,7 +135,9 @@ pub fn count_block_production(
 
 /// The wait for BigQuery ends when the epoch after the closed one is half done.
 fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo) -> bool {
-    epoch_info.epoch > closed_epoch + 1 || epoch_info.slot_index * 2 >= epoch_info.slots_in_epoch
+    epoch_info.epoch > closed_epoch + 1
+        || (epoch_info.epoch == closed_epoch + 1
+            && epoch_info.slot_index * 2 >= epoch_info.slots_in_epoch)
 }
 
 /// Vote account -> (leader slots, blocks produced). A vote account missing from the map has no
@@ -145,6 +147,7 @@ pub fn get_block_production_by_vote_account(
     epoch: Epoch,
     current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
+    finalize_epoch_rpc_fallback: bool,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
     info!("Getting block production by vote account for epoch {epoch}");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
@@ -183,6 +186,9 @@ pub fn get_block_production_by_vote_account(
             })?;
             match bq_schedule {
                 Some(schedule) => schedule,
+                None if epoch < current_epoch && !finalize_epoch_rpc_fallback => {
+                    bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+                }
                 None if epoch < current_epoch => {
                     let epoch_info = rpc_client.get_epoch_info()?;
                     let progress = format!(
@@ -267,6 +273,11 @@ mod tests {
     fn the_bigquery_wait_lasts_half_of_the_next_epoch() {
         assert!(!bigquery_wait_is_over(10, &epoch_info(11, 215_999)));
         assert!(bigquery_wait_is_over(10, &epoch_info(11, 216_000)));
+    }
+
+    #[test]
+    fn a_lagging_rpc_still_in_the_closed_epoch_keeps_the_wait() {
+        assert!(!bigquery_wait_is_over(10, &epoch_info(10, 300_000)));
     }
 
     #[test]

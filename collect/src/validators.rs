@@ -59,6 +59,12 @@ pub struct ValidatorsParams {
 
     #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
+
+    #[arg(
+        long = "finalize-epoch-rpc-fallback",
+        help = "Use the RPC leader schedule for a closed epoch when BigQuery still has none at half of the next epoch."
+    )]
+    finalize_epoch_rpc_fallback: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -311,6 +317,7 @@ pub fn collect_validators_info(
         &vote_accounts,
         validator_params.rpc_attempts,
         &node_info,
+        validator_params.finalize_epoch_rpc_fallback,
     )?;
 
     let rpc_epoch = client.get_epoch_info()?.epoch;

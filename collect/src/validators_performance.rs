@@ -40,6 +40,12 @@ pub struct ValidatorsPerformanceParams {
         default_value = "300"
     )]
     rpc_timeout: u64,
+
+    #[arg(
+        long = "finalize-epoch-rpc-fallback",
+        help = "Use the RPC leader schedule for a closed epoch when BigQuery still has none at half of the next epoch."
+    )]
+    finalize_epoch_rpc_fallback: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -217,6 +223,7 @@ pub fn validators_performance(
     vote_accounts: &RpcVoteAccountStatus,
     rpc_attempts: usize,
     node_info: &HashMap<String, NodeContact>,
+    finalize_epoch_rpc_fallback: bool,
 ) -> anyhow::Result<HashMap<String, ValidatorPerformance>> {
     let mut validators: HashMap<String, ValidatorPerformance> = Default::default();
 
@@ -227,7 +234,15 @@ pub fn validators_performance(
         .collect();
     // block production is the first RPC after the whois fetch; retry so a keep-alive socket dropped during that idle gap doesn't abort the whole snapshot
     let production_by_validator = retry_blocking(
-        || get_block_production_by_vote_account(client, epoch, current_epoch, vote_accounts),
+        || {
+            get_block_production_by_vote_account(
+                client,
+                epoch,
+                current_epoch,
+                vote_accounts,
+                finalize_epoch_rpc_fallback,
+            )
+        },
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!("Attempt {attempt} to get block production failed: {err:?}, retrying in {backoff:?}")
@@ -345,6 +360,7 @@ pub fn collect_validators_performance_info(
         &vote_accounts,
         performance_params.rpc_attempts,
         &node_info,
+        performance_params.finalize_epoch_rpc_fallback,
     )?;
 
     let rewards = if performance_params.with_rewards {
