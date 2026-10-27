@@ -1,5 +1,3 @@
-use collect::solana_service::MAX_TOWER_CREDITS_IN_EPOCH;
-use log::warn;
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
 use tokio_postgres::Client;
@@ -34,14 +32,6 @@ struct EpochTotals {
     alpenglow_reward: Decimal,
 }
 
-impl VotePerformanceInput {
-    // Testnet epochs 1042-1053 hold vote reward lamports in `credits`, about 3e11
-    fn tower_credits(&self) -> Option<u64> {
-        self.credits
-            .filter(|credits| *credits <= MAX_TOWER_CREDITS_IN_EPOCH)
-    }
-}
-
 fn alpenglow_input(row: &VotePerformanceInput) -> Option<(Decimal, Decimal, Decimal)> {
     Some((
         row.epoch_stake?,
@@ -54,9 +44,9 @@ impl EpochTotals {
     fn from_rows(rows: &[VotePerformanceInput]) -> Self {
         let mut totals = Self::default();
         for row in rows {
-            totals.has_credits |= row.tower_credits().is_some();
+            totals.has_credits |= row.credits.is_some();
             totals.has_rewards |= row.vote_reward_lamports.is_some();
-            if let Some(credits) = row.tower_credits() {
+            if let Some(credits) = row.credits {
                 totals.tower_stake += row.activated_stake;
                 totals.tower_weighted_credits += row.activated_stake * Decimal::from(credits);
             }
@@ -89,7 +79,7 @@ impl EpochTotals {
 
     // credits / stake-weighted mean credits
     fn tower_performance(&self, row: &VotePerformanceInput) -> Option<f64> {
-        let credits = Decimal::from(row.tower_credits()?);
+        let credits = Decimal::from(row.credits?);
         if self.tower_stake.is_zero() || self.tower_weighted_credits.is_zero() {
             return None;
         }
@@ -173,18 +163,6 @@ pub async fn load_vote_performance(
             });
     }
 
-    for (epoch, rows) in &by_epoch {
-        let left_out = rows
-            .iter()
-            .filter(|row| row.credits.is_some() && row.tower_credits().is_none())
-            .count();
-        if left_out > 0 {
-            warn!(
-                "Epoch {epoch}: {left_out} rows hold credits above {MAX_TOWER_CREDITS_IN_EPOCH}."
-            );
-        }
-    }
-
     Ok(by_epoch
         .into_iter()
         .flat_map(|(epoch, rows)| {
@@ -198,6 +176,7 @@ pub async fn load_vote_performance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collect::solana_service::MAX_TOWER_CREDITS_IN_EPOCH;
 
     fn tower(vote_account: &str, stake: u64, credits: Option<u64>) -> VotePerformanceInput {
         VotePerformanceInput {
@@ -425,17 +404,6 @@ mod tests {
             .map(|i| tower(&i.to_string(), stake, Some(MAX_TOWER_CREDITS_IN_EPOCH)))
             .collect();
         assert_eq!(vote_performance(&rows).get("0"), Some(&1.0));
-    }
-
-    #[test]
-    fn credits_above_the_tower_limit_are_left_out() {
-        // Testnet epoch 1050: 4.4e16 lamports of stake and 4.8e13 in `credits`
-        let stake = 44_000_000_000_000_000;
-        let rows: Vec<_> = (0..500)
-            .map(|i| tower(&i.to_string(), stake, Some(48_000_000_000_000)))
-            .collect();
-        assert!(vote_performance(&rows).is_empty());
-        assert_eq!(EpochTotals::from_rows(&rows).kind(), None);
     }
 
     #[test]
