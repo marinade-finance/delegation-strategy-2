@@ -1,5 +1,4 @@
 use crate::common::*;
-use crate::leader_schedule::FINALIZE_EPOCH_BIGQUERY_MAX_WAIT_SECONDS;
 use crate::marinade_service::*;
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
@@ -60,14 +59,6 @@ pub struct ValidatorsParams {
 
     #[arg(long = "epoch", help = "Which epoch to use for epoch-based metrics.")]
     epoch: Option<Epoch>,
-
-    #[arg(
-        long = "finalize-epoch-bigquery-max-wait",
-        env = "FINALIZE_EPOCH_BIGQUERY_MAX_WAIT",
-        help = "Seconds after a closed epoch ends to wait for its leader schedule in BigQuery before using the RPC schedule.",
-        default_value = FINALIZE_EPOCH_BIGQUERY_MAX_WAIT_SECONDS
-    )]
-    finalize_epoch_bigquery_max_wait_seconds: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -320,7 +311,6 @@ pub fn collect_validators_info(
         &vote_accounts,
         validator_params.rpc_attempts,
         &node_info,
-        validator_params.finalize_epoch_bigquery_max_wait_seconds,
     )?;
 
     let rpc_epoch = client.get_epoch_info()?.epoch;

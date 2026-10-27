@@ -1,4 +1,3 @@
-use crate::common::seconds_since_epoch_start;
 use anyhow::{bail, Context};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -10,6 +9,7 @@ use solana_rpc_client_api::response::RpcVoteAccountStatus;
 use solana_sdk::{
     account::from_account,
     clock::{Epoch, Slot},
+    epoch_info::EpochInfo,
     slot_history::{self, SlotHistory},
     sysvar,
 };
@@ -18,8 +18,6 @@ use std::collections::{HashMap, HashSet};
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
-// 6 hours
-pub const FINALIZE_EPOCH_BIGQUERY_MAX_WAIT_SECONDS: &str = "21600";
 
 /// Vote account -> absolute slots it leads in the epoch.
 pub type VoteLeaderSlots = HashMap<String, Vec<Slot>>;
@@ -135,13 +133,9 @@ pub fn count_block_production(
         .collect()
 }
 
-/// An epoch that ended before the current one started is older than any wait limit, so it reads `u64::MAX`.
-fn seconds_since_epoch_end(rpc_client: &RpcClient, epoch: Epoch) -> anyhow::Result<u64> {
-    let epoch_info = rpc_client.get_epoch_info()?;
-    if epoch_info.epoch > epoch + 1 {
-        return Ok(u64::MAX);
-    }
-    seconds_since_epoch_start(rpc_client, &epoch_info)
+/// The wait for BigQuery ends when the epoch after the closed one is half done.
+fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo) -> bool {
+    epoch_info.epoch > closed_epoch + 1 || epoch_info.slot_index * 2 >= epoch_info.slots_in_epoch
 }
 
 /// Vote account -> (leader slots, blocks produced). A vote account missing from the map has no
@@ -151,7 +145,6 @@ pub fn get_block_production_by_vote_account(
     epoch: Epoch,
     current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
-    finalize_epoch_bigquery_max_wait_seconds: u64,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
     info!("Getting block production by vote account for epoch {epoch}");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
@@ -191,14 +184,15 @@ pub fn get_block_production_by_vote_account(
             match bq_schedule {
                 Some(schedule) => schedule,
                 None if epoch < current_epoch => {
-                    let seconds_since_epoch_end = seconds_since_epoch_end(rpc_client, epoch)
-                        .context(format!(
-                            "Leader schedule of closed epoch {epoch} is not in BigQuery yet"
-                        ))?;
-                    if seconds_since_epoch_end < finalize_epoch_bigquery_max_wait_seconds {
-                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet, {seconds_since_epoch_end}s after the epoch ended (fallback after {finalize_epoch_bigquery_max_wait_seconds}s)")
+                    let epoch_info = rpc_client.get_epoch_info()?;
+                    let progress = format!(
+                        "epoch {} at slot {}/{}",
+                        epoch_info.epoch, epoch_info.slot_index, epoch_info.slots_in_epoch
+                    );
+                    if !bigquery_wait_is_over(epoch, &epoch_info) {
+                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet ({progress}), the RPC fallback starts at half of the next epoch")
                     }
-                    warn!("Leader schedule of closed epoch {epoch} is not in BigQuery {seconds_since_epoch_end}s after the epoch ended, mapping the RPC schedule by current identity");
+                    warn!("Leader schedule of closed epoch {epoch} is not in BigQuery ({progress}), mapping the RPC schedule by current identity");
                     rpc_schedule()?
                 }
                 None => {
@@ -256,6 +250,28 @@ mod tests {
             current: accounts,
             delinquent: vec![],
         }
+    }
+
+    fn epoch_info(epoch: Epoch, slot_index: u64) -> EpochInfo {
+        EpochInfo {
+            epoch,
+            slot_index,
+            slots_in_epoch: 432_000,
+            absolute_slot: 0,
+            block_height: 0,
+            transaction_count: None,
+        }
+    }
+
+    #[test]
+    fn the_bigquery_wait_lasts_half_of_the_next_epoch() {
+        assert!(!bigquery_wait_is_over(10, &epoch_info(11, 215_999)));
+        assert!(bigquery_wait_is_over(10, &epoch_info(11, 216_000)));
+    }
+
+    #[test]
+    fn an_epoch_older_than_the_previous_one_is_past_the_wait() {
+        assert!(bigquery_wait_is_over(10, &epoch_info(12, 0)));
     }
 
     #[test]
