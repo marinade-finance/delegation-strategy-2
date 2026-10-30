@@ -1,6 +1,6 @@
 use log::info;
+use solana_clock::Epoch;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 
 use crate::slot_params::{select_slot_params, SlotParams};

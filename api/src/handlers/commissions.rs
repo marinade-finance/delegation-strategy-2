@@ -39,7 +39,7 @@ pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
-    info!("Fetching commissions {:?}", &vote_account);
+    info!("Fetching commissions {:?}", vote_account);
     metrics::REQUEST_COUNT_COMMISSIONS.inc();
 
     let validators = context.read().await.cache.get_validators();
@@ -77,13 +77,13 @@ pub async fn handler(
                     )
                 }
                 _ => {
-                    error!("No commissions found for {}", &vote_account);
+                    error!("No commissions found for {}", vote_account);
                     response_error(StatusCode::NOT_FOUND, "Failed to fetch records!".into())
                 }
             })
         }
         None => {
-            error!("No validator found for {}", &vote_account);
+            error!("No validator found for {}", vote_account);
             Ok(response_error(
                 StatusCode::NOT_FOUND,
                 "Failed to fetch records!".into(),

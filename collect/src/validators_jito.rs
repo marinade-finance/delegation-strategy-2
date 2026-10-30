@@ -1,4 +1,7 @@
-use crate::{common::*, solana_service::solana_client_with_timeout};
+use crate::{
+    common::*,
+    solana_service::{get_program_accounts_with_config, solana_client_with_timeout},
+};
 use anchor_lang::AccountDeserialize;
 use clap::Parser;
 use jito_priority_fee_distribution::state::PriorityFeeDistributionAccount;
@@ -6,13 +9,13 @@ use jito_tip_distribution::state::TipDistributionAccount;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use solana_account::Account;
 use solana_account_decoder::UiAccountEncoding;
-use solana_program::pubkey::Pubkey;
+use solana_clock::Epoch;
+use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
-use solana_sdk::account::Account;
-use solana_sdk::clock::Epoch;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -191,28 +194,28 @@ fn fetch_program_accounts_with_retry(
     let account_size = jito_account_type.account_size();
     retry_blocking(
         || {
-            client
-                .get_program_accounts_with_config(
-                    &program_id,
-                    RpcProgramAccountsConfig {
-                        filters: Some(vec![
-                            RpcFilterType::DataSize(account_size.try_into().unwrap()),
-                            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                                byte_pos,
-                                epoch.to_le_bytes().to_vec(),
-                            )),
-                        ]),
-                        account_config: RpcAccountInfoConfig {
-                            encoding: Some(UiAccountEncoding::Base64),
-                            data_slice: None,
-                            commitment: None,
-                            min_context_slot: None,
-                        },
-                        with_context: None,
-                        sort_results: None,
+            get_program_accounts_with_config(
+                client,
+                &program_id,
+                RpcProgramAccountsConfig {
+                    filters: Some(vec![
+                        RpcFilterType::DataSize(account_size.try_into().unwrap()),
+                        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                            byte_pos,
+                            epoch.to_le_bytes().to_vec(),
+                        )),
+                    ]),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        data_slice: None,
+                        commitment: None,
+                        min_context_slot: None,
                     },
-                )
-                .map_err(Box::new)
+                    with_context: None,
+                    sort_results: None,
+                },
+            )
+            .map_err(Box::new)
         },
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {

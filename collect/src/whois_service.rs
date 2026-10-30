@@ -49,7 +49,7 @@ impl WhoisClient {
     }
 
     pub fn get_ip_info(&self, ip: &String) -> anyhow::Result<IpInfo> {
-        debug!("Fetching info about data centers: {}", &ip);
+        debug!("Fetching info about data centers: {}", ip);
         let body = self
             .client
             .get(format!("{}/ip/{}", self.host.clone(), ip))

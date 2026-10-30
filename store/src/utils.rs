@@ -780,7 +780,7 @@ pub fn update_validators_with_avgs(
     validators: &mut HashMap<String, ValidatorRecord>,
     epochs_range: RangeInclusive<u64>,
 ) {
-    for (_, record) in validators.iter_mut() {
+    for record in validators.values_mut() {
         record.avg_apy = average(
             &record
                 .epoch_stats
@@ -1957,7 +1957,7 @@ pub async fn update_validators_with_scores(
 
     let latest_scores = scores_per_epoch.get(latest_epoch_with_score).unwrap();
 
-    for (_, validator) in validators.iter_mut() {
+    for validator in validators.values_mut() {
         for epoch_record in validator.epoch_stats.iter_mut() {
             if let Some(scores) = scores_per_epoch.get(&epoch_record.epoch) {
                 epoch_record.score = scores.get(&validator.vote_account).cloned();
