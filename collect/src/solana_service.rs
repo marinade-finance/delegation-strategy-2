@@ -644,13 +644,30 @@ fn parse_validator_info(
         anyhow::bail!("{pubkey} could not be parsed as a validator info account");
     }
 }
+fn get_program_accounts_base64_zstd(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+) -> ClientResult<Vec<(Pubkey, Account)>> {
+    get_program_accounts_with_config(
+        rpc_client,
+        program_id,
+        RpcProgramAccountsConfig {
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
+                ..RpcAccountInfoConfig::default()
+            },
+            ..RpcProgramAccountsConfig::default()
+        },
+    )
+}
+
 pub fn get_validators_info(
     rpc_client: &RpcClient,
     rpc_attempts: usize,
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
     info!("Getting validator info");
     let validator_info = retry_blocking(
-        || rpc_client.get_program_accounts(&solana_config_interface::id()),
+        || get_program_accounts_base64_zstd(rpc_client, &solana_config_interface::id()),
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!(
@@ -833,7 +850,7 @@ pub fn get_vote_account_states(
 ) -> anyhow::Result<HashMap<String, VoteStateFields>> {
     info!("Getting vote account states");
     let vote_program_id = solana_sdk_ids::vote::id();
-    let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
+    let vote_accounts = get_program_accounts_base64_zstd(rpc_client, &vote_program_id)?;
     let accounts: Vec<(String, &[u8])> = vote_accounts
         .iter()
         .map(|(account_pubkey, account)| (account_pubkey.to_string(), account.data.as_slice()))
