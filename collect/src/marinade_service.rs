@@ -1,18 +1,17 @@
 use crate::leader_schedule::{MAINNET_BETA_GENESIS_HASH, TESTNET_GENESIS_HASH};
+use crate::solana_service::get_program_accounts_with_config;
 use crate::validators::BondsResponse;
 use crate::validators::ValidatorBond;
 use anyhow::bail;
 use solana_account_decoder::*;
-use solana_program::{
-    clock::*,
-    pubkey::Pubkey,
-    stake_history::{StakeHistory, StakeHistoryEntry},
-};
+use solana_clock::*;
+use solana_pubkey::pubkey;
+use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_rpc_client_api::filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
-use solana_sdk::pubkey;
 use solana_stake_interface as stake;
+use solana_stake_interface::stake_history::{StakeHistory, StakeHistoryEntry};
 use std::collections::*;
 
 pub fn get_marinade_stakes(
@@ -142,6 +141,7 @@ fn group_by_validator<'a>(
 ) -> HashMap<String, StakeAmounts> {
     let mut totals: HashMap<String, StakeAmounts> = HashMap::new();
     for stake in stake_accounts.filter_map(|stake_account| stake_account.stake()) {
+        #[allow(deprecated)]
         let StakeHistoryEntry {
             effective,
             activating,
@@ -181,7 +181,8 @@ fn get_stake_accounts(
         )));
     }
 
-    let accounts = rpc_client.get_program_accounts_with_config(
+    let accounts = get_program_accounts_with_config(
+        rpc_client,
         &stake::program::ID,
         RpcProgramAccountsConfig {
             filters: Some(filters),
@@ -241,7 +242,7 @@ mod tests {
                     stake,
                     activation_epoch,
                     deactivation_epoch,
-                    warmup_cooldown_rate: 0.25,
+                    _reserved: 0.25_f64.to_le_bytes(),
                 },
                 credits_observed: 0,
             },

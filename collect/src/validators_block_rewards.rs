@@ -7,7 +7,7 @@ use google_cloud_bigquery::query::row::Row;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
-use solana_sdk::clock::Epoch;
+use solana_clock::Epoch;
 use std::time::Duration;
 
 // BigQuery table name to store block rewards data

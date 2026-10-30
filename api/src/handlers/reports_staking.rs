@@ -3,7 +3,7 @@ use crate::{
 };
 use log::{error, info, warn};
 use serde::Serialize;
-use solana_program::native_token::LAMPORTS_PER_SOL;
+use solana_native_token::LAMPORTS_PER_SOL;
 use store::utils::get_last_epoch;
 use warp::{http::StatusCode, reply, Reply};
 

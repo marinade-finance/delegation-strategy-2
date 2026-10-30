@@ -12,10 +12,10 @@ use clap::Parser;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use solana_clock::Epoch;
+use solana_epoch_info::EpochInfo;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::response::RpcVoteAccountStatus;
-use solana_sdk::clock::Epoch;
-use solana_sdk::epoch_info::EpochInfo;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 

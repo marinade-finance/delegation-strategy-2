@@ -12,27 +12,27 @@ use log::{info, warn};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use solana_account::Account;
 use solana_account_decoder::validator_info;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding, UiDataSliceConfig};
+use solana_clock::{Epoch, Slot};
 use solana_commitment_config::CommitmentConfig;
-use solana_config_program_client::{get_config_data, ConfigKeys};
-use solana_program::{
-    stake_history::{StakeHistory, StakeHistoryEntry},
-    sysvar::stake_history,
-};
+use solana_config_interface::state::{get_config_data, ConfigKeys};
+use solana_pubkey::Pubkey;
 use solana_rpc_client::http_sender::HttpSender;
 use solana_rpc_client::rpc_client::{RpcClient, RpcClientConfig};
+use solana_rpc_client_api::client_error::{Error as ClientError, Result as ClientResult};
 use solana_rpc_client_api::config::{
     RpcAccountInfoConfig, RpcEpochConfig, RpcProgramAccountsConfig,
 };
 use solana_rpc_client_api::custom_error::JSON_RPC_SCAN_ERROR;
 use solana_rpc_client_api::error_object::RpcErrorObject;
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
-use solana_rpc_client_api::request::{RpcRequest, MAX_MULTIPLE_ACCOUNTS};
+use solana_rpc_client_api::request::{RpcError, RpcRequest, MAX_MULTIPLE_ACCOUNTS};
 use solana_rpc_client_api::response::{RpcVoteAccountInfo, RpcVoteAccountStatus};
-use solana_sdk::clock::{Epoch, Slot};
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk_ids::sysvar::stake_history;
 use solana_stake_interface as stake;
+use solana_stake_interface::stake_history::{StakeHistory, StakeHistoryEntry};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -77,6 +77,28 @@ pub fn solana_client_with_timeout(url: String, timeout: Duration, commitment: St
         HttpSender::new_with_client(url, http),
         RpcClientConfig::with_commitment(CommitmentConfig::from_str(&commitment).unwrap()),
     )
+}
+
+pub fn get_program_accounts_with_config(
+    rpc_client: &RpcClient,
+    program_id: &Pubkey,
+    config: RpcProgramAccountsConfig,
+) -> ClientResult<Vec<(Pubkey, Account)>> {
+    rpc_client
+        .get_program_ui_accounts_with_config(program_id, config)?
+        .into_iter()
+        .map(|(pubkey, ui_account)| {
+            ui_account
+                .to_account()
+                .map(|account| (pubkey, account))
+                .ok_or_else(|| {
+                    ClientError::new_with_request(
+                        RpcError::ParseError("Account from rpc".to_string()).into(),
+                        RpcRequest::GetProgramAccounts,
+                    )
+                })
+        })
+        .collect()
 }
 
 pub fn get_stake_history(rpc_client: &RpcClient) -> anyhow::Result<StakeHistory> {
@@ -600,7 +622,7 @@ fn parse_validator_info(
     pubkey: &Pubkey,
     account: &Account,
 ) -> anyhow::Result<(Pubkey, ValidatorInfo)> {
-    if account.owner != solana_config_program_client::ID {
+    if account.owner != solana_config_interface::id() {
         anyhow::bail!("{pubkey} is not a validator info account");
     }
     let key_list: ConfigKeys = deserialize(&account.data)?;
@@ -628,7 +650,7 @@ pub fn get_validators_info(
 ) -> anyhow::Result<HashMap<String, ValidatorInfo>> {
     info!("Getting validator info");
     let validator_info = retry_blocking(
-        || rpc_client.get_program_accounts(&solana_config_program_client::ID),
+        || rpc_client.get_program_accounts(&solana_config_interface::id()),
         QuadraticBackoffStrategy::iter_durations(rpc_attempts),
         |err, attempt, backoff| {
             warn!(
@@ -810,7 +832,7 @@ pub fn get_vote_account_states(
     rpc_client: &RpcClient,
 ) -> anyhow::Result<HashMap<String, VoteStateFields>> {
     info!("Getting vote account states");
-    let vote_program_id = solana_vote_program::id();
+    let vote_program_id = solana_sdk_ids::vote::id();
     let vote_accounts = rpc_client.get_program_accounts(&vote_program_id)?;
     let accounts: Vec<(String, &[u8])> = vote_accounts
         .iter()
@@ -923,10 +945,10 @@ pub fn collector_health_of<'a>(
 
 // relax_post_exec_min_balance_check is active, so agave checks rent only on an account it creates.
 fn evaluate_collector(collector: &Pubkey, account: Option<&Account>) -> CollectorHealth {
-    let healthy = if *collector == solana_sdk::incinerator::id() {
+    let healthy = if *collector == solana_sdk_ids::incinerator::id() {
         Some(false)
     } else {
-        account.map(|account| solana_sdk::system_program::check_id(&account.owner))
+        account.map(|account| solana_sdk_ids::system_program::check_id(&account.owner))
     };
     CollectorHealth {
         owner: account.map(|account| account.owner),
@@ -1395,6 +1417,7 @@ impl SliceTotals {
             number(ACTIVATION_EPOCH_OFFSET)?,
         );
         delegation.deactivation_epoch = number(DEACTIVATION_EPOCH_OFFSET)?;
+        #[allow(deprecated)]
         let StakeHistoryEntry {
             effective,
             activating,
@@ -2404,7 +2427,7 @@ mod stake_account_tests {
                     stake,
                     activation_epoch,
                     deactivation_epoch,
-                    warmup_cooldown_rate: 0.25,
+                    _reserved: 0.25_f64.to_le_bytes(),
                 },
                 credits_observed: 0,
             },
@@ -2527,6 +2550,7 @@ mod epoch_credits_tests {
             node_pubkey: String::new(),
             activated_stake,
             commission: 0,
+            inflation_rewards_commission_bps: None,
             epoch_vote_account: true,
             epoch_credits: history.to_vec(),
             last_vote: 0,
@@ -2723,12 +2747,12 @@ mod collector_health_tests {
     fn a_rent_exempt_system_account_is_healthy() {
         let health = evaluate_collector(
             &COLLECTOR,
-            Some(&account(solana_sdk::system_program::id(), RENT_MINIMUM)),
+            Some(&account(solana_sdk_ids::system_program::id(), RENT_MINIMUM)),
         );
         assert_eq!(
             health,
             CollectorHealth {
-                owner: Some(solana_sdk::system_program::id()),
+                owner: Some(solana_sdk_ids::system_program::id()),
                 lamports: RENT_MINIMUM,
                 healthy: Some(true),
             }
@@ -2739,7 +2763,7 @@ mod collector_health_tests {
     fn a_funded_system_account_below_rent_is_healthy() {
         let health = evaluate_collector(
             &COLLECTOR,
-            Some(&account(solana_sdk::system_program::id(), 1)),
+            Some(&account(solana_sdk_ids::system_program::id(), 1)),
         );
         assert_eq!(
             health.healthy,
@@ -2773,14 +2797,14 @@ mod collector_health_tests {
     #[test]
     fn the_incinerator_is_unhealthy_because_the_commission_burns() {
         assert_eq!(
-            evaluate_collector(&solana_sdk::incinerator::id(), None).healthy,
+            evaluate_collector(&solana_sdk_ids::incinerator::id(), None).healthy,
             Some(false),
             "agave zeroes the incinerator every block, so it reads as missing"
         );
         assert_eq!(
             evaluate_collector(
-                &solana_sdk::incinerator::id(),
-                Some(&account(solana_sdk::system_program::id(), u64::MAX)),
+                &solana_sdk_ids::incinerator::id(),
+                Some(&account(solana_sdk_ids::system_program::id(), u64::MAX)),
             )
             .healthy,
             Some(false)
@@ -2815,7 +2839,7 @@ mod collector_health_tests {
 
     fn health(healthy: bool) -> CollectorHealth {
         CollectorHealth {
-            owner: Some(solana_sdk::system_program::id()),
+            owner: Some(solana_sdk_ids::system_program::id()),
             lamports: RENT_MINIMUM,
             healthy: Some(healthy),
         }
@@ -2887,7 +2911,7 @@ mod validator_info_tests {
         Account {
             lamports: 1,
             data,
-            owner: solana_config_program_client::ID,
+            owner: solana_config_interface::id(),
             executable: false,
             rent_epoch: 0,
         }
@@ -2929,6 +2953,7 @@ mod stake_accounts_slice_tests {
         Pubkey::new_from_array(bytes)
     }
 
+    #[allow(deprecated)]
     fn meta(withdrawer: Pubkey) -> Meta {
         Meta {
             rent_exempt_reserve: 0,

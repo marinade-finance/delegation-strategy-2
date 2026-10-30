@@ -1,7 +1,7 @@
 use log::{debug, info};
+use solana_clock::Epoch;
+use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_sdk::clock::Epoch;
-use solana_sdk::pubkey::Pubkey;
 
 /// Unchanged by SIMD-0525, which shortens slots and leaves the epoch's slot count alone.
 pub const SLOTS_IN_EPOCH: u64 = 432_000;

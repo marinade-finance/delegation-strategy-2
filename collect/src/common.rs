@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
+use solana_epoch_info::EpochInfo;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_sdk::epoch_info::EpochInfo;
 use std::{thread, time::Duration};
 
 /// Below this the epoch is too young to measure against block time's one-second granularity.

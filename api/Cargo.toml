@@ -14,7 +14,7 @@ bytes = { workspace = true }
 futures = { workspace = true }
 env_logger = { workspace = true }
 clap = { workspace = true }
-solana-program = { workspace = true }
+solana-native-token = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }

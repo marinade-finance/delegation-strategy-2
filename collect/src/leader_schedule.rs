@@ -3,16 +3,13 @@ use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClient
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
 use log::{info, warn};
+use solana_clock::{Epoch, Slot};
 use solana_commitment_config::CommitmentConfig;
+use solana_epoch_info::EpochInfo;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::response::RpcVoteAccountStatus;
-use solana_sdk::{
-    account::from_account,
-    clock::{Epoch, Slot},
-    epoch_info::EpochInfo,
-    slot_history::{self, SlotHistory},
-    sysvar,
-};
+use solana_sdk_ids::sysvar;
+use solana_slot_history::{self as slot_history, SlotHistory};
 use std::collections::{HashMap, HashSet};
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
@@ -217,7 +214,8 @@ pub fn get_block_production_by_vote_account(
         .get_account_with_commitment(&sysvar::slot_history::id(), CommitmentConfig::finalized())?
         .value
         .context("SlotHistory sysvar not found")?;
-    let slot_history: SlotHistory = from_account(&slot_history_account)
+    let slot_history: SlotHistory = bincode::deserialize(&slot_history_account.data)
+        .ok()
         .context("Failed to deserialize the SlotHistory sysvar")?;
     if first_slot_in_epoch < slot_history.oldest() {
         bail!(
@@ -244,6 +242,7 @@ mod tests {
             node_pubkey: node_pubkey.into(),
             activated_stake: 1,
             commission: 0,
+            inflation_rewards_commission_bps: None,
             epoch_vote_account: true,
             epoch_credits: vec![],
             last_vote: 0,
