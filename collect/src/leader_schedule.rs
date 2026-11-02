@@ -215,7 +215,6 @@ pub fn get_block_production_by_vote_account(
         .value
         .context("SlotHistory sysvar not found")?;
     let slot_history: SlotHistory = bincode::deserialize(&slot_history_account.data)
-        .ok()
         .context("Failed to deserialize the SlotHistory sysvar")?;
     if first_slot_in_epoch < slot_history.oldest() {
         bail!(
