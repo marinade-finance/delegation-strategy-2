@@ -4,7 +4,7 @@ use clap::Parser;
 use csv::{required, Column};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use solana_sdk::clock::Epoch;
+use solana_clock::Epoch;
 use std::time::Duration;
 
 /// The service that owns this dataset: it in turn uses sandwiched.me sheet exports.

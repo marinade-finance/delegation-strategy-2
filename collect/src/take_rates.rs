@@ -7,7 +7,7 @@ use google_cloud_bigquery::query::row::Row;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
-use solana_sdk::clock::Epoch;
+use solana_clock::Epoch;
 use std::time::Duration;
 
 const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";

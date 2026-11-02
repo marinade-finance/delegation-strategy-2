@@ -43,8 +43,9 @@ jobs:
           sudo apt-get -y install libudev-dev pkg-config
 
       - name: 🦿 Install Rust tookchain
-        uses: dtolnay/rust-toolchain@e814c742d4444ce2f3f6abddea7faf00161ed941 # 1.88.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - name: 🧠 Cache Rust dependencies

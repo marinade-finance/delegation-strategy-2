@@ -50,7 +50,7 @@ pub async fn handler(
     query_params: QueryParams,
     context: WrappedContext,
 ) -> Result<impl Reply, warp::Rejection> {
-    info!("Fetching events {:?}", &vote_account);
+    info!("Fetching events {:?}", vote_account);
 
     let validators = context.read().await.cache.get_validators();
     let validator = validators.iter().find(|(_vote_key, record)| {
@@ -60,7 +60,7 @@ pub async fn handler(
     let vote_key = match validator {
         Some((vote_key, _validator)) => vote_key.clone(),
         None => {
-            error!("No validator found for {}", &vote_account);
+            error!("No validator found for {}", vote_account);
             return Ok(response_error(
                 StatusCode::NOT_FOUND,
                 "Failed to fetch records!".into(),
