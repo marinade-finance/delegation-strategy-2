@@ -11,6 +11,11 @@ lazy_static! {
         "How many times /cluster-stats endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_BLACKLIST: IntCounter = register_int_counter!(
+        "ds_request_count_blacklist",
+        "How many times /blacklist or /blacklist.csv endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_UNSTAKE_HINTS: IntCounter = register_int_counter!(
         "ds_request_count_unstake_hints",
         "How many times /unstake-hints endpoint was requested"

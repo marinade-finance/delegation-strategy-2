@@ -482,6 +482,45 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 }
 ```
 
+## Blacklist
+Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
+YAML config) and `rule` (computed by `store blacklist-evaluate`). `evidence` holds the observed values a
+rule judged; the thresholds are not served.
+```bash
+curl -sfLS 'localhost:8000/blacklist.csv' -D - | head
+```
+```
+X-Blacklist-Evaluated-Epoch: 1080
+
+vote_account,code
+2HWm5dvd...,SLOW_SLOTS_1080
+3vyMZHph...,BLACKLIST_COMMISSION_RUG
+```
+```bash
+curl -sfLS 'localhost:8000/blacklist' | jq
+```
+```json
+{
+  "evaluated_epoch": 1080,
+  "rows": [
+    {
+      "vote_account": "2HWm5dvd...",
+      "source": "rule",
+      "rule": "slow_slots",
+      "code": "SLOW_SLOTS_1080",
+      "reason": null,
+      "added_epoch": 1081,
+      "evidence": {
+        "epochs": {
+          "1079": { "slot_duration_median_ms": 245.0, "network_median_ms": 200.0 },
+          "1080": { "slot_duration_median_ms": 250.0, "network_median_ms": 200.0 }
+        }
+      }
+    }
+  ]
+}
+```
+
 ## Metrics
 ```bash
 curl -sLfS 'http://localhost:9000/metrics'

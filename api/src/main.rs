@@ -3,12 +3,12 @@
 
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, client_history, cluster_stats, commissions, config, docs, events,
-    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
-    list_validators, provider_history, readiness, releases, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints,
-    uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    admin_score_upload, blacklist, blacklist_csv, client_history, cluster_stats, commissions,
+    config, docs, events, global_unstake_hints, glossary, health, jito, jito_mev, list_clients,
+    list_providers, list_validators, provider_history, readiness, releases,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -318,6 +318,18 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(unstake_hints::handler);
 
+    let route_blacklist_csv = warp::path!("blacklist.csv")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(blacklist_csv::handler);
+
+    let route_blacklist = warp::path!("blacklist")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(blacklist::handler);
+
     let route_global_unstake_hints = warp::path!("global-unstake-hints")
         .and(warp::path::end())
         .and(warp::get())
@@ -373,6 +385,8 @@ async fn main() -> anyhow::Result<()> {
         .or(route_rewards)
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
+        .or(route_blacklist_csv)
+        .or(route_blacklist)
         .or(route_reports_commission_changes)
         .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
