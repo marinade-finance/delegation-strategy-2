@@ -1,3 +1,4 @@
+pub mod blacklist;
 pub mod close_epoch;
 pub mod cluster_info;
 pub mod dto;
