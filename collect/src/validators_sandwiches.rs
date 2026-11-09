@@ -103,6 +103,16 @@ pub fn parse_epoch_csv(epoch: Epoch, text: &str) -> anyhow::Result<Vec<Validator
         csv::parse_without_comments(csv_body(text), &CSV_COLUMNS, &label)?;
 
     rows.into_iter()
+        .filter(|row| {
+            let valid = is_base58_pubkey(&row.vote_account);
+            if !valid {
+                warn!(
+                    "{label}: dropping a row whose vote account {:?} is not a pubkey",
+                    row.vote_account
+                );
+            }
+            valid
+        })
         .map(|row| {
             let missing = |column: &str| format!("{label}: {} has no {column}", row.vote_account);
             let rate_30d = row
@@ -229,13 +239,13 @@ mod tests {
     #[test]
     fn the_three_line_preamble_is_dropped_before_the_header() {
         let csv = format!(
-            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\nvote1,2000,90,4.5\n"
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5\n"
         );
         assert_eq!(
             parse_epoch_csv(1030, &csv).unwrap(),
             vec![ValidatorSandwich {
                 epoch: 1030,
-                vote_account: "vote1".into(),
+                vote_account: "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU".into(),
                 blocks_produced: 2000,
                 blocks_with_sandwiches: 90,
                 sandwich_rate_30d: 4.5,
@@ -249,13 +259,13 @@ mod tests {
     fn the_modern_shape_fills_every_field() {
         let csv = format!(
             "{PREAMBLE}validator_name,vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate,60d_sandwich_rate\n\
-             -,vote1,9520,4056,42.6,29.7\n"
+             -,5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,9520,4056,42.6,29.7\n"
         );
         assert_eq!(
             parse_epoch_csv(886, &csv).unwrap(),
             vec![ValidatorSandwich {
                 epoch: 886,
-                vote_account: "vote1".into(),
+                vote_account: "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU".into(),
                 blocks_produced: 9520,
                 blocks_with_sandwiches: 4056,
                 sandwich_rate_30d: 42.6,
@@ -269,7 +279,7 @@ mod tests {
     #[test]
     fn the_pre_820_column_name_is_read_as_the_30d_rate() {
         let csv = format!(
-            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,sandwich_rate\nvote1,2356,1511,64.1\n"
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,sandwich_rate\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2356,1511,64.1\n"
         );
         let rows = parse_epoch_csv(791, &csv).unwrap();
         assert_eq!(rows[0].sandwich_rate_30d, 64.1);
@@ -280,13 +290,13 @@ mod tests {
     #[test]
     fn the_unprefixed_column_names_are_read() {
         let csv = format!(
-            "{PREAMBLE}vote_account,blocks_produced,blocks_with_sandwiches,sandwich_rate,sandwich_rate_60d\nvote1,4672,2990,64,52\n"
+            "{PREAMBLE}vote_account,blocks_produced,blocks_with_sandwiches,sandwich_rate,sandwich_rate_60d\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,4672,2990,64,52\n"
         );
         assert_eq!(
             parse_epoch_csv(812, &csv).unwrap(),
             vec![ValidatorSandwich {
                 epoch: 812,
-                vote_account: "vote1".into(),
+                vote_account: "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU".into(),
                 blocks_produced: 4672,
                 blocks_with_sandwiches: 2990,
                 sandwich_rate_30d: 64.0,
@@ -300,21 +310,21 @@ mod tests {
     fn a_validator_name_starting_with_a_hash_is_kept() {
         let csv = format!(
             "{PREAMBLE}validator_name,vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\n\
-             #Something,vote1,2000,90,4.5\n"
+             #Something,5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5\n"
         );
         assert_eq!(parse_epoch_csv(1030, &csv).unwrap().len(), 1);
     }
 
     #[test]
     fn a_row_with_no_block_count_is_an_error() {
-        let csv = format!("{PREAMBLE}vote_account,30d_sandwich_rate\nvote1,4.5\n");
+        let csv = format!("{PREAMBLE}vote_account,30d_sandwich_rate\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,4.5\n");
         let error = parse_epoch_csv(1030, &csv).unwrap_err().to_string();
         assert!(error.contains("no 30d blocks produced"), "{error}");
     }
 
     #[test]
     fn a_row_with_no_rate_at_all_is_an_error() {
-        let csv = format!("{PREAMBLE}vote_account,30d_blocks_produced\nvote1,2356\n");
+        let csv = format!("{PREAMBLE}vote_account,30d_blocks_produced\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2356\n");
         let error = parse_epoch_csv(1030, &csv).unwrap_err().to_string();
         assert!(error.contains("no 30d sandwich rate"), "{error}");
     }
@@ -330,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_wide_rate_column_is_read() {
-        let csv = format!("{PREAMBLE}{WIDE_HEADER}\nvote1,2000,90,4.5,4.3\n");
+        let csv = format!("{PREAMBLE}{WIDE_HEADER}\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5,4.3\n");
         assert_eq!(
             parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
             Some(4.3)
@@ -340,7 +350,7 @@ mod tests {
     #[test]
     fn a_csv_without_the_wide_column_reads_none() {
         let csv = format!(
-            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\nvote1,2000,90,4.5\n"
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5\n"
         );
         assert_eq!(
             parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
@@ -351,10 +361,30 @@ mod tests {
     // The report writes an empty cell when mev-hub gives no wide rate for a validator.
     #[test]
     fn a_blank_wide_cell_reads_none() {
-        let csv = format!("{PREAMBLE}{WIDE_HEADER}\nvote1,2000,90,4.5,\n");
+        let csv = format!(
+            "{PREAMBLE}{WIDE_HEADER}\n5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5,\n"
+        );
         assert_eq!(
             parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
             None
+        );
+    }
+
+    // The report is scraped; its account cell is served unquoted in /blacklist.csv.
+    #[test]
+    fn a_row_whose_account_is_not_a_pubkey_is_dropped() {
+        let csv = format!(
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\n\
+             5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU,2000,90,4.5\n\
+             \"5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU\nforged\",2000,90,4.5\n\
+             not-a-pubkey,2000,90,4.5\n"
+        );
+        let rows = parse_epoch_csv(1080, &csv).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU"]
         );
     }
 }

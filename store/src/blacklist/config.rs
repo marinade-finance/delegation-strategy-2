@@ -1,4 +1,5 @@
 use anyhow::{bail, ensure, Context};
+use collect::common::is_base58_pubkey;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -155,12 +156,9 @@ fn non_empty(list: &str, value: &str, field: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-const BASE58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-// Both land unquoted in /blacklist.csv, where a comma or a newline would forge a row.
 fn vote_account_shape(list: &str, vote_account: &str) -> anyhow::Result<()> {
     ensure!(
-        (32..=44).contains(&vote_account.len()) && vote_account.chars().all(|c| BASE58.contains(c)),
+        is_base58_pubkey(vote_account),
         "{list}: {vote_account:?} is not a base58 vote account"
     );
     Ok(())
