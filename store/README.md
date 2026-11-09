@@ -53,4 +53,8 @@ cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-priority --snapshot-file "$OUTPUT_DIR"/jito-priority.yaml
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
+
+# one-off: today's blacklist.csv becomes legacy rows of the blacklist table
+cargo run --bin store -- --postgres-url $POSTGRES_URL \
+  blacklist-import --csv ./blacklist.csv --source-ref "$(git rev-parse HEAD)"
 ```
