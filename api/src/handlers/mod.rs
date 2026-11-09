@@ -31,5 +31,6 @@ pub mod validator_score_breakdowns;
 pub mod validator_scores;
 pub mod validators_block_rewards;
 pub mod validators_flat;
+pub mod validators_quality;
 pub mod versions;
 pub mod workflow_metrics_upload;

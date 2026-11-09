@@ -4,7 +4,8 @@ use crate::handlers::{
     list_providers, list_validators, provider_history, readiness, releases,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
     take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    validator_scores, validators_block_rewards, validators_flat, validators_quality, versions,
+    workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -22,6 +23,8 @@ use utoipa::OpenApi;
         schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(blacklist::ResponseBlacklist),
         schemas(blacklist::BlacklistEntry),
+        schemas(validators_quality::ResponseValidatorsQuality),
+        schemas(store::validator_quality::ValidatorQualityRecord),
         schemas(cluster_stats::ResponseClusterStats),
         schemas(commissions::ResponseCommissions),
         schemas(take_rates::ResponseTakeRates),
@@ -129,6 +132,7 @@ use utoipa::OpenApi;
         validator_score_breakdowns::handler,
         validator_scores::handler,
         validators_flat::handler,
+        validators_quality::handler,
         versions::handler,
         workflow_metrics_upload::handler,
         jito_mev::handler,
