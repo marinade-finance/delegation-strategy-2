@@ -6,7 +6,6 @@ use tokio_postgres::Client;
 pub struct Context {
     pub psql_client: Client,
     pub glossary_path: String,
-    pub blacklist_path: String,
     pub scoring_url: String,
     pub validator_bonds_api_url: String,
     pub apy_api_url: String,
@@ -17,7 +16,6 @@ impl Context {
     pub fn new(
         psql_client: Client,
         glossary_path: String,
-        blacklist_path: String,
         scoring_url: String,
         validator_bonds_api_url: String,
         apy_api_url: String,
@@ -25,7 +23,6 @@ impl Context {
         Ok(Self {
             psql_client,
             glossary_path,
-            blacklist_path,
             scoring_url,
             validator_bonds_api_url,
             apy_api_url,

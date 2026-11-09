@@ -16,8 +16,11 @@ export PG_SSLROOTCERT='/tmp/postgres-root-cert.pem'
 cargo run --bin api -- \
   --postgres-ssl-root-cert $PG_SSLROOTCERT --postgres-url $POSTGRES_URL \
   --scoring-url https://scoring.marinade.finance --admin-auth-token ABCD \
-  --blacklist-path ./blacklist.csv --glossary-path ./glossary.md
+  --blacklist-config ./blacklist.yaml --glossary-path ./glossary.md
 ```
+
+The blacklist itself is served from the database (see `store blacklist-evaluate`); the API only refuses to
+start on an invalid config. A minimal `blacklist.yaml` (git-ignored) is `manual: []` and `exempt: []`.
 
 ```bash
 curl 'http://localhost:8000/validators'

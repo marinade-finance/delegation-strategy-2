@@ -55,8 +55,12 @@ pub struct Params {
     #[arg(long = "glossary-path")]
     glossary_path: String,
 
-    #[arg(long = "blacklist-path")]
-    blacklist_path: String,
+    #[arg(
+        long = "blacklist-config",
+        env = "BLACKLIST_CONFIG",
+        help = "The blacklist YAML; parsed at startup so a bad file never replaces a serving pod."
+    )]
+    blacklist_config: String,
 
     #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
@@ -71,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Launching API");
 
     let params = Params::parse();
+    store::blacklist::config::BlacklistConfig::load(&params.blacklist_config)?;
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;
@@ -87,7 +92,6 @@ async fn main() -> anyhow::Result<()> {
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
-        params.blacklist_path,
         params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
