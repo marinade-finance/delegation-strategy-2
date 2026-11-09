@@ -1,18 +1,16 @@
+use crate::blacklist::import::BLACKLIST_COLUMNS;
 use crate::dto::{
     BlacklistRecord, GlobalUnstakeHintRecord, ScoringRunRecord, UnstakeHint, UnstakeHintRecord,
     ValidatorScoreRecord,
 };
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
-use csv::{required, Column};
 use rust_decimal::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::Client;
 
 const MAX_ALLOWED_COMMISSION: u8 = 10;
 const MIN_REQUIRED_CREDITS_PERFORMANCE: f64 = 0.5;
-
-const BLACKLIST_COLUMNS: [Column; 2] = [required("vote_account"), required("code")];
 
 fn load_blacklist(blacklist_path: &String) -> anyhow::Result<HashMap<String, HashSet<String>>> {
     let blacklist: Vec<BlacklistRecord> =
