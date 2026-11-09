@@ -155,9 +155,7 @@ fn assert_close(actual: f64, expected: f64) {
 }
 
 async fn hints(client: &Client, epoch: u64) -> Vec<(String, Vec<UnstakeHint>)> {
-    let blacklist = std::env::temp_dir().join(format!("ds-test-blacklist-{epoch}.csv"));
-    std::fs::write(&blacklist, "vote_account,code\n").unwrap();
-    let mut hints: Vec<_> = load_unstake_hints(client, &blacklist.display().to_string(), epoch)
+    let mut hints: Vec<_> = load_unstake_hints(client, epoch)
         .await
         .unwrap()
         .into_iter()
