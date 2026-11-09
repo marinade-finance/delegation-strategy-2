@@ -332,7 +332,42 @@ async fn every_row_of_an_epoch_gets_the_cluster_median() {
             .expect("the validator has incident material")
             .sandwiches[0];
         assert_eq!(loaded.cluster_median_rate, 2.0, "{vote_account}");
+        assert_eq!(
+            loaded.cluster_pooled_rate,
+            100.0 * 1350.0 / 15_999.0,
+            "{vote_account}"
+        );
     }
+}
+
+#[tokio::test]
+async fn the_wide_rate_is_loaded_when_stored() {
+    let schema = "ds_test_incidents_sandwich_wide";
+    if skip_without_database(schema) {
+        return;
+    }
+    let client = migrated_client(schema).await.unwrap();
+
+    closed_epoch(&client, 900, "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z").await;
+    sandwiches(&client, "voteA", 900, 5000, 300, 6.0, Some(5.5)).await;
+    sandwiches(&client, "voteB", 900, 5000, 50, 1.0, Some(0.9)).await;
+    client
+        .execute(
+            "UPDATE validators_sandwiches SET wide_sandwich_rate_30d = 4.3 WHERE vote_account = 'voteA'",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let incidents = load_validator_incidents(&client, 900, 900, &no_records())
+        .await
+        .unwrap();
+
+    let wide = |vote_account: &str| {
+        incidents.get(vote_account).unwrap().sandwiches[0].wide_sandwich_rate_30d
+    };
+    assert_eq!(wide("voteA"), Some(4.3));
+    assert_eq!(wide("voteB"), None);
 }
 
 // `uptimes` is written every minute and `validators` hourly, so epoch 102 is a live case: a DOWN row
