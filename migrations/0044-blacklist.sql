@@ -7,6 +7,8 @@ CREATE TABLE blacklist (
     code TEXT NOT NULL,
     reason TEXT,
     evidence JSONB,
+    -- Rule rows: the earliest epoch the evidence covers, which an exemption's until_epoch is held against.
+    evidence_from_epoch NUMERIC,
     added_epoch NUMERIC,
     removed_epoch NUMERIC,
     removed_reason TEXT,
