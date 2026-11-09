@@ -63,6 +63,8 @@ pub async fn store_sandwiches(
             .collect();
         let rates_30d: Vec<f64> = chunk.iter().map(|r| r.sandwich_rate_30d).collect();
         let rates_60d: Vec<Option<f64>> = chunk.iter().map(|r| r.sandwich_rate_60d).collect();
+        let wide_rates_30d: Vec<Option<f64>> =
+            chunk.iter().map(|r| r.wide_sandwich_rate_30d).collect();
         let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
         let created_ats = updated_ats.clone();
 
@@ -75,7 +77,8 @@ pub async fn store_sandwiches(
             sandwich_rate_30d,
             sandwich_rate_60d,
             created_at,
-            updated_at
+            updated_at,
+            wide_sandwich_rate_30d
         )
         SELECT * FROM UNNEST(
             $1::NUMERIC[],
@@ -85,7 +88,8 @@ pub async fn store_sandwiches(
             $5::DOUBLE PRECISION[],
             $6::DOUBLE PRECISION[],
             $7::TIMESTAMP WITH TIME ZONE[],
-            $8::TIMESTAMP WITH TIME ZONE[]
+            $8::TIMESTAMP WITH TIME ZONE[],
+            $9::DOUBLE PRECISION[]
         )
         ON CONFLICT (epoch, vote_account)
         DO UPDATE SET
@@ -93,6 +97,7 @@ pub async fn store_sandwiches(
             blocks_with_sandwiches = EXCLUDED.blocks_with_sandwiches,
             sandwich_rate_30d = EXCLUDED.sandwich_rate_30d,
             sandwich_rate_60d = EXCLUDED.sandwich_rate_60d,
+            wide_sandwich_rate_30d = EXCLUDED.wide_sandwich_rate_30d,
             updated_at = EXCLUDED.updated_at"
         );
 
@@ -108,6 +113,7 @@ pub async fn store_sandwiches(
                     &rates_60d,
                     &created_ats,
                     &updated_ats,
+                    &wide_rates_30d,
                 ],
             )
             .await?;

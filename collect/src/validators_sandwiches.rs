@@ -63,6 +63,9 @@ pub struct ValidatorSandwich {
     pub sandwich_rate_30d: f64,
     /// Absent before epoch 820: upstream published only the 30d rate then.
     pub sandwich_rate_60d: Option<f64>,
+    /// Absent on epochs published before the report carried the wide rate.
+    #[serde(default)]
+    pub wide_sandwich_rate_30d: Option<f64>,
 }
 
 /// One row of an epoch CSV.
@@ -82,6 +85,8 @@ struct SandwichCsvRow {
     sandwich_rate_30d: Option<f64>,
     #[serde(default, rename = "60d_sandwich_rate", alias = "sandwich_rate_60d")]
     sandwich_rate_60d: Option<f64>,
+    #[serde(default, rename = "30d_wide_sandwich_rate")]
+    wide_sandwich_rate_30d: Option<f64>,
 }
 
 const CSV_COLUMNS: [Column; 1] = [required("vote_account")];
@@ -115,6 +120,7 @@ pub fn parse_epoch_csv(epoch: Epoch, text: &str) -> anyhow::Result<Vec<Validator
                 blocks_with_sandwiches,
                 sandwich_rate_30d: rate_30d,
                 sandwich_rate_60d: row.sandwich_rate_60d,
+                wide_sandwich_rate_30d: row.wide_sandwich_rate_30d,
                 vote_account: row.vote_account,
             })
         })
@@ -234,6 +240,7 @@ mod tests {
                 blocks_with_sandwiches: 90,
                 sandwich_rate_30d: 4.5,
                 sandwich_rate_60d: None,
+                wide_sandwich_rate_30d: None,
             }]
         );
     }
@@ -253,6 +260,7 @@ mod tests {
                 blocks_with_sandwiches: 4056,
                 sandwich_rate_30d: 42.6,
                 sandwich_rate_60d: Some(29.7),
+                wide_sandwich_rate_30d: None,
             }]
         );
     }
@@ -283,6 +291,7 @@ mod tests {
                 blocks_with_sandwiches: 2990,
                 sandwich_rate_30d: 64.0,
                 sandwich_rate_60d: Some(52.0),
+                wide_sandwich_rate_30d: None,
             }]
         );
     }
@@ -315,5 +324,37 @@ mod tests {
         let csv = format!("{PREAMBLE}validator_name,30d_sandwich_rate\n-,4.5\n");
         let error = parse_epoch_csv(1030, &csv).unwrap_err().to_string();
         assert!(error.contains("vote_account"), "{error}");
+    }
+
+    const WIDE_HEADER: &str = "vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate,30d_wide_sandwich_rate";
+
+    #[test]
+    fn a_wide_rate_column_is_read() {
+        let csv = format!("{PREAMBLE}{WIDE_HEADER}\nvote1,2000,90,4.5,4.3\n");
+        assert_eq!(
+            parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
+            Some(4.3)
+        );
+    }
+
+    #[test]
+    fn a_csv_without_the_wide_column_reads_none() {
+        let csv = format!(
+            "{PREAMBLE}vote_account,30d_blocks_produced,30d_blocks_with_sandwiches,30d_sandwich_rate\nvote1,2000,90,4.5\n"
+        );
+        assert_eq!(
+            parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
+            None
+        );
+    }
+
+    // The report writes an empty cell when mev-hub gives no wide rate for a validator.
+    #[test]
+    fn a_blank_wide_cell_reads_none() {
+        let csv = format!("{PREAMBLE}{WIDE_HEADER}\nvote1,2000,90,4.5,\n");
+        assert_eq!(
+            parse_epoch_csv(1080, &csv).unwrap()[0].wide_sandwich_rate_30d,
+            None
+        );
     }
 }
