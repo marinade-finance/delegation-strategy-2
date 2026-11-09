@@ -10,6 +10,14 @@ const MIN_SLOTS_TO_MEASURE: u64 = 1000;
 /// Skew between the container clock and the cluster's block time is a fixed offset, so only a long window dilutes it.
 const MIN_SECONDS_TO_MEASURE: u64 = 600;
 
+const BASE58_ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// The shape of a Solana pubkey: 32 to 44 base58 characters. Accounts from scraped or hand-kept
+/// sources are served unquoted in `/blacklist.csv`, where a comma or a newline would forge a row.
+pub fn is_base58_pubkey(value: &str) -> bool {
+    (32..=44).contains(&value.len()) && value.chars().all(|c| BASE58_ALPHABET.contains(c))
+}
+
 #[derive(Debug, Parser)]
 pub struct CommonParams {
     #[arg(short = 'u', long = "url", env = "RPC_URL")]

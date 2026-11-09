@@ -3,7 +3,7 @@ use crate::{
 };
 use anyhow::Context;
 use clap::Parser;
-use log::info;
+use log::{info, warn};
 use serde::{Deserialize, Deserializer, Serialize};
 use solana_clock::Epoch;
 use std::time::Duration;
@@ -94,6 +94,13 @@ fn records_to_slot_times(epoch: Epoch, records: Vec<TrilliumRecord>) -> Vec<Vali
     records
         .into_iter()
         .filter_map(|record| {
+            if !is_base58_pubkey(&record.vote_account_pubkey) {
+                warn!(
+                    "epoch {epoch}: dropping a record whose vote account {:?} is not a pubkey",
+                    record.vote_account_pubkey
+                );
+                return None;
+            }
             Some(ValidatorSlotTime {
                 epoch,
                 slot_duration_median_ms: record.slot_duration_median?,
@@ -205,13 +212,13 @@ mod tests {
     #[test]
     fn slot_duration_median_as_a_string_is_parsed() {
         let rows = parse(
-            r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": "200.00000", "ibrl_score": null}]"#,
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "200.00000", "ibrl_score": null}]"#,
         );
         assert_eq!(
             rows,
             vec![ValidatorSlotTime {
                 epoch: 1080,
-                vote_account: "vote1".into(),
+                vote_account: "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU".into(),
                 slot_duration_median_ms: 200.0,
                 ibrl_score: None,
             }]
@@ -220,29 +227,31 @@ mod tests {
 
     #[test]
     fn slot_duration_median_as_a_number_is_parsed() {
-        let rows = parse(r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": 243.5}]"#);
+        let rows = parse(
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": 243.5}]"#,
+        );
         assert_eq!(rows[0].slot_duration_median_ms, 243.5);
     }
 
     #[test]
     fn a_record_without_slot_duration_median_is_skipped() {
         let rows = parse(
-            r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": null},
-                {"vote_account_pubkey": "vote2"},
-                {"vote_account_pubkey": "vote3", "slot_duration_median": "201.5"}]"#,
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": null},
+                {"vote_account_pubkey": "CzmqDuqEpfnkptuLAcikmJrhCnhFXo8aUBj6Rto1SPAc"},
+                {"vote_account_pubkey": "QodirbUG8AZQBWpHhPJPfjj1xg4AaQUZCVVtwT8YfPi", "slot_duration_median": "201.5"}]"#,
         );
         assert_eq!(
             rows.iter()
                 .map(|row| row.vote_account.as_str())
                 .collect::<Vec<_>>(),
-            vec!["vote3"]
+            vec!["QodirbUG8AZQBWpHhPJPfjj1xg4AaQUZCVVtwT8YfPi"]
         );
     }
 
     #[test]
     fn ibrl_score_is_kept_when_present() {
         let rows = parse(
-            r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": "200", "ibrl_score": 87.5}]"#,
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "200", "ibrl_score": 87.5}]"#,
         );
         assert_eq!(rows[0].ibrl_score, Some(87.5));
     }
@@ -250,7 +259,7 @@ mod tests {
     #[test]
     fn a_non_numeric_slot_duration_is_an_error() {
         let result: Result<Vec<TrilliumRecord>, _> = serde_json::from_str(
-            r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": "fast"}]"#,
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "fast"}]"#,
         );
         assert!(result.is_err());
     }
@@ -294,7 +303,7 @@ mod tests {
         let url = stub(vec![
             (
                 "200 OK",
-                r#"[{"vote_account_pubkey": "vote1", "slot_duration_median": "200"}]"#,
+                r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "200"}]"#,
             ),
             ("404 Not Found", ""),
         ]);
@@ -302,6 +311,21 @@ mod tests {
         assert_eq!(
             rows.iter().map(|row| row.epoch).collect::<Vec<_>>(),
             vec![1079]
+        );
+    }
+
+    #[test]
+    fn a_record_whose_account_is_not_a_pubkey_is_dropped() {
+        let rows = parse(
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "200"},
+                {"vote_account_pubkey": "a,b", "slot_duration_median": "200"},
+                {"vote_account_pubkey": "", "slot_duration_median": "200"}]"#,
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.vote_account.as_str())
+                .collect::<Vec<_>>(),
+            vec!["5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU"]
         );
     }
 }
