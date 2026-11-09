@@ -1,6 +1,6 @@
-use super::{BlacklistRule, Hit, RuleInputs, SandwichRow};
+use super::{BlacklistRule, Hit, Input, RuleInputs, SandwichRow};
 use crate::blacklist::config::{RuleId, SandwichConfig};
-use crate::incidents::{sandwich_hit, sandwich_population, SandwichHit, SandwichPopulation};
+use crate::incidents::{sandwich_hit, sandwich_population, SandwichPopulation};
 use serde_json::{json, Value};
 
 /// The incidents' sandwich definition with the configured floor, on the single and the wide rate.
@@ -26,7 +26,7 @@ fn observed(
     blocks_produced: u64,
     sandwiched: u64,
     population: &SandwichPopulation,
-    hit: &SandwichHit,
+    p_value: f64,
 ) -> Value {
     json!({
         "rate_30d_pct": rate_pct,
@@ -34,13 +34,17 @@ fn observed(
         "blocks_with_sandwiches": sandwiched,
         "cluster_median_pct": population.median_rate,
         "cluster_pooled_pct": population.pooled_rate,
-        "p_value": hit.p_value,
+        "p_value": p_value,
     })
 }
 
 impl BlacklistRule for Sandwich {
     fn id(&self) -> RuleId {
         RuleId::Sandwich
+    }
+
+    fn inputs(&self) -> &'static [Input] {
+        &[Input::Sandwiches]
     }
 
     fn evaluate(&self, inputs: &RuleInputs) -> Vec<Hit> {
@@ -69,20 +73,21 @@ impl BlacklistRule for Sandwich {
                     &single_population,
                     self.rate_pct,
                 )
-                .map(|hit| {
+                .map(|p_value| {
                     observed(
                         row.sandwich_rate_30d,
                         row.blocks_produced,
                         row.blocks_with_sandwiches,
                         &single_population,
-                        &hit,
+                        p_value,
                     )
                 });
                 let wide = wide_population.as_ref().and_then(|population| {
                     let rate = row.wide_sandwich_rate_30d?;
                     let count = wide_count(rate, row.blocks_produced);
-                    sandwich_hit(rate, row.blocks_produced, count, population, self.rate_pct)
-                        .map(|hit| observed(rate, row.blocks_produced, count, population, &hit))
+                    sandwich_hit(rate, row.blocks_produced, count, population, self.rate_pct).map(
+                        |p_value| observed(rate, row.blocks_produced, count, population, p_value),
+                    )
                 });
                 let kind = match (&single, &wide) {
                     (Some(_), _) => "SINGLE",

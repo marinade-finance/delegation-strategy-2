@@ -132,7 +132,7 @@ struct EpochsResponse {
     epochs: Vec<Epoch>,
 }
 
-fn http_client() -> anyhow::Result<reqwest::blocking::Client> {
+pub(crate) fn http_client() -> anyhow::Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent("marinade-delegation-strategy")
         .timeout(Duration::from_secs(HTTP_TIMEOUT_S))

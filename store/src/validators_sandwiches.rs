@@ -49,6 +49,8 @@ pub async fn store_sandwiches(
         .collect();
 
     let mut total_upserted = 0;
+    // One transaction: the blacklist judges an epoch once, so it must never see half of one.
+    let tx = psql_client.transaction().await?;
 
     for chunk in sandwiches.chunks(DEFAULT_CHUNK_SIZE) {
         let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
@@ -101,7 +103,7 @@ pub async fn store_sandwiches(
             updated_at = EXCLUDED.updated_at"
         );
 
-        let rows_affected = psql_client
+        let rows_affected = tx
             .execute(
                 &query,
                 &[
@@ -122,6 +124,7 @@ pub async fn store_sandwiches(
 
         info!("Upserted {rows_affected} sandwich records in this chunk");
     }
+    tx.commit().await?;
 
     info!("Stored sandwiches snapshot: {total_upserted} total records upserted");
 

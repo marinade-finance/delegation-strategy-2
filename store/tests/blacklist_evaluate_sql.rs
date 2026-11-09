@@ -99,7 +99,14 @@ async fn epoch_with_inputs(client: &Client, epoch: u64, slow_ms: f64, sandwicher
     for (account, ms) in [("n1", 200.0), ("n2", 200.0), ("n3", 205.0)] {
         validator(client, epoch, account, 1_000_000, ms).await;
     }
-    validator(client, epoch, "slow", 10_000, slow_ms).await;
+    validator(
+        client,
+        epoch,
+        "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS",
+        10_000,
+        slow_ms,
+    )
+    .await;
     for index in 0..40 {
         sandwiches(client, epoch, &format!("s{index:02}"), 5000, 40).await;
     }
@@ -175,7 +182,7 @@ async fn setup(schema: &str) -> Option<Client> {
     Some(client)
 }
 
-const MANUAL_B: &str = "manual: [{ vote_account: B, code: MISSING_BLS, reason: 'SIMD-0357' }]";
+const MANUAL_B: &str = "manual: [{ vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, code: MISSING_BLS, reason: 'SIMD-0357' }]";
 
 #[tokio::test]
 async fn sync_is_idempotent() {
@@ -189,7 +196,7 @@ async fn sync_is_idempotent() {
 
     assert_eq!(
         active(&client).await,
-        rows(&[("B", "manual", "MISSING_BLS")])
+        rows(&[("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "manual", "MISSING_BLS")])
     );
     let total: i64 = client
         .query_one("SELECT COUNT(*) FROM blacklist", &[])
@@ -212,7 +219,7 @@ async fn a_removed_manual_entry_closes_its_row() {
     assert!(active(&client).await.is_empty());
     let row = client
         .query_one(
-            "SELECT removed_epoch, removed_reason FROM blacklist WHERE vote_account = 'B'",
+            "SELECT removed_epoch, removed_reason FROM blacklist WHERE vote_account = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'",
             &[],
         )
         .await
@@ -232,7 +239,7 @@ async fn a_changed_reason_updates_the_active_row() {
     run(
         &mut client,
         schema,
-        "manual: [{ vote_account: B, code: MISSING_BLS, reason: 'no BLS key' }]",
+        "manual: [{ vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, code: MISSING_BLS, reason: 'no BLS key' }]",
     )
     .await
     .unwrap();
@@ -253,13 +260,20 @@ async fn sync_never_closes_legacy_rows() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
-    insert_row(&client, "L", "legacy", None, "SLOW_VOTER").await;
+    insert_row(
+        &client,
+        "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+        "legacy",
+        None,
+        "SLOW_VOTER",
+    )
+    .await;
 
     run(&mut client, schema, "manual: []").await.unwrap();
 
     assert_eq!(
         active(&client).await,
-        rows(&[("L", "legacy", "SLOW_VOTER")])
+        rows(&[("LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "legacy", "SLOW_VOTER")])
     );
 }
 
@@ -269,28 +283,63 @@ async fn exempt_closes_only_matching_rows() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
-    insert_row(&client, "A", "rule", Some("slow_slots"), "SLOW_SLOTS_1070").await;
     insert_row(
         &client,
-        "A",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rule",
+        Some("slow_slots"),
+        "SLOW_SLOTS_1070",
+    )
+    .await;
+    insert_row(
+        &client,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "rule",
         Some("sandwich"),
         "MALICIOUS_SANDWICHED_ME_SINGLE_1070",
     )
     .await;
-    insert_row(&client, "A", "legacy", None, "SLOW_VOTER").await;
-    insert_row(&client, "L", "legacy", None, "MALICIOUS_SM").await;
-    insert_row(&client, "R", "rule", Some("slow_slots"), "SLOW_SLOTS_1070").await;
-    insert_row(&client, "R", "legacy", None, "SLOW_VOTER").await;
+    insert_row(
+        &client,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "legacy",
+        None,
+        "SLOW_VOTER",
+    )
+    .await;
+    insert_row(
+        &client,
+        "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+        "legacy",
+        None,
+        "MALICIOUS_SM",
+    )
+    .await;
+    insert_row(
+        &client,
+        "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+        "rule",
+        Some("slow_slots"),
+        "SLOW_SLOTS_1070",
+    )
+    .await;
+    insert_row(
+        &client,
+        "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+        "legacy",
+        None,
+        "SLOW_VOTER",
+    )
+    .await;
 
     run(
         &mut client,
         schema,
-        "manual: [{ vote_account: R, code: MISSING_BLS, reason: 'no BLS key' }]
+        "manual: [{ vote_account: RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR, code: MISSING_BLS, reason: 'no BLS key' }]
 exempt:
-  - { vote_account: A, rule: slow_slots, reason: 'appeal' }
-  - { vote_account: L, rule: legacy, reason: 'appeal' }
-  - { vote_account: R, rule: all, reason: 'appeal' }",
+  - { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, reason: 'appeal' }
+  - { vote_account: LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL, rule: legacy, reason: 'appeal' }
+  - { vote_account: RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR, rule: all, reason: 'appeal' }",
     )
     .await
     .unwrap();
@@ -298,14 +347,18 @@ exempt:
     assert_eq!(
         active(&client).await,
         rows(&[
-            ("A", "legacy", "SLOW_VOTER"),
-            ("A", "rule", "MALICIOUS_SANDWICHED_ME_SINGLE_1070"),
-            ("R", "manual", "MISSING_BLS"),
+            ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "legacy", "SLOW_VOTER"),
+            (
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "rule",
+                "MALICIOUS_SANDWICHED_ME_SINGLE_1070"
+            ),
+            ("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR", "manual", "MISSING_BLS"),
         ])
     );
     let reason: String = client
         .query_one(
-            "SELECT removed_reason FROM blacklist WHERE vote_account = 'L'",
+            "SELECT removed_reason FROM blacklist WHERE vote_account = 'LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL'",
             &[],
         )
         .await
@@ -321,10 +374,17 @@ async fn an_until_epoch_exemption_keeps_a_later_offence() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
-    insert_row(&client, "A", "rule", Some("slow_slots"), "SLOW_SLOTS_1070").await;
+    insert_row(
+        &client,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "rule",
+        Some("slow_slots"),
+        "SLOW_SLOTS_1070",
+    )
+    .await;
     client
         .execute(
-            "UPDATE blacklist SET evidence_from_epoch = 1084 WHERE vote_account = 'A'",
+            "UPDATE blacklist SET evidence_from_epoch = 1084 WHERE vote_account = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'",
             &[],
         )
         .await
@@ -333,7 +393,7 @@ async fn an_until_epoch_exemption_keeps_a_later_offence() {
     run(
         &mut client,
         schema,
-        "exempt: [{ vote_account: A, rule: slow_slots, until_epoch: 1083, reason: 'fixed client' }]",
+        "exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, until_epoch: 1083, reason: 'fixed client' }]",
     )
     .await
     .unwrap();
@@ -375,7 +435,11 @@ async fn a_slow_slots_hit_lands_with_evidence() {
 
     assert_eq!(
         active(&client).await,
-        rows(&[("slow", "rule", "SLOW_SLOTS_1080")])
+        rows(&[(
+            "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS",
+            "rule",
+            "SLOW_SLOTS_1080"
+        )])
     );
     let row = client
         .query_one(
@@ -401,6 +465,7 @@ async fn a_sandwich_hit_lands_with_evidence() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
+    epoch_with_inputs(&client, 1079, 200.0, false).await;
     epoch_with_inputs(&client, 1080, 200.0, true).await;
 
     run(&mut client, schema, RULES).await.unwrap();
@@ -425,6 +490,7 @@ async fn an_epoch_with_missing_inputs_stops_without_being_marked() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
+    epoch_with_inputs(&client, 1079, 200.0, false).await;
     epoch_with_inputs(&client, 1080, 200.0, false).await;
     closed_epoch(&client, 1081).await;
     validator(&client, 1081, "n1", 1_000_000, 200.0).await;
@@ -440,6 +506,7 @@ async fn an_evaluated_epoch_is_not_re_evaluated_when_its_data_changes() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
+    epoch_with_inputs(&client, 1079, 200.0, false).await;
     epoch_with_inputs(&client, 1080, 200.0, false).await;
     run(&mut client, schema, RULES).await.unwrap();
 
@@ -456,6 +523,7 @@ async fn one_active_row_per_account_and_rule() {
     let Some(mut client) = setup(schema).await else {
         return;
     };
+    epoch_with_inputs(&client, 1079, 200.0, false).await;
     epoch_with_inputs(&client, 1080, 200.0, true).await;
     epoch_with_inputs(&client, 1081, 200.0, true).await;
 
@@ -481,14 +549,18 @@ async fn until_epoch_ignores_earlier_evidence() {
     epoch_with_inputs(&client, 1080, 250.0, false).await;
     epoch_with_inputs(&client, 1081, 250.0, false).await;
     let config = format!(
-        "{RULES}exempt: [{{ vote_account: slow, rule: slow_slots, until_epoch: 1079, reason: 'fixed client' }}]"
+        "{RULES}exempt: [{{ vote_account: SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS, rule: slow_slots, until_epoch: 1079, reason: 'fixed client' }}]"
     );
 
     run(&mut client, schema, &config).await.unwrap();
 
     assert_eq!(
         active(&client).await,
-        rows(&[("slow", "rule", "SLOW_SLOTS_1081")])
+        rows(&[(
+            "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS",
+            "rule",
+            "SLOW_SLOTS_1081"
+        )])
     );
 }
 
@@ -507,4 +579,107 @@ async fn a_bad_config_writes_nothing() {
     assert!(format!("{error:#}").contains("bogus"), "{error:#}");
     assert!(active(&client).await.is_empty());
     assert!(evaluated_epochs(&client).await.is_empty());
+}
+
+async fn skipped_epochs(client: &Client) -> Vec<Decimal> {
+    client
+        .query(
+            "SELECT epoch FROM blacklist_evaluations WHERE skipped ORDER BY epoch",
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+// Without the skip, one epoch the collectors never filled would stop every later evaluation.
+#[tokio::test]
+async fn an_epoch_whose_inputs_never_arrive_is_skipped_once_a_later_one_is_ready() {
+    let schema = "ds_test_blacklist_eval_skip";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    epoch_with_inputs(&client, 1079, 200.0, false).await;
+    epoch_with_inputs(&client, 1080, 200.0, false).await;
+    client
+        .execute("DELETE FROM validators_sandwiches WHERE epoch = 1080", &[])
+        .await
+        .unwrap();
+    epoch_with_inputs(&client, 1081, 200.0, true).await;
+
+    run(&mut client, schema, RULES).await.unwrap();
+
+    assert_eq!(
+        evaluated_epochs(&client).await,
+        vec![Decimal::from(1080), Decimal::from(1081)]
+    );
+    assert_eq!(skipped_epochs(&client).await, vec![Decimal::from(1080)]);
+    assert_eq!(
+        active(&client).await,
+        rows(&[("sandwicher", "rule", "MALICIOUS_SANDWICHED_ME_SINGLE_1081")])
+    );
+}
+
+// The slow-slots rule reads two epochs; judging E without E-1 would list no one and seal E.
+#[tokio::test]
+async fn a_missing_window_epoch_holds_the_evaluation() {
+    let schema = "ds_test_blacklist_eval_window";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    epoch_with_inputs(&client, 1080, 250.0, false).await;
+
+    run(&mut client, schema, RULES).await.unwrap();
+
+    assert!(evaluated_epochs(&client).await.is_empty());
+}
+
+#[tokio::test]
+async fn slot_times_of_another_source_are_not_an_input() {
+    let schema = "ds_test_blacklist_eval_source";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    epoch_with_inputs(&client, 1079, 245.0, false).await;
+    epoch_with_inputs(&client, 1080, 250.0, false).await;
+    client
+        .execute(
+            "UPDATE validators_slot_times SET source = 'shred-timing' WHERE epoch = 1079",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    run(&mut client, schema, RULES).await.unwrap();
+
+    assert!(evaluated_epochs(&client).await.is_empty());
+}
+
+// Only the rules switched on decide readiness: the sandwich rule alone needs no slot times.
+#[tokio::test]
+async fn an_input_only_an_off_rule_reads_is_not_waited_for() {
+    let schema = "ds_test_blacklist_eval_off_rule";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    epoch_with_inputs(&client, 1080, 200.0, true).await;
+    client
+        .execute("DELETE FROM validators_slot_times", &[])
+        .await
+        .unwrap();
+
+    run(
+        &mut client,
+        schema,
+        "rules: { start_epoch: 1080, sandwich: { rate_pct: 4.0 } }",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        active(&client).await,
+        rows(&[("sandwicher", "rule", "MALICIOUS_SANDWICHED_ME_SINGLE_1080")])
+    );
 }

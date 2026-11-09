@@ -24,5 +24,7 @@ CREATE UNIQUE INDEX blacklist_active_rule ON blacklist(vote_account, rule)
 CREATE TABLE blacklist_evaluations (
     epoch NUMERIC PRIMARY KEY,
     rows_added INTEGER NOT NULL,
+    -- The epoch's inputs never arrived; a later epoch was judged instead.
+    skipped BOOLEAN NOT NULL DEFAULT false,
     evaluated_at TIMESTAMP WITH TIME ZONE NOT NULL
 );

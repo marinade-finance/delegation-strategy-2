@@ -9,6 +9,8 @@ pub struct Context {
     pub scoring_url: String,
     pub validator_bonds_api_url: String,
     pub apy_api_url: String,
+    /// `rules.start_epoch` of the blacklist config; `None` while the rules are off.
+    pub blacklist_start_epoch: Option<u64>,
     pub cache: Cache,
 }
 
@@ -19,6 +21,7 @@ impl Context {
         scoring_url: String,
         validator_bonds_api_url: String,
         apy_api_url: String,
+        blacklist_start_epoch: Option<u64>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             psql_client,
@@ -26,6 +29,7 @@ impl Context {
             scoring_url,
             validator_bonds_api_url,
             apy_api_url,
+            blacklist_start_epoch,
             cache: Cache::new(),
         })
     }

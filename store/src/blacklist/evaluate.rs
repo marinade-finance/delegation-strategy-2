@@ -1,10 +1,13 @@
 use super::config::{BlacklistConfig, ExemptEntry, ManualEntry, RuleId, RulesConfig};
-use super::db::last_evaluated_epoch;
-use super::rules::{registry, Hit, RuleInputs, SandwichRow, SlotTime};
+use super::db::max_epoch;
+use super::rules::{
+    registry, required_inputs, window_start, Hit, Input, RuleInputs, SandwichRow, SlotTime,
+};
 use clap::Parser;
-use log::info;
+use collect::validators_slot_times::SOURCE_TRILLIUM;
+use log::{info, warn};
 use rust_decimal::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use tokio_postgres::{Client, Transaction};
 
 #[derive(Debug, Parser)]
@@ -18,7 +21,7 @@ pub struct EvaluateParams {
 pub async fn evaluate(params: EvaluateParams, psql_client: &mut Client) -> anyhow::Result<()> {
     let config = BlacklistConfig::load(&params.config_path)?;
     let tx = psql_client.transaction().await?;
-    let current_epoch = epoch_of(&tx, "SELECT MAX(epoch) AS epoch FROM cluster_info")
+    let current_epoch = max_epoch(&tx, "cluster_info")
         .await?
         .ok_or_else(|| anyhow::anyhow!("cluster_info is empty, no current epoch"))?;
 
@@ -37,15 +40,6 @@ pub async fn evaluate(params: EvaluateParams, psql_client: &mut Client) -> anyho
 
     tx.commit().await?;
     Ok(())
-}
-
-async fn epoch_of(tx: &Transaction<'_>, query: &str) -> anyhow::Result<Option<u64>> {
-    Ok(tx
-        .query_one(query, &[])
-        .await?
-        .get::<_, Option<Decimal>>("epoch")
-        .map(u64::try_from)
-        .transpose()?)
 }
 
 async fn sync_manual(
@@ -152,15 +146,11 @@ async fn run_rules(
         info!("No rule is configured, nothing to evaluate");
         return Ok(());
     }
-    let window = rules
-        .iter()
-        .map(|rule| rule.epochs_window())
-        .max()
-        .unwrap_or(1);
-    let from_epoch = last_evaluated_epoch(tx)
+    let required = required_inputs(&rules);
+    let from_epoch = max_epoch(tx, "blacklist_evaluations")
         .await?
         .map_or(start_epoch, |last| start_epoch.max(last + 1));
-    let Some(last_closed) = epoch_of(tx, "SELECT MAX(epoch) AS epoch FROM epochs").await? else {
+    let Some(last_closed) = max_epoch(tx, "epochs").await? else {
         info!("No closed epoch yet");
         return Ok(());
     };
@@ -176,10 +166,23 @@ async fn run_rules(
         .collect();
 
     for epoch in from_epoch..=last_closed {
-        let Some(inputs) = load_inputs(tx, epoch, window).await? else {
-            info!("Inputs of epoch {epoch} are not complete yet, stopping");
-            break;
-        };
+        if !ready(tx, epoch, &required).await? {
+            let mut later_ready = false;
+            for later in epoch + 1..=last_closed {
+                if ready(tx, later, &required).await? {
+                    later_ready = true;
+                    break;
+                }
+            }
+            if !later_ready {
+                info!("Inputs of epoch {epoch} are not complete yet, stopping");
+                break;
+            }
+            warn!("Inputs of epoch {epoch} never arrived while a later epoch's did, skipping it");
+            record_evaluation(tx, epoch, 0, true).await?;
+            continue;
+        }
+        let inputs = load_inputs(tx, epoch, &required).await?;
         let mut rows_added: i32 = 0;
         for rule in &rules {
             for hit in rule.evaluate(&inputs) {
@@ -205,93 +208,129 @@ async fn run_rules(
                 rows_added += 1;
             }
         }
-        tx.execute(
-            "INSERT INTO blacklist_evaluations (epoch, rows_added, evaluated_at) VALUES ($1, $2, now())",
-            &[&Decimal::from(epoch), &rows_added],
-        )
-        .await?;
+        record_evaluation(tx, epoch, rows_added, false).await?;
         info!("Epoch {epoch} evaluated: {rows_added} rows added");
     }
     Ok(())
 }
 
-/// `None` until every input of `epoch` is stored, so a half-collected epoch is never judged.
+async fn record_evaluation(
+    tx: &Transaction<'_>,
+    epoch: u64,
+    rows_added: i32,
+    skipped: bool,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO blacklist_evaluations (epoch, rows_added, skipped, evaluated_at)
+         VALUES ($1, $2, $3, now())",
+        &[&Decimal::from(epoch), &rows_added, &skipped],
+    )
+    .await?;
+    Ok(())
+}
+
+/// The table and the filter that hold one input of an epoch.
+fn input_source(input: Input) -> (&'static str, String) {
+    match input {
+        Input::SlotTimes => (
+            "validators_slot_times",
+            format!("source = '{SOURCE_TRILLIUM}'"),
+        ),
+        Input::Stakes => ("validators", "TRUE".into()),
+        Input::Sandwiches => ("validators_sandwiches", "TRUE".into()),
+    }
+}
+
+/// Whether every input the rules read is stored for every epoch of its window, so a
+/// half-collected epoch is never judged.
+async fn ready(
+    tx: &Transaction<'_>,
+    epoch: u64,
+    required: &BTreeMap<Input, u64>,
+) -> anyhow::Result<bool> {
+    let closed: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM epochs WHERE epoch = $1) AS closed",
+            &[&Decimal::from(epoch)],
+        )
+        .await?
+        .get("closed");
+    if !closed {
+        return Ok(false);
+    }
+    for (input, window) in required {
+        let (table, filter) = input_source(*input);
+        let from = window_start(epoch, *window);
+        let stored: i64 = tx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(DISTINCT epoch) AS stored FROM {table}
+                     WHERE {filter} AND epoch BETWEEN $1 AND $2"
+                ),
+                &[&Decimal::from(from), &Decimal::from(epoch)],
+            )
+            .await?
+            .get("stored");
+        if stored as u64 != epoch - from + 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn load_inputs(
     tx: &Transaction<'_>,
     epoch: u64,
-    window: u64,
-) -> anyhow::Result<Option<RuleInputs>> {
-    let at = Decimal::from(epoch);
-    let ready: bool = tx
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM epochs WHERE epoch = $1)
-                AND EXISTS (SELECT 1 FROM validators_slot_times WHERE epoch = $1)
-                AND EXISTS (SELECT 1 FROM validators_sandwiches WHERE epoch = $1)
-                AND EXISTS (SELECT 1 FROM validators WHERE epoch = $1) AS ready",
-            &[&at],
-        )
-        .await?
-        .get("ready");
-    if !ready {
-        return Ok(None);
-    }
-
-    let from = Decimal::from(epoch + 1 - window.min(epoch + 1));
+    required: &BTreeMap<Input, u64>,
+) -> anyhow::Result<RuleInputs> {
     let mut inputs = RuleInputs {
         epoch,
         ..Default::default()
     };
-    for row in tx
-        .query(
-            "SELECT epoch, vote_account, slot_duration_median_ms FROM validators_slot_times
-             WHERE epoch BETWEEN $1 AND $2",
-            &[&from, &at],
-        )
-        .await?
-    {
-        inputs
-            .slot_times
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .push(SlotTime {
-                vote_account: row.get("vote_account"),
-                slot_duration_median_ms: row.get("slot_duration_median_ms"),
-            });
+    for (input, window) in required {
+        let (table, filter) = input_source(*input);
+        let range = [
+            Decimal::from(window_start(epoch, *window)),
+            Decimal::from(epoch),
+        ];
+        let rows = tx
+            .query(
+                &format!("SELECT * FROM {table} WHERE {filter} AND epoch BETWEEN $1 AND $2"),
+                &[&range[0], &range[1]],
+            )
+            .await?;
+        for row in rows {
+            let row_epoch: u64 = row.get::<_, Decimal>("epoch").try_into()?;
+            match input {
+                Input::SlotTimes => {
+                    inputs
+                        .slot_times
+                        .entry(row_epoch)
+                        .or_default()
+                        .push(SlotTime {
+                            vote_account: row.get("vote_account"),
+                            slot_duration_median_ms: row.get("slot_duration_median_ms"),
+                        })
+                }
+                Input::Stakes => {
+                    inputs.stakes.entry(row_epoch).or_default().insert(
+                        row.get("vote_account"),
+                        row.get::<_, Decimal>("activated_stake").try_into()?,
+                    );
+                }
+                Input::Sandwiches => inputs.sandwiches.push(SandwichRow {
+                    vote_account: row.get("vote_account"),
+                    blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
+                    blocks_with_sandwiches: row
+                        .get::<_, Decimal>("blocks_with_sandwiches")
+                        .try_into()?,
+                    sandwich_rate_30d: row.get("sandwich_rate_30d"),
+                    wide_sandwich_rate_30d: row.get("wide_sandwich_rate_30d"),
+                }),
+            }
+        }
     }
-    for row in tx
-        .query(
-            "SELECT epoch, vote_account, activated_stake FROM validators WHERE epoch BETWEEN $1 AND $2",
-            &[&from, &at],
-        )
-        .await?
-    {
-        inputs
-            .stakes
-            .entry(row.get::<_, Decimal>("epoch").try_into()?)
-            .or_default()
-            .insert(
-                row.get("vote_account"),
-                row.get::<_, Decimal>("activated_stake").try_into()?,
-            );
-    }
-    for row in tx
-        .query(
-            "SELECT vote_account, blocks_produced, blocks_with_sandwiches, sandwich_rate_30d,
-                wide_sandwich_rate_30d
-             FROM validators_sandwiches WHERE epoch = $1",
-            &[&at],
-        )
-        .await?
-    {
-        inputs.sandwiches.push(SandwichRow {
-            vote_account: row.get("vote_account"),
-            blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into()?,
-            blocks_with_sandwiches: row.get::<_, Decimal>("blocks_with_sandwiches").try_into()?,
-            sandwich_rate_30d: row.get("sandwich_rate_30d"),
-            wide_sandwich_rate_30d: row.get("wide_sandwich_rate_30d"),
-        });
-    }
-    Ok(Some(inputs))
+    Ok(inputs)
 }
 
 #[cfg(test)]
@@ -314,15 +353,18 @@ mod tests {
 
     #[test]
     fn an_active_row_suppresses_a_second_one() {
-        let active = HashSet::from([("A".to_string(), "slow_slots".to_string())]);
+        let active = HashSet::from([(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            "slow_slots".to_string(),
+        )]);
         assert!(suppressed(
-            &hit("A", vec![1080]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1080]),
             RuleId::SlowSlots,
             &active,
             &[]
         ));
         assert!(!suppressed(
-            &hit("A", vec![1080]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1080]),
             RuleId::Sandwich,
             &active,
             &[]
@@ -332,22 +374,22 @@ mod tests {
     #[test]
     fn a_permanent_exemption_suppresses_its_rule_or_all() {
         let none = HashSet::new();
-        let all = exempt("exempt: [{ vote_account: A, reason: R }]");
-        let sandwich = exempt("exempt: [{ vote_account: A, rule: sandwich, reason: R }]");
+        let all = exempt("exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, reason: R }]");
+        let sandwich = exempt("exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: sandwich, reason: R }]");
         assert!(suppressed(
-            &hit("A", vec![1080]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1080]),
             RuleId::SlowSlots,
             &none,
             &all
         ));
         assert!(!suppressed(
-            &hit("A", vec![1080]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1080]),
             RuleId::SlowSlots,
             &none,
             &sandwich
         ));
         assert!(!suppressed(
-            &hit("B", vec![1080]),
+            &hit("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", vec![1080]),
             RuleId::SlowSlots,
             &none,
             &all
@@ -358,15 +400,15 @@ mod tests {
     fn until_epoch_ignores_only_evidence_up_to_it() {
         let none = HashSet::new();
         let until =
-            exempt("exempt: [{ vote_account: A, rule: slow_slots, until_epoch: 1083, reason: R }]");
+            exempt("exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, until_epoch: 1083, reason: R }]");
         assert!(suppressed(
-            &hit("A", vec![1083, 1084]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1083, 1084]),
             RuleId::SlowSlots,
             &none,
             &until
         ));
         assert!(!suppressed(
-            &hit("A", vec![1084, 1085]),
+            &hit("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", vec![1084, 1085]),
             RuleId::SlowSlots,
             &none,
             &until

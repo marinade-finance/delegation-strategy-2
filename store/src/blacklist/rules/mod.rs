@@ -38,9 +38,19 @@ pub struct RuleInputs {
     pub sandwiches: Vec<SandwichRow>,
 }
 
+/// A stored dataset a rule reads. An epoch is judged only once every input of every rule is there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Input {
+    SlotTimes,
+    Stakes,
+    Sandwiches,
+}
+
 /// A rule is pure over `RuleInputs`; adding one is a module, an id and a line in `registry`.
 pub trait BlacklistRule {
     fn id(&self) -> RuleId;
+
+    fn inputs(&self) -> &'static [Input];
 
     /// Closed epochs ending at the evaluated one that the rule reads.
     fn epochs_window(&self) -> u64 {
@@ -48,6 +58,23 @@ pub trait BlacklistRule {
     }
 
     fn evaluate(&self, inputs: &RuleInputs) -> Vec<Hit>;
+}
+
+/// First epoch of a `window` of epochs ending at `epoch`.
+pub fn window_start(epoch: u64, window: u64) -> u64 {
+    epoch.saturating_sub(window.saturating_sub(1))
+}
+
+/// For each input any rule reads, the longest window it is read over.
+pub fn required_inputs(rules: &[Box<dyn BlacklistRule>]) -> BTreeMap<Input, u64> {
+    let mut required = BTreeMap::new();
+    for rule in rules {
+        for input in rule.inputs() {
+            let window = required.entry(*input).or_insert(0);
+            *window = rule.epochs_window().max(*window);
+        }
+    }
+    required
 }
 
 pub fn registry(rules: &RulesConfig) -> Vec<Box<dyn BlacklistRule>> {
@@ -81,13 +108,33 @@ mod tests {
     }
 
     #[test]
-    fn the_window_is_the_longest_rule_window() {
+    fn each_input_is_required_over_the_window_of_the_rules_that_read_it() {
         let registered = registry(&rules(
             "rules: { sandwich: { rate_pct: 4 }, slow_slots: { median_mult: 1.1, consecutive_epochs: 3 } }",
         ));
         assert_eq!(
-            registered.iter().map(|rule| rule.epochs_window()).max(),
-            Some(3)
+            required_inputs(&registered).into_iter().collect::<Vec<_>>(),
+            vec![
+                (Input::SlotTimes, 3),
+                (Input::Stakes, 3),
+                (Input::Sandwiches, 1)
+            ]
         );
+    }
+
+    #[test]
+    fn a_rule_that_is_off_requires_nothing() {
+        let registered = registry(&rules("rules: { sandwich: { rate_pct: 4 } }"));
+        assert_eq!(
+            required_inputs(&registered).into_iter().collect::<Vec<_>>(),
+            vec![(Input::Sandwiches, 1)]
+        );
+    }
+
+    #[test]
+    fn the_window_starts_its_length_minus_one_before_the_epoch() {
+        assert_eq!(window_start(1080, 2), 1079);
+        assert_eq!(window_start(1080, 1), 1080);
+        assert_eq!(window_start(0, 3), 0);
     }
 }

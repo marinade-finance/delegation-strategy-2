@@ -182,7 +182,6 @@ pub struct EpochSandwiches {
     pub cluster_median_rate: f64,
     /// Percent: all sandwiched blocks over all produced blocks of the epoch.
     pub cluster_pooled_rate: f64,
-    pub wide_sandwich_rate_30d: Option<f64>,
 }
 
 impl EpochSandwiches {
@@ -216,12 +215,6 @@ pub struct SandwichPopulation {
     pub pooled_rate: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SandwichHit {
-    pub bar: f64,
-    pub p_value: f64,
-}
-
 fn sandwich_bar(median_rate: f64, floor_pct: f64) -> f64 {
     (SANDWICH_CLUSTER_MULTIPLIER * median_rate)
         .max(median_rate + MIN_SANDWICH_EXCESS_PP)
@@ -230,15 +223,15 @@ fn sandwich_bar(median_rate: f64, floor_pct: f64) -> f64 {
 
 /// The one sandwich definition: the rate clears the bar, and the count is not explainable by
 /// chance at the cluster's pooled rate. Incidents and the blacklist differ only in `floor_pct`.
+/// Returns the p-value of a hit.
 pub fn sandwich_hit(
     rate_pct: f64,
     blocks_produced: u64,
     blocks_with_sandwiches: u64,
     population: &SandwichPopulation,
     floor_pct: f64,
-) -> Option<SandwichHit> {
-    let bar = sandwich_bar(population.median_rate, floor_pct);
-    if rate_pct < bar {
+) -> Option<f64> {
+    if rate_pct < sandwich_bar(population.median_rate, floor_pct) {
         return None;
     }
     let p_value = binomial_upper_tail(
@@ -246,7 +239,7 @@ pub fn sandwich_hit(
         blocks_produced,
         population.pooled_rate / 100.0,
     );
-    (p_value < SANDWICH_SIGNIFICANCE_P).then_some(SandwichHit { bar, p_value })
+    (p_value < SANDWICH_SIGNIFICANCE_P).then_some(p_value)
 }
 
 /// P(X >= k) for X ~ Binomial(n, p), summed in log space so large `n` neither under- nor overflows.
@@ -960,7 +953,6 @@ mod tests {
             sandwich_rate_60d: Some(sandwich_rate_30d),
             cluster_median_rate: 1.5,
             cluster_pooled_rate: 1.5,
-            wide_sandwich_rate_30d: None,
         }
     }
 
@@ -1249,9 +1241,8 @@ mod tests {
             pooled_rate: 0.773,
         };
         assert_eq!(sandwich_hit(25.0, 8, 2, &population, 4.0), None);
-        let hit = sandwich_hit(6.7, 104, 7, &population, 4.0).unwrap();
-        assert_eq!(hit.bar, 4.0);
-        assert!(hit.p_value < SANDWICH_SIGNIFICANCE_P, "{}", hit.p_value);
+        let p_value = sandwich_hit(6.7, 104, 7, &population, 4.0).unwrap();
+        assert!(p_value < SANDWICH_SIGNIFICANCE_P, "{p_value}");
     }
 
     #[test]
@@ -1261,6 +1252,27 @@ mod tests {
             pooled_rate: 0.773,
         };
         assert_eq!(sandwich_hit(3.9, 10_000, 390, &population, 4.0), None);
+    }
+
+    // The 1000-block floor used to make any rate over the bar an incident on such a window.
+    #[test]
+    fn a_thick_window_over_the_bar_but_not_significant_is_not_an_incident() {
+        let population = SandwichPopulation {
+            median_rate: 1.0,
+            pooled_rate: 1.9,
+        };
+        assert_eq!(sandwich_hit(2.0, 1000, 20, &population, 0.0), None);
+        assert!(sandwich_hit(
+            2.0,
+            1000,
+            20,
+            &SandwichPopulation {
+                pooled_rate: 0.5,
+                ..population
+            },
+            0.0
+        )
+        .is_some());
     }
 
     #[test]

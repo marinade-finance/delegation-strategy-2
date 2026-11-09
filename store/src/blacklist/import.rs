@@ -5,7 +5,7 @@ use log::info;
 use std::path::Path;
 use tokio_postgres::Client;
 
-pub const BLACKLIST_COLUMNS: [Column; 2] = [required("vote_account"), required("code")];
+const BLACKLIST_COLUMNS: [Column; 2] = [required("vote_account"), required("code")];
 
 #[derive(Debug, Parser)]
 pub struct ImportParams {

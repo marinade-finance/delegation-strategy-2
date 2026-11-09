@@ -118,6 +118,8 @@ impl BlacklistConfig {
             non_empty("manual", &entry.vote_account, "vote_account")?;
             non_empty("manual", &entry.code, "code")?;
             non_empty("manual", &entry.reason, "reason")?;
+            vote_account_shape("manual", &entry.vote_account)?;
+            code_shape(&entry.code)?;
             if !manual.insert((&entry.vote_account, &entry.code)) {
                 bail!(
                     "manual: {} {} is listed twice",
@@ -131,6 +133,7 @@ impl BlacklistConfig {
         for entry in &self.exempt {
             non_empty("exempt", &entry.vote_account, "vote_account")?;
             non_empty("exempt", &entry.reason, "reason")?;
+            vote_account_shape("exempt", &entry.vote_account)?;
             if !exempt.insert((&entry.vote_account, entry.rule)) {
                 bail!(
                     "exempt: {} {} is listed twice",
@@ -152,6 +155,26 @@ fn non_empty(list: &str, value: &str, field: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+const BASE58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+// Both land unquoted in /blacklist.csv, where a comma or a newline would forge a row.
+fn vote_account_shape(list: &str, vote_account: &str) -> anyhow::Result<()> {
+    ensure!(
+        (32..=44).contains(&vote_account.len()) && vote_account.chars().all(|c| BASE58.contains(c)),
+        "{list}: {vote_account:?} is not a base58 vote account"
+    );
+    Ok(())
+}
+
+fn code_shape(code: &str) -> anyhow::Result<()> {
+    ensure!(
+        code.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+        "manual: code {code:?} must match [A-Z0-9_]+"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,11 +189,11 @@ rules:
     rate_pct: 4.0
 manual:
   # internal note
-  - { vote_account: Bxx, code: MISSING_BLS, reason: 'SIMD-0357, epoch 1006' }
+  - { vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, code: MISSING_BLS, reason: 'SIMD-0357, epoch 1006' }
 exempt:
-  - { vote_account: Bxx, rule: all, until_epoch: null, reason: 'appeal false positive' }
-  - { vote_account: Axx, rule: slow_slots, until_epoch: 1083, reason: 'fixed client' }
-  - { vote_account: Lxx, rule: legacy, reason: 'imported row no longer valid' }
+  - { vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, rule: all, until_epoch: null, reason: 'appeal false positive' }
+  - { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, until_epoch: 1083, reason: 'fixed client' }
+  - { vote_account: LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL, rule: legacy, reason: 'imported row no longer valid' }
 ";
 
     fn error(yaml: &str) -> String {
@@ -210,8 +233,10 @@ exempt:
 
     #[test]
     fn an_exemption_without_a_rule_covers_all() {
-        let config =
-            BlacklistConfig::parse("exempt: [{ vote_account: Axx, reason: appeal }]").unwrap();
+        let config = BlacklistConfig::parse(
+            "exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, reason: appeal }]",
+        )
+        .unwrap();
         assert_eq!(config.exempt[0].rule, RuleId::All);
         assert_eq!(config.exempt[0].until_epoch, None);
     }
@@ -221,30 +246,39 @@ exempt:
         assert!(error("rule: {}").contains("unknown field"));
         assert!(error("rules: { start_epoch: 1, slow: {} }").contains("unknown field"));
         assert!(
-            error("manual: [{ vote_account: A, code: C, reason: R, epoch: 1 }]")
+            error("manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: R, epoch: 1 }]")
                 .contains("unknown field")
         );
     }
 
     #[test]
     fn an_unknown_rule_id_is_refused() {
-        assert!(error("exempt: [{ vote_account: A, rule: foo, reason: R }]").contains("foo"));
+        assert!(error(
+            "exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: foo, reason: R }]"
+        )
+        .contains("foo"));
     }
 
     #[test]
     fn an_empty_reason_is_refused() {
-        assert!(error("manual: [{ vote_account: A, code: C, reason: '' }]").contains("reason"));
-        assert!(error("exempt: [{ vote_account: A, reason: ' ' }]").contains("reason"));
+        assert!(error(
+            "manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: '' }]"
+        )
+        .contains("reason"));
+        assert!(
+            error("exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, reason: ' ' }]")
+                .contains("reason")
+        );
     }
 
     #[test]
     fn a_duplicate_is_refused() {
         assert!(error(
-            "manual: [{ vote_account: A, code: C, reason: R }, { vote_account: A, code: C, reason: S }]"
+            "manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: R }, { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: S }]"
         )
         .contains("twice"));
         assert!(error(
-            "exempt: [{ vote_account: A, rule: sandwich, reason: R }, { vote_account: A, rule: sandwich, reason: S }]"
+            "exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: sandwich, reason: R }, { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: sandwich, reason: S }]"
         )
         .contains("twice"));
     }
@@ -252,8 +286,8 @@ exempt:
     #[test]
     fn one_account_may_carry_several_codes_and_exemptions() {
         BlacklistConfig::parse(
-            "manual: [{ vote_account: A, code: C, reason: R }, { vote_account: A, code: D, reason: R }]
-exempt: [{ vote_account: A, rule: sandwich, reason: R }, { vote_account: A, rule: slow_slots, reason: R }]",
+            "manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: R }, { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: D, reason: R }]
+exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: sandwich, reason: R }, { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, reason: R }]",
         )
         .unwrap();
     }
@@ -270,6 +304,23 @@ exempt: [{ vote_account: A, rule: sandwich, reason: R }, { vote_account: A, rule
         );
         assert!(error("rules: { sandwich: { rate_pct: 0 } }").contains("rate_pct"));
         assert!(error("rules: { sandwich: { rate_pct: 101 } }").contains("rate_pct"));
+    }
+
+    // Both values are served unquoted in /blacklist.csv.
+    #[test]
+    fn a_vote_account_or_code_that_could_break_the_csv_is_refused() {
+        assert!(
+            error("manual: [{ vote_account: 'Bxx,evil', code: C, reason: R }]").contains("base58")
+        );
+        assert!(error("exempt: [{ vote_account: short, reason: R }]").contains("base58"));
+        assert!(error(
+            "manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: 'MISSING,BLS', reason: R }]"
+        )
+        .contains("[A-Z0-9_]+"));
+        assert!(error(
+            "manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: missing_bls, reason: R }]"
+        )
+        .contains("[A-Z0-9_]+"));
     }
 
     #[test]

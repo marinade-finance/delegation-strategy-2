@@ -1,4 +1,4 @@
-use super::{BlacklistRule, Hit, RuleInputs};
+use super::{window_start, BlacklistRule, Hit, Input, RuleInputs};
 use crate::blacklist::config::{RuleId, SlowSlotsConfig};
 use serde_json::json;
 use std::collections::HashMap;
@@ -42,14 +42,17 @@ impl BlacklistRule for SlowSlots {
         RuleId::SlowSlots
     }
 
+    fn inputs(&self) -> &'static [Input] {
+        &[Input::SlotTimes, Input::Stakes]
+    }
+
     fn epochs_window(&self) -> u64 {
         self.consecutive_epochs
     }
 
     fn evaluate(&self, inputs: &RuleInputs) -> Vec<Hit> {
-        let epochs: Vec<u64> = (inputs.epoch + 1 - self.consecutive_epochs.min(inputs.epoch + 1)
-            ..=inputs.epoch)
-            .collect();
+        let epochs: Vec<u64> =
+            (window_start(inputs.epoch, self.consecutive_epochs)..=inputs.epoch).collect();
         let empty = HashMap::new();
 
         let mut medians = Vec::with_capacity(epochs.len());

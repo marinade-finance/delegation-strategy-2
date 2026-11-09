@@ -22,7 +22,7 @@ use utoipa::OpenApi;
     components(
         schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(blacklist::ResponseBlacklist),
-        schemas(blacklist::BlacklistEntry),
+        schemas(store::blacklist::db::BlacklistRow),
         schemas(validators_quality::ResponseValidatorsQuality),
         schemas(store::validator_quality::ValidatorQualityRecord),
         schemas(cluster_stats::ResponseClusterStats),

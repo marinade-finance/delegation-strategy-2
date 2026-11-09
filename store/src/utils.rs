@@ -354,7 +354,7 @@ async fn load_commission_raises(
 
 /// Keyed by vote account. An epoch with no `epochs` row is the one still running: it has no start
 /// or end to report, so it stays out.
-pub async fn load_validator_sandwiches(
+async fn load_validator_sandwiches(
     psql_client: &Client,
     from_epoch: u64,
     last_epoch: u64,
@@ -369,7 +369,6 @@ pub async fn load_validator_sandwiches(
                 blocks_with_sandwiches,
                 sandwich_rate_30d,
                 sandwich_rate_60d,
-                wide_sandwich_rate_30d,
                 epochs.start_at,
                 epochs.end_at
             FROM validators_sandwiches
@@ -395,7 +394,6 @@ pub async fn load_validator_sandwiches(
                     .try_into()?,
                 sandwich_rate_30d: row.get("sandwich_rate_30d"),
                 sandwich_rate_60d: row.get("sandwich_rate_60d"),
-                wide_sandwich_rate_30d: row.get("wide_sandwich_rate_30d"),
                 cluster_median_rate: 0.0,
                 cluster_pooled_rate: 0.0,
             },
