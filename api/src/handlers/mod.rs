@@ -1,4 +1,6 @@
 pub mod admin_score_upload;
+pub mod blacklist;
+pub mod blacklist_csv;
 pub mod client_history;
 pub mod cluster_stats;
 pub mod commissions;
