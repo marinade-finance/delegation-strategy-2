@@ -26,7 +26,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 8;
+const WARM_STEPS: usize = 9;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Raw incident material the served `incidents` arrays are projected from, per vote account.
@@ -757,6 +757,19 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Refreshed with the caches so a stalled or skipping blacklist evaluation can page.
+pub async fn refresh_blacklist_status(context: &WrappedContext) -> anyhow::Result<()> {
+    let context = context.read().await;
+    let (lag, skipped) = store::blacklist::db::evaluation_status(
+        &context.psql_client,
+        context.blacklist_start_epoch,
+    )
+    .await?;
+    metrics::BLACKLIST_EVALUATION_LAG_EPOCHS.set(lag.try_into()?);
+    metrics::BLACKLIST_SKIPPED_EPOCHS.set(skipped.try_into()?);
+    Ok(())
+}
+
 type WarmFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 type WarmStep = (&'static str, fn(&WrappedContext) -> WarmFuture<'_>);
 
@@ -774,6 +787,9 @@ fn warm_steps() -> [WarmStep; WARM_STEPS] {
             Box::pin(warm_net_apy_history_cache(c))
         }),
         ("validators", |c| Box::pin(warm_validators_cache(c))),
+        ("blacklist_status", |c| {
+            Box::pin(refresh_blacklist_status(c))
+        }),
     ]
 }
 

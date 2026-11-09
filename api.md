@@ -508,7 +508,8 @@ curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
 ## Blacklist
 Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
 YAML config) and `rule` (computed by `store blacklist-evaluate`). `evidence` holds the observed values a
-rule judged; the thresholds are not served.
+rule judged; the thresholds are not served. On `:9000/metrics`, `ds_blacklist_evaluation_lag_epochs` (1 on
+time, 0 with the rules off) and `ds_blacklist_skipped_epochs` (epochs whose inputs never arrived) are what to alert on.
 ```bash
 curl -sfLS 'localhost:8000/blacklist.csv' -D - | head
 ```

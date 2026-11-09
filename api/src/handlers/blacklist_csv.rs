@@ -1,6 +1,6 @@
 use crate::{context::WrappedContext, metrics, utils::response::response_error_500};
 use log::{error, info};
-use store::blacklist::db::{last_evaluated_epoch, load_active, BlacklistRow};
+use store::blacklist::db::{load_blacklist, BlacklistRow};
 use warp::{http::Response, Reply};
 
 /// Same shape as the `blacklist.csv` file it replaces, so every reader parses it unchanged.
@@ -25,14 +25,7 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
     info!("Fetching blacklist CSV");
     metrics::REQUEST_BLACKLIST.inc();
 
-    let context = context.read().await;
-    let loaded = match load_active(&context.psql_client).await {
-        Ok(rows) => last_evaluated_epoch(&context.psql_client)
-            .await
-            .map(|epoch| (rows, epoch)),
-        Err(err) => Err(err),
-    };
-    let (rows, evaluated_epoch) = match loaded {
+    let (evaluated_epoch, rows) = match load_blacklist(&context.read().await.psql_client).await {
         Ok(loaded) => loaded,
         Err(err) => {
             error!("Failed to load the blacklist: {err}");

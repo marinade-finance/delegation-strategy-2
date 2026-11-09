@@ -1,4 +1,6 @@
-use crate::{common::*, solana_service::solana_client_with_timeout};
+use crate::{
+    common::*, solana_service::solana_client_with_timeout, validators_sandwiches::http_client,
+};
 use anyhow::Context;
 use clap::Parser;
 use log::info;
@@ -9,7 +11,6 @@ use std::time::Duration;
 pub const DEFAULT_API_URL: &str = "https://api.trillium.so";
 pub const SOURCE_TRILLIUM: &str = "trillium";
 
-const HTTP_TIMEOUT_S: u64 = 60;
 const DATA_VERSION: u16 = 1;
 
 #[derive(Debug, Parser)]
@@ -101,13 +102,6 @@ fn records_to_slot_times(epoch: Epoch, records: Vec<TrilliumRecord>) -> Vec<Vali
             })
         })
         .collect()
-}
-
-fn http_client() -> anyhow::Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .user_agent("marinade-delegation-strategy")
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
-        .build()?)
 }
 
 /// `None` while Trillium has not published the epoch yet.

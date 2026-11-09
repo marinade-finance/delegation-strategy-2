@@ -76,7 +76,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Launching API");
 
     let params = Params::parse();
-    store::blacklist::config::BlacklistConfig::load(&params.blacklist_config)?;
+    let blacklist_start_epoch =
+        store::blacklist::config::BlacklistConfig::load(&params.blacklist_config)?
+            .rules
+            .and_then(|rules| rules.start_epoch);
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;
@@ -96,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
+        blacklist_start_epoch,
     )?));
     let ready = cache::ReadyFlag::default();
     cache::spawn_cache_warmer(context.clone(), ready.clone());

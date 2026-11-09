@@ -55,6 +55,8 @@ pub async fn store_slot_times(
         .collect();
 
     let mut total_upserted = 0;
+    // One transaction: the blacklist judges an epoch once, so it must never see half of one.
+    let tx = psql_client.transaction().await?;
 
     for chunk in slot_times.chunks(DEFAULT_CHUNK_SIZE) {
         let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
@@ -91,7 +93,7 @@ pub async fn store_slot_times(
             updated_at = EXCLUDED.updated_at"
         );
 
-        let rows_affected = psql_client
+        let rows_affected = tx
             .execute(
                 &query,
                 &[
@@ -110,6 +112,7 @@ pub async fn store_slot_times(
 
         info!("Upserted {rows_affected} slot time records in this chunk");
     }
+    tx.commit().await?;
 
     info!("Stored slot times snapshot: {total_upserted} total records upserted");
 
