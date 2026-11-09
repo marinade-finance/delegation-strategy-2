@@ -16,6 +16,11 @@ lazy_static! {
         "How many times /blacklist or /blacklist.csv endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_VALIDATORS_QUALITY: IntCounter = register_int_counter!(
+        "ds_request_count_validators_quality",
+        "How many times /validators/quality endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_UNSTAKE_HINTS: IntCounter = register_int_counter!(
         "ds_request_count_unstake_hints",
         "How many times /unstake-hints endpoint was requested"

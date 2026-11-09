@@ -482,6 +482,29 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 }
 ```
 
+## Validator quality
+Per-epoch quality inputs: sandwich figures from solana-sandwich-report and the Trillium slot-time median.
+`ibrl_score` stays `null` until Trillium publishes it.
+```bash
+curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
+```
+```json
+{
+  "epoch": 1080,
+  "validators": [
+    {
+      "vote_account": "5AC692sp...",
+      "blocks_produced": 217,
+      "blocks_with_sandwiches": 26,
+      "sandwich_rate_30d": 12.0,
+      "wide_sandwich_rate_30d": null,
+      "slot_duration_median_ms": 201.5,
+      "ibrl_score": null
+    }
+  ]
+}
+```
+
 ## Blacklist
 Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
 YAML config) and `rule` (computed by `store blacklist-evaluate`). `evidence` holds the observed values a

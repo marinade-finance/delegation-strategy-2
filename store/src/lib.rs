@@ -15,6 +15,7 @@ pub mod stake_deltas;
 pub mod take_rates;
 pub mod uptime;
 pub mod utils;
+pub mod validator_quality;
 pub mod validators;
 pub mod validators_block_rewards;
 pub mod validators_events;

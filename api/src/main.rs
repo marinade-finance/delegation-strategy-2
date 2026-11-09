@@ -8,7 +8,8 @@ use crate::handlers::{
     list_providers, list_validators, provider_history, readiness, releases,
     reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
     take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    validator_scores, validators_block_rewards, validators_flat, validators_quality, versions,
+    workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -203,6 +204,13 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(validators_flat::handler);
 
+    let route_validators_quality = warp::path!("validators" / "quality")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<validators_quality::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(validators_quality::handler);
+
     let route_validators_block_rewards = warp::path!("validators" / "block-rewards")
         .and(warp::path::end())
         .and(warp::get())
@@ -369,6 +377,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
         .or(route_validators_flat)
+        .or(route_validators_quality)
         .or(route_validators_block_rewards)
         .or(route_uptimes)
         .or(route_events)
