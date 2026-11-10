@@ -114,6 +114,10 @@ impl ValidatorVersion {
     pub fn major(&self) -> u64 {
         self.numbers[0]
     }
+
+    pub fn minor(&self) -> u64 {
+        self.numbers[1]
+    }
 }
 
 impl Ord for ValidatorVersion {

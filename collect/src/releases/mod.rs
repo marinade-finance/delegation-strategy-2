@@ -63,10 +63,9 @@ pub trait ReleaseFetcher {
     fn fetch(&self) -> anyhow::Result<Vec<ReleaseEntry>>;
 }
 
-/// Frankendancer keeps the `0.<frankendancer>.<agave>` numbering it always had; Firedancer proper
-/// releases under its own major (`1.1.4`, then calendar versions like `26.8.2`).
+/// Frankendancer is `0.<minor >= 100>.<agave>`; anything else, `0.1.x` included, is Firedancer.
 pub fn firedancer_lineage(version: &ValidatorVersion) -> &'static str {
-    if version.major() == 0 {
+    if version.major() == 0 && version.minor() >= 100 {
         "frankendancer"
     } else {
         "firedancer"
@@ -210,5 +209,10 @@ mod tests {
         assert_eq!(lineage("0.905.0-beta.40007"), "frankendancer");
         assert_eq!(lineage("26.8.2"), "firedancer");
         assert_eq!(lineage("1.1.4"), "firedancer");
+        assert_eq!(lineage("0.1.1"), "firedancer");
+        assert_eq!(lineage("0.1.0"), "firedancer");
+        assert_eq!(lineage("0.99.0"), "firedancer");
+        assert_eq!(lineage("0.100.0"), "frankendancer");
+        assert_eq!(lineage("0.101.0"), "frankendancer");
     }
 }
