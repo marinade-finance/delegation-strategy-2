@@ -1005,6 +1005,31 @@ impl std::ops::Deref for ValidatorClientGroupRecord {
     }
 }
 
+/// A client label, as the child rows of `/clients` serve it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorClientComboRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    pub city_count: u64,
+    pub country_count: u64,
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    pub version_spread: Vec<GroupShare>,
+}
+
+impl GroupRow for ValidatorClientComboRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorClientComboRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 #[serde(untagged)]
@@ -1470,7 +1495,7 @@ mod tests {
         assert!(provider.get("group").is_none());
 
         let client = serde_json::to_value(ValidatorClientGroupRecord {
-            group,
+            group: group.clone(),
             block_engines: vec!["Agave + JitoBAM".to_string()],
             ..Default::default()
         })
@@ -1482,5 +1507,32 @@ mod tests {
             client.get("asns").is_none(),
             "a client row has no provider columns at all"
         );
+
+        let bare = serde_json::to_value(&group).unwrap();
+        let combo = serde_json::to_value(ValidatorClientComboRecord {
+            group,
+            city_count: 4,
+            country_count: 3,
+            version_spread: vec![GroupShare {
+                key: "2.3.9".to_string(),
+                validator_count: 2,
+                total_stake: Decimal::from(5),
+                stake_share: 1.0,
+            }],
+        })
+        .unwrap();
+        assert!(combo.get("group").is_none());
+        let mut combo_keys: Vec<_> = combo.as_object().unwrap().keys().cloned().collect();
+        let mut expected_keys: Vec<_> = bare.as_object().unwrap().keys().cloned().collect();
+        expected_keys.extend(["city_count", "country_count", "version_spread"].map(String::from));
+        combo_keys.sort();
+        expected_keys.sort();
+        assert_eq!(combo_keys, expected_keys);
+        for (key, value) in bare.as_object().unwrap() {
+            assert_eq!(&combo[key], value, "{key}");
+        }
+        assert_eq!(combo["city_count"], 4);
+        assert_eq!(combo["country_count"], 3);
+        assert_eq!(combo["version_spread"][0]["key"], "2.3.9");
     }
 }
