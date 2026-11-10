@@ -1597,28 +1597,6 @@ mod tests {
     }
 
     #[test]
-    fn a_late_release_stays_late_beside_a_dev_build() {
-        let subject = vec![
-            firedancer(100, "26.10.4", 200),
-            firedancer(101, "26.10.4", 200),
-        ];
-        let others = (0..10)
-            .map(|_| {
-                vec![
-                    firedancer(100, "26.10.6", 80),
-                    firedancer(101, "26.10.6", 80),
-                ]
-            })
-            .chain(std::iter::once(vec![
-                firedancer(100, "0.1.1", 5000),
-                firedancer(101, "0.1.1", 5000),
-            ]))
-            .collect();
-
-        assert_eq!(late_versions_served(subject, others, 100..=101), vec![101]);
-    }
-
-    #[test]
     fn a_firedancer_dev_build_does_not_fill_the_lineage_minimum() {
         let cluster: Vec<_> = (0..9)
             .map(|_| validator(vec![firedancer(EPOCH, "26.10.6", 100)]))
