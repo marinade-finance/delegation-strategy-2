@@ -281,7 +281,7 @@ async fn client_lineage_splits_id_12_by_the_version_it_reports() {
     assert_eq!(
         stats.lineage_stake.get("frankendancer"),
         Some(&900),
-        "id 12 on a 0.x version joins id 14 on the frankendancer lineage"
+        "id 12 on a Frankendancer version joins id 14 on the frankendancer lineage"
     );
     assert_eq!(stats.lineage_validator_count.get("frankendancer"), Some(&2));
     assert_eq!(

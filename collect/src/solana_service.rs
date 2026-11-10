@@ -2108,6 +2108,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn id_12_on_a_restarted_firedancer_version_is_firedancer() {
+        let fire_bam = ClientId::Registered(12);
+        for version in ["0.1.1", "0.1.0"] {
+            assert_eq!(fire_bam.lineage(Some(version)), Some("firedancer"));
+            assert_eq!(
+                fire_bam.label(Some(version)),
+                Some("Firedancer + JitoBAM".to_string())
+            );
+        }
+    }
+
     // Only about what the rendering can be parsed into: the number is kept in the resolution so the
     // two unclassified shapes stay distinguishable, but `number()` deliberately does not expose it.
     #[test]

@@ -1,5 +1,6 @@
 use crate::dto;
 use chrono::{DateTime, Utc};
+use collect::releases::is_firedancer_dev_build;
 use collect::validator_version::ValidatorVersion;
 use rust_decimal::prelude::*;
 use std::collections::HashMap;
@@ -211,11 +212,14 @@ impl EpochClientVersion {
     }
 }
 
-/// `None` for an epoch still running, a client id absent from the registry, or a version string
-/// nothing can parse.
+/// `None` for an epoch still running, a client id absent from the registry, a version string
+/// nothing can parse, or a Firedancer dev build.
 fn epoch_client_version(stats: &dto::ValidatorEpochStats) -> Option<(ValidatorVersion, String)> {
-    let version = stats.version.as_deref()?.parse().ok()?;
+    let version: ValidatorVersion = stats.version.as_deref()?.parse().ok()?;
     let lineage = stats.client_lineage.clone()?;
+    if is_firedancer_dev_build(&lineage, &version) {
+        return None;
+    }
     stats.epoch_start_at?;
     stats.epoch_end_at?;
     Some((version, lineage))
@@ -639,9 +643,14 @@ mod tests {
             .collect();
 
         for (epoch, lineage) in lineage_epochs {
+            let padding = if lineage == "firedancer" {
+                "1.0.0"
+            } else {
+                "0.0.0"
+            };
             cluster.extend(
                 (0..MIN_LINEAGE_VALIDATORS)
-                    .map(|_| validator(vec![client(epoch, Some("0.0.0"), Some(&lineage), 0)])),
+                    .map(|_| validator(vec![client(epoch, Some(padding), Some(&lineage), 0)])),
             );
         }
         cluster
@@ -1550,6 +1559,81 @@ mod tests {
 
         // 100 of the 200 stake that could be compared, not 100 of 1000.
         assert_eq!(newer_share(&shares, "agave", "4.1.0"), Some(0.5));
+    }
+
+    fn firedancer(epoch: u64, version: &str, stake: u64) -> dto::ValidatorEpochStats {
+        client(epoch, Some(version), Some("firedancer"), stake)
+    }
+
+    #[test]
+    fn a_firedancer_dev_build_weighs_on_neither_side() {
+        let released: Vec<_> = (0..8)
+            .map(|_| validator(vec![firedancer(EPOCH, "26.10.6", 100)]))
+            .chain((0..2).map(|_| validator(vec![firedancer(EPOCH, "26.10.4", 100)])))
+            .collect();
+        let mut with_dev_build = released.clone();
+        with_dev_build.push(validator(vec![firedancer(EPOCH, "0.1.1", 4000)]));
+        let shares = newer_stake_shares(&with_dev_build);
+
+        assert_eq!(shares, newer_stake_shares(&released));
+        assert_eq!(newer_share(&shares, "firedancer", "26.10.4"), Some(0.8));
+        assert_eq!(newer_share(&shares, "firedancer", "26.10.6"), Some(0.0));
+        assert_eq!(newer_share(&shares, "firedancer", "0.1.1"), None);
+    }
+
+    #[test]
+    fn a_firedancer_dev_build_is_never_late() {
+        let subject = vec![firedancer(100, "0.1.1", 100), firedancer(101, "0.1.1", 100)];
+        let others = (0..10)
+            .map(|_| {
+                vec![
+                    firedancer(100, "26.10.6", 100),
+                    firedancer(101, "26.10.6", 100),
+                ]
+            })
+            .collect();
+
+        assert!(late_versions_served(subject, others, 100..=101).is_empty());
+    }
+
+    #[test]
+    fn a_firedancer_dev_build_does_not_fill_the_lineage_minimum() {
+        let cluster: Vec<_> = (0..9)
+            .map(|_| validator(vec![firedancer(EPOCH, "26.10.6", 100)]))
+            .chain(std::iter::once(validator(vec![firedancer(
+                EPOCH, "0.1.1", 100,
+            )])))
+            .collect();
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(newer_share(&shares, "firedancer", "26.10.6"), None);
+    }
+
+    #[test]
+    fn a_frankendancer_major_zero_version_is_still_compared() {
+        let cluster = judged([
+            validator(vec![client(
+                EPOCH,
+                Some("0.812.30108"),
+                Some("frankendancer"),
+                1,
+            )]),
+            validator(vec![client(
+                EPOCH,
+                Some("0.1106.40201"),
+                Some("frankendancer"),
+                9,
+            )]),
+            validator(vec![client(EPOCH, Some("0.5.0"), Some("sig"), 1)]),
+            validator(vec![client(EPOCH, Some("0.6.0"), Some("sig"), 9)]),
+        ]);
+        let shares = newer_stake_shares(&cluster);
+
+        assert_eq!(
+            newer_share(&shares, "frankendancer", "0.812.30108"),
+            Some(0.9)
+        );
+        assert_eq!(newer_share(&shares, "sig", "0.5.0"), Some(0.9));
     }
 
     #[test]
