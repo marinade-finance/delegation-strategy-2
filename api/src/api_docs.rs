@@ -206,6 +206,37 @@ mod tests {
     }
 
     #[test]
+    fn clients_children_are_documented_as_combo_rows() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let schemas = &spec["components"]["schemas"];
+
+        let node = &schemas["ValidatorGroupNode"]["properties"];
+        assert_eq!(
+            node["children"]["items"]["$ref"],
+            "#/components/schemas/ValidatorClientComboRecord"
+        );
+        assert_eq!(
+            node["group"]["$ref"],
+            "#/components/schemas/ValidatorClientGroupRecord"
+        );
+
+        let combo = &schemas["ValidatorClientComboRecord"]["allOf"];
+        assert_eq!(
+            combo[0]["$ref"],
+            "#/components/schemas/ValidatorGroupRecord"
+        );
+        let mut own: Vec<_> = combo[1]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        own.sort();
+        assert_eq!(own, ["city_count", "country_count", "version_spread"]);
+        assert_eq!(combo.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
     fn unconsumed_commission_endpoints_are_deprecated() {
         let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
         for path in [

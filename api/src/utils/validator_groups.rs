@@ -455,6 +455,64 @@ mod tests {
     }
 
     #[test]
+    fn paging_keeps_the_breakdowns_of_each_block_engine() {
+        let share = |version: &str| store::dto::GroupShare {
+            key: version.to_string(),
+            validator_count: 1,
+            total_stake: Decimal::from(100),
+            stake_share: 1.0,
+        };
+        let mut tree = client_tree();
+        for child in &mut tree.nodes[0].children {
+            match child.key.as_str() {
+                "Agave + Jito" => {
+                    child.country_count = 3;
+                    child.city_count = 5;
+                    child.version_spread = vec![share("2.3.9")];
+                }
+                "Agave + Rakurai" => {
+                    child.country_count = 1;
+                    child.city_count = 1;
+                    child.version_spread = vec![share("2.2.14")];
+                }
+                _ => {}
+            }
+        }
+
+        let page = page_tree(
+            tree,
+            &GetGroupsConfig {
+                order_field: OrderField::Name,
+                order_direction: OrderDirection::ASC,
+                ..config()
+            },
+        );
+        let breakdowns = |key: &str| {
+            let child = page.nodes[0]
+                .children
+                .iter()
+                .find(|child| child.key == key)
+                .unwrap_or_else(|| panic!("no {key}"));
+            (
+                child.country_count,
+                child.city_count,
+                child
+                    .version_spread
+                    .iter()
+                    .map(|share| share.key.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            child_keys(&page, "Agave"),
+            named(&["Agave", "Agave + Jito", "Agave + Rakurai"])
+        );
+        assert_eq!(breakdowns("Agave + Jito"), (3, 5, named(&["2.3.9"])));
+        assert_eq!(breakdowns("Agave + Rakurai"), (1, 1, named(&["2.2.14"])));
+        assert_eq!(breakdowns("Agave"), (0, 0, vec![]));
+    }
+
+    #[test]
     fn a_search_matching_a_block_engine_keeps_its_client_and_all_its_engines() {
         let page = page_tree(
             client_tree(),
