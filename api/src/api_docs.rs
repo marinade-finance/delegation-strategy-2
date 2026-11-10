@@ -234,6 +234,14 @@ mod tests {
         own.sort();
         assert_eq!(own, ["city_count", "country_count", "version_spread"]);
         assert_eq!(combo.as_array().unwrap().len(), 2);
+
+        let lineage = &schemas["ValidatorClientGroupRecord"]["allOf"][1]["properties"];
+        for field in own {
+            assert_eq!(
+                combo[1]["properties"][&field], lineage[&field],
+                "{field} must have the lineage row's shape"
+            );
+        }
     }
 
     #[test]

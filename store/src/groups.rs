@@ -2297,6 +2297,14 @@ mod tests {
             ),
             located("plain", AGAVE, 100, Some("2.2.14"), Some("Germany"), None),
             located("frank", FRANKENDANCER, 300, None, None, None),
+            located(
+                "frank-b",
+                FRANKENDANCER,
+                300,
+                Some("0.808.30014"),
+                Some("Netherlands"),
+                Some("Amsterdam"),
+            ),
         ]));
         assert_eq!(
             child_keys(&tree.nodes[0]),
@@ -2344,9 +2352,11 @@ mod tests {
             spread(group(&agave.children, "Agave")),
             vec![("2.2.14".to_string(), 1, Decimal::from(100), 1.0)]
         );
-        assert!(group(&tree.nodes[1].children, "Frankendancer")
-            .version_spread
-            .is_empty());
+        assert_eq!(
+            spread(group(&tree.nodes[1].children, "Frankendancer")),
+            vec![("0.808.30014".to_string(), 1, Decimal::from(300), 0.5)],
+            "a member reporting no version is left out, but its stake stays in the denominator"
+        );
 
         assert_eq!(
             agave
@@ -2375,7 +2385,7 @@ mod tests {
         assert_eq!(counts(group(&agave.children, "Agave")), (1, 0));
         assert_eq!(
             counts(group(&tree.nodes[1].children, "Frankendancer")),
-            (0, 0)
+            (1, 1)
         );
         assert_eq!((agave.group.country_count, agave.group.city_count), (2, 2));
     }
@@ -2410,6 +2420,8 @@ mod tests {
             Member::new("known", last_two_epochs(900, AGAVE, None)),
             Member {
                 client_id_raw: Some("Sonic"),
+                version: Some("1.0.0"),
+                dc_country: Some("Japan"),
                 ..Member::new("unplaceable", last_two_epochs(100, None, None))
             },
         ]);
@@ -2425,6 +2437,16 @@ mod tests {
             vec!["Sonic".to_string()],
             "the row keeps the name the node reported even though its client is unknown"
         );
+        let sonic = &unclassified.children[0];
+        assert_eq!(
+            sonic
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.stake_share))
+                .collect::<Vec<_>>(),
+            vec![("1.0.0", 1.0)]
+        );
+        assert_eq!((sonic.country_count, sonic.city_count), (1, 0));
     }
 
     #[test]

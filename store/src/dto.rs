@@ -1509,7 +1509,28 @@ mod tests {
         );
 
         let bare = serde_json::to_value(&group).unwrap();
-        let combo = serde_json::to_value(ValidatorClientComboRecord {
+        let sorted_keys = |value: &serde_json::Value, extra: &[&str]| {
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+            keys.extend(extra.iter().map(|key| key.to_string()));
+            keys.sort();
+            keys
+        };
+        assert_eq!(
+            sorted_keys(&client, &[]),
+            sorted_keys(
+                &bare,
+                &[
+                    "city_count",
+                    "country_count",
+                    "version_spread",
+                    "block_engines",
+                    "block_engine_vendors",
+                    "latest_release"
+                ]
+            )
+        );
+
+        let combo_record = ValidatorClientComboRecord {
             group,
             city_count: 4,
             country_count: 3,
@@ -1519,20 +1540,25 @@ mod tests {
                 total_stake: Decimal::from(5),
                 stake_share: 1.0,
             }],
-        })
-        .unwrap();
+        };
+        let combo = serde_json::to_value(&combo_record).unwrap();
         assert!(combo.get("group").is_none());
-        let mut combo_keys: Vec<_> = combo.as_object().unwrap().keys().cloned().collect();
-        let mut expected_keys: Vec<_> = bare.as_object().unwrap().keys().cloned().collect();
-        expected_keys.extend(["city_count", "country_count", "version_spread"].map(String::from));
-        combo_keys.sort();
-        expected_keys.sort();
-        assert_eq!(combo_keys, expected_keys);
+        assert_eq!(
+            sorted_keys(&combo, &[]),
+            sorted_keys(&bare, &["city_count", "country_count", "version_spread"])
+        );
         for (key, value) in bare.as_object().unwrap() {
             assert_eq!(&combo[key], value, "{key}");
         }
         assert_eq!(combo["city_count"], 4);
         assert_eq!(combo["country_count"], 3);
         assert_eq!(combo["version_spread"][0]["key"], "2.3.9");
+
+        let node = serde_json::to_value(ValidatorGroupNode {
+            group: Default::default(),
+            children: vec![combo_record],
+        })
+        .unwrap();
+        assert_eq!(node["children"][0], combo);
     }
 }
