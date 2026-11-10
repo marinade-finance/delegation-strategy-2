@@ -72,6 +72,11 @@ pub fn firedancer_lineage(version: &ValidatorVersion) -> &'static str {
     }
 }
 
+/// Firedancer's main branch reports `0.1.1`; its releases are calendar versions.
+pub fn is_firedancer_dev_build(lineage: &str, version: &ValidatorVersion) -> bool {
+    lineage == "firedancer" && version.major() == 0
+}
+
 #[derive(Debug, Parser)]
 pub struct ReleasesParams {
     #[arg(
@@ -214,5 +219,21 @@ mod tests {
         assert_eq!(lineage("0.99.0"), "firedancer");
         assert_eq!(lineage("0.100.0"), "frankendancer");
         assert_eq!(lineage("0.101.0"), "frankendancer");
+    }
+
+    #[test]
+    fn a_dev_build_is_a_firedancer_version_with_major_zero() {
+        let dev =
+            |lineage: &str, text: &str| is_firedancer_dev_build(lineage, &text.parse().unwrap());
+        assert!(dev("firedancer", "0.1.1"));
+        assert!(dev("firedancer", "0.1.0"));
+        assert!(dev("firedancer", "0.1204.40300"));
+        assert!(!dev("firedancer", "26.10.6"));
+        assert!(!dev("firedancer", "1.1.4"));
+        assert!(!dev("frankendancer", "0.1106.40201"));
+        assert!(!dev("frankendancer", "0.100.0"));
+        assert!(!dev("frankendancer", "0.1.1"));
+        assert!(!dev("agave", "0.1.1"));
+        assert!(!dev("sig", "0.5.0"));
     }
 }
