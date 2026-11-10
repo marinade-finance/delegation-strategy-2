@@ -1,9 +1,9 @@
 use crate::dto::{
     client_engine, client_is_classified, client_label, client_lineage, effective_client_id,
     ClientRelease, GroupHistories, GroupHistory, GroupHistoryEpoch, GroupIncidents, GroupLocation,
-    GroupRow, GroupShare, ValidatorClientGroupRecord, ValidatorEpochStats, ValidatorGroupNode,
-    ValidatorGroupRecord, ValidatorGroupTree, ValidatorGroups, ValidatorProviderGroupRecord,
-    ValidatorProviderGroups, ValidatorRecord,
+    GroupRow, GroupShare, ValidatorClientComboRecord, ValidatorClientGroupRecord,
+    ValidatorEpochStats, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
+    ValidatorGroups, ValidatorProviderGroupRecord, ValidatorProviderGroups, ValidatorRecord,
 };
 use crate::operators;
 use crate::stake_deltas::delta_epochs;
@@ -326,6 +326,15 @@ impl ProviderAndClientBreakdowns {
             group,
         }
     }
+
+    fn into_client_combo_record(self, group: ValidatorGroupRecord) -> ValidatorClientComboRecord {
+        ValidatorClientComboRecord {
+            country_count: self.country_count(),
+            city_count: self.city_count(),
+            version_spread: Self::shares(self.versions, group.total_stake),
+            group,
+        }
+    }
 }
 
 /// A member without the value is left out of both sums, so it neither dilutes the mean nor reads as zero.
@@ -546,6 +555,11 @@ impl Accumulator<ProviderAndClientBreakdowns> {
             .cloned();
         let breakdowns = std::mem::take(&mut self.breakdowns);
         breakdowns.into_client_group_record(self.finish_base(ctx), latest_release)
+    }
+
+    fn finish_client_combo(mut self, ctx: &FinishContext) -> ValidatorClientComboRecord {
+        let breakdowns = std::mem::take(&mut self.breakdowns);
+        breakdowns.into_client_combo_record(self.finish_base(ctx))
     }
 }
 
@@ -791,7 +805,7 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
     let block_engines = aggregate_keyed(
         population,
         GroupKind::ClientLabel,
-        Accumulator::<()>::finish_base,
+        Accumulator::finish_client_combo,
     );
     let engines_by_client = block_engines_by_client(&population.eligible, population.current_epoch);
     let engines_by_label = engines_by_label(&population.eligible);
@@ -831,7 +845,7 @@ fn aggregate_client_tree(population: &Population, releases: &ClientReleases) -> 
 /// The block engine of each child that runs one, and its vendor slug at the same index. Keeps the
 /// children's stake order. A child running no engine is left out of both.
 fn paired_block_engines(
-    children: &[ValidatorGroupRecord],
+    children: &[ValidatorClientComboRecord],
     engines_by_label: &HashMap<FoldedKey, (String, String)>,
 ) -> (Vec<String>, Vec<String>) {
     let mut names: Vec<String> = Vec::new();
@@ -2247,6 +2261,123 @@ mod tests {
         );
         assert!(tree.nodes[1].group.block_engines.is_empty());
         assert!(tree.nodes[1].group.block_engine_vendors.is_empty());
+    }
+
+    fn combos_spread_over_countries_and_versions() -> ValidatorGroupTree {
+        let located = |vote_account, client_id, stake, version, country, city| Member {
+            version,
+            dc_country: country,
+            dc_city: city,
+            ..Member::new(vote_account, last_two_epochs(stake, client_id, None))
+        };
+        let tree = tree(&validators(vec![
+            located(
+                "jito-a",
+                Some(1),
+                300,
+                Some("2.3.9"),
+                Some("Germany"),
+                Some("Frankfurt"),
+            ),
+            located(
+                "jito-b",
+                Some(1),
+                100,
+                Some("2.3.7"),
+                Some("Poland"),
+                Some("Warsaw"),
+            ),
+            located(
+                "bam",
+                JITO_BAM,
+                200,
+                Some("2.3.9"),
+                Some("Germany"),
+                Some("Frankfurt"),
+            ),
+            located("plain", AGAVE, 100, Some("2.2.14"), Some("Germany"), None),
+            located("frank", FRANKENDANCER, 300, None, None, None),
+        ]));
+        assert_eq!(
+            child_keys(&tree.nodes[0]),
+            vec![
+                "Agave + Jito".to_string(),
+                "Agave + JitoBAM".to_string(),
+                "Agave".to_string()
+            ]
+        );
+        tree
+    }
+
+    #[test]
+    fn a_combo_row_spreads_the_versions_of_its_own_validators() {
+        let tree = combos_spread_over_countries_and_versions();
+        let spread = |combo: &ValidatorClientComboRecord| {
+            combo
+                .version_spread
+                .iter()
+                .map(|share| {
+                    (
+                        share.key.clone(),
+                        share.validator_count,
+                        share.total_stake,
+                        share.stake_share,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let agave = &tree.nodes[0];
+
+        assert_eq!(
+            spread(group(&agave.children, "Agave + Jito")),
+            vec![
+                ("2.3.9".to_string(), 1, Decimal::from(300), 0.75),
+                ("2.3.7".to_string(), 1, Decimal::from(100), 0.25)
+            ],
+            "shares are of the combo's own stake, not the lineage's"
+        );
+        assert_eq!(
+            spread(group(&agave.children, "Agave + JitoBAM")),
+            vec![("2.3.9".to_string(), 1, Decimal::from(200), 1.0)]
+        );
+        assert_eq!(
+            spread(group(&agave.children, "Agave")),
+            vec![("2.2.14".to_string(), 1, Decimal::from(100), 1.0)]
+        );
+        assert!(group(&tree.nodes[1].children, "Frankendancer")
+            .version_spread
+            .is_empty());
+
+        assert_eq!(
+            agave
+                .group
+                .version_spread
+                .iter()
+                .map(|share| (share.key.as_str(), share.validator_count, share.total_stake))
+                .collect::<Vec<_>>(),
+            vec![
+                ("2.3.9", 2, Decimal::from(500)),
+                ("2.2.14", 1, Decimal::from(100)),
+                ("2.3.7", 1, Decimal::from(100))
+            ],
+            "the lineage still spreads over all of its validators"
+        );
+    }
+
+    #[test]
+    fn a_combo_row_counts_the_countries_of_its_own_validators() {
+        let tree = combos_spread_over_countries_and_versions();
+        let counts = |combo: &ValidatorClientComboRecord| (combo.country_count, combo.city_count);
+        let agave = &tree.nodes[0];
+
+        assert_eq!(counts(group(&agave.children, "Agave + Jito")), (2, 2));
+        assert_eq!(counts(group(&agave.children, "Agave + JitoBAM")), (1, 1));
+        assert_eq!(counts(group(&agave.children, "Agave")), (1, 0));
+        assert_eq!(
+            counts(group(&tree.nodes[1].children, "Frankendancer")),
+            (0, 0)
+        );
+        assert_eq!((agave.group.country_count, agave.group.city_count), (2, 2));
     }
 
     #[test]

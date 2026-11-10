@@ -3,8 +3,8 @@ use rust_decimal::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use store::dto::{
-    GroupRow, ValidatorGroupNode, ValidatorGroupRecord, ValidatorGroupTree,
-    ValidatorProviderGroupRecord, ValidatorProviderGroups,
+    GroupRow, ValidatorClientComboRecord, ValidatorGroupNode, ValidatorGroupRecord,
+    ValidatorGroupTree, ValidatorProviderGroupRecord, ValidatorProviderGroups,
 };
 
 pub const DEFAULT_LIMIT: usize = 100;
@@ -226,7 +226,7 @@ pub fn page_tree(tree: ValidatorGroupTree, config: &GetGroupsConfig) -> TreePage
         .collect();
     let total_count = matching.len();
 
-    let mut children_by_key: HashMap<String, Vec<ValidatorGroupRecord>> = matching
+    let mut children_by_key: HashMap<String, Vec<ValidatorClientComboRecord>> = matching
         .iter()
         .map(|node| (node.group.key.clone(), node.children.clone()))
         .collect();
@@ -351,7 +351,13 @@ mod tests {
                 group: group(key, stake),
                 ..Default::default()
             },
-            children,
+            children: children
+                .into_iter()
+                .map(|group| ValidatorClientComboRecord {
+                    group,
+                    ..Default::default()
+                })
+                .collect(),
         }
     }
 

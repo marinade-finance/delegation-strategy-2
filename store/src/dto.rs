@@ -1120,7 +1120,7 @@ pub struct ValidatorProviderGroups {
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorGroupNode {
     pub group: ValidatorClientGroupRecord,
-    pub children: Vec<ValidatorGroupRecord>,
+    pub children: Vec<ValidatorClientComboRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
