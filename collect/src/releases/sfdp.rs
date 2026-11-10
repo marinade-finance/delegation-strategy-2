@@ -32,7 +32,7 @@ struct SfdpResponse {
 #[derive(Debug, Deserialize)]
 struct SfdpRow {
     agave_min_version: Option<String>,
-    /// Despite the name, Frankendancer (Firedancer networking on the Agave runtime), `0.x` versions.
+    /// Despite the name, Frankendancer (Firedancer networking on the Agave runtime), `0.1300.0`-style.
     firedancer_min_version: Option<String>,
     /// "Full" is Firedancer proper, with no Agave parts, on calendar versions like `26.10.4`.
     firedancer_full_min_version: Option<String>,

@@ -2895,7 +2895,7 @@ mod tests {
         assert_eq!(
             stake(&history.client_lineages, "Frankendancer"),
             ("Frankendancer".to_string(), Decimal::from(50)),
-            "id 12 on a 0.x version is Frankendancer"
+            "id 12 on a Frankendancer version is Frankendancer"
         );
         assert_eq!(
             stake(&history.client_labels, "Frankendancer + JitoBAM"),

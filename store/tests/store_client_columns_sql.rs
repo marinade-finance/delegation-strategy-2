@@ -343,7 +343,7 @@ async fn load_versions_classifies_from_the_raw_rendering_when_no_id_was_stored()
         ],
         "a registry name or an Unknown(N) rendering classifies even with no stored id; \
          a client the registry does not know stays Unknown with its raw rendering intact; \
-         id 12 on a 0.x version is Frankendancer"
+         id 12 on a Frankendancer version is Frankendancer"
     );
 
     client
