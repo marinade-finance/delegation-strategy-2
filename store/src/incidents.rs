@@ -639,9 +639,14 @@ mod tests {
             .collect();
 
         for (epoch, lineage) in lineage_epochs {
+            let padding = if lineage == "firedancer" {
+                "1.0.0"
+            } else {
+                "0.0.0"
+            };
             cluster.extend(
                 (0..MIN_LINEAGE_VALIDATORS)
-                    .map(|_| validator(vec![client(epoch, Some("0.0.0"), Some(&lineage), 0)])),
+                    .map(|_| validator(vec![client(epoch, Some(padding), Some(&lineage), 0)])),
             );
         }
         cluster
