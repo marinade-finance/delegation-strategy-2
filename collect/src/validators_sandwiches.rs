@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use solana_clock::Epoch;
 use std::time::Duration;
 
-/// The service that owns this dataset: it in turn uses sandwiched.me sheet exports.
+/// The service that owns this dataset; it republishes the upstream's per-epoch sheets.
 pub const DEFAULT_API_URL: &str = "https://solana-sandwich-report.marinade.finance";
 
 const HTTP_TIMEOUT_S: u64 = 60;
@@ -69,7 +69,7 @@ pub struct ValidatorSandwich {
 }
 
 /// One row of an epoch CSV.
-/// The aliases are the older column names that some sandwiched.me sheets use.
+/// The aliases are the older column names that some upstream sheets use.
 #[derive(Debug, Deserialize)]
 struct SandwichCsvRow {
     vote_account: String,
@@ -91,7 +91,7 @@ struct SandwichCsvRow {
 
 const CSV_COLUMNS: [Column; 1] = [required("vote_account")];
 
-/// The CSVs carry the sandwiched.me sheets own 3-line preamble, and the csv parser reads a header off
+/// The CSVs carry the upstream sheets' own 3-line preamble, and the csv parser reads a header off
 /// the first line it is given.
 fn csv_body(text: &str) -> &str {
     text.splitn(3, '\n').nth(2).unwrap_or("")
@@ -234,7 +234,7 @@ pub fn collect_validator_sandwiches_info(
 mod tests {
     use super::*;
 
-    const PREAMBLE: &str = "Snapshot of mev-hub validators API for Epoch 1030,,,,\n,,,,\n";
+    const PREAMBLE: &str = "Snapshot of the upstream validators API for Epoch 1030,,,,\n,,,,\n";
 
     #[test]
     fn the_three_line_preamble_is_dropped_before_the_header() {
@@ -358,7 +358,7 @@ mod tests {
         );
     }
 
-    // The report writes an empty cell when mev-hub gives no wide rate for a validator.
+    // The report writes an empty cell when the upstream gives no wide rate for a validator.
     #[test]
     fn a_blank_wide_cell_reads_none() {
         let csv = format!(
