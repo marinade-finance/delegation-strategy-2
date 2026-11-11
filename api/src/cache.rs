@@ -757,16 +757,11 @@ pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-// Refreshed with the caches so a stalled or skipping blacklist evaluation can page.
+// Refreshed with the caches so a stalled auction import can page.
 pub async fn refresh_blacklist_status(context: &WrappedContext) -> anyhow::Result<()> {
     let context = context.read().await;
-    let (lag, skipped) = store::blacklist::db::evaluation_status(
-        &context.psql_client,
-        context.blacklist_start_epoch,
-    )
-    .await?;
-    metrics::BLACKLIST_EVALUATION_LAG_EPOCHS.set(lag.try_into()?);
-    metrics::BLACKLIST_SKIPPED_EPOCHS.set(skipped.try_into()?);
+    let lag = store::blacklist::db::import_lag_epochs(&context.psql_client).await?;
+    metrics::BLACKLIST_IMPORT_LAG_EPOCHS.set(lag.try_into()?);
     Ok(())
 }
 

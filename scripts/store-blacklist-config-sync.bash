@@ -13,4 +13,4 @@ fi
 
 "$BIN_DIR/store" \
   --postgres-url "$POSTGRES_URL" \
-  blacklist-evaluate "$@"
+  blacklist-config-sync "$@"

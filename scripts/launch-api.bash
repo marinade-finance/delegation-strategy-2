@@ -12,14 +12,7 @@ then
   exit 1
 fi
 
-if [[ -z $BLACKLIST_CONFIG ]]
-then
-  echo "Env variable BLACKLIST_CONFIG is missing!" >&2
-  exit 1
-fi
-
 "$BIN_DIR/api" \
   --postgres-url "$POSTGRES_URL" \
   --glossary-path "$GLOSSARY_MD" \
-  --blacklist-config "$BLACKLIST_CONFIG" \
   --scoring-url "$SCORING_URL"

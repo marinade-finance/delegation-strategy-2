@@ -1,15 +1,13 @@
-use crate::{context::WrappedContext, metrics, utils::response::response_error_500};
+use crate::{
+    context::WrappedContext,
+    metrics,
+    utils::response::{response_error, response_error_500},
+};
 use log::{error, info};
-use serde::Serialize;
-use store::blacklist::db::{load_blacklist, BlacklistRow};
+use store::blacklist::db::{load_blacklist, Blacklist};
 use warp::{http::StatusCode, reply::json, Reply};
 
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct ResponseBlacklist {
-    /// The last closed epoch the rules judged or skipped; `null` before the rules first ran.
-    evaluated_epoch: Option<u64>,
-    rows: Vec<BlacklistRow>,
-}
+pub const NOT_BOOTSTRAPPED: &str = "The blacklist is not bootstrapped yet";
 
 #[utoipa::path(
     get,
@@ -17,7 +15,8 @@ pub struct ResponseBlacklist {
     operation_id = "Blacklist",
     path = "/blacklist",
     responses(
-        (status = 200, body = ResponseBlacklist)
+        (status = 200, body = Blacklist),
+        (status = 503, description = "The legacy list is not imported yet; serving part of the list would unlist the rest")
     )
 )]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
@@ -26,13 +25,8 @@ pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Reject
 
     Ok(
         match load_blacklist(&context.read().await.psql_client).await {
-            Ok((evaluated_epoch, rows)) => warp::reply::with_status(
-                json(&ResponseBlacklist {
-                    evaluated_epoch,
-                    rows,
-                }),
-                StatusCode::OK,
-            ),
+            Ok(Some(blacklist)) => warp::reply::with_status(json(&blacklist), StatusCode::OK),
+            Ok(None) => response_error(StatusCode::SERVICE_UNAVAILABLE, NOT_BOOTSTRAPPED.into()),
             Err(err) => {
                 error!("Failed to load the blacklist: {err}");
                 response_error_500("Failed to load the blacklist!".into())

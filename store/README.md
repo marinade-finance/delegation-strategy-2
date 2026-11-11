@@ -57,7 +57,7 @@ cargo run --bin store -- --postgres-url $POSTGRES_URL \
 # one-off: today's blacklist.csv becomes legacy rows of the blacklist table
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
   blacklist-import --csv ./blacklist.csv --source-ref "$(git rev-parse HEAD)"
-# hourly: sync manual/exempt from the config, run the rules over newly closed epochs
+# hourly: sync the manual adds and the exemptions from the config
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  blacklist-evaluate --config ./blacklist.yaml
+  blacklist-config-sync --config ./blacklist.yaml
 ```
