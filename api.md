@@ -483,8 +483,8 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
 ```
 
 ## Validator quality
-Per-epoch quality inputs: sandwich figures from solana-sandwich-report and the Trillium slot-time median.
-`ibrl_score` stays `null` until Trillium publishes it.
+Per-epoch quality inputs: the 30d sandwich figures and the slot-time median. The SAM auction decides the
+blacklist from them. `ibrl_score` stays `null` until the upstream publishes it.
 ```bash
 curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
 ```
@@ -507,15 +507,14 @@ curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
 
 ## Blacklist
 Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
-YAML config) and `rule` (computed by `store blacklist-evaluate`). `evidence` holds the observed values a
-rule judged; the thresholds are not served. On `:9000/metrics`, `ds_blacklist_evaluation_lag_epochs` (1 on
-time, 0 with the rules off) and `ds_blacklist_skipped_epochs` (epochs whose inputs never arrived) are what to alert on.
+YAML config) and `auction` (listed by the SAM auction of `auction_epoch`, imported from ds-sam-pipeline).
+`/blacklist` also serves the config's exemptions, which the auction honours. Both routes answer 503 until
+the legacy import ran, so a partial list is never served. On `:9000/metrics`, alert on
+`ds_blacklist_import_lag_epochs` above 1.
 ```bash
-curl -sfLS 'localhost:8000/blacklist.csv' -D - | head
+curl -sfLS 'localhost:8000/blacklist.csv' | head
 ```
 ```
-X-Blacklist-Evaluated-Epoch: 1080
-
 vote_account,code
 2HWm5dvd...,SLOW_SLOTS_1080
 3vyMZHph...,BLACKLIST_COMMISSION_RUG
@@ -525,22 +524,12 @@ curl -sfLS 'localhost:8000/blacklist' | jq
 ```
 ```json
 {
-  "evaluated_epoch": 1080,
   "rows": [
-    {
-      "vote_account": "2HWm5dvd...",
-      "source": "rule",
-      "rule": "slow_slots",
-      "code": "SLOW_SLOTS_1080",
-      "reason": null,
-      "added_epoch": 1081,
-      "evidence": {
-        "epochs": {
-          "1079": { "slot_duration_median_ms": 245.0, "network_median_ms": 200.0 },
-          "1080": { "slot_duration_median_ms": 250.0, "network_median_ms": 200.0 }
-        }
-      }
-    }
+    { "vote_account": "2HWm5dvd...", "source": "auction", "code": "SLOW_SLOTS_1080", "auction_epoch": 1081 },
+    { "vote_account": "3vyMZHph...", "source": "legacy", "code": "BLACKLIST_COMMISSION_RUG", "auction_epoch": null }
+  ],
+  "exempt": [
+    { "vote_account": "7xKXtg2C...", "rule": "sandwich", "until_epoch": 1083 }
   ]
 }
 ```
