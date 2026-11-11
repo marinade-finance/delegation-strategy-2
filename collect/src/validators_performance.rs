@@ -43,9 +43,11 @@ pub struct ValidatorsPerformanceParams {
 
     #[arg(
         long = "finalize-epoch-rpc-fallback",
-        help = "Use the RPC leader schedule for a closed epoch when BigQuery still has none at half of the next epoch."
+        env = "FINALIZE_EPOCH_RPC_FALLBACK",
+        value_name = "SLOTS",
+        help = "Use the RPC leader schedule for a closed epoch when BigQuery still has none this many slots into the next epoch. 0 falls back at once."
     )]
-    finalize_epoch_rpc_fallback: bool,
+    finalize_epoch_rpc_fallback: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,7 +225,7 @@ pub fn validators_performance(
     vote_accounts: &RpcVoteAccountStatus,
     rpc_attempts: usize,
     node_info: &HashMap<String, NodeContact>,
-    finalize_epoch_rpc_fallback: bool,
+    finalize_epoch_rpc_fallback: Option<u64>,
 ) -> anyhow::Result<HashMap<String, ValidatorPerformance>> {
     let mut validators: HashMap<String, ValidatorPerformance> = Default::default();
 

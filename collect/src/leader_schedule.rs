@@ -130,21 +130,21 @@ pub fn count_block_production(
         .collect()
 }
 
-/// The wait for BigQuery ends when the epoch after the closed one is half done.
-fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo) -> bool {
+/// The wait for BigQuery ends `wait_slots` into the epoch after the closed one.
+fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo, wait_slots: u64) -> bool {
     epoch_info.epoch > closed_epoch + 1
-        || (epoch_info.epoch == closed_epoch + 1
-            && epoch_info.slot_index * 2 >= epoch_info.slots_in_epoch)
+        || (epoch_info.epoch == closed_epoch + 1 && epoch_info.slot_index >= wait_slots)
 }
 
 /// Vote account -> (leader slots, blocks produced). A vote account missing from the map has no
 /// resolved slots. For the open epoch only the slots up to the newest finalized slot count.
+/// `finalize_epoch_rpc_fallback` is `None` when a closed epoch must wait for BigQuery.
 pub fn get_block_production_by_vote_account(
     rpc_client: &RpcClient,
     epoch: Epoch,
     current_epoch: Epoch,
     vote_accounts: &RpcVoteAccountStatus,
-    finalize_epoch_rpc_fallback: bool,
+    finalize_epoch_rpc_fallback: Option<u64>,
 ) -> anyhow::Result<HashMap<String, (usize, usize)>> {
     info!("Getting block production by vote account for epoch {epoch}");
     let epoch_schedule = rpc_client.get_epoch_schedule()?;
@@ -183,17 +183,17 @@ pub fn get_block_production_by_vote_account(
             })?;
             match bq_schedule {
                 Some(schedule) => schedule,
-                None if epoch < current_epoch && !finalize_epoch_rpc_fallback => {
-                    bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
-                }
                 None if epoch < current_epoch => {
+                    let Some(wait_slots) = finalize_epoch_rpc_fallback else {
+                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet")
+                    };
                     let epoch_info = rpc_client.get_epoch_info()?;
                     let progress = format!(
                         "epoch {} at slot {}/{}",
                         epoch_info.epoch, epoch_info.slot_index, epoch_info.slots_in_epoch
                     );
-                    if !bigquery_wait_is_over(epoch, &epoch_info) {
-                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet ({progress}), the RPC fallback starts at half of the next epoch")
+                    if !bigquery_wait_is_over(epoch, &epoch_info, wait_slots) {
+                        bail!("Leader schedule of closed epoch {epoch} is not in BigQuery yet ({progress}), the RPC fallback starts at slot {wait_slots} of the next epoch")
                     }
                     warn!("Leader schedule of closed epoch {epoch} is not in BigQuery ({progress}), mapping the RPC schedule by current identity");
                     rpc_schedule()?
@@ -268,19 +268,24 @@ mod tests {
     }
 
     #[test]
-    fn the_bigquery_wait_lasts_half_of_the_next_epoch() {
-        assert!(!bigquery_wait_is_over(10, &epoch_info(11, 215_999)));
-        assert!(bigquery_wait_is_over(10, &epoch_info(11, 216_000)));
+    fn the_bigquery_wait_lasts_the_given_slots_into_the_next_epoch() {
+        assert!(!bigquery_wait_is_over(10, &epoch_info(11, 89_999), 90_000));
+        assert!(bigquery_wait_is_over(10, &epoch_info(11, 90_000), 90_000));
+    }
+
+    #[test]
+    fn a_zero_wait_falls_back_at_the_next_epoch_start() {
+        assert!(bigquery_wait_is_over(10, &epoch_info(11, 0), 0));
     }
 
     #[test]
     fn a_lagging_rpc_still_in_the_closed_epoch_keeps_the_wait() {
-        assert!(!bigquery_wait_is_over(10, &epoch_info(10, 300_000)));
+        assert!(!bigquery_wait_is_over(10, &epoch_info(10, 300_000), 0));
     }
 
     #[test]
     fn an_epoch_older_than_the_previous_one_is_past_the_wait() {
-        assert!(bigquery_wait_is_over(10, &epoch_info(12, 0)));
+        assert!(bigquery_wait_is_over(10, &epoch_info(12, 0), 90_000));
     }
 
     #[test]

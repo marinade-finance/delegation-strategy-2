@@ -49,6 +49,14 @@ cargo run --bin collect -- -u $RPC_URL validators-block-rewards --epoch $EPOCH |
   tee "$OUTPUT_DIR"/validators-block-rewards.yaml
 ```
 
+## Forcing a testnet epoch close
+
+A testnet epoch with no snapshot never gets its leader schedule into BigQuery. The finalize job waits `FINALIZE_EPOCH_RPC_FALLBACK` slots into the next epoch before it maps the RPC leader schedule by current identity. To close it now, run a one-off job with the wait at `0`:
+
+```bash
+kubectl -n prod create job ds-finalize-force --from=cronjob/ds-collector-finalize-testnet --dry-run=client -o yaml | kubectl set env --local -f - FINALIZE_EPOCH_RPC_FALLBACK=0 -o yaml | kubectl apply -f -
+```
+
 ## validators-events range
 
 `validators-events` (PSR settlements) is queried by epoch range, upserted idempotently:
