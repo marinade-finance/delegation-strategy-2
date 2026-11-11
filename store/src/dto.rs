@@ -1005,6 +1005,31 @@ impl std::ops::Deref for ValidatorClientGroupRecord {
     }
 }
 
+/// A client label, as the child rows of `/clients` serve it.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, utoipa::ToSchema)]
+pub struct ValidatorClientComboRecord {
+    #[serde(flatten)]
+    pub group: ValidatorGroupRecord,
+    pub city_count: u64,
+    pub country_count: u64,
+    /// Stake share per version string as the nodes report it, biggest first. Unbucketed.
+    pub version_spread: Vec<GroupShare>,
+}
+
+impl GroupRow for ValidatorClientComboRecord {
+    fn row(&self) -> &ValidatorGroupRecord {
+        &self.group
+    }
+}
+
+impl std::ops::Deref for ValidatorClientComboRecord {
+    type Target = ValidatorGroupRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.group
+    }
+}
+
 /// A group's incidents, as records or as their count. Serializes as a JSON array or a JSON number.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, utoipa::ToSchema)]
 #[serde(untagged)]
@@ -1095,7 +1120,7 @@ pub struct ValidatorProviderGroups {
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
 pub struct ValidatorGroupNode {
     pub group: ValidatorClientGroupRecord,
-    pub children: Vec<ValidatorGroupRecord>,
+    pub children: Vec<ValidatorClientComboRecord>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, utoipa::ToSchema)]
@@ -1470,7 +1495,7 @@ mod tests {
         assert!(provider.get("group").is_none());
 
         let client = serde_json::to_value(ValidatorClientGroupRecord {
-            group,
+            group: group.clone(),
             block_engines: vec!["Agave + JitoBAM".to_string()],
             ..Default::default()
         })
@@ -1482,5 +1507,58 @@ mod tests {
             client.get("asns").is_none(),
             "a client row has no provider columns at all"
         );
+
+        let bare = serde_json::to_value(&group).unwrap();
+        let sorted_keys = |value: &serde_json::Value, extra: &[&str]| {
+            let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+            keys.extend(extra.iter().map(|key| key.to_string()));
+            keys.sort();
+            keys
+        };
+        assert_eq!(
+            sorted_keys(&client, &[]),
+            sorted_keys(
+                &bare,
+                &[
+                    "city_count",
+                    "country_count",
+                    "version_spread",
+                    "block_engines",
+                    "block_engine_vendors",
+                    "latest_release"
+                ]
+            )
+        );
+
+        let combo_record = ValidatorClientComboRecord {
+            group,
+            city_count: 4,
+            country_count: 3,
+            version_spread: vec![GroupShare {
+                key: "2.3.9".to_string(),
+                validator_count: 2,
+                total_stake: Decimal::from(5),
+                stake_share: 1.0,
+            }],
+        };
+        let combo = serde_json::to_value(&combo_record).unwrap();
+        assert!(combo.get("group").is_none());
+        assert_eq!(
+            sorted_keys(&combo, &[]),
+            sorted_keys(&bare, &["city_count", "country_count", "version_spread"])
+        );
+        for (key, value) in bare.as_object().unwrap() {
+            assert_eq!(&combo[key], value, "{key}");
+        }
+        assert_eq!(combo["city_count"], 4);
+        assert_eq!(combo["country_count"], 3);
+        assert_eq!(combo["version_spread"][0]["key"], "2.3.9");
+
+        let node = serde_json::to_value(ValidatorGroupNode {
+            group: Default::default(),
+            children: vec![combo_record],
+        })
+        .unwrap();
+        assert_eq!(node["children"][0], combo);
     }
 }

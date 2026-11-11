@@ -70,6 +70,7 @@ use utoipa::OpenApi;
         schemas(store::dto::ValidatorGroupRecord),
         schemas(store::dto::ValidatorProviderGroupRecord),
         schemas(store::dto::ValidatorClientGroupRecord),
+        schemas(store::dto::ValidatorClientComboRecord),
         schemas(store::dto::ValidatorRecord),
         schemas(store::dto::ValidatorsAggregated),
         schemas(store::dto::ValidatorScoreRecord),
@@ -202,6 +203,45 @@ mod tests {
             orphans.is_empty(),
             "path parameters without a matching path segment: {orphans:?}"
         );
+    }
+
+    #[test]
+    fn clients_children_are_documented_as_combo_rows() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let schemas = &spec["components"]["schemas"];
+
+        let node = &schemas["ValidatorGroupNode"]["properties"];
+        assert_eq!(
+            node["children"]["items"]["$ref"],
+            "#/components/schemas/ValidatorClientComboRecord"
+        );
+        assert_eq!(
+            node["group"]["$ref"],
+            "#/components/schemas/ValidatorClientGroupRecord"
+        );
+
+        let combo = &schemas["ValidatorClientComboRecord"]["allOf"];
+        assert_eq!(
+            combo[0]["$ref"],
+            "#/components/schemas/ValidatorGroupRecord"
+        );
+        let mut own: Vec<_> = combo[1]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        own.sort();
+        assert_eq!(own, ["city_count", "country_count", "version_spread"]);
+        assert_eq!(combo.as_array().unwrap().len(), 2);
+
+        let lineage = &schemas["ValidatorClientGroupRecord"]["allOf"][1]["properties"];
+        for field in own {
+            assert_eq!(
+                combo[1]["properties"][&field], lineage[&field],
+                "{field} must have the lineage row's shape"
+            );
+        }
     }
 
     #[test]
