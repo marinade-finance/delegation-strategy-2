@@ -1,4 +1,5 @@
 use clap::Parser;
+use collect::blacklist_auctions::{collect_blacklist_auctions, BlacklistAuctionsParams};
 use collect::common::*;
 use collect::releases::{collect_releases_info, ReleasesParams};
 use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
@@ -36,6 +37,7 @@ enum CollectCommand {
     ValidatorsSlotTimes(SlotTimesParams),
     TakeRates(TakeRatesParams),
     Releases(ReleasesParams),
+    BlacklistAuctions(BlacklistAuctionsParams),
 }
 
 impl Display for CollectCommand {
@@ -51,6 +53,7 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsSlotTimes(_) => write!(f, "validators-slot-times"),
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
             CollectCommand::Releases(_) => write!(f, "releases"),
+            CollectCommand::BlacklistAuctions(_) => write!(f, "blacklist-auctions"),
         }
     }
 }
@@ -95,6 +98,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::Releases(releases_params) => {
             collect_releases_info(params.common, releases_params)
+        }
+        CollectCommand::BlacklistAuctions(auctions_params) => {
+            collect_blacklist_auctions(auctions_params)
         }
     };
 
