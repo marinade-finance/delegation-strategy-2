@@ -25,7 +25,7 @@ async fn store(
 ) {
     let snapshot = ValidatorsSlotTimesSnapshot {
         version: 1,
-        source: "trillium".into(),
+        source: "external".into(),
         from_epoch: EPOCH,
         loaded_at_epoch: EPOCH + 1,
         loaded_at_slot_index: 1000,
@@ -76,11 +76,11 @@ async fn a_snapshot_row_lands_in_the_table() {
 
     assert_eq!(
         read(&client, "voteA").await,
-        ("trillium".into(), 243.5, Some(87.5))
+        ("external".into(), 243.5, Some(87.5))
     );
 }
 
-// Trillium returns no ibrl_score for any validator today.
+// The upstream returns no ibrl_score for any validator today.
 #[tokio::test]
 async fn a_missing_ibrl_score_is_stored_as_null() {
     let schema = "ds_test_store_slot_times_null";
@@ -134,7 +134,7 @@ async fn a_second_run_updates_the_row_it_already_wrote() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         read(&client, "voteA").await,
-        ("trillium".into(), 244.0, Some(90.0))
+        ("external".into(), 244.0, Some(90.0))
     );
 
     let created_at: chrono::DateTime<chrono::Utc> = rows[0].get("created_at");

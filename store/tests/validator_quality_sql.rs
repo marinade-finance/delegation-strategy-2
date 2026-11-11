@@ -22,7 +22,7 @@ async fn slot_time(client: &Client, epoch: u64, vote_account: &str, ibrl_score: 
         .execute(
             "INSERT INTO validators_slot_times (epoch, vote_account, source, slot_duration_median_ms,
                 ibrl_score, created_at, updated_at)
-             VALUES ($1, $2, 'trillium', 243.5, $3, now(), now())",
+             VALUES ($1, $2, 'external', 243.5, $3, now(), now())",
             &[&Decimal::from(epoch), &vote_account, &ibrl_score],
         )
         .await
@@ -103,7 +103,7 @@ async fn only_the_requested_epoch_is_returned() {
     );
 }
 
-// Trillium returns no ibrl_score for any validator today; the field is served, as null.
+// The upstream returns no ibrl_score for any validator today; the field is served, as null.
 #[tokio::test]
 async fn a_null_ibrl_score_is_served_as_null() {
     let schema = "ds_test_validator_quality_ibrl";

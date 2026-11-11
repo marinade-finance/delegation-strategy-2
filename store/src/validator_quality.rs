@@ -1,3 +1,4 @@
+use collect::validators_slot_times::SOURCE_EXTERNAL;
 use rust_decimal::prelude::*;
 use serde::Serialize;
 use tokio_postgres::Client;
@@ -33,10 +34,10 @@ pub async fn load_validator_quality(
                 t.ibrl_score
              FROM (SELECT * FROM validators_sandwiches WHERE epoch = $1) s
              FULL OUTER JOIN (
-                SELECT * FROM validators_slot_times WHERE epoch = $1 AND source = 'trillium'
+                SELECT * FROM validators_slot_times WHERE epoch = $1 AND source = $2
              ) t ON t.vote_account = s.vote_account
              ORDER BY vote_account",
-            &[&Decimal::from(epoch)],
+            &[&Decimal::from(epoch), &SOURCE_EXTERNAL],
         )
         .await?;
 

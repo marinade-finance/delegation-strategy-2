@@ -8,18 +8,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use solana_clock::Epoch;
 use std::time::Duration;
 
-pub const DEFAULT_API_URL: &str = "https://api.trillium.so";
-pub const SOURCE_TRILLIUM: &str = "trillium";
+/// The `source` of the rows this collector stores; a later in-house collector stores its own.
+pub const SOURCE_EXTERNAL: &str = "external";
 
 const DATA_VERSION: u16 = 1;
 
 #[derive(Debug, Parser)]
 pub struct SlotTimesParams {
-    #[arg(
-        long = "api-url",
-        help = "Base URL of the Trillium API.",
-        default_value = DEFAULT_API_URL
-    )]
+    #[arg(long = "api-url", help = "Base URL of the upstream slot-time API.")]
     api_url: String,
 
     #[arg(
@@ -63,7 +59,7 @@ pub struct ValidatorSlotTime {
 }
 
 #[derive(Debug, Deserialize)]
-struct TrilliumRecord {
+struct SlotTimeRecord {
     vote_account_pubkey: String,
     #[serde(default, deserialize_with = "number_or_string")]
     slot_duration_median: Option<f64>,
@@ -71,7 +67,7 @@ struct TrilliumRecord {
     ibrl_score: Option<f64>,
 }
 
-/// Trillium sends some numbers as decimal strings (`"200.00000"`).
+/// The upstream sends some numbers as decimal strings (`"200.00000"`).
 fn number_or_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -90,7 +86,7 @@ fn number_or_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option
     }
 }
 
-fn records_to_slot_times(epoch: Epoch, records: Vec<TrilliumRecord>) -> Vec<ValidatorSlotTime> {
+fn records_to_slot_times(epoch: Epoch, records: Vec<SlotTimeRecord>) -> Vec<ValidatorSlotTime> {
     records
         .into_iter()
         .filter_map(|record| {
@@ -111,12 +107,12 @@ fn records_to_slot_times(epoch: Epoch, records: Vec<TrilliumRecord>) -> Vec<Vali
         .collect()
 }
 
-/// `None` while Trillium has not published the epoch yet.
+/// `None` while the upstream has not published the epoch yet.
 fn fetch_epoch(
     client: &reqwest::blocking::Client,
     api_url: &str,
     epoch: Epoch,
-) -> anyhow::Result<Option<Vec<TrilliumRecord>>> {
+) -> anyhow::Result<Option<Vec<SlotTimeRecord>>> {
     let url = format!(
         "{}/validator_rewards/{epoch}",
         api_url.trim_end_matches('/')
@@ -147,7 +143,7 @@ fn fetch_slot_times(
     let mut slot_times = Vec::new();
     for epoch in from_epoch..current_epoch {
         let Some(records) = fetch_epoch(client, api_url, epoch)? else {
-            info!("epoch {epoch} not published by Trillium yet, stopping");
+            info!("epoch {epoch} not published upstream yet, stopping");
             break;
         };
         let rows = records_to_slot_times(epoch, records);
@@ -187,7 +183,7 @@ pub fn collect_validator_slot_times_info(
         std::io::stdout(),
         &ValidatorsSlotTimesSnapshot {
             version: DATA_VERSION,
-            source: SOURCE_TRILLIUM.into(),
+            source: SOURCE_EXTERNAL.into(),
             from_epoch,
             loaded_at_epoch: current_epoch_info.epoch,
             loaded_at_slot_index: current_epoch_info.slot_index,
@@ -258,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_non_numeric_slot_duration_is_an_error() {
-        let result: Result<Vec<TrilliumRecord>, _> = serde_json::from_str(
+        let result: Result<Vec<SlotTimeRecord>, _> = serde_json::from_str(
             r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "fast"}]"#,
         );
         assert!(result.is_err());
