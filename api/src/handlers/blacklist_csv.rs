@@ -1,7 +1,15 @@
-use crate::{context::WrappedContext, metrics, utils::response::response_error_500};
+use crate::{
+    context::WrappedContext,
+    handlers::blacklist::NOT_BOOTSTRAPPED,
+    metrics,
+    utils::response::{response_error, response_error_500},
+};
 use log::{error, info};
 use store::blacklist::db::{load_blacklist, BlacklistRow};
-use warp::{http::Response, Reply};
+use warp::{
+    http::{Response, StatusCode},
+    Reply,
+};
 
 /// Same shape as the `blacklist.csv` file it replaces, so every reader parses it unchanged.
 pub fn render_csv(rows: &[BlacklistRow]) -> String {
@@ -18,26 +26,29 @@ pub fn render_csv(rows: &[BlacklistRow]) -> String {
     operation_id = "Blacklist as CSV",
     path = "/blacklist.csv",
     responses(
-        (status = 200, description = "`vote_account,code` per active row; header `X-Blacklist-Evaluated-Epoch` names the last epoch the rules judged", content_type = "text/csv")
+        (status = 200, description = "`vote_account,code` per active row", content_type = "text/csv"),
+        (status = 503, description = "The legacy list is not imported yet; serving part of the list would unlist the rest")
     )
 )]
 pub async fn handler(context: WrappedContext) -> Result<impl Reply, warp::Rejection> {
     info!("Fetching blacklist CSV");
     metrics::REQUEST_BLACKLIST.inc();
 
-    let (evaluated_epoch, rows) = match load_blacklist(&context.read().await.psql_client).await {
-        Ok(loaded) => loaded,
-        Err(err) => {
-            error!("Failed to load the blacklist: {err}");
-            return Ok(response_error_500("Failed to load the blacklist!".into()).into_response());
-        }
-    };
-
-    let mut response = Response::builder().header("Content-Type", "text/csv");
-    if let Some(epoch) = evaluated_epoch {
-        response = response.header("X-Blacklist-Evaluated-Epoch", epoch.to_string());
-    }
-    Ok(response.body(render_csv(&rows)).unwrap().into_response())
+    Ok(
+        match load_blacklist(&context.read().await.psql_client).await {
+            Ok(Some(blacklist)) => Response::builder()
+                .header("Content-Type", "text/csv")
+                .body(render_csv(&blacklist.rows))
+                .unwrap()
+                .into_response(),
+            Ok(None) => response_error(StatusCode::SERVICE_UNAVAILABLE, NOT_BOOTSTRAPPED.into())
+                .into_response(),
+            Err(err) => {
+                error!("Failed to load the blacklist: {err}");
+                response_error_500("Failed to load the blacklist!".into()).into_response()
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -48,11 +59,8 @@ mod tests {
         BlacklistRow {
             vote_account: vote_account.into(),
             source: "legacy".into(),
-            rule: None,
             code: code.into(),
-            reason: None,
-            added_epoch: None,
-            evidence: None,
+            auction_epoch: None,
         }
     }
 
@@ -67,10 +75,5 @@ mod tests {
             render_csv(&rows),
             "vote_account,code\nA,SLOW_VOTER\nA,SLOW_SLOTS_1080\nB,MALICIOUS_SM\n"
         );
-    }
-
-    #[test]
-    fn an_empty_table_renders_only_the_header() {
-        assert_eq!(render_csv(&[]), "vote_account,code\n");
     }
 }

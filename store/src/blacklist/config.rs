@@ -3,41 +3,17 @@ use collect::common::is_base58_pubkey;
 use serde::Deserialize;
 use std::collections::HashSet;
 
-/// Thresholds, hand-kept adds and exemptions. A rule section left out turns that rule off.
+/// Hand-kept adds and exemptions. The rules and their thresholds belong to the SAM auction.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlacklistConfig {
-    pub rules: Option<RulesConfig>,
     #[serde(default)]
     pub manual: Vec<ManualEntry>,
     #[serde(default)]
     pub exempt: Vec<ExemptEntry>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RulesConfig {
-    /// First epoch the rules judge. Absent → rules do not run.
-    pub start_epoch: Option<u64>,
-    pub slow_slots: Option<SlowSlotsConfig>,
-    pub sandwich: Option<SandwichConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SlowSlotsConfig {
-    /// Bar = this × the stake-weighted network median of the slot-time medians.
-    pub median_mult: f64,
-    pub consecutive_epochs: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandwichConfig {
-    /// Percent, the floor under the cluster-relative bar.
-    pub rate_pct: f64,
-}
-
+/// What an exemption covers: the listings of one auction rule, the legacy rows, or all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleId {
@@ -59,6 +35,15 @@ impl RuleId {
 
     fn all() -> Self {
         RuleId::All
+    }
+
+    /// The code prefix of the auction rows this rule lists; `None` for `all` and `legacy`.
+    pub fn code_prefix(self) -> Option<&'static str> {
+        match self {
+            RuleId::SlowSlots => Some("SLOW_SLOTS_"),
+            RuleId::Sandwich => Some("MALICIOUS_SM_"),
+            RuleId::All | RuleId::Legacy => None,
+        }
     }
 }
 
@@ -95,25 +80,6 @@ impl BlacklistConfig {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if let Some(rules) = &self.rules {
-            if let Some(slow_slots) = &rules.slow_slots {
-                ensure!(
-                    slow_slots.median_mult > 1.0,
-                    "rules.slow_slots.median_mult must be above 1"
-                );
-                ensure!(
-                    slow_slots.consecutive_epochs >= 1,
-                    "rules.slow_slots.consecutive_epochs must be at least 1"
-                );
-            }
-            if let Some(sandwich) = &rules.sandwich {
-                ensure!(
-                    sandwich.rate_pct > 0.0 && sandwich.rate_pct <= 100.0,
-                    "rules.sandwich.rate_pct must be in (0, 100]"
-                );
-            }
-        }
-
         let mut manual = HashSet::new();
         for entry in &self.manual {
             non_empty("manual", &entry.vote_account, "vote_account")?;
@@ -178,13 +144,6 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = "
-rules:
-  start_epoch: 1090
-  slow_slots:
-    median_mult: 1.10
-    consecutive_epochs: 2
-  sandwich:
-    rate_pct: 4.0
 manual:
   # internal note
   - { vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, code: MISSING_BLS, reason: 'SIMD-0357, epoch 1006' }
@@ -201,10 +160,6 @@ exempt:
     #[test]
     fn the_documented_example_parses() {
         let config = BlacklistConfig::parse(EXAMPLE).unwrap();
-        let rules = config.rules.unwrap();
-        assert_eq!(rules.start_epoch, Some(1090));
-        assert_eq!(rules.slow_slots.unwrap().median_mult, 1.10);
-        assert_eq!(rules.sandwich.unwrap().rate_pct, 4.0);
         assert_eq!(config.manual.len(), 1);
         assert_eq!(
             config.exempt.iter().map(|e| e.rule).collect::<Vec<_>>(),
@@ -213,20 +168,24 @@ exempt:
     }
 
     #[test]
-    fn an_empty_config_has_no_rules_and_empty_lists() {
+    fn an_empty_config_has_empty_lists() {
         let config = BlacklistConfig::parse("manual: []\nexempt: []\n").unwrap();
-        assert!(config.rules.is_none());
         assert!(config.manual.is_empty() && config.exempt.is_empty());
         assert!(BlacklistConfig::parse("{}").unwrap().manual.is_empty());
     }
 
+    // The thresholds moved to the SAM auction; a leftover rules section must not pass silently.
     #[test]
-    fn a_rules_section_without_rules_parses() {
-        let rules = BlacklistConfig::parse("rules: { start_epoch: 1090 }")
-            .unwrap()
-            .rules
-            .unwrap();
-        assert!(rules.slow_slots.is_none() && rules.sandwich.is_none());
+    fn a_rules_section_is_refused() {
+        assert!(error("rules: { start_epoch: 1090 }").contains("unknown field"));
+    }
+
+    #[test]
+    fn each_rule_names_the_code_prefix_of_its_listings() {
+        assert_eq!(RuleId::Sandwich.code_prefix(), Some("MALICIOUS_SM_"));
+        assert_eq!(RuleId::SlowSlots.code_prefix(), Some("SLOW_SLOTS_"));
+        assert_eq!(RuleId::All.code_prefix(), None);
+        assert_eq!(RuleId::Legacy.code_prefix(), None);
     }
 
     #[test]
@@ -242,7 +201,6 @@ exempt:
     #[test]
     fn unknown_fields_are_refused() {
         assert!(error("rule: {}").contains("unknown field"));
-        assert!(error("rules: { start_epoch: 1, slow: {} }").contains("unknown field"));
         assert!(
             error("manual: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, code: C, reason: R, epoch: 1 }]")
                 .contains("unknown field")
@@ -288,20 +246,6 @@ exempt:
 exempt: [{ vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: sandwich, reason: R }, { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, reason: R }]",
         )
         .unwrap();
-    }
-
-    #[test]
-    fn thresholds_out_of_range_are_refused() {
-        assert!(
-            error("rules: { slow_slots: { median_mult: 1.0, consecutive_epochs: 2 } }")
-                .contains("median_mult")
-        );
-        assert!(
-            error("rules: { slow_slots: { median_mult: 1.1, consecutive_epochs: 0 } }")
-                .contains("consecutive_epochs")
-        );
-        assert!(error("rules: { sandwich: { rate_pct: 0 } }").contains("rate_pct"));
-        assert!(error("rules: { sandwich: { rate_pct: 101 } }").contains("rate_pct"));
     }
 
     // Both values are served unquoted in /blacklist.csv.

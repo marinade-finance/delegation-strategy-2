@@ -133,6 +133,15 @@ async fn seed(client: &Client) {
         )
         .await
         .unwrap();
+    // Unstake hints refuse to run before the legacy import; a closed row marks it done.
+    client
+        .execute(
+            "INSERT INTO blacklist (vote_account, source, code, removed_epoch, created_at, updated_at)
+             VALUES ('imported', 'legacy', 'SLOW_VOTER', 0, NOW(), NOW())",
+            &[],
+        )
+        .await
+        .unwrap();
 }
 
 fn tower_performance(row: &Row) -> f64 {

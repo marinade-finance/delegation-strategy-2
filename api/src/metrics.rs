@@ -12,14 +12,9 @@ lazy_static! {
         "How many times /cluster-stats endpoint was requested"
     )
     .unwrap();
-    pub static ref BLACKLIST_EVALUATION_LAG_EPOCHS: IntGauge = register_int_gauge!(
-        "ds_blacklist_evaluation_lag_epochs",
-        "Epochs between the current one and the last the blacklist rules judged; 1 when on time, 0 with the rules off"
-    )
-    .unwrap();
-    pub static ref BLACKLIST_SKIPPED_EPOCHS: IntGauge = register_int_gauge!(
-        "ds_blacklist_skipped_epochs",
-        "Closed epochs the blacklist rules skipped because their inputs never arrived"
+    pub static ref BLACKLIST_IMPORT_LAG_EPOCHS: IntGauge = register_int_gauge!(
+        "ds_blacklist_import_lag_epochs",
+        "Epochs between the current one and the last SAM auction whose listings were imported; 0 when on time or before the first import"
     )
     .unwrap();
     pub static ref REQUEST_BLACKLIST: IntCounter = register_int_counter!(

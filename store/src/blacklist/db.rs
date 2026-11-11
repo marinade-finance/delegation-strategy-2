@@ -6,16 +6,26 @@ use tokio_postgres::GenericClient;
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct BlacklistRow {
     pub vote_account: String,
-    /// `manual`, `rule` or `legacy`.
+    /// `legacy`, `manual` or `auction`.
     pub source: String,
-    /// The rule that listed the account, for `source = rule`.
-    pub rule: Option<String>,
     pub code: String,
-    pub reason: Option<String>,
-    pub added_epoch: Option<u64>,
-    /// Observed values the rule judged.
-    #[schema(value_type = Option<Object>)]
-    pub evidence: Option<serde_json::Value>,
+    /// The SAM auction that listed the account, for `source = auction`.
+    pub auction_epoch: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
+pub struct BlacklistExempt {
+    pub vote_account: String,
+    /// `all`, `sandwich`, `slow_slots` or `legacy`.
+    pub rule: String,
+    /// Listings on evidence up to this epoch are exempt; absent for as long as the entry exists.
+    pub until_epoch: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
+pub struct Blacklist {
+    pub rows: Vec<BlacklistRow>,
+    pub exempt: Vec<BlacklistExempt>,
 }
 
 /// `MAX(epoch)` of a table; `None` while it is empty.
@@ -28,45 +38,94 @@ pub async fn max_epoch(client: &impl GenericClient, table: &str) -> anyhow::Resu
         .transpose()?)
 }
 
-/// The last epoch the rules judged or skipped, and the active rows ordered by vote account, then
-/// code. The epoch is read first, so it never names an evaluation newer than the rows.
-pub async fn load_blacklist(
-    client: &impl GenericClient,
-) -> anyhow::Result<(Option<u64>, Vec<BlacklistRow>)> {
-    let evaluated_epoch = max_epoch(client, "blacklist_evaluations").await?;
+/// Whether the legacy list was imported. Before that the table holds only part of the list, and
+/// serving it would unlist everyone else.
+pub async fn bootstrapped(client: &impl GenericClient) -> anyhow::Result<bool> {
+    Ok(client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM blacklist WHERE source = 'legacy') AS bootstrapped",
+            &[],
+        )
+        .await?
+        .get("bootstrapped"))
+}
+
+fn optional_epoch(value: Option<Decimal>) -> anyhow::Result<Option<u64>> {
+    Ok(value.map(u64::try_from).transpose()?)
+}
+
+/// The active rows ordered by vote account, then code, and the exemptions; `None` before the
+/// legacy import.
+pub async fn load_blacklist(client: &impl GenericClient) -> anyhow::Result<Option<Blacklist>> {
+    if !bootstrapped(client).await? {
+        return Ok(None);
+    }
     let rows = client
         .query(
-            "SELECT vote_account, source, rule, code, reason, added_epoch, evidence::TEXT AS evidence
-             FROM blacklist
+            "SELECT vote_account, source, code, auction_epoch FROM blacklist
              WHERE removed_epoch IS NULL
              ORDER BY vote_account, code, id",
             &[],
         )
-        .await?;
-    let rows = rows
+        .await?
         .into_iter()
         .map(|row| {
             Ok(BlacklistRow {
                 vote_account: row.get("vote_account"),
                 source: row.get("source"),
-                rule: row.get("rule"),
                 code: row.get("code"),
-                reason: row.get("reason"),
-                added_epoch: row
-                    .get::<_, Option<Decimal>>("added_epoch")
-                    .map(u64::try_from)
-                    .transpose()?,
-                evidence: row
-                    .get::<_, Option<String>>("evidence")
-                    .map(|text| serde_json::from_str(&text))
-                    .transpose()?,
+                auction_epoch: optional_epoch(row.get("auction_epoch"))?,
             })
         })
         .collect::<anyhow::Result<_>>()?;
-    Ok((evaluated_epoch, rows))
+    let exempt = client
+        .query(
+            "SELECT vote_account, rule, until_epoch FROM blacklist_exempt ORDER BY vote_account, rule",
+            &[],
+        )
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(BlacklistExempt {
+                vote_account: row.get("vote_account"),
+                rule: row.get("rule"),
+                until_epoch: optional_epoch(row.get("until_epoch"))?,
+            })
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(Some(Blacklist { rows, exempt }))
 }
 
+/// Epochs from the last imported SAM auction to the current one; 0 before the first import, so
+/// nothing pages until the auction decides the list.
+pub async fn import_lag_epochs(client: &impl GenericClient) -> anyhow::Result<u64> {
+    let Some(imported) = max_epoch_of(client, "auction_epoch", "blacklist_auction_imports").await?
+    else {
+        return Ok(0);
+    };
+    let current = max_epoch(client, "cluster_info").await?.unwrap_or(imported);
+    Ok(current.saturating_sub(imported))
+}
+
+async fn max_epoch_of(
+    client: &impl GenericClient,
+    column: &str,
+    table: &str,
+) -> anyhow::Result<Option<u64>> {
+    optional_epoch(
+        client
+            .query_one(&format!("SELECT MAX({column}) AS epoch FROM {table}"), &[])
+            .await?
+            .get("epoch"),
+    )
+}
+
+/// Accounts with an active row. Fails before the legacy import rather than return a partial set.
 pub async fn load_active_accounts(client: &impl GenericClient) -> anyhow::Result<HashSet<String>> {
+    anyhow::ensure!(
+        bootstrapped(client).await?,
+        "The blacklist is not bootstrapped yet: run the legacy import first"
+    );
     Ok(client
         .query(
             "SELECT DISTINCT vote_account FROM blacklist WHERE removed_epoch IS NULL",
@@ -76,27 +135,4 @@ pub async fn load_active_accounts(client: &impl GenericClient) -> anyhow::Result
         .into_iter()
         .map(|row| row.get("vote_account"))
         .collect())
-}
-
-/// Closed epochs the rules have not reached, and epochs they skipped for missing inputs. The lag
-/// is 0 while the rules are off; it is normally 1, the running epoch itself.
-pub async fn evaluation_status(
-    client: &impl GenericClient,
-    start_epoch: Option<u64>,
-) -> anyhow::Result<(u64, u64)> {
-    let skipped: i64 = client
-        .query_one(
-            "SELECT COUNT(*) AS skipped FROM blacklist_evaluations WHERE skipped",
-            &[],
-        )
-        .await?
-        .get("skipped");
-    let Some(start_epoch) = start_epoch else {
-        return Ok((0, skipped.try_into()?));
-    };
-    let current = max_epoch(client, "cluster_info").await?.unwrap_or(0);
-    let reached = max_epoch(client, "blacklist_evaluations")
-        .await?
-        .unwrap_or(start_epoch.saturating_sub(1));
-    Ok((current.saturating_sub(reached), skipped.try_into()?))
 }

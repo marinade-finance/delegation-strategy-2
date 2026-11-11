@@ -52,7 +52,7 @@ async fn every_csv_row_is_imported_as_legacy() {
 
     let rows = client
         .query(
-            "SELECT source, rule, reason, added_epoch IS NULL AS no_epoch FROM blacklist",
+            "SELECT source, auction_epoch IS NULL AS no_auction, reason, added_epoch IS NULL AS no_epoch FROM blacklist",
             &[],
         )
         .await
@@ -60,7 +60,7 @@ async fn every_csv_row_is_imported_as_legacy() {
     assert_eq!(rows.len(), 3);
     for row in rows {
         assert_eq!(row.get::<_, String>("source"), "legacy");
-        assert_eq!(row.get::<_, Option<String>>("rule"), None);
+        assert!(row.get::<_, bool>("no_auction"));
         assert_eq!(
             row.get::<_, String>("reason"),
             "imported from ds2 blacklist.csv @ abc123"

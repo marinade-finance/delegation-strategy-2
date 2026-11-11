@@ -21,7 +21,8 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(admin_score_upload::ResponseAdminScoreUpload),
-        schemas(blacklist::ResponseBlacklist),
+        schemas(store::blacklist::db::Blacklist),
+        schemas(store::blacklist::db::BlacklistExempt),
         schemas(store::blacklist::db::BlacklistRow),
         schemas(validators_quality::ResponseValidatorsQuality),
         schemas(store::validator_quality::ValidatorQualityRecord),

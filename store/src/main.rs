@@ -8,7 +8,7 @@ use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use node_observations::{store_node_observations, StoreNodeObservationsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
-use store::blacklist::evaluate::{evaluate, EvaluateParams};
+use store::blacklist::config_sync::{config_sync, ConfigSyncParams};
 use store::blacklist::import::{import_legacy, ImportParams};
 use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::releases::{store_releases, StoreReleasesParams};
@@ -64,7 +64,7 @@ enum StoreCommand {
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
     BlacklistImport(ImportParams),
-    BlacklistEvaluate(EvaluateParams),
+    BlacklistConfigSync(ConfigSyncParams),
     Migrate,
 }
 
@@ -164,8 +164,8 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::BlacklistImport(import_params) => {
             import_legacy(import_params, &mut psql_client).await
         }
-        StoreCommand::BlacklistEvaluate(evaluate_params) => {
-            evaluate(evaluate_params, &mut psql_client).await
+        StoreCommand::BlacklistConfigSync(sync_params) => {
+            config_sync(sync_params, &mut psql_client).await
         }
         StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }

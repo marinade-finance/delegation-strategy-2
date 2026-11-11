@@ -56,13 +56,6 @@ pub struct Params {
     #[arg(long = "glossary-path")]
     glossary_path: String,
 
-    #[arg(
-        long = "blacklist-config",
-        env = "BLACKLIST_CONFIG",
-        help = "The blacklist YAML; parsed at startup so a bad file never replaces a serving pod."
-    )]
-    blacklist_config: String,
-
     #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
@@ -76,10 +69,6 @@ async fn main() -> anyhow::Result<()> {
     info!("Launching API");
 
     let params = Params::parse();
-    let blacklist_start_epoch =
-        store::blacklist::config::BlacklistConfig::load(&params.blacklist_config)?
-            .rules
-            .and_then(|rules| rules.start_epoch);
 
     let mut builder = SslConnector::builder(SslMethod::tls())?;
     builder.set_ca_file(&params.postgres_ssl_root_cert)?;
@@ -99,7 +88,6 @@ async fn main() -> anyhow::Result<()> {
         params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
-        blacklist_start_epoch,
     )?));
     let ready = cache::ReadyFlag::default();
     cache::spawn_cache_warmer(context.clone(), ready.clone());
