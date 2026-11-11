@@ -475,6 +475,11 @@ mod tests {
                     child.city_count = 1;
                     child.version_spread = vec![share("2.2.14")];
                 }
+                "Agave" => {
+                    child.country_count = 2;
+                    child.city_count = 4;
+                    child.version_spread = vec![share("2.1.0")];
+                }
                 _ => {}
             }
         }
@@ -509,7 +514,7 @@ mod tests {
         );
         assert_eq!(breakdowns("Agave + Jito"), (3, 5, named(&["2.3.9"])));
         assert_eq!(breakdowns("Agave + Rakurai"), (1, 1, named(&["2.2.14"])));
-        assert_eq!(breakdowns("Agave"), (0, 0, vec![]));
+        assert_eq!(breakdowns("Agave"), (2, 4, named(&["2.1.0"])));
     }
 
     #[test]
