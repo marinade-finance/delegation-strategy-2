@@ -1,3 +1,4 @@
+pub mod blacklist_auctions;
 pub mod common;
 pub mod leader_schedule;
 pub mod marinade_service;
