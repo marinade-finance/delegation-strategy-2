@@ -152,16 +152,14 @@ pub fn collect_releases_info(
                 fetchers.push(Box::new(feature_gates::FeatureGatesFetcher::new(
                     params.feature_gate_schedule_url.clone(),
                     params.version_floor_url.clone(),
-                    common_params.rpc_url.clone(),
+                    common_params.rpc_url()?,
                     common_params.commitment.clone(),
                 )?))
             }
             ReleaseSource::Sfdp => {
                 // Only this fetcher needs the cluster's current epoch, so the RPC call stays inside.
-                let client = solana_client(
-                    common_params.rpc_url.clone(),
-                    common_params.commitment.clone(),
-                );
+                let client =
+                    solana_client(common_params.rpc_url()?, common_params.commitment.clone());
                 let current_epoch = client.get_epoch_info()?.epoch;
                 let from_epoch = params
                     .from_epoch

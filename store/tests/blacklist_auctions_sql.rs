@@ -2,7 +2,9 @@ mod common;
 
 use clap::Parser;
 use collect::blacklist_auctions::{AuctionListings, Listing};
-use common::{migrated_client, skip_without_database, write_yaml};
+use common::{
+    current_epoch, migrated_client, owned_rows as rows, skip_without_database, write_yaml,
+};
 use rust_decimal::Decimal;
 use store::blacklist::auctions::{import_run, store_auctions, StoreAuctionsParams};
 use tokio_postgres::Client;
@@ -39,13 +41,6 @@ async fn active(client: &Client) -> Vec<(String, String, String)> {
         .collect()
 }
 
-fn rows(expected: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
-    expected
-        .iter()
-        .map(|(a, c, r)| (a.to_string(), c.to_string(), r.to_string()))
-        .collect()
-}
-
 async fn imports(client: &Client) -> Vec<(Decimal, String, i32)> {
     client
         .query(
@@ -64,14 +59,7 @@ async fn setup(schema: &str) -> Option<Client> {
         return None;
     }
     let client = migrated_client(schema).await.unwrap();
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, 1086, 0, now())",
-            &[],
-        )
-        .await
-        .unwrap();
+    current_epoch(&client, 1086).await;
     Some(client)
 }
 

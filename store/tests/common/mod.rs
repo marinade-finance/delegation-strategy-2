@@ -66,6 +66,51 @@ pub async fn stored_expected_take_rate(
         .get(0)
 }
 
+pub async fn current_epoch(client: &Client, epoch: u64) {
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (0, $1, 0, now())",
+            &[&Decimal::from(epoch)],
+        )
+        .await
+        .unwrap();
+}
+
+/// A blacklist row; an `auction` row comes from auction 1085, run `1085.40290`.
+pub async fn insert_blacklist_row(
+    client: &Client,
+    vote_account: &str,
+    source: &str,
+    code: &str,
+    removed_epoch: Option<u64>,
+) {
+    let auction = (source == "auction").then(|| Decimal::from(1085));
+    client
+        .execute(
+            "INSERT INTO blacklist (vote_account, source, code, auction_epoch, run_id, removed_epoch,
+                created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, now(), now())",
+            &[
+                &vote_account,
+                &source,
+                &code,
+                &auction,
+                &auction.map(|_| "1085.40290"),
+                &removed_epoch.map(Decimal::from),
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+pub fn owned_rows(expected: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+    expected
+        .iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect()
+}
+
 pub fn write_yaml(name: &str, contents: &str) -> String {
     let path = std::env::temp_dir().join(format!("ds-test-{name}.yaml"));
     std::fs::write(&path, contents).unwrap();

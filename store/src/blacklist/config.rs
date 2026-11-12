@@ -61,7 +61,8 @@ pub struct ExemptEntry {
     pub vote_account: String,
     #[serde(default = "RuleId::all")]
     pub rule: RuleId,
-    /// Evidence up to this epoch is ignored. Absent → exempt for as long as the entry exists.
+    /// Listings whose code names this epoch or an earlier one are exempt, e.g. 1084 for
+    /// `SLOW_SLOTS_1084`. Absent → exempt for as long as the entry exists.
     pub until_epoch: Option<u64>,
     pub reason: String,
 }
@@ -149,7 +150,7 @@ manual:
   - { vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, code: MISSING_BLS, reason: 'SIMD-0357, epoch 1006' }
 exempt:
   - { vote_account: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB, rule: all, until_epoch: null, reason: 'appeal false positive' }
-  - { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, until_epoch: 1083, reason: 'fixed client' }
+  - { vote_account: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, rule: slow_slots, until_epoch: 1084, reason: 'fixed client' }
   - { vote_account: LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL, rule: legacy, reason: 'imported row no longer valid' }
 ";
 

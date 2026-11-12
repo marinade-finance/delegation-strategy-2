@@ -1,16 +1,18 @@
 mod common;
 
 use clap::Parser;
-use common::{migrated_client, skip_without_database};
+use common::{
+    current_epoch, insert_blacklist_row, migrated_client, owned_rows as rows,
+    skip_without_database, write_yaml,
+};
 use rust_decimal::Decimal;
 use store::blacklist::config_sync::{config_sync, ConfigSyncParams};
 use tokio_postgres::Client;
 
 async fn run(client: &mut Client, name: &str, config: &str) -> anyhow::Result<()> {
-    let path = std::env::temp_dir().join(format!("ds-test-{name}-blacklist.yaml"));
-    std::fs::write(&path, config).unwrap();
+    let path = write_yaml(&format!("{name}-blacklist"), config);
     let result = config_sync(
-        ConfigSyncParams::parse_from(["store", "--config", path.to_str().unwrap()]),
+        ConfigSyncParams::parse_from(["store", "--config", &path]),
         client,
     )
     .await;
@@ -19,21 +21,7 @@ async fn run(client: &mut Client, name: &str, config: &str) -> anyhow::Result<()
 }
 
 async fn insert_row(client: &Client, vote_account: &str, source: &str, code: &str) {
-    let auction = (source == "auction").then(|| Decimal::from(1085));
-    client
-        .execute(
-            "INSERT INTO blacklist (vote_account, source, code, auction_epoch, run_id, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, now(), now())",
-            &[
-                &vote_account,
-                &source,
-                &code,
-                &auction,
-                &auction.map(|_| "1085.40290"),
-            ],
-        )
-        .await
-        .unwrap();
+    insert_blacklist_row(client, vote_account, source, code, None).await;
 }
 
 /// `(vote_account, source, code)` of the active rows, ordered.
@@ -51,26 +39,12 @@ async fn active(client: &Client) -> Vec<(String, String, String)> {
         .collect()
 }
 
-fn rows(expected: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
-    expected
-        .iter()
-        .map(|(a, s, c)| (a.to_string(), s.to_string(), c.to_string()))
-        .collect()
-}
-
 async fn setup(schema: &str) -> Option<Client> {
     if skip_without_database(schema) {
         return None;
     }
     let client = migrated_client(schema).await.unwrap();
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, 1085, 0, now())",
-            &[],
-        )
-        .await
-        .unwrap();
+    current_epoch(&client, 1085).await;
     Some(client)
 }
 
