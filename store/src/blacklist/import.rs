@@ -1,3 +1,4 @@
+use super::db::bootstrapped;
 use crate::dto::BlacklistRecord;
 use clap::Parser;
 use csv::{required, Column};
@@ -33,16 +34,9 @@ pub async fn import_legacy(params: ImportParams, psql_client: &mut Client) -> an
     );
 
     let tx = psql_client.transaction().await?;
-    let existing: i64 = tx
-        .query_one(
-            "SELECT COUNT(*) AS count FROM blacklist WHERE source = 'legacy'",
-            &[],
-        )
-        .await?
-        .get("count");
     anyhow::ensure!(
-        existing == 0,
-        "{existing} legacy blacklist rows exist already, refusing to import again"
+        !bootstrapped(&tx).await?,
+        "legacy blacklist rows exist already, refusing to import again"
     );
 
     let vote_accounts: Vec<&str> = records.iter().map(|r| r.vote_account.as_str()).collect();

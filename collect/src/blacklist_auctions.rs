@@ -1,5 +1,5 @@
 use crate::common::is_base58_pubkey;
-use crate::releases::github::GITHUB_API;
+use crate::releases::github::{github_client, GITHUB_API};
 use anyhow::{bail, ensure, Context};
 use clap::Parser;
 use csv::{required, Column};
@@ -69,6 +69,15 @@ pub struct BlacklistAuctionsSnapshot {
     pub version: u16,
     pub created_at: String,
     pub runs: Vec<AuctionListings>,
+    /// Runs whose file could not be read or parsed; the store fails after importing the rest.
+    #[serde(default)]
+    pub refused: Vec<String>,
+}
+
+/// The epoch and slot of a run directory name, `<epoch>.<slot>`.
+pub fn run_epoch_slot(name: &str) -> Option<(u64, u64)> {
+    let (epoch, slot) = name.split_once('.')?;
+    Some((epoch.parse().ok()?, slot.parse().ok()?))
 }
 
 /// The newest run (highest slot) of every auction epoch among `auctions/` directory names. A
@@ -76,10 +85,7 @@ pub struct BlacklistAuctionsSnapshot {
 pub fn newest_runs<'a>(names: impl IntoIterator<Item = &'a str>) -> BTreeMap<u64, String> {
     let mut newest: BTreeMap<u64, (u64, String)> = BTreeMap::new();
     for name in names {
-        let Some((epoch, slot)) = name
-            .split_once('.')
-            .and_then(|(e, s)| Some((e.parse::<u64>().ok()?, s.parse::<u64>().ok()?)))
-        else {
+        let Some((epoch, slot)) = run_epoch_slot(name) else {
             continue;
         };
         if newest.get(&epoch).is_none_or(|(known, _)| slot > *known) {
@@ -215,33 +221,43 @@ pub fn collect_blacklist_auctions(params: BlacklistAuctionsParams) -> anyhow::Re
     info!("Collecting the blacklist listings of the applied SAM auctions");
     let created_at = chrono::Utc::now();
     let github = Github {
-        client: reqwest::blocking::Client::builder()
-            // GitHub answers 403 to a request without one.
-            .user_agent("marinade-delegation-strategy")
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
-            .build()?,
+        client: github_client(Duration::from_secs(HTTP_TIMEOUT_S))?,
         params,
     };
 
     let names = github.run_names()?;
     let newest = newest_runs(names.iter().map(String::as_str));
     let mut runs = Vec::new();
+    let mut refused = Vec::new();
     for (auction_epoch, run_id) in
         runs_to_read(&newest, github.params.from_epoch, github.params.epochs_back)
     {
-        let Some(text) = github.added_csv(&run_id)? else {
-            error!(
-                "Auction run {run_id} has no {ADDED_FILE}, leaving epoch {auction_epoch} as it is"
-            );
-            continue;
+        let rows = match github.added_csv(&run_id) {
+            Ok(None) => {
+                error!(
+                    "Auction run {run_id} has no {ADDED_FILE}, leaving epoch {auction_epoch} as it is"
+                );
+                continue;
+            }
+            Ok(Some(text)) => parse_added_csv(&text, &run_id),
+            Err(err) => Err(err),
         };
-        let rows = parse_added_csv(&text, &run_id)?;
-        info!("Auction run {run_id}: {} listings", rows.len());
-        runs.push(AuctionListings {
-            auction_epoch,
-            run_id,
-            rows,
-        });
+        match rows {
+            Ok(rows) => {
+                info!("Auction run {run_id}: {} listings", rows.len());
+                runs.push(AuctionListings {
+                    auction_epoch,
+                    run_id,
+                    rows,
+                });
+            }
+            Err(err) => {
+                error!(
+                    "Auction run {run_id} refused, leaving epoch {auction_epoch} as it is: {err:#}"
+                );
+                refused.push(run_id);
+            }
+        }
     }
 
     serde_yaml::to_writer(
@@ -250,6 +266,7 @@ pub fn collect_blacklist_auctions(params: BlacklistAuctionsParams) -> anyhow::Re
             version: DATA_VERSION,
             created_at: created_at.to_string(),
             runs,
+            refused,
         },
     )?;
     Ok(())

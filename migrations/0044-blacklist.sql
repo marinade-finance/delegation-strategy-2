@@ -25,6 +25,7 @@ CREATE UNIQUE INDEX blacklist_active_auction ON blacklist(vote_account, code)
 CREATE TABLE blacklist_exempt (
     vote_account TEXT NOT NULL,
     rule TEXT NOT NULL,
+    code_prefix TEXT,
     until_epoch NUMERIC,
     PRIMARY KEY (vote_account, rule)
 );

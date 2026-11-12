@@ -30,12 +30,7 @@ pub struct Blacklist {
 
 /// `MAX(epoch)` of a table; `None` while it is empty.
 pub async fn max_epoch(client: &impl GenericClient, table: &str) -> anyhow::Result<Option<u64>> {
-    Ok(client
-        .query_one(&format!("SELECT MAX(epoch) AS epoch FROM {table}"), &[])
-        .await?
-        .get::<_, Option<Decimal>>("epoch")
-        .map(u64::try_from)
-        .transpose()?)
+    max_epoch_of(client, "epoch", table).await
 }
 
 /// Whether the legacy list was imported. Before that the table holds only part of the list, and
