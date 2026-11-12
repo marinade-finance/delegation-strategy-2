@@ -395,14 +395,19 @@ async fn load_validator_sandwiches(
                 sandwich_rate_30d: row.get("sandwich_rate_30d"),
                 sandwich_rate_60d: row.get("sandwich_rate_60d"),
                 cluster_median_rate: 0.0,
+                cluster_pooled_rate: 0.0,
             },
         ));
     }
 
-    let medians = crate::incidents::cluster_sandwich_medians(loaded.iter().map(|(_, epoch)| epoch));
+    let populations =
+        crate::incidents::cluster_sandwich_populations(loaded.iter().map(|(_, epoch)| epoch));
     let mut sandwiches: HashMap<String, Vec<EpochSandwiches>> = Default::default();
     for (vote_account, mut epoch) in loaded {
-        epoch.cluster_median_rate = medians.get(&epoch.epoch).copied().unwrap_or(0.0);
+        if let Some(population) = populations.get(&epoch.epoch) {
+            epoch.cluster_median_rate = population.median_rate;
+            epoch.cluster_pooled_rate = population.pooled_rate;
+        }
         sandwiches.entry(vote_account).or_default().push(epoch);
     }
 

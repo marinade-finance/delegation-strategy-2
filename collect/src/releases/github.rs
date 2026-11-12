@@ -34,16 +34,20 @@ pub struct GithubFetcher {
     client: reqwest::blocking::Client,
 }
 
+/// A client GitHub accepts: it answers 403 to a request without a user agent.
+pub fn github_client(timeout: Duration) -> reqwest::Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent("marinade-delegation-strategy")
+        .timeout(timeout)
+        .build()
+}
+
 impl GithubFetcher {
     pub fn new(api_url: String, token: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
             api_url,
             token,
-            client: reqwest::blocking::Client::builder()
-                // GitHub answers 403 to a request without one.
-                .user_agent("marinade-delegation-strategy")
-                .timeout(Duration::from_secs(super::HTTP_TIMEOUT_S))
-                .build()?,
+            client: github_client(Duration::from_secs(super::HTTP_TIMEOUT_S))?,
         })
     }
 

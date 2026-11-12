@@ -1,0 +1,1425 @@
+{
+  "cases": [
+    {
+      "name": "a chance count does not hit",
+      "floor_pct": 4,
+      "rows": [
+        {
+          "vote_account": "n00",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n01",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n02",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n03",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n04",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n05",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n06",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n07",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n08",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n09",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n10",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n11",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n12",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n13",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n14",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n15",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n16",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n17",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n18",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n19",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n20",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n21",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n22",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n23",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n24",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n25",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n26",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n27",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n28",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n29",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n30",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n31",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n32",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n33",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n34",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n35",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n36",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n37",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n38",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n39",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "thin",
+          "blocks_produced": 8,
+          "blocks_with_sandwiches": 2,
+          "sandwich_rate_30d": 25
+        }
+      ],
+      "expected": {
+        "median": 0.8,
+        "pooled": 0.7804687812487501,
+        "hits": []
+      }
+    },
+    {
+      "name": "a rate just under the floor does not hit",
+      "floor_pct": 4,
+      "rows": [
+        {
+          "vote_account": "n00",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n01",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n02",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n03",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n04",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n05",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n06",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n07",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n08",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n09",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n10",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n11",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n12",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n13",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n14",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n15",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n16",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n17",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n18",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n19",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n20",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n21",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n22",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n23",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n24",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n25",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n26",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n27",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n28",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n29",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n30",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n31",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n32",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n33",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n34",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n35",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n36",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n37",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n38",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n39",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "under",
+          "blocks_produced": 10000,
+          "blocks_with_sandwiches": 390,
+          "sandwich_rate_30d": 3.9
+        }
+      ],
+      "expected": {
+        "median": 0.8,
+        "pooled": 0.9280952380952381,
+        "hits": []
+      }
+    },
+    {
+      "name": "significant rates over the floor hit",
+      "floor_pct": 4,
+      "rows": [
+        {
+          "vote_account": "n00",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n01",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n02",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n03",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n04",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n05",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n06",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n07",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n08",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n09",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n10",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n11",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n12",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n13",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n14",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n15",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n16",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n17",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n18",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n19",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n20",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n21",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n22",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n23",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n24",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n25",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n26",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n27",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n28",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n29",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n30",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n31",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n32",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n33",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n34",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n35",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n36",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n37",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n38",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n39",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "dhoz",
+          "blocks_produced": 104,
+          "blocks_with_sandwiches": 7,
+          "sandwich_rate_30d": 6.7
+        },
+        {
+          "vote_account": "blackmont",
+          "blocks_produced": 196,
+          "blocks_with_sandwiches": 26,
+          "sandwich_rate_30d": 13.3
+        }
+      ],
+      "expected": {
+        "median": 0.8,
+        "pooled": 0.7948077883175237,
+        "hits": [
+          {
+            "vote_account": "dhoz",
+            "p_value": 0.000021711899702642492
+          },
+          {
+            "vote_account": "blackmont",
+            "p_value": 1.2010632244217706e-23
+          }
+        ]
+      }
+    },
+    {
+      "name": "a rate exactly at the bar is judged",
+      "floor_pct": 4,
+      "rows": [
+        {
+          "vote_account": "n00",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n01",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n02",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n03",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n04",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n05",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n06",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n07",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n08",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n09",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n10",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n11",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n12",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n13",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n14",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n15",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n16",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n17",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n18",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n19",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n20",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n21",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n22",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n23",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n24",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n25",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n26",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n27",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n28",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n29",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n30",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n31",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n32",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n33",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n34",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n35",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n36",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n37",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n38",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n39",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "edge",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 200,
+          "sandwich_rate_30d": 4
+        }
+      ],
+      "expected": {
+        "median": 0.8,
+        "pooled": 0.8580487804878049,
+        "hits": [
+          {
+            "vote_account": "edge",
+            "p_value": 9.633310922170956e-69
+          }
+        ]
+      }
+    },
+    {
+      "name": "thin windows stay out of the median",
+      "floor_pct": 0,
+      "rows": [
+        {
+          "vote_account": "thick1",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "thick2",
+          "blocks_produced": 6000,
+          "blocks_with_sandwiches": 60,
+          "sandwich_rate_30d": 1
+        },
+        {
+          "vote_account": "thin1",
+          "blocks_produced": 50,
+          "blocks_with_sandwiches": 25,
+          "sandwich_rate_30d": 50
+        },
+        {
+          "vote_account": "thin2",
+          "blocks_produced": 80,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 50
+        },
+        {
+          "vote_account": "thin3",
+          "blocks_produced": 999,
+          "blocks_with_sandwiches": 500,
+          "sandwich_rate_30d": 50.1
+        }
+      ],
+      "expected": {
+        "median": 0.9,
+        "pooled": 5.482727347679116,
+        "hits": [
+          {
+            "vote_account": "thin1",
+            "p_value": 9.756443504916587e-19
+          },
+          {
+            "vote_account": "thin2",
+            "p_value": 4.3348787694359187e-29
+          },
+          {
+            "vote_account": "thin3",
+            "p_value": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "an even count takes the mean of the middle two",
+      "floor_pct": 0,
+      "rows": [
+        {
+          "vote_account": "a",
+          "blocks_produced": 2000,
+          "blocks_with_sandwiches": 20,
+          "sandwich_rate_30d": 1
+        },
+        {
+          "vote_account": "b",
+          "blocks_produced": 2000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 2
+        },
+        {
+          "vote_account": "c",
+          "blocks_produced": 2000,
+          "blocks_with_sandwiches": 400,
+          "sandwich_rate_30d": 20
+        },
+        {
+          "vote_account": "d",
+          "blocks_produced": 2000,
+          "blocks_with_sandwiches": 60,
+          "sandwich_rate_30d": 3
+        }
+      ],
+      "expected": {
+        "median": 2.5,
+        "pooled": 6.5,
+        "hits": [
+          {
+            "vote_account": "c",
+            "p_value": 3.9543539553182984e-89
+          }
+        ]
+      }
+    },
+    {
+      "name": "the incidents floor of zero uses the cluster bar only",
+      "floor_pct": 0,
+      "rows": [
+        {
+          "vote_account": "n00",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n01",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n02",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n03",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n04",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n05",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n06",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n07",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n08",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n09",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n10",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n11",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n12",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n13",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n14",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n15",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n16",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n17",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n18",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n19",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n20",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n21",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n22",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n23",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n24",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n25",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n26",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n27",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n28",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n29",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n30",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n31",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n32",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n33",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n34",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n35",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n36",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n37",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 39,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n38",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 40,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "n39",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 38,
+          "sandwich_rate_30d": 0.8
+        },
+        {
+          "vote_account": "above",
+          "blocks_produced": 5000,
+          "blocks_with_sandwiches": 100,
+          "sandwich_rate_30d": 2
+        }
+      ],
+      "expected": {
+        "median": 0.8,
+        "pooled": 0.8092682926829269,
+        "hits": [
+          {
+            "vote_account": "above",
+            "p_value": 1.6935917616205846e-15
+          }
+        ]
+      }
+    },
+    {
+      "name": "no block produced has no population",
+      "floor_pct": 4,
+      "rows": [
+        {
+          "vote_account": "zero",
+          "blocks_produced": 0,
+          "blocks_with_sandwiches": 0,
+          "sandwich_rate_30d": 50
+        }
+      ],
+      "expected": {
+        "median": null,
+        "pooled": null,
+        "hits": []
+      }
+    }
+  ]
+}

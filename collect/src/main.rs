@@ -1,4 +1,5 @@
 use clap::Parser;
+use collect::blacklist_auctions::{collect_blacklist_auctions, BlacklistAuctionsParams};
 use collect::common::*;
 use collect::releases::{collect_releases_info, ReleasesParams};
 use collect::take_rates::{collect_take_rates_info, TakeRatesParams};
@@ -10,6 +11,7 @@ use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceParams,
 };
 use collect::validators_sandwiches::{collect_validator_sandwiches_info, SandwichesParams};
+use collect::validators_slot_times::{collect_validator_slot_times_info, SlotTimesParams};
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
@@ -32,8 +34,10 @@ enum CollectCommand {
     ValidatorsBlockRewards(BlockRewardsParams),
     ValidatorsEvents(EventsParams),
     ValidatorsSandwiches(SandwichesParams),
+    ValidatorsSlotTimes(SlotTimesParams),
     TakeRates(TakeRatesParams),
     Releases(ReleasesParams),
+    BlacklistAuctions(BlacklistAuctionsParams),
 }
 
 impl Display for CollectCommand {
@@ -46,8 +50,10 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsBlockRewards(_) => write!(f, "validators-block-rewards"),
             CollectCommand::ValidatorsEvents(_) => write!(f, "validators-events"),
             CollectCommand::ValidatorsSandwiches(_) => write!(f, "validators-sandwiches"),
+            CollectCommand::ValidatorsSlotTimes(_) => write!(f, "validators-slot-times"),
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
             CollectCommand::Releases(_) => write!(f, "releases"),
+            CollectCommand::BlacklistAuctions(_) => write!(f, "blacklist-auctions"),
         }
     }
 }
@@ -84,11 +90,17 @@ fn main() -> anyhow::Result<()> {
         CollectCommand::ValidatorsSandwiches(sandwiches_params) => {
             collect_validator_sandwiches_info(params.common, sandwiches_params)
         }
+        CollectCommand::ValidatorsSlotTimes(slot_times_params) => {
+            collect_validator_slot_times_info(params.common, slot_times_params)
+        }
         CollectCommand::TakeRates(take_rates_params) => {
             collect_take_rates_info(params.common, take_rates_params)
         }
         CollectCommand::Releases(releases_params) => {
             collect_releases_info(params.common, releases_params)
+        }
+        CollectCommand::BlacklistAuctions(auctions_params) => {
+            collect_blacklist_auctions(auctions_params)
         }
     };
 

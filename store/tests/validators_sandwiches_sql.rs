@@ -22,6 +22,7 @@ fn sandwich(
         blocks_with_sandwiches: 300,
         sandwich_rate_30d,
         sandwich_rate_60d,
+        wide_sandwich_rate_30d: None,
     }
 }
 
@@ -107,6 +108,59 @@ async fn a_missing_60d_rate_is_stored_as_null() {
     .await;
 
     assert_eq!(read(&client, "voteA").await.1, None);
+}
+
+async fn read_wide(client: &Client, vote_account: &str) -> Option<f64> {
+    client
+        .query_one(
+            "SELECT wide_sandwich_rate_30d FROM validators_sandwiches WHERE vote_account = $1",
+            &[&vote_account],
+        )
+        .await
+        .unwrap()
+        .get("wide_sandwich_rate_30d")
+}
+
+#[tokio::test]
+async fn a_wide_rate_lands_in_the_table() {
+    let schema = "ds_test_store_sandwiches_wide";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store(
+        &mut client,
+        schema,
+        "2026-09-09T00:00:00Z",
+        vec![ValidatorSandwich {
+            wide_sandwich_rate_30d: Some(4.3),
+            ..sandwich("voteA", 44.4, Some(31.1))
+        }],
+    )
+    .await;
+
+    assert_eq!(read_wide(&client, "voteA").await, Some(4.3));
+}
+
+// Epochs published before the report carried the wide rate have no value for it.
+#[tokio::test]
+async fn a_missing_wide_rate_is_stored_as_null() {
+    let schema = "ds_test_store_sandwiches_wide_null";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+
+    store(
+        &mut client,
+        schema,
+        "2026-09-09T00:00:00Z",
+        vec![sandwich("voteA", 44.4, Some(31.1))],
+    )
+    .await;
+
+    assert_eq!(read_wide(&client, "voteA").await, None);
 }
 
 // The collector re-reads a window every run, so the same epoch arrives again and again.
