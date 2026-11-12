@@ -1,37 +1,10 @@
 mod common;
 
-use common::{migrated_client, skip_without_database};
-use rust_decimal::Decimal;
+use common::{current_epoch, insert_blacklist_row as row, migrated_client, skip_without_database};
 use store::blacklist::db::{
     import_lag_epochs, load_active_accounts, load_blacklist, BlacklistExempt, BlacklistRow,
 };
 use tokio_postgres::Client;
-
-async fn row(
-    client: &Client,
-    vote_account: &str,
-    source: &str,
-    code: &str,
-    removed_epoch: Option<u64>,
-) {
-    let auction = (source == "auction").then(|| Decimal::from(1085));
-    client
-        .execute(
-            "INSERT INTO blacklist (vote_account, source, code, auction_epoch, run_id, removed_epoch,
-                created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, now(), now())",
-            &[
-                &vote_account,
-                &source,
-                &code,
-                &auction,
-                &auction.map(|_| "1085.40290"),
-                &removed_epoch.map(Decimal::from),
-            ],
-        )
-        .await
-        .unwrap();
-}
 
 async fn client(schema: &str) -> Option<Client> {
     if skip_without_database(schema) {
@@ -152,17 +125,6 @@ async fn an_auction_row_needs_its_epoch_and_run() {
         Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION),
         "{error:?}"
     );
-}
-
-async fn current_epoch(client: &Client, epoch: u64) {
-    client
-        .execute(
-            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
-             VALUES (0, $1, 0, now())",
-            &[&Decimal::from(epoch)],
-        )
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

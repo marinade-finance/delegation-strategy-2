@@ -18,7 +18,8 @@ pub struct BlacklistExempt {
     pub vote_account: String,
     /// `all`, `sandwich`, `slow_slots` or `legacy`.
     pub rule: String,
-    /// Listings on evidence up to this epoch are exempt; absent for as long as the entry exists.
+    /// Listings whose code names this epoch or an earlier one are exempt; absent for as long as
+    /// the entry exists.
     pub until_epoch: Option<u64>,
 }
 

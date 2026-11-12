@@ -182,7 +182,7 @@ pub fn collect_validator_sandwiches_info(
     info!("Collecting validator sandwich rates snapshot");
     let timeout = Duration::from_secs(sandwiches_params.rpc_timeout);
     let rpc_client =
-        solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
+        solana_client_with_timeout(common_params.rpc_url()?, timeout, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = rpc_client.get_epoch_info()?;
