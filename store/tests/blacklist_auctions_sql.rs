@@ -1,9 +1,10 @@
 mod common;
 
+use clap::Parser;
 use collect::blacklist_auctions::{AuctionListings, Listing};
-use common::{migrated_client, skip_without_database};
+use common::{migrated_client, skip_without_database, write_yaml};
 use rust_decimal::Decimal;
-use store::blacklist::auctions::import_run;
+use store::blacklist::auctions::{import_run, store_auctions, StoreAuctionsParams};
 use tokio_postgres::Client;
 
 const A: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -171,6 +172,111 @@ async fn a_newer_run_of_the_epoch_replaces_its_rows() {
     assert_eq!(
         imports(&client).await,
         vec![(Decimal::from(1085), "1085.900".into(), 1)]
+    );
+}
+
+#[tokio::test]
+async fn an_older_run_never_replaces_a_newer_one() {
+    let schema = "ds_test_blacklist_auctions_older";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+
+    import_run(
+        &mut client,
+        &run(1085, "1085.900", &[(B, "SLOW_SLOTS_1084")]),
+    )
+    .await
+    .unwrap();
+    import_run(
+        &mut client,
+        &run(1085, "1085.100", &[(A, "MALICIOUS_SM_1084")]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        active(&client).await,
+        rows(&[(B, "SLOW_SLOTS_1084", "1085.900")])
+    );
+    assert_eq!(
+        imports(&client).await,
+        vec![(Decimal::from(1085), "1085.900".into(), 1)]
+    );
+}
+
+#[tokio::test]
+async fn an_exempt_account_is_closed_on_import() {
+    let schema = "ds_test_blacklist_auctions_exempt";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    client
+        .execute(
+            "INSERT INTO blacklist_exempt (vote_account, rule, code_prefix, until_epoch)
+             VALUES ($1, 'slow_slots', 'SLOW_SLOTS_', NULL)",
+            &[&A],
+        )
+        .await
+        .unwrap();
+
+    import_run(
+        &mut client,
+        &run(
+            1085,
+            "1085.100",
+            &[
+                (A, "MALICIOUS_SM_1084"),
+                (A, "SLOW_SLOTS_1084"),
+                (B, "SLOW_SLOTS_1084"),
+            ],
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        active(&client).await,
+        rows(&[
+            (A, "MALICIOUS_SM_1084", "1085.100"),
+            (B, "SLOW_SLOTS_1084", "1085.100")
+        ])
+    );
+    let reason: String = client
+        .query_one(
+            "SELECT removed_reason FROM blacklist WHERE vote_account = $1 AND code = 'SLOW_SLOTS_1084'",
+            &[&A],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(reason, "exempt");
+}
+
+#[tokio::test]
+async fn refused_runs_fail_the_store_after_the_rest_is_imported() {
+    let schema = "ds_test_blacklist_auctions_refused";
+    let Some(mut client) = setup(schema).await else {
+        return;
+    };
+    let snapshot = write_yaml(
+        schema,
+        &format!(
+            "version: 1\ncreated_at: now\nruns:\n- auction_epoch: 1085\n  run_id: '1085.100'\n  rows:\n  - vote_account: {A}\n    code: MALICIOUS_SM_1084\nrefused: ['1084.100']\n"
+        ),
+    );
+
+    let err = store_auctions(
+        StoreAuctionsParams::parse_from(["store", "--snapshot-file", &snapshot]),
+        &mut client,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("1084.100"), "{err}");
+    assert_eq!(
+        active(&client).await,
+        rows(&[(A, "MALICIOUS_SM_1084", "1085.100")])
     );
 }
 

@@ -1,7 +1,8 @@
+use super::config_sync::EXEMPT_COVERS;
 use super::db::max_epoch;
 use clap::Parser;
-use collect::blacklist_auctions::{AuctionListings, BlacklistAuctionsSnapshot};
-use log::info;
+use collect::blacklist_auctions::{run_epoch_slot, AuctionListings, BlacklistAuctionsSnapshot};
+use log::{info, warn};
 use rust_decimal::prelude::*;
 use tokio_postgres::Client;
 
@@ -20,23 +21,37 @@ pub async fn store_auctions(
     for run in &snapshot.runs {
         import_run(psql_client, run).await?;
     }
+    anyhow::ensure!(
+        snapshot.refused.is_empty(),
+        "Auction runs refused by the collect, their epochs left as they were: {}",
+        snapshot.refused.join(", ")
+    );
     Ok(())
 }
 
-/// Replaces an auction epoch's listings with those of `run` unless that run is imported already.
-/// One transaction per run: a failure leaves the epoch as it was.
+/// Replaces an auction epoch's listings with those of `run` unless that run or a newer one is
+/// imported already. One transaction per run: a failure leaves the epoch as it was.
 pub async fn import_run(psql_client: &mut Client, run: &AuctionListings) -> anyhow::Result<()> {
     let tx = psql_client.transaction().await?;
     let auction_epoch = Decimal::from(run.auction_epoch);
     let imported: Option<String> = tx
         .query_opt(
-            "SELECT run_id FROM blacklist_auction_imports WHERE auction_epoch = $1",
+            "SELECT run_id FROM blacklist_auction_imports WHERE auction_epoch = $1 FOR UPDATE",
             &[&auction_epoch],
         )
         .await?
         .map(|row| row.get("run_id"));
-    if imported.as_deref() == Some(run.run_id.as_str()) {
-        return Ok(());
+    if let Some(imported) = imported {
+        if imported == run.run_id {
+            return Ok(());
+        }
+        if run_epoch_slot(&imported) > run_epoch_slot(&run.run_id) {
+            warn!(
+                "Auction {} run {} is older than the imported run {imported}, not imported",
+                run.auction_epoch, run.run_id
+            );
+            return Ok(());
+        }
     }
     let current_epoch = max_epoch(&tx, "cluster_info")
         .await?
@@ -63,6 +78,16 @@ pub async fn import_run(psql_client: &mut Client, run: &AuctionListings) -> anyh
             &[&accounts, &codes, &auction_epoch, &run.run_id],
         )
         .await?;
+    let exempted = tx
+        .execute(
+            &format!(
+                "UPDATE blacklist SET removed_epoch = $1, removed_reason = 'exempt', updated_at = now()
+                 FROM blacklist_exempt AS x
+                 WHERE blacklist.removed_epoch IS NULL AND blacklist.run_id = $2 AND {EXEMPT_COVERS}"
+            ),
+            &[&current_epoch, &run.run_id],
+        )
+        .await?;
     tx.execute(
         "INSERT INTO blacklist_auction_imports (auction_epoch, run_id, rows, imported_at)
          VALUES ($1, $2, $3, now())
@@ -73,7 +98,7 @@ pub async fn import_run(psql_client: &mut Client, run: &AuctionListings) -> anyh
     .await?;
     tx.commit().await?;
     info!(
-        "Auction {} run {}: {added} listings imported, {replaced} of an earlier run closed",
+        "Auction {} run {}: {added} listings imported, {exempted} of them exempt, {replaced} of an earlier run closed",
         run.auction_epoch, run.run_id
     );
     Ok(())

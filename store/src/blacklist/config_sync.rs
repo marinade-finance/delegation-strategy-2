@@ -65,63 +65,68 @@ async fn sync_manual(
     Ok(())
 }
 
+/// Whether exemption `x` (vote_account, rule, code_prefix, until_epoch) covers a `blacklist` row:
+/// auction and legacy rows only, never manual ones. An `until_epoch` is held against the epoch an
+/// auction row's code names.
+pub(super) const EXEMPT_COVERS: &str = "blacklist.vote_account = x.vote_account
+    AND ((blacklist.source = 'auction'
+          AND (x.rule = 'all' OR COALESCE(starts_with(blacklist.code, x.code_prefix), false))
+          AND (x.until_epoch IS NULL
+            OR substring(blacklist.code FROM '_([0-9]+)$')::NUMERIC <= x.until_epoch))
+      OR (blacklist.source = 'legacy' AND x.rule IN ('all', 'legacy')))";
+
 /// Replaces the served exemptions with the config's, without their reasons.
 async fn sync_exempt(tx: &Transaction<'_>, exempt: &[ExemptEntry]) -> anyhow::Result<()> {
     let accounts: Vec<&str> = exempt.iter().map(|e| e.vote_account.as_str()).collect();
     let rules: Vec<&str> = exempt.iter().map(|e| e.rule.as_str()).collect();
+    let prefixes: Vec<Option<&str>> = exempt.iter().map(|e| e.rule.code_prefix()).collect();
     let until_epochs: Vec<Option<Decimal>> = exempt
         .iter()
         .map(|e| e.until_epoch.map(Decimal::from))
         .collect();
     tx.execute("DELETE FROM blacklist_exempt", &[]).await?;
     tx.execute(
-        "INSERT INTO blacklist_exempt (vote_account, rule, until_epoch)
-         SELECT * FROM UNNEST($1::TEXT[], $2::TEXT[], $3::NUMERIC[])",
-        &[&accounts, &rules, &until_epochs],
+        "INSERT INTO blacklist_exempt (vote_account, rule, code_prefix, until_epoch)
+         SELECT * FROM UNNEST($1::TEXT[], $2::TEXT[], $3::TEXT[], $4::NUMERIC[])",
+        &[&accounts, &rules, &prefixes, &until_epochs],
     )
     .await?;
     Ok(())
 }
 
-/// Closes the auction and legacy rows an exemption covers. Never touches manual rows. An
-/// `until_epoch` is held against the epoch an auction row's code names.
+/// Closes the rows the exemptions cover.
 async fn apply_exempt(
     tx: &Transaction<'_>,
     exempt: &[ExemptEntry],
     current_epoch: u64,
 ) -> anyhow::Result<()> {
-    let epoch = Decimal::from(current_epoch);
-    for entry in exempt {
-        let until_epoch = entry.until_epoch.map(Decimal::from);
-        let closed = tx
-            .execute(
+    let accounts: Vec<&str> = exempt.iter().map(|e| e.vote_account.as_str()).collect();
+    let rules: Vec<&str> = exempt.iter().map(|e| e.rule.as_str()).collect();
+    let prefixes: Vec<Option<&str>> = exempt.iter().map(|e| e.rule.code_prefix()).collect();
+    let until_epochs: Vec<Option<Decimal>> = exempt
+        .iter()
+        .map(|e| e.until_epoch.map(Decimal::from))
+        .collect();
+    let reasons: Vec<&str> = exempt.iter().map(|e| e.reason.as_str()).collect();
+    let closed = tx
+        .execute(
+            &format!(
                 "UPDATE blacklist
-                 SET removed_epoch = $1, removed_reason = 'exempt: ' || $2::TEXT, updated_at = now()
-                 WHERE removed_epoch IS NULL AND vote_account = $3
-                   AND (
-                     (source = 'auction'
-                       AND ($4::TEXT = 'all' OR COALESCE(starts_with(code, $5::TEXT), false))
-                       AND ($6::NUMERIC IS NULL
-                         OR substring(code FROM '_([0-9]+)$')::NUMERIC <= $6))
-                     OR (source = 'legacy' AND $4::TEXT IN ('all', 'legacy'))
-                   )",
-                &[
-                    &epoch,
-                    &entry.reason,
-                    &entry.vote_account,
-                    &entry.rule.as_str(),
-                    &entry.rule.code_prefix(),
-                    &until_epoch,
-                ],
-            )
-            .await?;
-        if closed > 0 {
-            info!(
-                "Exemption closed {closed} rows of {} ({})",
-                entry.vote_account,
-                entry.rule.as_str()
-            );
-        }
-    }
+                 SET removed_epoch = $1, removed_reason = 'exempt: ' || x.reason, updated_at = now()
+                 FROM UNNEST($2::TEXT[], $3::TEXT[], $4::TEXT[], $5::NUMERIC[], $6::TEXT[])
+                   AS x(vote_account, rule, code_prefix, until_epoch, reason)
+                 WHERE blacklist.removed_epoch IS NULL AND {EXEMPT_COVERS}"
+            ),
+            &[
+                &Decimal::from(current_epoch),
+                &accounts,
+                &rules,
+                &prefixes,
+                &until_epochs,
+                &reasons,
+            ],
+        )
+        .await?;
+    info!("Exemptions closed {closed} rows");
     Ok(())
 }
