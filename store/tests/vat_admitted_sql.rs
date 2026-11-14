@@ -6,6 +6,7 @@ use common::{
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use store::utils::{load_validators, load_vat_minimum_balances, ValidatorOverlays};
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1082;
@@ -78,4 +79,48 @@ async fn close_epoch_leaves_vat_admitted_null_without_debits() {
     for vote_account in [DEBITED, REFUSED, UNSTAKED] {
         assert_eq!(vat_admitted(&client, vote_account, EPOCH).await, None);
     }
+}
+
+#[tokio::test]
+async fn load_validators_serves_vat_admitted_per_epoch() {
+    let schema = "ds_test_vat_admitted_served";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    seed_validators(&mut client, schema).await;
+    close(&mut client, schema, Some(vec![DEBITED.to_string()])).await;
+    let mut open_epoch = validator_snapshot(EPOCH + 1, "identityDebited", DEBITED);
+    open_epoch
+        .validators
+        .append(&mut validator_snapshot(EPOCH + 1, "identityRefused", REFUSED).validators);
+    store_snapshot(&mut client, schema, &open_epoch).await;
+
+    let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
+    let records = load_validators(
+        &client,
+        unreachable_scoring_url,
+        3,
+        3,
+        &ValidatorOverlays::default(),
+        &load_vat_minimum_balances(&client, 3).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    let served = |vote_account: &str| -> Vec<(u64, Option<bool>)> {
+        records[vote_account]
+            .epoch_stats
+            .iter()
+            .map(|stat| (stat.epoch, stat.vat_admitted))
+            .collect()
+    };
+    assert_eq!(
+        served(DEBITED),
+        vec![(EPOCH + 1, None), (EPOCH, Some(true))]
+    );
+    assert_eq!(
+        served(REFUSED),
+        vec![(EPOCH + 1, None), (EPOCH, Some(false)), (EPOCH - 1, None)]
+    );
+    assert_eq!(served(UNSTAKED), vec![(EPOCH, None)]);
 }
