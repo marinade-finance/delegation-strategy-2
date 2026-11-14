@@ -4,7 +4,7 @@ use clap::Parser;
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use solana_clock::Epoch;
@@ -34,6 +34,13 @@ pub struct TakeRatesParams {
         help = "Query take rates from this epoch onwards. Overrides --epochs-back (use for historical backfill)."
     )]
     from_epoch: Option<u64>,
+
+    #[arg(
+        long = "rpc-attempts",
+        help = "How many times to retry the operation.",
+        default_value = "10"
+    )]
+    rpc_attempts: usize,
 }
 
 const DATA_VERSION: u16 = 1;
@@ -209,7 +216,13 @@ pub fn collect_take_rates_info(
         solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
 
     let created_at = chrono::Utc::now();
-    let current_epoch_info = client.get_epoch_info()?;
+    let current_epoch_info = retry_blocking(
+        || client.get_epoch_info().map_err(anyhow::Error::from),
+        QuadraticBackoffStrategy::iter_durations(take_rates_params.rpc_attempts),
+        |err, attempt, backoff| {
+            warn!("Attempt {attempt} to get epoch info failed: {err:?}, retrying in {backoff:?}")
+        },
+    )?;
     info!("Current epoch: {current_epoch_info:?}");
     let from_epoch = take_rates_params.from_epoch.unwrap_or_else(|| {
         current_epoch_info
@@ -219,10 +232,18 @@ pub fn collect_take_rates_info(
     info!("Querying take rates from epoch: {from_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let rewards = runtime.block_on(async {
-        let bq_client = create_bigquery_client().await?;
-        query_validator_rewards(&bq_client, from_epoch).await
-    })?;
+    let rewards = retry_blocking(
+        || {
+            runtime.block_on(async {
+                let bq_client = create_bigquery_client().await?;
+                query_validator_rewards(&bq_client, from_epoch).await
+            })
+        },
+        QuadraticBackoffStrategy::iter_durations(take_rates_params.rpc_attempts),
+        |err, attempt, backoff| {
+            warn!("Attempt {attempt} to query validator rewards failed: {err:?}, retrying in {backoff:?}")
+        },
+    )?;
 
     info!("Retrieved {} validator reward records", rewards.len());
 
