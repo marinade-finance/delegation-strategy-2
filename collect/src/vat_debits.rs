@@ -1,6 +1,7 @@
 use crate::leader_schedule::{
     bigquery_dataset, bigquery_wait_is_over, create_bigquery_client, GOOGLE_BQ_PROJECT_ID,
 };
+use crate::solana_service::is_alpenglow_active;
 use anyhow::{bail, Context};
 use google_cloud_bigquery::client::Client as BqClient;
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -66,13 +67,23 @@ fn missing_debits_verdict(
     Ok(())
 }
 
-/// The VAT debits of a closed epoch. `None` closes the epoch with an unknown verdict: no
-/// BigQuery dataset for the cluster, or the `finalize_epoch_rpc_fallback` wait is over.
+/// Agave burns the VAT only under Alpenglow; the first debits are those of the migration epoch.
+fn chain_charges_vat(epoch: Epoch, alpenglow_migration_epoch: Option<Epoch>) -> bool {
+    alpenglow_migration_epoch.is_some_and(|migration_epoch| epoch >= migration_epoch)
+}
+
+/// The VAT debits of a closed epoch. `None` closes the epoch with an unknown verdict: an epoch
+/// before Alpenglow, no BigQuery dataset for the cluster, or the `finalize_epoch_rpc_fallback`
+/// wait is over.
 pub fn vat_debited_of_closed_epoch(
     rpc_client: &RpcClient,
     epoch: Epoch,
     finalize_epoch_rpc_fallback: Option<u64>,
 ) -> anyhow::Result<Option<Vec<String>>> {
+    if !chain_charges_vat(epoch, is_alpenglow_active(rpc_client)?) {
+        info!("Epoch {epoch} predates Alpenglow and has no VAT debits, it closes without them");
+        return Ok(None);
+    }
     let Some(dataset) = bigquery_dataset(rpc_client)? else {
         warn!("BigQuery has no VAT debits for this cluster, epoch {epoch} closes without them");
         return Ok(None);
@@ -132,5 +143,13 @@ mod tests {
     #[test]
     fn missing_debits_close_the_epoch_unknown_after_the_wait() {
         assert!(missing_debits_verdict(10, &epoch_info(11, 90_000), Some(90_000)).is_ok());
+    }
+
+    #[test]
+    fn the_chain_charges_vat_from_the_alpenglow_migration_epoch_on() {
+        assert!(!chain_charges_vat(1062, Some(1063)));
+        assert!(chain_charges_vat(1063, Some(1063)));
+        assert!(chain_charges_vat(1085, Some(1063)));
+        assert!(!chain_charges_vat(1085, None));
     }
 }
