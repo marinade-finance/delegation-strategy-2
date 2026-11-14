@@ -40,6 +40,7 @@ fn snapshot(
         cluster_inflation: None,
         vat_minimum_balance: None,
         vat_lamports_per_epoch: None,
+        vat_debited: None,
         validators: Default::default(),
         nodes: nodes
             .into_iter()

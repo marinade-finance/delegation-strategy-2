@@ -12,14 +12,14 @@ use solana_sdk_ids::sysvar;
 use solana_slot_history::{self as slot_history, SlotHistory};
 use std::collections::{HashMap, HashSet};
 
-const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
+pub(crate) const GOOGLE_BQ_PROJECT_ID: &str = "data-store-406413";
 pub(crate) const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub(crate) const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
 
 /// Vote account -> absolute slots it leads in the epoch.
 pub type VoteLeaderSlots = HashMap<String, Vec<Slot>>;
 
-async fn create_bigquery_client() -> anyhow::Result<BqClient> {
+pub(crate) async fn create_bigquery_client() -> anyhow::Result<BqClient> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     Ok(BqClient::new(config).await?)
 }
@@ -130,8 +130,21 @@ pub fn count_block_production(
         .collect()
 }
 
+/// The stakes-etl BigQuery dataset of the cluster, `None` for a cluster stakes-etl does not load.
+pub(crate) fn bigquery_dataset(rpc_client: &RpcClient) -> anyhow::Result<Option<&'static str>> {
+    Ok(match rpc_client.get_genesis_hash()?.to_string().as_str() {
+        MAINNET_BETA_GENESIS_HASH => Some("mainnet_beta_stakes"),
+        TESTNET_GENESIS_HASH => Some("testnet_stakes"),
+        _ => None,
+    })
+}
+
 /// The wait for BigQuery ends `wait_slots` into the epoch after the closed one.
-fn bigquery_wait_is_over(closed_epoch: Epoch, epoch_info: &EpochInfo, wait_slots: u64) -> bool {
+pub(crate) fn bigquery_wait_is_over(
+    closed_epoch: Epoch,
+    epoch_info: &EpochInfo,
+    wait_slots: u64,
+) -> bool {
     epoch_info.epoch > closed_epoch + 1
         || (epoch_info.epoch == closed_epoch + 1 && epoch_info.slot_index >= wait_slots)
 }
@@ -166,13 +179,7 @@ pub fn get_block_production_by_vote_account(
         ))
     };
 
-    let genesis_hash = rpc_client.get_genesis_hash()?.to_string();
-    let dataset = match genesis_hash.as_str() {
-        MAINNET_BETA_GENESIS_HASH => Some("mainnet_beta_stakes"),
-        TESTNET_GENESIS_HASH => Some("testnet_stakes"),
-        _ => None,
-    };
-    let schedule = match dataset {
+    let schedule = match bigquery_dataset(rpc_client)? {
         Some(dataset) => {
             info!("Reading the leader schedule of epoch {epoch} from BigQuery dataset {dataset}");
             let runtime =
@@ -205,7 +212,7 @@ pub fn get_block_production_by_vote_account(
             }
         }
         None => {
-            warn!("BigQuery has no leader schedule for genesis hash {genesis_hash}, mapping the RPC schedule of epoch {epoch} by current identity");
+            warn!("BigQuery has no leader schedule for this cluster, mapping the RPC schedule of epoch {epoch} by current identity");
             rpc_schedule()?
         }
     };
