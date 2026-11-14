@@ -80,6 +80,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "epoch_stake": "9488392700088216",
           "vote_account_lamports": "390217135",
           "vat_eligible": false,
+          "vat_admitted": false,
           "bls_pubkey": null,
           "vat_rejection_reason": "no_bls_key",
           "vat_runway_epochs": "0",
@@ -158,6 +159,8 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 - `vat_minimum_balances` is a top-level map from epoch to lamports, with one value for each epoch the response covers. The value is the rent of a v4 vote state plus the VAT of the next epoch, 1.6 SOL at 400 ms slots down to 0.8 SOL at 200 ms. It includes the VAT also before Alpenglow, when agave burns no VAT yet. It comes from the newest `cluster_info` row of the epoch. An epoch without a value is left out.
 
 `bls_pubkey` can be `null` in epochs before Alpenglow, or shortly after it, before DS2 collected the key. The API skips check 1 for those epochs. `null` in `vat_eligible` or `vat_runway_epochs` means an input is missing. The top-level fields repeat the newest epoch.
+
+`vat_eligible` is a forecast from the last snapshot of the epoch. `epoch_stats[].vat_admitted` is the verdict of the chain, read from the stakes-etl VAT debits when DS2 closes the epoch: `true` when the vote account paid the VAT, `false` when it had stake and paid none. It is `null` for the open epoch, for a vote account without stake, and when the debits were not in BigQuery by the close.
 
 ## Uptimes
 ```bash

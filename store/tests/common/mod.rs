@@ -170,6 +170,7 @@ pub fn performance_snapshot(
         }),
         vat_minimum_balance: None,
         vat_lamports_per_epoch: None,
+        vat_debited: None,
         validators,
         nodes: Default::default(),
         rewards: Some(rewards),

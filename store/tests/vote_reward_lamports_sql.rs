@@ -52,6 +52,7 @@ fn performance_snapshot(created_at: &str, performance: ValidatorPerformance) -> 
         }),
         vat_minimum_balance: None,
         vat_lamports_per_epoch: None,
+        vat_debited: None,
         validators: HashMap::from([(VOTE_ACCOUNT.to_string(), performance)]),
         nodes: Default::default(),
         rewards: Some(HashMap::from([(

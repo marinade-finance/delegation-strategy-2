@@ -271,6 +271,7 @@ mod tests {
             ("ValidatorEpochStats", "vote_account_lamports"),
             ("ResponseValidators", "vat_minimum_balances"),
             ("ValidatorEpochStats", "vat_eligible"),
+            ("ValidatorEpochStats", "vat_admitted"),
             ("ValidatorRecord", "vat_eligible"),
             ("ValidatorEpochStats", "bls_pubkey"),
             ("ValidatorEpochStats", "vat_rejection_reason"),

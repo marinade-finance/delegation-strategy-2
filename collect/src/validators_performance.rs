@@ -7,6 +7,7 @@ use crate::slot_params::{
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use crate::vat::get_vat_minimum_balance;
+use crate::vat_debits::vat_debited_of_closed_epoch;
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
@@ -128,6 +129,9 @@ pub struct ValidatorsPerformanceSnapshot {
     /// The VAT part of `vat_minimum_balance`. None for a backfilled epoch.
     #[serde(default)]
     pub vat_lamports_per_epoch: Option<u64>,
+    /// Vote accounts charged the VAT for the epoch's inflation. Set only when closing an epoch.
+    #[serde(default)]
+    pub vat_debited: Option<Vec<String>>,
     pub validators: HashMap<String, ValidatorPerformance>,
     // Every gossip node, not just the vote-account-joined subset in `validators`; absent from snapshots written before the field existed, which the backfill path still reads.
     #[serde(default)]
@@ -393,6 +397,16 @@ pub fn collect_validators_performance_info(
         None
     };
 
+    let vat_debited = if performance_params.with_rewards && epoch < current_epoch_info.epoch {
+        vat_debited_of_closed_epoch(
+            &client,
+            epoch,
+            performance_params.finalize_epoch_rpc_fallback,
+        )?
+    } else {
+        None
+    };
+
     // A backfilled epoch would read today's rent and gates, which are not the ones at its end.
     let vat_minimum_balance = if epoch == current_epoch_info.epoch {
         Some(get_vat_minimum_balance(&client, &activations, epoch)?)
@@ -411,6 +425,7 @@ pub fn collect_validators_performance_info(
             cluster_inflation,
             vat_minimum_balance: vat_minimum_balance.map(|minimum| minimum.total()),
             vat_lamports_per_epoch: vat_minimum_balance.map(|minimum| minimum.vat),
+            vat_debited,
             validators,
             nodes: node_info,
             rewards,
@@ -544,6 +559,7 @@ delinquent: false
             cluster_inflation: None,
             vat_minimum_balance: None,
             vat_lamports_per_epoch: None,
+            vat_debited: None,
             validators: Default::default(),
             nodes: HashMap::from([("identityRoundTrip".to_string(), node)]),
             rewards: None,

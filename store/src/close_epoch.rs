@@ -118,6 +118,31 @@ async fn store_commission_outside_the_snapshot(
     Ok(updated)
 }
 
+// Only a staked account can be refused; an unstaked one has no verdict to give.
+async fn store_vat_admitted(
+    psql_client: &Client,
+    epoch: &Decimal,
+    debited: &[String],
+) -> anyhow::Result<u64> {
+    anyhow::ensure!(
+        !debited.is_empty(),
+        "The snapshot of epoch {epoch} holds an empty VAT debit list"
+    );
+    let updated = psql_client
+        .execute(
+            "UPDATE validators
+             SET vat_admitted = CASE
+                 WHEN vote_account = ANY($2) THEN TRUE
+                 WHEN activated_stake > 0 THEN FALSE
+                 ELSE NULL
+             END
+             WHERE epoch = $1",
+            &[epoch, &debited],
+        )
+        .await?;
+    Ok(updated)
+}
+
 // The in-memory tally sees only snapshot validators, so re-count in the DB.
 async fn warn_on_unresolved_commission(psql_client: &Client, epoch: u64) -> anyhow::Result<()> {
     let row = psql_client
@@ -440,6 +465,20 @@ pub async fn close_epoch(
                 "Could not store effective commission for validators outside the snapshot: {err}"
             ),
         }
+    }
+
+    match &snapshot.vat_debited {
+        Some(debited) => {
+            let updated = store_vat_admitted(psql_client, &snapshot_epoch, debited).await?;
+            info!(
+                "VAT verdict of epoch {} stored for {updated} validators",
+                snapshot.epoch
+            );
+        }
+        None => warn!(
+            "Epoch {} closes without VAT debits, vat_admitted stays NULL",
+            snapshot.epoch
+        ),
     }
 
     update_uptimes(psql_client, snapshot.epoch).await?;
