@@ -534,6 +534,8 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         })
         .await?;
 
+    let vat_verdict_mismatch =
+        store::utils::load_vat_verdict_mismatch(&context.read().await.psql_client).await?;
     let validators_len = validators.len();
     {
         // Flags and net APY publish with the records they stamped, so their timestamps cannot outrun them.
@@ -553,6 +555,10 @@ pub async fn warm_validators_cache(context: &WrappedContext) -> anyhow::Result<(
         // Inside the commit: a failed warm must not leave the gauge describing unserved records.
         record_inflation_commission_sources(ctx.cache.validators.values());
         record_unhealthy_collectors(ctx.cache.validators.values());
+        let (vat_verdict_epoch, current_epoch) = vat_verdict_epochs(ctx.cache.validators.values());
+        metrics::VAT_VERDICT_LATEST_EPOCH.set(vat_verdict_epoch);
+        metrics::CURRENT_EPOCH.set(current_epoch);
+        metrics::VAT_VERDICT_MISMATCH.set(vat_verdict_mismatch);
     }
 
     info!(
@@ -865,6 +871,21 @@ fn record_unhealthy_collectors<'a>(
     }
 }
 
+/// (newest epoch with a chain VAT verdict, newest epoch), each 0 when the cache holds none.
+fn vat_verdict_epochs<'a>(
+    validators: impl Iterator<Item = &'a store::dto::ValidatorRecord>,
+) -> (i64, i64) {
+    let (mut verdict_epoch, mut current_epoch) = (0, 0);
+    for stats in validators.flat_map(|record| record.epoch_stats.iter()) {
+        let epoch = stats.epoch as i64;
+        current_epoch = current_epoch.max(epoch);
+        if stats.vat_admitted.is_some() {
+            verdict_epoch = verdict_epoch.max(epoch);
+        }
+    }
+    (verdict_epoch, current_epoch)
+}
+
 // Zero, not absent: an unregistered series makes a cache that never loaded invisible to a staleness alert.
 fn init_success_metrics(steps: &[WarmStep]) {
     for (name, _) in steps {
@@ -872,6 +893,9 @@ fn init_success_metrics(steps: &[WarmStep]) {
             .with_label_values(&[name])
             .set(0);
     }
+    metrics::VAT_VERDICT_MISMATCH.set(0);
+    metrics::VAT_VERDICT_LATEST_EPOCH.set(0);
+    metrics::CURRENT_EPOCH.set(0);
 }
 
 fn record_success(name: &str) {
@@ -1423,5 +1447,45 @@ mod unhealthy_collector_metric_tests {
             0,
             "a resolved fleet reads 0, so the alert clears"
         );
+    }
+}
+
+#[cfg(test)]
+mod vat_verdict_metric_tests {
+    use super::*;
+    use store::dto::{ValidatorEpochStats, ValidatorRecord};
+
+    fn record(stats: &[(u64, Option<bool>)]) -> ValidatorRecord {
+        ValidatorRecord {
+            epoch_stats: stats
+                .iter()
+                .map(|(epoch, vat_admitted)| ValidatorEpochStats {
+                    epoch: *epoch,
+                    vat_admitted: *vat_admitted,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_empty_cache_reads_zero() {
+        assert_eq!(vat_verdict_epochs(std::iter::empty()), (0, 0));
+    }
+
+    #[test]
+    fn the_verdict_of_the_last_boundary_trails_the_running_epoch_by_one() {
+        let validators = [
+            record(&[(12, None), (11, Some(true)), (10, Some(false))]),
+            record(&[(12, None), (11, None)]),
+        ];
+        assert_eq!(vat_verdict_epochs(validators.iter()), (11, 12));
+    }
+
+    #[test]
+    fn a_missing_verdict_leaves_the_older_epoch() {
+        let validators = [record(&[(12, None), (11, None), (10, Some(true))])];
+        assert_eq!(vat_verdict_epochs(validators.iter()), (10, 12));
     }
 }

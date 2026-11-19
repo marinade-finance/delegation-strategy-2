@@ -2153,6 +2153,18 @@ pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
     Ok(row.get("has_rows"))
 }
 
+/// Mismatched vote accounts of the newest cross-checked epoch; 0 before any check.
+pub async fn load_vat_verdict_mismatch(psql_client: &Client) -> anyhow::Result<i64> {
+    let row = psql_client
+        .query_opt(
+            "SELECT mismatched FROM vat_verdict_checks ORDER BY epoch DESC LIMIT 1",
+            &[],
+        )
+        .await?;
+
+    Ok(row.map_or(0, |row| i64::from(row.get::<_, i32>("mismatched"))))
+}
+
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
     let row = psql_client
         .query_opt(

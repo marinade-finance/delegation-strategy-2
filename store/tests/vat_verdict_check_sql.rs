@@ -6,6 +6,7 @@ use common::{
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use store::utils::load_vat_verdict_mismatch;
 use tokio_postgres::Client;
 
 const EPOCH: u64 = 1082;
@@ -160,4 +161,24 @@ async fn a_failing_check_never_fails_the_close() {
         .unwrap()
         .get(0);
     assert_eq!(closed, 1);
+}
+
+#[tokio::test]
+async fn the_mismatch_metric_reads_the_newest_check() {
+    let schema = "ds_test_vat_check_metric";
+    let Some(client) = seeded(schema).await else {
+        return;
+    };
+    assert_eq!(load_vat_verdict_mismatch(&client).await.unwrap(), 0);
+
+    client
+        .batch_execute(
+            "INSERT INTO vat_verdict_checks VALUES
+                 (1081, NOW(), 5, '{}', '{}'),
+                 (1082, NOW(), 2, '{}', '{}')",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(load_vat_verdict_mismatch(&client).await.unwrap(), 2);
 }
