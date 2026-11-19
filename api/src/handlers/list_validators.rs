@@ -799,6 +799,7 @@ mod tests {
             pending_delegator_rewards: None,
             vote_account_lamports: None,
             vat_eligible: None,
+            vat_admitted: None,
             bls_pubkey: None,
             vat_rejection_reason: None,
             vat_runway_epochs: None,
