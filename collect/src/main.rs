@@ -12,6 +12,7 @@ use collect::validators_performance::{
 };
 use collect::validators_sandwiches::{collect_validator_sandwiches_info, SandwichesParams};
 use collect::validators_slot_times::{collect_validator_slot_times_info, SlotTimesParams};
+use collect::vat_debits::{collect_vat_debits, VatDebitsParams};
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
@@ -38,6 +39,7 @@ enum CollectCommand {
     TakeRates(TakeRatesParams),
     Releases(ReleasesParams),
     BlacklistAuctions(BlacklistAuctionsParams),
+    VatDebits(VatDebitsParams),
 }
 
 impl Display for CollectCommand {
@@ -54,6 +56,7 @@ impl Display for CollectCommand {
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
             CollectCommand::Releases(_) => write!(f, "releases"),
             CollectCommand::BlacklistAuctions(_) => write!(f, "blacklist-auctions"),
+            CollectCommand::VatDebits(_) => write!(f, "vat-debits"),
         }
     }
 }
@@ -101,6 +104,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::BlacklistAuctions(auctions_params) => {
             collect_blacklist_auctions(auctions_params)
+        }
+        CollectCommand::VatDebits(vat_debits_params) => {
+            collect_vat_debits(params.common, vat_debits_params)
         }
     };
 
