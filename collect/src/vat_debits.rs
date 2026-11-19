@@ -1,12 +1,17 @@
 use crate::common::CommonParams;
+use crate::leader_schedule::{bigquery_dataset, create_bigquery_client, GOOGLE_BQ_PROJECT_ID};
 use crate::slot_params::is_known_vat_lamports;
 use crate::solana_service::{is_alpenglow_active, solana_client_with_timeout};
-use anyhow::Context;
+use anyhow::{bail, Context};
 use clap::Parser;
-use log::info;
+use google_cloud_bigquery::client::Client as BqClient;
+use google_cloud_bigquery::http::job::query::QueryRequest;
+use google_cloud_bigquery::query::row::Row;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_clock::Epoch;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_rpc_client_api::request::RpcRequest;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
@@ -54,6 +59,66 @@ struct BlockReward {
 /// Agave burns the VAT only under Alpenglow; the first debits are those of the migration epoch.
 fn chain_charges_vat(epoch: Epoch, alpenglow_migration_epoch: Option<Epoch>) -> bool {
     alpenglow_migration_epoch.is_some_and(|migration_epoch| epoch >= migration_epoch)
+}
+
+/// Vote accounts stakes-etl saw charged the SIMD-0357 VAT for the epoch; empty while not loaded.
+async fn query_vat_debited(
+    bq_client: &BqClient,
+    dataset: &str,
+    epoch: Epoch,
+) -> anyhow::Result<Vec<String>> {
+    let query = format!(
+        "SELECT vote_account \
+         FROM `{GOOGLE_BQ_PROJECT_ID}.{dataset}.rewards_validators_inflation_vat` \
+         WHERE epoch = {epoch}"
+    );
+    let request = QueryRequest {
+        query,
+        use_legacy_sql: false,
+        ..Default::default()
+    };
+    let mut iter = bq_client
+        .query::<Row>(GOOGLE_BQ_PROJECT_ID, request)
+        .await
+        .context("Failed to query the VAT debits")?;
+
+    let mut debited = vec![];
+    let mut seen = HashSet::new();
+    while let Some(row) = iter.next().await? {
+        let vote_account = row
+            .column::<String>(0)
+            .context("Failed to read vote_account")?;
+        if !seen.insert(vote_account.clone()) {
+            bail!("VAT debits of epoch {epoch} hold vote account {vote_account} more than once");
+        }
+        debited.push(vote_account);
+    }
+    Ok(debited)
+}
+
+/// The stakes-etl debits of a closed epoch for the cross-check at close; `None` whenever they cannot be read.
+pub fn bigquery_vat_debited(rpc_client: &RpcClient, epoch: Epoch) -> Option<Vec<String>> {
+    let read = || -> anyhow::Result<Option<Vec<String>>> {
+        if !chain_charges_vat(epoch, is_alpenglow_active(rpc_client)?) {
+            return Ok(None);
+        }
+        let Some(dataset) = bigquery_dataset(rpc_client)? else {
+            return Ok(None);
+        };
+        let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+        let debited = runtime.block_on(async {
+            let bq_client = create_bigquery_client().await?;
+            query_vat_debited(&bq_client, dataset, epoch).await
+        })?;
+        Ok((!debited.is_empty()).then_some(debited))
+    };
+    match read() {
+        Ok(debited) => debited,
+        Err(err) => {
+            warn!("Could not read the stakes-etl VAT debits of epoch {epoch}: {err:#}");
+            None
+        }
+    }
 }
 
 /// The checks of stakes-etl `ensure_vat_debits`, plus the anchors proving the block opens the payout.
