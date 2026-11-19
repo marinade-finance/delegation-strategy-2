@@ -8,6 +8,7 @@ use common::{
 };
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use store::utils::{load_validators, load_vat_minimum_balances, ValidatorOverlays};
 use store::vat_verdict::{store_vat_verdict, StoreVatVerdictParams};
 use tokio_postgres::Client;
 
@@ -277,4 +278,57 @@ async fn more_than_ten_percent_undebited_staked_accounts_write_nothing() {
         "{err}"
     );
     assert_eq!(written_verdicts(&client).await, 0);
+}
+
+#[tokio::test]
+async fn load_validators_serves_vat_admitted_per_epoch() {
+    let schema = "ds_test_vat_verdict_served";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+    let refused = staked(STAKED - 1);
+    let mut running_epoch = validator_snapshot(EPOCH + 1, "identityDebited", &staked(0));
+    running_epoch
+        .validators
+        .append(&mut validator_snapshot(EPOCH + 1, "identityRefused", &refused).validators);
+    store_snapshot(&mut client, schema, &running_epoch).await;
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (0, $1, 0, NOW())",
+            &[&Decimal::from(EPOCH + 1)],
+        )
+        .await
+        .unwrap();
+
+    let unreachable_scoring_url = "http://127.0.0.1:1".to_string();
+    let records = load_validators(
+        &client,
+        unreachable_scoring_url,
+        3,
+        3,
+        &ValidatorOverlays::default(),
+        &load_vat_minimum_balances(&client, 3).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    let served = |vote_account: &str| -> Vec<(u64, Option<bool>)> {
+        records[vote_account]
+            .epoch_stats
+            .iter()
+            .map(|stat| (stat.epoch, stat.vat_admitted))
+            .collect()
+    };
+    assert_eq!(
+        served(&staked(0)),
+        vec![(EPOCH + 1, None), (EPOCH, Some(true))]
+    );
+    assert_eq!(
+        served(&refused),
+        vec![(EPOCH + 1, None), (EPOCH, Some(false)), (EPOCH - 1, None)]
+    );
+    assert_eq!(served(UNSTAKED), vec![(EPOCH, None)]);
 }
