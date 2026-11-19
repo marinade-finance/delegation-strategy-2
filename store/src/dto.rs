@@ -387,8 +387,6 @@ pub struct ValidatorEpochStats {
     pub vote_reward_lamports: Option<u64>,
     /// Alpenglow reward-committee stake: prior epoch's `activated_stake`. Null if none or no data.
     pub epoch_stake: Option<Decimal>,
-    /// Same as `ValidatorRecord::vote_performance`, for this epoch.
-    pub vote_performance: Option<f64>,
     pub leader_slots: u64,
     pub blocks_produced: u64,
     pub skip_rate: Option<f64>,

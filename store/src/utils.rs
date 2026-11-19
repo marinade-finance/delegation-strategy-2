@@ -1832,7 +1832,6 @@ pub async fn load_validators(
                 credits: tower_credits,
                 vote_reward_lamports,
                 epoch_stake: row.get("epoch_stake"),
-                vote_performance: epoch_vote_performance,
                 leader_slots: row.get::<_, Decimal>("leader_slots").try_into().unwrap(),
                 blocks_produced: row.get::<_, Decimal>("blocks_produced").try_into().unwrap(),
                 skip_rate: row.get("skip_rate"),
