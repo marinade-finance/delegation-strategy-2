@@ -834,6 +834,7 @@ mod tests {
             credits: Some(1),
             vote_reward_lamports: None,
             epoch_stake: None,
+            vote_performance: None,
             leader_slots: 0,
             blocks_produced: 0,
             skip_rate: None,
