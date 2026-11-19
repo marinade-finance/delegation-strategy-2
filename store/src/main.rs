@@ -17,6 +17,7 @@ use store::take_rates::{
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
+use store::vat_verdict::{store_vat_verdict, StoreVatVerdictParams};
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
 use validators_jito::{store_jito, StoreJitoParams};
@@ -55,6 +56,7 @@ enum StoreCommand {
     TakeRates(StoreTakeRatesParams),
     RefreshExpectedTakeRates(RefreshExpectedTakeRatesParams),
     Releases(StoreReleasesParams),
+    VatVerdict(StoreVatVerdictParams),
     JitoMev(StoreJitoParams),
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
@@ -149,6 +151,9 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::Releases(store_params) => {
             store_releases(store_params, &mut psql_client).await
+        }
+        StoreCommand::VatVerdict(store_params) => {
+            store_vat_verdict(store_params, &mut psql_client).await
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
