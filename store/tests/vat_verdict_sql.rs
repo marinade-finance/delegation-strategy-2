@@ -262,6 +262,28 @@ async fn more_than_ten_percent_unknown_debited_accounts_write_nothing() {
 }
 
 #[tokio::test]
+async fn repeated_debits_do_not_dilute_the_unknown_share() {
+    let schema = "ds_test_vat_verdict_repeated";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    let mut debited = staked_range(0..STAKED - 2);
+    debited.extend(staked_range(0..10));
+    debited.extend((1..=3).map(|index| format!("VatVerdictUnknown{index}")));
+
+    let err = store_verdict(&mut client, schema, EPOCH, debited)
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("3 of 21 debited vote accounts are unknown"),
+        "{err}"
+    );
+    assert_eq!(written_verdicts(&client).await, 0);
+}
+
+#[tokio::test]
 async fn more_than_ten_percent_undebited_staked_accounts_write_nothing() {
     let schema = "ds_test_vat_verdict_undebited";
     let Some(mut client) = seeded(schema).await else {

@@ -37,6 +37,7 @@ pub async fn store_vat_verdict(
                              FROM validators WHERE epoch = $1)
              SELECT
                  (SELECT COUNT(*) FROM stored) AS known,
+                 (SELECT COUNT(*) FROM listed) AS debited,
                  (SELECT COUNT(*) FROM listed
                   WHERE vote_account NOT IN (SELECT vote_account FROM stored)) AS unknown_debited,
                  (SELECT COUNT(*) FROM stored WHERE staked) AS staked,
@@ -49,7 +50,7 @@ pub async fn store_vat_verdict(
     let unknown_debited: i64 = counts.get("unknown_debited");
     let staked: i64 = counts.get("staked");
     let staked_undebited: i64 = counts.get("staked_undebited");
-    let debited_count = debited.len() as i64;
+    let debited_count: i64 = counts.get("debited");
     anyhow::ensure!(known > 0, "DS2 holds no validators of epoch {epoch}");
     anyhow::ensure!(
         unknown_debited * 100 <= debited_count * MAX_UNKNOWN_DEBITED_PERCENT
