@@ -340,7 +340,7 @@ pub struct ValidatorEpochStats {
     pub vote_account_lamports: Option<Decimal>,
     /// SIMD-0357 forecast for the inflation rewards of the epoch, once Alpenglow is active: the agave VAT filter applied to the last stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. A forecast from the last snapshot, not the verdict of the chain, which is `vat_admitted`. Null when `vote_account_lamports` or the minimum is null.
     pub vat_eligible: Option<bool>,
-    /// SIMD-0357 verdict of the chain for the inflation rewards of the epoch: true when the vote account paid the VAT debit in the first block of the next epoch, false when it had stake and paid none. Null for a vote account without stake that paid no VAT and until DS2 has read that block.
+    /// SIMD-0357 verdict of the chain for the inflation rewards of the epoch: true when the vote account paid the VAT debit in the first block of the next epoch, false when it had `activated_stake` in the epoch and paid none. Null for a vote account without `activated_stake` in the epoch that paid no VAT and until DS2 has stored the verdict.
     pub vat_admitted: Option<bool>,
     /// Base58 compressed BLS key of the vote account. Null in epochs before Alpenglow.
     pub bls_pubkey: Option<String>,
