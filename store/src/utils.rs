@@ -13,6 +13,7 @@ use crate::incidents::{
 use crate::validators_jito::get_last_jito_info;
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
+use collect::common::{with_bigquery_timeout, BIGQUERY_READ_TIMEOUT};
 use collect::take_rates::query_validator_rewards;
 use collect::vat::{
     vat_admissions, vat_runway_epochs, VatCandidate, VatMinimumBalance, VatRejection,
@@ -857,6 +858,15 @@ const STAKES_TABLE: &str = "stakes";
 
 /// Latest epoch present in BigQuery; the gate for refreshing BigQuery-sourced caches.
 pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
+    with_bigquery_timeout(
+        "last epoch",
+        BIGQUERY_READ_TIMEOUT,
+        read_last_bigquery_epoch(),
+    )
+    .await
+}
+
+async fn read_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
     let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
@@ -869,6 +879,15 @@ pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
 
 /// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
 pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
+    with_bigquery_timeout(
+        "unique delegators",
+        BIGQUERY_READ_TIMEOUT,
+        read_latest_unique_delegators(),
+    )
+    .await
+}
+
+async fn read_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -954,6 +973,10 @@ pub struct TakeRates {
 /// `query_validator_rewards` returns, plus the cluster reward mix those same rows sum to. Windowed by
 /// `epochs.epoch_end_time` (same as apy-api).
 pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
+    with_bigquery_timeout("take rates", BIGQUERY_READ_TIMEOUT, read_take_rates()).await
+}
+
+async fn read_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 

@@ -1,3 +1,4 @@
+use crate::common::{with_bigquery_timeout, BIGQUERY_READ_TIMEOUT};
 use anyhow::{bail, Context};
 use google_cloud_bigquery::client::{Client as BqClient, ClientConfig as BqClientConfig};
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -183,10 +184,14 @@ pub fn get_block_production_by_vote_account(
             info!("Reading the leader schedule of epoch {epoch} from BigQuery dataset {dataset}");
             let runtime =
                 tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-            let bq_schedule = runtime.block_on(async {
-                let bq_client = create_bigquery_client().await?;
-                query_vote_leader_slots(&bq_client, dataset, epoch, slots_in_epoch).await
-            })?;
+            let bq_schedule = runtime.block_on(with_bigquery_timeout(
+                "leader schedule",
+                BIGQUERY_READ_TIMEOUT,
+                async {
+                    let bq_client = create_bigquery_client().await?;
+                    query_vote_leader_slots(&bq_client, dataset, epoch, slots_in_epoch).await
+                },
+            ))?;
             match bq_schedule {
                 Some(schedule) => schedule,
                 None if epoch < current_epoch => {
