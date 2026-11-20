@@ -10,13 +10,30 @@ const MIN_SLOTS_TO_MEASURE: u64 = 1000;
 /// Skew between the container clock and the cluster's block time is a fixed offset, so only a long window dilutes it.
 const MIN_SECONDS_TO_MEASURE: u64 = 600;
 
+const BASE58_ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// The shape of a Solana pubkey: 32 to 44 base58 characters. Accounts from scraped or hand-kept
+/// sources are served unquoted in `/blacklist.csv`, where a comma or a newline would forge a row.
+pub fn is_base58_pubkey(value: &str) -> bool {
+    (32..=44).contains(&value.len()) && value.chars().all(|c| BASE58_ALPHABET.contains(c))
+}
+
 #[derive(Debug, Parser)]
 pub struct CommonParams {
     #[arg(short = 'u', long = "url", env = "RPC_URL")]
-    pub rpc_url: String,
+    rpc_url: Option<String>,
 
     #[arg(short = 'c', long = "commitment", default_value = "finalized")]
     pub commitment: String,
+}
+
+impl CommonParams {
+    /// The RPC URL, required by every collector that reads the chain.
+    pub fn rpc_url(&self) -> anyhow::Result<String> {
+        self.rpc_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--url or RPC_URL is required"))
+    }
 }
 
 pub fn retry_blocking<F, T, E, ErrorCallback>(
@@ -123,6 +140,19 @@ mod tests {
     use super::*;
 
     const SLOTS_IN_EPOCH: u64 = 432_000;
+
+    #[test]
+    fn the_rpc_url_is_required_only_where_it_is_read() {
+        let params = |rpc_url: Option<&str>| CommonParams {
+            rpc_url: rpc_url.map(String::from),
+            commitment: "finalized".into(),
+        };
+        assert_eq!(params(Some("http://rpc")).rpc_url().unwrap(), "http://rpc");
+        assert_eq!(
+            params(None).rpc_url().unwrap_err().to_string(),
+            "--url or RPC_URL is required"
+        );
+    }
 
     #[test]
     fn slot_duration_follows_the_clock_not_the_slot_count() {

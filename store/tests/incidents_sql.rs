@@ -332,6 +332,11 @@ async fn every_row_of_an_epoch_gets_the_cluster_median() {
             .expect("the validator has incident material")
             .sandwiches[0];
         assert_eq!(loaded.cluster_median_rate, 2.0, "{vote_account}");
+        assert_eq!(
+            loaded.cluster_pooled_rate,
+            100.0 * 1350.0 / 15_999.0,
+            "{vote_account}"
+        );
     }
 }
 

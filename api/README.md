@@ -16,8 +16,10 @@ export PG_SSLROOTCERT='/tmp/postgres-root-cert.pem'
 cargo run --bin api -- \
   --postgres-ssl-root-cert $PG_SSLROOTCERT --postgres-url $POSTGRES_URL \
   --scoring-url https://scoring.marinade.finance --admin-auth-token ABCD \
-  --blacklist-path ./blacklist.csv --glossary-path ./glossary.md
+  --glossary-path ./glossary.md
 ```
+
+The blacklist is served from the database; [store](../store/README.md) lists the commands that fill it.
 
 ```bash
 curl 'http://localhost:8000/validators'

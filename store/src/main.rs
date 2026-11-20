@@ -8,6 +8,9 @@ use ls_open_epochs::{list_open_epochs, LsOpenEpochsParams};
 use node_observations::{store_node_observations, StoreNodeObservationsParams};
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use store::blacklist::auctions::{store_auctions, StoreAuctionsParams};
+use store::blacklist::config_sync::{config_sync, ConfigSyncParams};
+use store::blacklist::import::{import_legacy, ImportParams};
 use store::close_epoch::{close_epoch, CloseEpochParams};
 use store::releases::{store_releases, StoreReleasesParams};
 use store::take_rates::{
@@ -17,6 +20,7 @@ use store::take_rates::{
 use store::validators_block_rewards::{store_block_rewards, StoreBlockRewardsParams};
 use store::validators_events::{store_events, StoreEventsParams};
 use store::validators_sandwiches::{store_sandwiches, StoreSandwichesParams};
+use store::validators_slot_times::{store_slot_times, StoreSlotTimesParams};
 use uptime::{store_uptime, StoreUptimeParams};
 use validators::{store_validators, StoreValidatorsParams};
 use validators_jito::{store_jito, StoreJitoParams};
@@ -52,6 +56,7 @@ enum StoreCommand {
     ValidatorsBlockRewards(StoreBlockRewardsParams),
     ValidatorsEvents(StoreEventsParams),
     ValidatorsSandwiches(StoreSandwichesParams),
+    ValidatorsSlotTimes(StoreSlotTimesParams),
     TakeRates(StoreTakeRatesParams),
     RefreshExpectedTakeRates(RefreshExpectedTakeRatesParams),
     Releases(StoreReleasesParams),
@@ -59,6 +64,9 @@ enum StoreCommand {
     JitoPriority(StoreJitoParams),
     CloseEpoch(CloseEpochParams),
     LsOpenEpochs(LsOpenEpochsParams),
+    BlacklistImport(ImportParams),
+    BlacklistConfigSync(ConfigSyncParams),
+    BlacklistAuctions(StoreAuctionsParams),
     Migrate,
 }
 
@@ -141,6 +149,9 @@ async fn main() -> anyhow::Result<()> {
         StoreCommand::ValidatorsSandwiches(store_params) => {
             store_sandwiches(store_params, &mut psql_client).await
         }
+        StoreCommand::ValidatorsSlotTimes(store_params) => {
+            store_slot_times(store_params, &mut psql_client).await
+        }
         StoreCommand::TakeRates(store_params) => {
             store_take_rates(store_params, &mut psql_client).await
         }
@@ -152,6 +163,15 @@ async fn main() -> anyhow::Result<()> {
         }
         StoreCommand::CloseEpoch(close_params) => close_epoch(close_params, &mut psql_client).await,
         StoreCommand::LsOpenEpochs(_ls_params) => list_open_epochs(&psql_client).await,
+        StoreCommand::BlacklistImport(import_params) => {
+            import_legacy(import_params, &mut psql_client).await
+        }
+        StoreCommand::BlacklistConfigSync(sync_params) => {
+            config_sync(sync_params, &mut psql_client).await
+        }
+        StoreCommand::BlacklistAuctions(auctions_params) => {
+            store_auctions(auctions_params, &mut psql_client).await
+        }
         StoreCommand::Migrate => store::migrations::migrate(&mut psql_client).await,
     }
 }

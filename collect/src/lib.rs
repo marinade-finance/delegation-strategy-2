@@ -1,3 +1,4 @@
+pub mod blacklist_auctions;
 pub mod common;
 pub mod leader_schedule;
 pub mod marinade_service;
@@ -12,5 +13,6 @@ pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_performance;
 pub mod validators_sandwiches;
+pub mod validators_slot_times;
 pub mod vat;
 pub mod whois_service;
