@@ -2,7 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use solana_epoch_info::EpochInfo;
 use solana_rpc_client::rpc_client::RpcClient;
-use std::{thread, time::Duration};
+use std::{future::Future, thread, time::Duration};
 
 /// Below this the epoch is too young to measure against block time's one-second granularity.
 const MIN_SLOTS_TO_MEASURE: u64 = 1000;
@@ -118,6 +118,19 @@ impl QuadraticBackoffStrategy {
     }
 }
 
+pub const BIGQUERY_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+// google-cloud-bigquery polls a running job without a retry limit over a client without a timeout.
+pub async fn with_bigquery_timeout<T>(
+    what: &str,
+    bound: Duration,
+    read: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(bound, read)
+        .await
+        .with_context(|| format!("BigQuery read of {what} timed out after {bound:?}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +186,35 @@ mod tests {
         let at_350ms = seconds_from_rate(123_440, milliseconds_per_slot(21_602, 61_720).unwrap());
         assert_eq!(at_400ms / 3_600, 12);
         assert_eq!(at_350ms / 3_600, 12);
+    }
+
+    #[tokio::test]
+    async fn a_bigquery_read_past_its_bound_fails_naming_the_read() {
+        let err = with_bigquery_timeout(
+            "leader schedule",
+            Duration::from_millis(10),
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("leader schedule"), "{message}");
+        assert!(message.contains("timed out"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_bigquery_read_within_its_bound_returns_its_value() {
+        let value = with_bigquery_timeout("rewards", BIGQUERY_READ_TIMEOUT, async { Ok(7) }).await;
+        assert_eq!(value.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_bigquery_read_error_passes_through_unchanged() {
+        let err = with_bigquery_timeout("rewards", BIGQUERY_READ_TIMEOUT, async {
+            Err::<(), _>(anyhow::anyhow!("boom"))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(format!("{err:#}"), "boom");
     }
 }
