@@ -143,8 +143,10 @@ impl PerEpochCache {
             "BigQuery epoch changed ({:?} -> {last_epoch}), refreshing",
             cached.as_ref().map(|c| c.epoch)
         );
-        let delegators = store::utils::load_latest_unique_delegators().await;
-        let take_rates = store::utils::load_take_rates().await;
+        let (delegators, take_rates) = tokio::join!(
+            store::utils::load_latest_unique_delegators(),
+            store::utils::load_take_rates()
+        );
         match (delegators, take_rates) {
             (Ok(unique_delegators), Ok(take_rates)) => Some(PerEpochCache {
                 epoch: last_epoch,
