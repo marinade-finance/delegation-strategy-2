@@ -1,8 +1,10 @@
-use super::db::bootstrapped;
+use super::config_sync::EXEMPT_COVERS;
+use super::db::{bootstrapped, max_epoch};
 use crate::dto::BlacklistRecord;
 use clap::Parser;
 use csv::{required, Column};
 use log::info;
+use rust_decimal::prelude::*;
 use std::path::Path;
 use tokio_postgres::Client;
 
@@ -50,8 +52,21 @@ pub async fn import_legacy(params: ImportParams, psql_client: &mut Client) -> an
             &[&vote_accounts, &codes, &reason],
         )
         .await?;
+    let mut exempted = 0;
+    if let Some(current_epoch) = max_epoch(&tx, "cluster_info").await? {
+        exempted = tx
+            .execute(
+                &format!(
+                    "UPDATE blacklist SET removed_epoch = $1, removed_reason = 'exempt', updated_at = now()
+                     FROM blacklist_exempt AS x
+                     WHERE blacklist.removed_epoch IS NULL AND blacklist.source = 'legacy' AND {EXEMPT_COVERS}"
+                ),
+                &[&Decimal::from(current_epoch)],
+            )
+            .await?;
+    }
     tx.commit().await?;
 
-    info!("Imported {inserted} legacy blacklist rows");
+    info!("Imported {inserted} legacy blacklist rows, {exempted} of them exempt");
     Ok(())
 }

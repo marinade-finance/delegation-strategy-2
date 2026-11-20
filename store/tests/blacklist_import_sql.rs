@@ -86,6 +86,48 @@ async fn a_second_import_is_refused() {
     assert_eq!(active_pairs(&client).await.len(), 1);
 }
 
+#[tokio::test]
+async fn a_stored_exemption_closes_its_legacy_rows() {
+    let schema = "ds_test_blacklist_import_exempt";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    client
+        .batch_execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at)
+             VALUES (0, 1090, 0, NOW());
+             INSERT INTO blacklist_exempt (vote_account, rule, code_prefix, until_epoch)
+             VALUES ('voteA', 'legacy', NULL, NULL), ('voteB', 'sandwich', 'MALICIOUS_SM_', NULL);",
+        )
+        .await
+        .unwrap();
+    let path = write_csv(
+        schema,
+        "vote_account,code\nvoteA,SLOW_VOTER\nvoteB,MALICIOUS_SM_800\nvoteC,SLOW_VOTER\n",
+    );
+
+    import(&mut client, &path).await.unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(
+        active_pairs(&client).await,
+        HashSet::from([
+            ("voteB".to_string(), "MALICIOUS_SM_800".to_string()),
+            ("voteC".to_string(), "SLOW_VOTER".to_string()),
+        ])
+    );
+    let closed = client
+        .query_one(
+            "SELECT removed_epoch::TEXT AS epoch, removed_reason FROM blacklist WHERE vote_account = 'voteA'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.get::<_, String>("epoch"), "1090");
+    assert_eq!(closed.get::<_, String>("removed_reason"), "exempt");
+}
+
 // The import replaces the file every reader used, so it has to carry every row of it.
 #[tokio::test]
 async fn the_repos_blacklist_imports_whole() {

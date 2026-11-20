@@ -80,8 +80,8 @@ fn number_or_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option
         Some(Value::Number(number)) => Ok(Some(number)),
         Some(Value::Text(text)) => text
             .trim()
-            .parse()
-            .map(Some)
+            .parse::<f64>()
+            .map(|number| number.is_finite().then_some(number))
             .map_err(serde::de::Error::custom),
     }
 }
@@ -250,6 +250,23 @@ mod tests {
             r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "200", "ibrl_score": 87.5}]"#,
         );
         assert_eq!(rows[0].ibrl_score, Some(87.5));
+    }
+
+    #[test]
+    fn a_non_finite_measurement_counts_as_missing() {
+        let rows = parse(
+            r#"[{"vote_account_pubkey": "5AC692spnjbegP7ttCXJEzUe8S81sLYsqJd8Ae6Zv1xU", "slot_duration_median": "NaN"},
+                {"vote_account_pubkey": "QodirbUG8AZQBWpHhPJPfjj1xg4AaQUZCVVtwT8YfPi", "slot_duration_median": "201.5", "ibrl_score": "inf"}]"#,
+        );
+        assert_eq!(
+            rows,
+            vec![ValidatorSlotTime {
+                epoch: 1080,
+                vote_account: "QodirbUG8AZQBWpHhPJPfjj1xg4AaQUZCVVtwT8YfPi".into(),
+                slot_duration_median_ms: 201.5,
+                ibrl_score: None,
+            }]
+        );
     }
 
     #[test]

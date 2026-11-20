@@ -33,10 +33,12 @@ pub async fn store_auctions(
 /// imported already. One transaction per run: a failure leaves the epoch as it was.
 pub async fn import_run(psql_client: &mut Client, run: &AuctionListings) -> anyhow::Result<()> {
     let tx = psql_client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(hashtext('blacklist_auction_imports'))")
+        .await?;
     let auction_epoch = Decimal::from(run.auction_epoch);
     let imported: Option<String> = tx
         .query_opt(
-            "SELECT run_id FROM blacklist_auction_imports WHERE auction_epoch = $1 FOR UPDATE",
+            "SELECT run_id FROM blacklist_auction_imports WHERE auction_epoch = $1",
             &[&auction_epoch],
         )
         .await?

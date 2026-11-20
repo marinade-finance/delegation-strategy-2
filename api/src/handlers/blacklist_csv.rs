@@ -13,11 +13,15 @@ use warp::{
 
 /// Same shape as the `blacklist.csv` file it replaces, so every reader parses it unchanged.
 pub fn render_csv(rows: &[BlacklistRow]) -> String {
-    let mut csv = String::from("vote_account,code\n");
+    let mut csv = csv::Writer::from_writer(Vec::new());
+    csv.write_record(["vote_account", "code"])
+        .expect("writing to a Vec cannot fail");
     for row in rows {
-        csv.push_str(&format!("{},{}\n", row.vote_account, row.code));
+        csv.write_record([&row.vote_account, &row.code])
+            .expect("writing to a Vec cannot fail");
     }
-    csv
+    String::from_utf8(csv.into_inner().expect("writing to a Vec cannot fail"))
+        .expect("the fields are UTF-8 strings")
 }
 
 #[utoipa::path(
@@ -74,6 +78,14 @@ mod tests {
         assert_eq!(
             render_csv(&rows),
             "vote_account,code\nA,SLOW_VOTER\nA,SLOW_SLOTS_1080\nB,MALICIOUS_SM\n"
+        );
+    }
+
+    #[test]
+    fn a_comma_in_a_field_stays_in_its_column() {
+        assert_eq!(
+            render_csv(&[row("A", "SLOW,VOTER")]),
+            "vote_account,code\nA,\"SLOW,VOTER\"\n"
         );
     }
 }
