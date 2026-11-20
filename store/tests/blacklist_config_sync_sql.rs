@@ -189,9 +189,9 @@ exempt:
     assert_eq!(reason, "exempt: appeal");
 }
 
-// An exemption limited by until_epoch closes only a listing judged on evidence up to it.
+// The auction keeps a listed account until an exemption without until_epoch releases it.
 #[tokio::test]
-async fn an_until_epoch_exemption_keeps_a_later_offence() {
+async fn an_until_epoch_exemption_closes_no_listed_row() {
     let schema = "ds_test_blacklist_sync_exempt_until";
     let Some(mut client) = setup(schema).await else {
         return;
@@ -209,7 +209,10 @@ async fn an_until_epoch_exemption_keeps_a_later_offence() {
 
     assert_eq!(
         active(&client).await,
-        rows(&[(A, "auction", "SLOW_SLOTS_1084")])
+        rows(&[
+            (A, "auction", "SLOW_SLOTS_1083"),
+            (A, "auction", "SLOW_SLOTS_1084")
+        ])
     );
 }
 

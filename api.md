@@ -509,7 +509,8 @@ curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
 Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
 YAML config) and `auction` (listed by the SAM auction of `auction_epoch`, imported from ds-sam-pipeline).
 `/blacklist` also serves the config's exemptions, which the auction honours. Both routes answer 503 until
-the legacy import ran, so a partial list is never served. On `:9000/metrics`, alert on
+the legacy import ran, so a partial list is never served; `/unstake-hints` and `/global-unstake-hints`
+answer 500 until then. On `:9000/metrics`, alert on
 `ds_blacklist_import_lag_epochs` above 1.
 ```bash
 curl -sfLS 'localhost:8000/blacklist.csv' | head

@@ -36,6 +36,8 @@ pub async fn import_legacy(params: ImportParams, psql_client: &mut Client) -> an
     );
 
     let tx = psql_client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(hashtext('blacklist'))")
+        .await?;
     anyhow::ensure!(
         !bootstrapped(&tx).await?,
         "legacy blacklist rows exist already, refusing to import again"

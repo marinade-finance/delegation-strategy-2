@@ -16,6 +16,8 @@ pub struct ConfigSyncParams {
 pub async fn config_sync(params: ConfigSyncParams, psql_client: &mut Client) -> anyhow::Result<()> {
     let config = BlacklistConfig::load(&params.config_path)?;
     let tx = psql_client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(hashtext('blacklist'))")
+        .await?;
     let current_epoch = max_epoch(&tx, "cluster_info")
         .await?
         .ok_or_else(|| anyhow::anyhow!("cluster_info is empty, no current epoch"))?;
@@ -66,13 +68,12 @@ async fn sync_manual(
 }
 
 /// Whether exemption `x` (vote_account, rule, code_prefix, until_epoch) covers a `blacklist` row:
-/// auction and legacy rows only, never manual ones. An `until_epoch` is held against the epoch an
-/// auction row's code names.
+/// auction and legacy rows only, never manual ones. Only an exemption without `until_epoch` closes a
+/// row; a bounded one only keeps the auction from listing hits up to it, as the auction holds it.
 pub(super) const EXEMPT_COVERS: &str = "blacklist.vote_account = x.vote_account
+    AND x.until_epoch IS NULL
     AND ((blacklist.source = 'auction'
-          AND (x.rule = 'all' OR COALESCE(starts_with(blacklist.code, x.code_prefix), false))
-          AND (x.until_epoch IS NULL
-            OR substring(blacklist.code FROM '_([0-9]+)$')::NUMERIC <= x.until_epoch))
+          AND (x.rule = 'all' OR COALESCE(starts_with(blacklist.code, x.code_prefix), false)))
       OR (blacklist.source = 'legacy' AND x.rule IN ('all', 'legacy')))";
 
 /// Replaces the served exemptions with the config's, without their reasons.
