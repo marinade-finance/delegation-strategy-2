@@ -7,7 +7,7 @@ use clap::Parser;
 use google_cloud_bigquery::client::Client as BqClient;
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::query::row::Row;
-use log::{info, warn};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_clock::Epoch;
@@ -115,7 +115,7 @@ pub fn bigquery_vat_debited(rpc_client: &RpcClient, epoch: Epoch) -> Option<Vec<
     match read() {
         Ok(debited) => debited,
         Err(err) => {
-            warn!("Could not read the stakes-etl VAT debits of epoch {epoch}: {err:#}");
+            error!("Could not read the stakes-etl VAT debits of epoch {epoch}: {err:#}");
             None
         }
     }
