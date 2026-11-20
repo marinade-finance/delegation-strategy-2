@@ -10,6 +10,7 @@ use collect::validators_performance::{
     collect_validators_performance_info, ValidatorsPerformanceParams,
 };
 use collect::validators_sandwiches::{collect_validator_sandwiches_info, SandwichesParams};
+use collect::vat_debits::{collect_vat_debits, VatDebitsParams};
 use env_logger::Env;
 use log::info;
 use std::fmt::Display;
@@ -34,6 +35,7 @@ enum CollectCommand {
     ValidatorsSandwiches(SandwichesParams),
     TakeRates(TakeRatesParams),
     Releases(ReleasesParams),
+    VatDebits(VatDebitsParams),
 }
 
 impl Display for CollectCommand {
@@ -48,6 +50,7 @@ impl Display for CollectCommand {
             CollectCommand::ValidatorsSandwiches(_) => write!(f, "validators-sandwiches"),
             CollectCommand::TakeRates(_) => write!(f, "take-rates"),
             CollectCommand::Releases(_) => write!(f, "releases"),
+            CollectCommand::VatDebits(_) => write!(f, "vat-debits"),
         }
     }
 }
@@ -89,6 +92,9 @@ fn main() -> anyhow::Result<()> {
         }
         CollectCommand::Releases(releases_params) => {
             collect_releases_info(params.common, releases_params)
+        }
+        CollectCommand::VatDebits(vat_debits_params) => {
+            collect_vat_debits(params.common, vat_debits_params)
         }
     };
 

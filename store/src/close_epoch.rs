@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::solana_service::bps_to_percent;
 use collect::validators_performance::{ClusterInflation, ValidatorsPerformanceSnapshot};
-use log::{info, warn};
+use log::{error, info, warn};
 use rust_decimal::prelude::*;
 use serde_yaml;
 use std::collections::{HashMap, HashSet};
@@ -131,6 +131,43 @@ async fn warn_on_unresolved_commission(psql_client: &Client, epoch: u64) -> anyh
         warn!("Epoch {epoch} closed with {unresolved} validator rows still without commission_effective");
     }
     Ok(())
+}
+
+/// Compares the stakes-etl debits with the stored chain verdict; `None` when no verdict is stored.
+async fn store_vat_verdict_check(
+    psql_client: &Client,
+    epoch: &Decimal,
+    bigquery_debited: &[String],
+    checked_at: &DateTime<Utc>,
+) -> anyhow::Result<Option<i32>> {
+    let row = psql_client
+        .query_opt(
+            "WITH listed AS (SELECT DISTINCT UNNEST($2::TEXT[]) AS vote_account),
+                  stored AS (SELECT DISTINCT vote_account FROM validators
+                             WHERE epoch = $1 AND vat_admitted),
+                  only_bigquery AS (
+                      SELECT COALESCE(ARRAY_AGG(vote_account ORDER BY vote_account), '{}'::TEXT[]) AS accounts
+                      FROM listed
+                      WHERE vote_account NOT IN (SELECT vote_account FROM stored)
+                        AND vote_account IN (SELECT vote_account FROM validators WHERE epoch = $1)),
+                  only_stored AS (
+                      SELECT COALESCE(ARRAY_AGG(vote_account ORDER BY vote_account), '{}'::TEXT[]) AS accounts
+                      FROM stored WHERE vote_account NOT IN (SELECT vote_account FROM listed))
+             INSERT INTO vat_verdict_checks (epoch, checked_at, mismatched, only_bigquery, only_stored)
+             SELECT $1, $3, CARDINALITY(only_bigquery.accounts) + CARDINALITY(only_stored.accounts),
+                    only_bigquery.accounts, only_stored.accounts
+             FROM only_bigquery, only_stored
+             WHERE EXISTS (SELECT 1 FROM validators WHERE epoch = $1 AND vat_admitted IS NOT NULL)
+             ON CONFLICT (epoch) DO UPDATE SET
+                 checked_at = EXCLUDED.checked_at,
+                 mismatched = EXCLUDED.mismatched,
+                 only_bigquery = EXCLUDED.only_bigquery,
+                 only_stored = EXCLUDED.only_stored
+             RETURNING mismatched",
+            &[epoch, &bigquery_debited, checked_at],
+        )
+        .await?;
+    Ok(row.map(|row| row.get("mismatched")))
 }
 
 pub async fn create_epoch_record(
@@ -447,6 +484,37 @@ pub async fn close_epoch(
     refresh_expected_take_rates(psql_client, &[snapshot.epoch]).await?;
     if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
         warn!("Could not count validator rows without commission_effective: {err}");
+    }
+    match &snapshot.vat_debited_bigquery {
+        None => warn!(
+            "Epoch {} closes without the stakes-etl VAT debits, the chain verdict stays unchecked",
+            snapshot.epoch
+        ),
+        Some(debited) => match store_vat_verdict_check(
+            psql_client,
+            &snapshot_epoch,
+            debited,
+            &snapshot_created_at,
+        )
+        .await
+        {
+            Ok(None) => warn!(
+                "Epoch {} closes before its chain VAT verdict is stored, the verdict stays unchecked",
+                snapshot.epoch
+            ),
+            Ok(Some(0)) => info!(
+                "Chain VAT verdict of epoch {} matches the stakes-etl debits",
+                snapshot.epoch
+            ),
+            Ok(Some(mismatched)) => error!(
+                "Chain VAT verdict of epoch {} differs from the stakes-etl debits for {mismatched} vote accounts, see vat_verdict_checks",
+                snapshot.epoch
+            ),
+            Err(err) => error!(
+                "Could not cross-check the chain VAT verdict of epoch {}: {err}",
+                snapshot.epoch
+            ),
+        },
     }
 
     Ok(())

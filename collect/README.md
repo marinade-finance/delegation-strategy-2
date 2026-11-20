@@ -86,3 +86,12 @@ cargo run --bin collect -- releases > releases.yaml
 # One-off historical backfill of every floor the endpoint answers for.
 cargo run --bin collect -- releases --from-epoch 688 > releases.yaml
 ```
+
+## vat-debits
+
+The SIMD-0357 verdict of the chain for an epoch: the vote accounts debited the VAT in the block that opens the payout of `--epoch N`, the first block of N+1. `store vat-verdict` writes it to `validators.vat_admitted`, with `POSTGRES_URL` and `PG_SSLROOTCERT` set as in `store/README.md`. A read that fails a check exits non-zero and prints nothing; the hourly finalize job retries it.
+
+```bash
+cargo run --bin collect -- vat-debits --epoch 1090 > vat-debits.yaml
+cargo run --bin store -- --postgres-url $POSTGRES_URL vat-verdict --snapshot-file vat-debits.yaml
+```

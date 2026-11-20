@@ -219,10 +219,14 @@ pub fn collect_take_rates_info(
     info!("Querying take rates from epoch: {from_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let rewards = runtime.block_on(async {
-        let bq_client = create_bigquery_client().await?;
-        query_validator_rewards(&bq_client, from_epoch).await
-    })?;
+    let rewards = runtime.block_on(with_bigquery_timeout(
+        "validator rewards",
+        BIGQUERY_READ_TIMEOUT,
+        async {
+            let bq_client = create_bigquery_client().await?;
+            query_validator_rewards(&bq_client, from_epoch).await
+        },
+    ))?;
 
     info!("Retrieved {} validator reward records", rewards.len());
 

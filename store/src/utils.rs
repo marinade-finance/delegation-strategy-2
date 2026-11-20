@@ -13,6 +13,7 @@ use crate::incidents::{
 use crate::validators_jito::get_last_jito_info;
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
+use collect::common::{with_bigquery_timeout, BIGQUERY_READ_TIMEOUT};
 use collect::take_rates::query_validator_rewards;
 use collect::vat::{
     vat_admissions, vat_runway_epochs, VatCandidate, VatMinimumBalance, VatRejection,
@@ -852,6 +853,15 @@ const STAKES_TABLE: &str = "stakes";
 
 /// Latest epoch present in BigQuery; the gate for refreshing BigQuery-sourced caches.
 pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
+    with_bigquery_timeout(
+        "last epoch",
+        BIGQUERY_READ_TIMEOUT,
+        read_last_bigquery_epoch(),
+    )
+    .await
+}
+
+async fn read_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
     let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
@@ -864,6 +874,15 @@ pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
 
 /// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
 pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
+    with_bigquery_timeout(
+        "unique delegators",
+        BIGQUERY_READ_TIMEOUT,
+        read_latest_unique_delegators(),
+    )
+    .await
+}
+
+async fn read_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -949,6 +968,10 @@ pub struct TakeRates {
 /// `query_validator_rewards` returns, plus the cluster reward mix those same rows sum to. Windowed by
 /// `epochs.epoch_end_time` (same as apy-api).
 pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
+    with_bigquery_timeout("take rates", BIGQUERY_READ_TIMEOUT, read_take_rates()).await
+}
+
+async fn read_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -1332,6 +1355,7 @@ pub async fn load_validators(
                 pending_delegator_rewards,
                 vote_account_lamports,
                 bls_pubkey,
+                vat_admitted,
                 COALESCE(validators.epoch > (SELECT last_epoch FROM bls_uncollected), FALSE) AS bls_pubkey_collected,
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
@@ -1795,6 +1819,7 @@ pub async fn load_validators(
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                 vote_account_lamports,
                 vat_eligible,
+                vat_admitted: row.get::<_, Option<bool>>("vat_admitted"),
                 bls_pubkey,
                 vat_rejection_reason,
                 vat_runway_epochs,
@@ -2149,6 +2174,18 @@ pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
         .await?;
 
     Ok(row.get("has_rows"))
+}
+
+/// Mismatched vote accounts of the newest cross-checked epoch; 0 before any check.
+pub async fn load_vat_verdict_mismatch(psql_client: &Client) -> anyhow::Result<i64> {
+    let row = psql_client
+        .query_opt(
+            "SELECT mismatched FROM vat_verdict_checks ORDER BY epoch DESC LIMIT 1",
+            &[],
+        )
+        .await?;
+
+    Ok(row.map_or(0, |row| i64::from(row.get::<_, i32>("mismatched"))))
 }
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {
