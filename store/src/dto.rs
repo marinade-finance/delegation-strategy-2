@@ -506,7 +506,6 @@ pub struct ValidatorRecord {
     /// Null before Alpenglow.
     pub vote_reward_lamports: Option<u64>,
     /// Votes relative to the cluster, 1 = on par. Tower credits over the stake-weighted mean, or under Alpenglow `(reward/w) / (Σreward/Σw)` with `w = stake/S + leader_slots/N`, where `stake` is the `activated_stake` of the previous epoch. Null in the migration epoch and without data.
-    #[serde(skip_serializing)]
     pub vote_performance: Option<f64>,
     pub score: Option<f64>,
     pub warnings: Vec<ValidatorWarning>,

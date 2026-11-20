@@ -138,7 +138,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 | Migration epoch | `null` |
 | After the migration epoch | `(reward/w) / (Σreward/Σw)`, with `w = stake/S + leader_slots/N` |
 
-`stake` is the `activated_stake` of the previous epoch, because agave pays the reward on that stake. S and N are the sums over the validators that have a vote reward and a `stake`. `vote_performance` is `null` when an input is `null`. The API responses do not include it.
+`stake` is the `activated_stake` of the previous epoch, because agave pays the reward on that stake. S and N are the sums over the validators that have a vote reward and a `stake`. `vote_performance` is `null` when an input is `null`. `/validators` gives it on each validator, for the latest epoch. `/clients` and `/providers` do not include it.
 
 `order_field=Credits` sorts on `credits`, then on `vote_performance`. `/clients` and `/providers` use the same two keys.
 
