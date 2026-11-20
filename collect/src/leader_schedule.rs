@@ -135,7 +135,10 @@ pub(crate) fn bigquery_dataset(rpc_client: &RpcClient) -> anyhow::Result<Option<
     Ok(match rpc_client.get_genesis_hash()?.to_string().as_str() {
         MAINNET_BETA_GENESIS_HASH => Some("mainnet_beta_stakes"),
         TESTNET_GENESIS_HASH => Some("testnet_stakes"),
-        _ => None,
+        genesis_hash => {
+            warn!("Genesis hash {genesis_hash} has no stakes-etl BigQuery dataset");
+            None
+        }
     })
 }
 

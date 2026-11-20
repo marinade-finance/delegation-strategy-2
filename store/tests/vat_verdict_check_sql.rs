@@ -93,15 +93,11 @@ async fn differing_sets_record_both_sides() {
     };
     let before = verdicts(&client).await;
 
-    close(&mut client, schema, Some(&[ADMITTED, BIGQUERY_ONLY])).await;
+    close(&mut client, schema, Some(&[ADMITTED, REFUSED])).await;
 
     assert_eq!(
         check_row(&client).await,
-        Some((
-            2,
-            vec![BIGQUERY_ONLY.to_string()],
-            vec![STORED_ONLY.to_string()]
-        ))
+        Some((2, vec![REFUSED.to_string()], vec![STORED_ONLY.to_string()]))
     );
     assert_eq!(verdicts(&client).await, before);
 }
@@ -181,4 +177,37 @@ async fn the_mismatch_metric_reads_the_newest_check() {
         .unwrap();
 
     assert_eq!(load_vat_verdict_mismatch(&client).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn debits_of_vote_accounts_unknown_to_ds2_are_no_mismatch() {
+    let schema = "ds_test_vat_check_unknown";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+
+    close(
+        &mut client,
+        schema,
+        Some(&[ADMITTED, STORED_ONLY, BIGQUERY_ONLY]),
+    )
+    .await;
+
+    assert_eq!(check_row(&client).await, Some((0, vec![], vec![])));
+}
+
+#[tokio::test]
+async fn a_close_before_the_verdict_records_no_check() {
+    let schema = "ds_test_vat_check_no_verdict";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    client
+        .batch_execute("UPDATE validators SET vat_admitted = NULL")
+        .await
+        .unwrap();
+
+    close(&mut client, schema, Some(&[ADMITTED, STORED_ONLY])).await;
+
+    assert_eq!(check_row(&client).await, None);
 }
