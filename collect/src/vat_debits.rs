@@ -1,4 +1,4 @@
-use crate::common::CommonParams;
+use crate::common::{with_bigquery_timeout, CommonParams, BIGQUERY_READ_TIMEOUT};
 use crate::leader_schedule::{bigquery_dataset, create_bigquery_client, GOOGLE_BQ_PROJECT_ID};
 use crate::slot_params::is_known_vat_lamports;
 use crate::solana_service::{is_alpenglow_active, solana_client_with_timeout};
@@ -106,10 +106,14 @@ pub fn bigquery_vat_debited(rpc_client: &RpcClient, epoch: Epoch) -> Option<Vec<
             return Ok(None);
         };
         let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-        let debited = runtime.block_on(async {
-            let bq_client = create_bigquery_client().await?;
-            query_vat_debited(&bq_client, dataset, epoch).await
-        })?;
+        let debited = runtime.block_on(with_bigquery_timeout(
+            "VAT debits",
+            BIGQUERY_READ_TIMEOUT,
+            async {
+                let bq_client = create_bigquery_client().await?;
+                query_vat_debited(&bq_client, dataset, epoch).await
+            },
+        ))?;
         Ok((!debited.is_empty()).then_some(debited))
     };
     match read() {

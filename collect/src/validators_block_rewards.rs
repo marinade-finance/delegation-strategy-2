@@ -161,11 +161,19 @@ pub fn collect_validator_block_rewards_info(
     info!("Looking at epoch: {looking_at_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let block_rewards = runtime.block_on(async {
-        let bq_client = create_bigquery_client().await?;
-        query_validator_block_rewards(&bq_client, &rewards_params.gcp_table_name, looking_at_epoch)
+    let block_rewards = runtime.block_on(with_bigquery_timeout(
+        "validator block rewards",
+        BIGQUERY_READ_TIMEOUT,
+        async {
+            let bq_client = create_bigquery_client().await?;
+            query_validator_block_rewards(
+                &bq_client,
+                &rewards_params.gcp_table_name,
+                looking_at_epoch,
+            )
             .await
-    })?;
+        },
+    ))?;
 
     if block_rewards.len() <= rewards_params.loading_limit as usize {
         if rewards_params.epoch.is_some() {
