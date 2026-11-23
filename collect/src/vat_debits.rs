@@ -179,7 +179,7 @@ pub fn collect_vat_debits(
 ) -> anyhow::Result<()> {
     let epoch = params.epoch;
     let client = solana_client_with_timeout(
-        common_params.rpc_url,
+        common_params.rpc_url()?,
         Duration::from_secs(params.rpc_timeout),
         common_params.commitment,
     );
