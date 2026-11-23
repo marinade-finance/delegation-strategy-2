@@ -3,12 +3,13 @@
 
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, client_history, cluster_stats, commissions, config, docs, events,
-    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
-    list_validators, provider_history, readiness, releases, reports_commission_changes,
-    reports_scoring, reports_scoring_html, reports_staking, rewards, take_rates, unstake_hints,
-    uptimes, validator_score_breakdown, validator_score_breakdowns, validator_scores,
-    validators_block_rewards, validators_flat, versions, workflow_metrics_upload,
+    admin_score_upload, blacklist, blacklist_csv, client_history, cluster_stats, commissions,
+    config, docs, events, global_unstake_hints, glossary, health, jito, jito_mev, list_clients,
+    list_providers, list_validators, provider_history, readiness, releases,
+    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
+    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
+    validator_scores, validators_block_rewards, validators_flat, validators_quality, versions,
+    workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -55,9 +56,6 @@ pub struct Params {
     #[arg(long = "glossary-path")]
     glossary_path: String,
 
-    #[arg(long = "blacklist-path")]
-    blacklist_path: String,
-
     #[arg(env = "ADMIN_AUTH_TOKEN", long = "admin-auth-token")]
     admin_auth_token: String,
 
@@ -87,7 +85,6 @@ async fn main() -> anyhow::Result<()> {
     let context = Arc::new(RwLock::new(Context::new(
         psql_client,
         params.glossary_path,
-        params.blacklist_path,
         params.scoring_url,
         params.validator_bonds_api_url,
         params.apy_api_url,
@@ -198,6 +195,13 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::query::<validators_flat::QueryParams>())
         .and(with_context(context.clone()))
         .and_then(validators_flat::handler);
+
+    let route_validators_quality = warp::path!("validators" / "quality")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<validators_quality::QueryParams>())
+        .and(with_context(context.clone()))
+        .and_then(validators_quality::handler);
 
     let route_validators_block_rewards = warp::path!("validators" / "block-rewards")
         .and(warp::path::end())
@@ -314,6 +318,18 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(unstake_hints::handler);
 
+    let route_blacklist_csv = warp::path!("blacklist.csv")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(blacklist_csv::handler);
+
+    let route_blacklist = warp::path!("blacklist")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_context(context.clone()))
+        .and_then(blacklist::handler);
+
     let route_global_unstake_hints = warp::path!("global-unstake-hints")
         .and(warp::path::end())
         .and(warp::get())
@@ -353,6 +369,7 @@ async fn main() -> anyhow::Result<()> {
         .or(route_validator_score_breakdowns)
         .or(route_validator_scores)
         .or(route_validators_flat)
+        .or(route_validators_quality)
         .or(route_validators_block_rewards)
         .or(route_uptimes)
         .or(route_events)
@@ -369,6 +386,8 @@ async fn main() -> anyhow::Result<()> {
         .or(route_rewards)
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
+        .or(route_blacklist_csv)
+        .or(route_blacklist)
         .or(route_reports_commission_changes)
         .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)

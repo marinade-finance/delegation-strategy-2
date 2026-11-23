@@ -1,4 +1,6 @@
 pub mod admin_score_upload;
+pub mod blacklist;
+pub mod blacklist_csv;
 pub mod client_history;
 pub mod cluster_stats;
 pub mod commissions;
@@ -29,5 +31,6 @@ pub mod validator_score_breakdowns;
 pub mod validator_scores;
 pub mod validators_block_rewards;
 pub mod validators_flat;
+pub mod validators_quality;
 pub mod versions;
 pub mod workflow_metrics_upload;

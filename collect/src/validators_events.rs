@@ -143,7 +143,7 @@ pub fn collect_validator_events_info(
     info!("Collecting validator events (PSR settlements) snapshot");
     let timeout = Duration::from_secs(events_params.rpc_timeout);
     let client =
-        solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
+        solana_client_with_timeout(common_params.rpc_url()?, timeout, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;

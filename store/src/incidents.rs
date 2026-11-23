@@ -35,9 +35,12 @@ pub const SANDWICH_CLUSTER_MULTIPLIER: f64 = 2.0;
 // An incident rate is also at least this many percentage points above the cluster median.
 pub const MIN_SANDWICH_EXCESS_PP: f64 = 1.0;
 
-/// Blocks the 30-day window needs before its rate is judged. Under this the denominator is small
-/// enough that a handful of blocks moves the rate by whole points.
+/// Blocks the 30-day window needs to count towards the cluster median. Thinner windows sit at
+/// whole-point rates and would drag it around; they are still judged, by significance.
 pub const MIN_SANDWICH_BLOCKS: u64 = 1000;
+
+/// A sandwich count this unlikely at the cluster's pooled rate is not chance.
+pub const SANDWICH_SIGNIFICANCE_P: f64 = 1e-4;
 
 // Incident epochs at most this many epochs apart join one incident.
 pub const MAX_SANDWICH_INCIDENT_GAP_EPOCHS: u64 = 2;
@@ -178,20 +181,128 @@ pub struct EpochSandwiches {
     pub sandwich_rate_60d: Option<f64>,
     /// Percent.
     pub cluster_median_rate: f64,
+    /// Percent: all sandwiched blocks over all produced blocks of the epoch.
+    pub cluster_pooled_rate: f64,
 }
 
 impl EpochSandwiches {
     /// The bar the epoch had to clear. The caller's floor can only tighten it.
     pub fn threshold(&self, filters: &IncidentFilters) -> f64 {
-        (SANDWICH_CLUSTER_MULTIPLIER * self.cluster_median_rate)
-            .max(self.cluster_median_rate + MIN_SANDWICH_EXCESS_PP)
-            .max(filters.min_sandwich_rate.unwrap_or(0.0))
+        sandwich_bar(
+            self.cluster_median_rate,
+            filters.min_sandwich_rate.unwrap_or(0.0),
+        )
     }
 
     pub fn counts_as_incident(&self, filters: &IncidentFilters) -> bool {
-        self.blocks_produced >= MIN_SANDWICH_BLOCKS
-            && self.sandwich_rate_30d >= self.threshold(filters)
+        sandwich_hit(
+            self.sandwich_rate_30d,
+            self.blocks_produced,
+            self.blocks_with_sandwiches,
+            &SandwichPopulation {
+                median_rate: self.cluster_median_rate,
+                pooled_rate: self.cluster_pooled_rate,
+            },
+            filters.min_sandwich_rate.unwrap_or(0.0),
+        )
+        .is_some()
     }
+}
+
+/// The cluster an epoch's sandwich rates are judged against. Both rates in percent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SandwichPopulation {
+    pub median_rate: f64,
+    pub pooled_rate: f64,
+}
+
+fn sandwich_bar(median_rate: f64, floor_pct: f64) -> f64 {
+    (SANDWICH_CLUSTER_MULTIPLIER * median_rate)
+        .max(median_rate + MIN_SANDWICH_EXCESS_PP)
+        .max(floor_pct)
+}
+
+/// The one sandwich definition: the rate clears the bar, and the count is not explainable by
+/// chance at the cluster's pooled rate. Incidents and the blacklist differ only in `floor_pct`.
+/// Returns the p-value of a hit.
+pub fn sandwich_hit(
+    rate_pct: f64,
+    blocks_produced: u64,
+    blocks_with_sandwiches: u64,
+    population: &SandwichPopulation,
+    floor_pct: f64,
+) -> Option<f64> {
+    if rate_pct < sandwich_bar(population.median_rate, floor_pct) {
+        return None;
+    }
+    let p_value = binomial_upper_tail(
+        blocks_with_sandwiches,
+        blocks_produced,
+        population.pooled_rate / 100.0,
+    );
+    (p_value < SANDWICH_SIGNIFICANCE_P).then_some(p_value)
+}
+
+/// P(X >= k) for X ~ Binomial(n, p), summed in log space so large `n` neither under- nor overflows.
+pub fn binomial_upper_tail(k: u64, n: u64, p: f64) -> f64 {
+    if k == 0 {
+        return 1.0;
+    }
+    if k > n || p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
+    let (ln_p, ln_q) = (p.ln(), (-p).ln_1p());
+    let ln_choose: f64 = (1..=k)
+        .map(|i| ((n - k + i) as f64).ln() - (i as f64).ln())
+        .sum();
+    let mut term = ln_choose + k as f64 * ln_p + (n - k) as f64 * ln_q;
+    let mut total = term;
+    for i in k..n {
+        term += ((n - i) as f64).ln() - ((i + 1) as f64).ln() + ln_p - ln_q;
+        let (high, low) = if total >= term {
+            (total, term)
+        } else {
+            (term, total)
+        };
+        total = high + (low - high).exp().ln_1p();
+        if term < total - 40.0 {
+            break;
+        }
+    }
+    total.exp().min(1.0)
+}
+
+/// `rows` are `(rate_pct, blocks_produced, blocks_with_sandwiches)` of one epoch. `None` when no
+/// block was produced at all. The median is over validators with at least `MIN_SANDWICH_BLOCKS`,
+/// and 0 when none has that many.
+pub fn sandwich_population(
+    rows: impl IntoIterator<Item = (f64, u64, u64)>,
+) -> Option<SandwichPopulation> {
+    let (mut rates, mut blocks, mut sandwiched) = (Vec::new(), 0u64, 0u64);
+    for (rate, produced, with_sandwiches) in rows {
+        if produced >= MIN_SANDWICH_BLOCKS {
+            rates.push(rate);
+        }
+        blocks += produced;
+        sandwiched += with_sandwiches;
+    }
+    if blocks == 0 {
+        return None;
+    }
+    rates.sort_by(f64::total_cmp);
+    let middle = rates.len() / 2;
+    let median_rate = match rates.len() {
+        0 => 0.0,
+        len if len % 2 == 0 => (rates[middle - 1] + rates[middle]) / 2.0,
+        _ => rates[middle],
+    };
+    Some(SandwichPopulation {
+        median_rate,
+        pooled_rate: 100.0 * sandwiched as f64 / blocks as f64,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -576,33 +687,21 @@ pub fn cluster_skip_rates<'a>(
         .collect()
 }
 
-/// Median 30-day sandwich rate per epoch, across the validators with at least
-/// `MIN_SANDWICH_BLOCKS` blocks.
-pub fn cluster_sandwich_medians<'a>(
+/// The single-sandwich population of each epoch.
+pub fn cluster_sandwich_populations<'a>(
     sandwiches: impl IntoIterator<Item = &'a EpochSandwiches>,
-) -> HashMap<u64, f64> {
-    let mut rates: HashMap<u64, Vec<f64>> = Default::default();
+) -> HashMap<u64, SandwichPopulation> {
+    let mut rows: HashMap<u64, Vec<(f64, u64, u64)>> = Default::default();
     for sandwich in sandwiches {
-        if sandwich.blocks_produced >= MIN_SANDWICH_BLOCKS {
-            rates
-                .entry(sandwich.epoch)
-                .or_default()
-                .push(sandwich.sandwich_rate_30d);
-        }
+        rows.entry(sandwich.epoch).or_default().push((
+            sandwich.sandwich_rate_30d,
+            sandwich.blocks_produced,
+            sandwich.blocks_with_sandwiches,
+        ));
     }
 
-    rates
-        .into_iter()
-        .map(|(epoch, mut rates)| {
-            rates.sort_by(f64::total_cmp);
-            let middle = rates.len() / 2;
-            let median = if rates.len() % 2 == 0 {
-                (rates[middle - 1] + rates[middle]) / 2.0
-            } else {
-                rates[middle]
-            };
-            (epoch, median)
-        })
+    rows.into_iter()
+        .filter_map(|(epoch, rows)| sandwich_population(rows).map(|p| (epoch, p)))
         .collect()
 }
 
@@ -849,7 +948,7 @@ mod tests {
         }
     }
 
-    /// An epoch with blocks enough to be judged, against a cluster median of 1.5 %.
+    /// An epoch with blocks enough to be judged, against a cluster median and pooled rate of 1.5 %.
     fn sandwiched(epoch: u64, sandwich_rate_30d: f64) -> EpochSandwiches {
         let epoch_start_at = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
             + chrono::Duration::days(2 * epoch as i64);
@@ -858,10 +957,11 @@ mod tests {
             epoch_start_at,
             epoch_end_at: epoch_start_at + chrono::Duration::days(2),
             blocks_produced: 5000,
-            blocks_with_sandwiches: (5000.0 * sandwich_rate_30d / 100.0) as u64,
+            blocks_with_sandwiches: (sandwich_rate_30d * 50.0).round() as u64,
             sandwich_rate_30d,
             sandwich_rate_60d: Some(sandwich_rate_30d),
             cluster_median_rate: 1.5,
+            cluster_pooled_rate: 1.5,
         }
     }
 
@@ -1078,6 +1178,7 @@ mod tests {
     fn sandwich_types(cluster_median_rate: f64, sandwich_rate_30d: f64) -> Vec<&'static str> {
         let mut epoch = sandwiched(EPOCH, sandwich_rate_30d);
         epoch.cluster_median_rate = cluster_median_rate;
+        epoch.cluster_pooled_rate = cluster_median_rate;
         let records = ValidatorIncidentRecords {
             sandwiches: vec![epoch],
             ..Default::default()
@@ -1110,19 +1211,99 @@ mod tests {
         assert_eq!(sandwich_types(6.0, 12.0), vec!["Sandwich"]);
     }
 
-    // A window this thin moves whole points on a handful of blocks.
-    #[test]
-    fn a_window_under_the_block_floor_is_never_judged() {
-        let mut thin = sandwiched(EPOCH, 90.0);
-        thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
+    fn thin_window_types(blocks_produced: u64, blocks_with_sandwiches: u64) -> Vec<&'static str> {
+        let mut thin = sandwiched(EPOCH, 0.0);
+        thin.blocks_produced = blocks_produced;
+        thin.blocks_with_sandwiches = blocks_with_sandwiches;
+        thin.sandwich_rate_30d = 100.0 * blocks_with_sandwiches as f64 / blocks_produced as f64;
+        thin.cluster_median_rate = 0.8;
+        thin.cluster_pooled_rate = 0.773;
         let records = ValidatorIncidentRecords {
             sandwiches: vec![thin],
             ..Default::default()
         };
+        served_types(&records.into_response_incidents(&Default::default()))
+    }
 
-        assert!(records
-            .into_response_incidents(&Default::default())
-            .is_empty());
+    // 2 of 8 blocks is 25 %, yet at a 0.773 % cluster rate such a count happens by chance (p ≈ 1.6e-3).
+    #[test]
+    fn a_chance_count_on_eight_blocks_is_not_a_hit() {
+        assert!(thin_window_types(8, 2).is_empty());
+    }
+
+    // Under the old 1000-block floor none of these was judged at all.
+    #[test]
+    fn a_thin_window_with_a_significant_count_is_a_hit() {
+        for (blocks, sandwiched) in [(104, 7), (296, 12), (196, 26)] {
+            assert_eq!(
+                thin_window_types(blocks, sandwiched),
+                vec!["Sandwich"],
+                "{sandwiched}/{blocks}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chance_count_is_not_significant() {
+        let population = SandwichPopulation {
+            median_rate: 0.8,
+            pooled_rate: 0.773,
+        };
+        assert_eq!(sandwich_hit(25.0, 8, 2, &population, 4.0), None);
+        let p_value = sandwich_hit(6.7, 104, 7, &population, 4.0).unwrap();
+        assert!(p_value < SANDWICH_SIGNIFICANCE_P, "{p_value}");
+    }
+
+    #[test]
+    fn a_rate_under_the_floor_is_not_a_hit_however_significant() {
+        let population = SandwichPopulation {
+            median_rate: 0.8,
+            pooled_rate: 0.773,
+        };
+        assert_eq!(sandwich_hit(3.9, 10_000, 390, &population, 4.0), None);
+    }
+
+    // The 1000-block floor used to make any rate over the bar an incident on such a window.
+    #[test]
+    fn a_thick_window_over_the_bar_but_not_significant_is_not_an_incident() {
+        let population = SandwichPopulation {
+            median_rate: 1.0,
+            pooled_rate: 1.9,
+        };
+        assert_eq!(sandwich_hit(2.0, 1000, 20, &population, 0.0), None);
+        assert!(sandwich_hit(
+            2.0,
+            1000,
+            20,
+            &SandwichPopulation {
+                pooled_rate: 0.5,
+                ..population
+            },
+            0.0
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn the_binomial_tail_has_exact_edges() {
+        assert_eq!(binomial_upper_tail(0, 0, 0.5), 1.0);
+        assert_eq!(binomial_upper_tail(0, 10, 0.01), 1.0);
+        assert_eq!(binomial_upper_tail(11, 10, 0.5), 0.0);
+        assert_eq!(binomial_upper_tail(1, 10, 0.0), 0.0);
+        assert!((binomial_upper_tail(1, 1, 0.3) - 0.3).abs() < 1e-12);
+        assert!((binomial_upper_tail(2, 2, 0.5) - 0.25).abs() < 1e-12);
+        assert!((binomial_upper_tail(1, 2, 0.5) - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_binomial_tail_stays_finite_and_falls_with_the_count_on_large_windows() {
+        let mut previous = 1.0;
+        for k in [50, 77, 100, 200, 400] {
+            let tail = binomial_upper_tail(k, 10_000, 0.0077);
+            assert!(tail.is_finite() && tail > 0.0 && tail <= 1.0, "{k}: {tail}");
+            assert!(tail < previous, "{k}: {tail} !< {previous}");
+            previous = tail;
+        }
     }
 
     #[test]
@@ -1296,14 +1477,20 @@ mod tests {
         thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
         rows.push(thin);
 
-        assert_eq!(cluster_sandwich_medians(&rows).get(&EPOCH), Some(&2.0));
+        assert_eq!(median(&rows, EPOCH), Some(2.0));
+    }
+
+    fn median(rows: &[EpochSandwiches], epoch: u64) -> Option<f64> {
+        cluster_sandwich_populations(rows)
+            .get(&epoch)
+            .map(|p| p.median_rate)
     }
 
     #[test]
     fn an_even_count_takes_the_mean_of_the_middle_rates() {
         let rows = sandwich_rows(EPOCH, &[4.0, 1.0, 2.0, 3.0]);
 
-        assert_eq!(cluster_sandwich_medians(&rows).get(&EPOCH), Some(&2.5));
+        assert_eq!(median(&rows, EPOCH), Some(2.5));
     }
 
     #[test]
@@ -1311,17 +1498,35 @@ mod tests {
         let mut rows = sandwich_rows(EPOCH, &[1.0, 1.0, 1.0]);
         rows.extend(sandwich_rows(EPOCH + 1, &[5.0]));
 
-        let medians = cluster_sandwich_medians(&rows);
-        assert_eq!(medians.get(&EPOCH), Some(&1.0));
-        assert_eq!(medians.get(&(EPOCH + 1)), Some(&5.0));
+        assert_eq!(median(&rows, EPOCH), Some(1.0));
+        assert_eq!(median(&rows, EPOCH + 1), Some(5.0));
     }
 
+    // The bar then falls to the 1-point excess, as it did when the loader defaulted the median.
     #[test]
-    fn an_epoch_with_only_thin_windows_has_no_median() {
+    fn an_epoch_with_only_thin_windows_has_a_zero_median() {
         let mut thin = sandwiched(EPOCH, 90.0);
         thin.blocks_produced = MIN_SANDWICH_BLOCKS - 1;
 
-        assert!(cluster_sandwich_medians(&[thin]).is_empty());
+        assert_eq!(median(&[thin], EPOCH), Some(0.0));
+    }
+
+    // Block-weighted, so a thin window counts as little as its blocks.
+    #[test]
+    fn the_pooled_rate_counts_every_window_by_its_blocks() {
+        let mut rows = sandwich_rows(EPOCH, &[1.0, 3.0]);
+        let mut thin = sandwiched(EPOCH, 50.0);
+        thin.blocks_produced = 10;
+        thin.blocks_with_sandwiches = 5;
+        rows.push(thin);
+
+        let population = cluster_sandwich_populations(&rows)[&EPOCH];
+        assert_eq!(population.pooled_rate, 100.0 * 205.0 / 10_010.0);
+    }
+
+    #[test]
+    fn an_epoch_without_blocks_has_no_population() {
+        assert_eq!(sandwich_population([(0.0, 0, 0)]), None);
     }
 
     #[test]

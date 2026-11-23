@@ -1,7 +1,8 @@
 use lazy_static::lazy_static;
 use log::error;
 use prometheus::{
-    register_int_counter, register_int_gauge_vec, Encoder, IntCounter, IntGaugeVec, TextEncoder,
+    register_int_counter, register_int_gauge, register_int_gauge_vec, Encoder, IntCounter,
+    IntGauge, IntGaugeVec, TextEncoder,
 };
 use warp::Filter;
 
@@ -9,6 +10,21 @@ lazy_static! {
     pub static ref REQUEST_CLUSTER_STATS: IntCounter = register_int_counter!(
         "ds_request_count_cluster_stats",
         "How many times /cluster-stats endpoint was requested"
+    )
+    .unwrap();
+    pub static ref BLACKLIST_IMPORT_LAG_EPOCHS: IntGauge = register_int_gauge!(
+        "ds_blacklist_import_lag_epochs",
+        "Epochs between the current one and the last SAM auction whose listings were imported; 0 when on time or before the first import"
+    )
+    .unwrap();
+    pub static ref REQUEST_BLACKLIST: IntCounter = register_int_counter!(
+        "ds_request_count_blacklist",
+        "How many times /blacklist or /blacklist.csv endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_VALIDATORS_QUALITY: IntCounter = register_int_counter!(
+        "ds_request_count_validators_quality",
+        "How many times /validators/quality endpoint was requested"
     )
     .unwrap();
     pub static ref REQUEST_UNSTAKE_HINTS: IntCounter = register_int_counter!(
