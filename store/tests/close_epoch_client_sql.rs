@@ -336,6 +336,70 @@ async fn a_tie_goes_to_the_lower_client_id_raw_and_a_missing_version_keeps_the_s
 }
 
 #[tokio::test]
+async fn an_upgrade_does_not_split_the_time_of_the_client_held_longest() {
+    let schema = "ds_test_close_epoch_client_7";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let before_upgrade = Held {
+        version: "4.3.1",
+        ..A
+    };
+
+    seed(&mut client, EPOCH, &["voteUpgraded"]).await;
+    set_stored(&client, "voteUpgraded", EPOCH, &holding(B, None)).await;
+    close(&client, EPOCH, t0(), at(9)).await;
+    version_row(&client, "voteUpgraded", EPOCH, at(0), Some(before_upgrade)).await;
+    version_row(&client, "voteUpgraded", EPOCH, at(2), Some(B)).await;
+    version_row(&client, "voteUpgraded", EPOCH, at(6), Some(A)).await;
+
+    assert_eq!(
+        update_clients_from_versions(&client, EPOCH).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        stored(&client, "voteUpgraded", EPOCH).await,
+        holding(A, None),
+        "AgaveBam ran 2h + 3h against JitoLabs' 4h; its longer-held version is stored"
+    );
+
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+async fn two_spellings_of_one_client_count_as_one_client() {
+    let schema = "ds_test_close_epoch_client_8";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let numbered = Held {
+        raw: "Unknown(6)",
+        ..A
+    };
+
+    seed(&mut client, EPOCH, &["voteRespelled"]).await;
+    set_stored(&client, "voteRespelled", EPOCH, &holding(B, None)).await;
+    close(&client, EPOCH, t0(), at(9)).await;
+    version_row(&client, "voteRespelled", EPOCH, at(0), Some(A)).await;
+    version_row(&client, "voteRespelled", EPOCH, at(3), Some(B)).await;
+    version_row(&client, "voteRespelled", EPOCH, at(7), Some(numbered)).await;
+
+    assert_eq!(
+        update_clients_from_versions(&client, EPOCH).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        stored(&client, "voteRespelled", EPOCH).await,
+        holding(A, None),
+        "client 6 ran 3h as AgaveBam + 2h as Unknown(6) against JitoLabs' 4h"
+    );
+
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
 async fn close_epoch_stores_the_client_held_longest() {
     let schema = "ds_test_close_epoch_client_6";
     if skip_without_database(schema) {

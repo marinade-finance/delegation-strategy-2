@@ -996,10 +996,7 @@ fn render_history(
                     epoch: *epoch,
                     epoch_start_at: stats.epoch_start_at,
                     epoch_end_at: stats.epoch_end_at,
-                    stake_share: stake_share(
-                        point.total_stake,
-                        epoch_stake.get(epoch).copied().unwrap_or_default(),
-                    ),
+                    stake_share: stake_share(point.total_stake, epoch_stake[epoch]),
                     total_stake: point.total_stake,
                     validator_count: point.validator_count,
                     net_apy: point.net_apy.mean(),
