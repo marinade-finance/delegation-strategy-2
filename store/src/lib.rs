@@ -1,3 +1,4 @@
+pub mod blacklist;
 pub mod close_epoch;
 pub mod cluster_info;
 pub mod dto;
@@ -14,10 +15,12 @@ pub mod stake_deltas;
 pub mod take_rates;
 pub mod uptime;
 pub mod utils;
+pub mod validator_quality;
 pub mod validators;
 pub mod validators_block_rewards;
 pub mod validators_events;
 pub mod validators_jito;
 pub mod validators_sandwiches;
+pub mod validators_slot_times;
 pub mod versions;
 pub mod vote_performance;

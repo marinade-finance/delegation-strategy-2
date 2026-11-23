@@ -368,7 +368,7 @@ pub fn collect_jito_info(
     info!("Collecting snapshot of JITO validators accounts");
     let timeout = Duration::from_secs(jito_params.rpc_timeout);
     let client =
-        solana_client_with_timeout(common_params.rpc_url, timeout, common_params.commitment);
+        solana_client_with_timeout(common_params.rpc_url()?, timeout, common_params.commitment);
 
     let created_at = chrono::Utc::now();
     let current_epoch_info = client.get_epoch_info()?;

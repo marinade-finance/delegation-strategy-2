@@ -34,7 +34,6 @@ pub async fn handler(
 
     let unstake_hints = store::scoring::load_global_unstake_hint_records(
         &context.read().await.psql_client,
-        &context.read().await.blacklist_path,
         query_params.epoch,
     )
     .await;

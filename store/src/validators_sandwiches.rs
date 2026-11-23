@@ -49,6 +49,8 @@ pub async fn store_sandwiches(
         .collect();
 
     let mut total_upserted = 0;
+    // One transaction: the blacklist judges an epoch once, so it must never see half of one.
+    let tx = psql_client.transaction().await?;
 
     for chunk in sandwiches.chunks(DEFAULT_CHUNK_SIZE) {
         let epochs: Vec<Decimal> = chunk.iter().map(|r| Decimal::from(r.epoch)).collect();
@@ -63,6 +65,8 @@ pub async fn store_sandwiches(
             .collect();
         let rates_30d: Vec<f64> = chunk.iter().map(|r| r.sandwich_rate_30d).collect();
         let rates_60d: Vec<Option<f64>> = chunk.iter().map(|r| r.sandwich_rate_60d).collect();
+        let wide_rates_30d: Vec<Option<f64>> =
+            chunk.iter().map(|r| r.wide_sandwich_rate_30d).collect();
         let updated_ats: Vec<&DateTime<Utc>> = vec![&snapshot_created_at; chunk.len()];
         let created_ats = updated_ats.clone();
 
@@ -75,7 +79,8 @@ pub async fn store_sandwiches(
             sandwich_rate_30d,
             sandwich_rate_60d,
             created_at,
-            updated_at
+            updated_at,
+            wide_sandwich_rate_30d
         )
         SELECT * FROM UNNEST(
             $1::NUMERIC[],
@@ -85,7 +90,8 @@ pub async fn store_sandwiches(
             $5::DOUBLE PRECISION[],
             $6::DOUBLE PRECISION[],
             $7::TIMESTAMP WITH TIME ZONE[],
-            $8::TIMESTAMP WITH TIME ZONE[]
+            $8::TIMESTAMP WITH TIME ZONE[],
+            $9::DOUBLE PRECISION[]
         )
         ON CONFLICT (epoch, vote_account)
         DO UPDATE SET
@@ -93,10 +99,11 @@ pub async fn store_sandwiches(
             blocks_with_sandwiches = EXCLUDED.blocks_with_sandwiches,
             sandwich_rate_30d = EXCLUDED.sandwich_rate_30d,
             sandwich_rate_60d = EXCLUDED.sandwich_rate_60d,
+            wide_sandwich_rate_30d = EXCLUDED.wide_sandwich_rate_30d,
             updated_at = EXCLUDED.updated_at"
         );
 
-        let rows_affected = psql_client
+        let rows_affected = tx
             .execute(
                 &query,
                 &[
@@ -108,6 +115,7 @@ pub async fn store_sandwiches(
                     &rates_60d,
                     &created_ats,
                     &updated_ats,
+                    &wide_rates_30d,
                 ],
             )
             .await?;
@@ -116,6 +124,7 @@ pub async fn store_sandwiches(
 
         info!("Upserted {rows_affected} sandwich records in this chunk");
     }
+    tx.commit().await?;
 
     info!("Stored sandwiches snapshot: {total_upserted} total records upserted");
 

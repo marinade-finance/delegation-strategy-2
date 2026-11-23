@@ -138,7 +138,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 | Migration epoch | `null` |
 | After the migration epoch | `(reward/w) / (Σreward/Σw)`, with `w = stake/S + leader_slots/N` |
 
-`stake` is the `activated_stake` of the previous epoch, because agave pays the reward on that stake. S and N are the sums over the validators that have a vote reward and a `stake`. `vote_performance` is `null` when an input is `null`. The API responses do not include it.
+`stake` is the `activated_stake` of the previous epoch, because agave pays the reward on that stake. S and N are the sums over the validators that have a vote reward and a `stake`. `vote_performance` is `null` when an input is `null`. `/validators` gives it on each validator, for the latest epoch. `/clients` and `/providers` do not include it.
 
 `order_field=Credits` sorts on `credits`, then on `vote_performance`. `/clients` and `/providers` use the same two keys.
 
@@ -479,6 +479,59 @@ curl -sfLS 'localhost:8000/cluster-stats?epochs=1' | jq
       }
     ]
   }
+}
+```
+
+## Validator quality
+Per-epoch quality inputs: the 30d sandwich figures and the slot-time median. The SAM auction decides the
+blacklist from them. `ibrl_score` stays `null` until the upstream publishes it.
+```bash
+curl -sfLS 'localhost:8000/validators/quality?epoch=1080' | jq
+```
+```json
+{
+  "epoch": 1080,
+  "validators": [
+    {
+      "vote_account": "5AC692sp...",
+      "blocks_produced": 217,
+      "blocks_with_sandwiches": 26,
+      "sandwich_rate_30d": 12.0,
+      "wide_sandwich_rate_30d": null,
+      "slot_duration_median_ms": 201.5,
+      "ibrl_score": null
+    }
+  ]
+}
+```
+
+## Blacklist
+Active rows of the `blacklist` table: `legacy` (imported from the old `blacklist.csv`), `manual` (the
+YAML config) and `auction` (listed by the SAM auction of `auction_epoch`, imported from ds-sam-pipeline).
+`/blacklist` also serves the config's exemptions, which the auction honours. Both routes answer 503 until
+the legacy import ran, so a partial list is never served; `/unstake-hints` and `/global-unstake-hints`
+answer 500 until then. On `:9000/metrics`, alert on
+`ds_blacklist_import_lag_epochs` above 1.
+```bash
+curl -sfLS 'localhost:8000/blacklist.csv' | head
+```
+```
+vote_account,code
+2HWm5dvd...,SLOW_SLOTS_1080
+3vyMZHph...,BLACKLIST_COMMISSION_RUG
+```
+```bash
+curl -sfLS 'localhost:8000/blacklist' | jq
+```
+```json
+{
+  "rows": [
+    { "vote_account": "2HWm5dvd...", "source": "auction", "code": "SLOW_SLOTS_1080", "auction_epoch": 1081 },
+    { "vote_account": "3vyMZHph...", "source": "legacy", "code": "BLACKLIST_COMMISSION_RUG", "auction_epoch": null }
+  ],
+  "exempt": [
+    { "vote_account": "7xKXtg2C...", "rule": "sandwich", "until_epoch": 1083 }
+  ]
 }
 ```
 
