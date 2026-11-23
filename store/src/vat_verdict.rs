@@ -1,6 +1,4 @@
-use crate::utils::{
-    load_vat_minimum_balances, vat_forecasts, BLS_PUBKEY_COLLECTED_SQL, DEFAULT_CACHE_EPOCHS,
-};
+use crate::utils::{load_epoch_vat_minimum_balance, vat_forecasts, BLS_PUBKEY_COLLECTED_SQL};
 use collect::vat_debits::VatDebitsSnapshot;
 use log::info;
 use rust_decimal::Decimal;
@@ -32,25 +30,9 @@ pub async fn store_vat_verdict(
         "VAT debits file '{path}' of epoch {epoch} lists no vote account"
     );
     let epoch_decimal = Decimal::from(epoch);
-    let minimums = load_vat_minimum_balances(psql_client, DEFAULT_CACHE_EPOCHS).await?;
+    let minimums = load_epoch_vat_minimum_balance(psql_client, epoch).await?;
 
     let transaction = psql_client.transaction().await?;
-    let counts = transaction
-        .query_one(
-            "WITH listed AS (SELECT DISTINCT UNNEST($2::TEXT[]) AS vote_account),
-                  stored AS (SELECT DISTINCT vote_account FROM validators WHERE epoch = $1)
-             SELECT
-                 (SELECT COUNT(*) FROM stored) AS known,
-                 (SELECT COUNT(*) FROM listed) AS debited,
-                 (SELECT COUNT(*) FROM listed
-                  WHERE vote_account NOT IN (SELECT vote_account FROM stored)) AS unknown_debited",
-            &[&epoch_decimal, debited],
-        )
-        .await?;
-    let known: i64 = counts.get("known");
-    let unknown_debited: i64 = counts.get("unknown_debited");
-    let debited_count: i64 = counts.get("debited");
-    anyhow::ensure!(known > 0, "DS2 holds no validators of epoch {epoch}");
     let rows = transaction
         .query(
             &format!(
@@ -62,7 +44,11 @@ pub async fn store_vat_verdict(
             &[&epoch_decimal],
         )
         .await?;
+    anyhow::ensure!(!rows.is_empty(), "DS2 holds no validators of epoch {epoch}");
     let listed: HashSet<&str> = debited.iter().map(String::as_str).collect();
+    let stored: HashSet<&str> = rows.iter().map(|row| row.get("vote_account")).collect();
+    let debited_count = listed.len() as i64;
+    let unknown_debited = listed.iter().filter(|v| !stored.contains(*v)).count() as i64;
     let forecasts = vat_forecasts(&rows, &minimums);
     let admitted: Vec<&str> = forecasts
         .iter()

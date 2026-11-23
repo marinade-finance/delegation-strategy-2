@@ -402,11 +402,11 @@ async fn rows_without_a_forecast_stay_out_of_the_undebited_share() {
         &client,
         "inflation_rewards_commission_bps_is_v4",
         None,
-        vec![staked(STAKED - 4)],
+        staked_range(STAKED - 6..STAKED - 3),
     )
     .await;
 
-    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 4))
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 6))
         .await
         .unwrap();
 
@@ -430,6 +430,28 @@ async fn an_epoch_without_a_forecast_writes_nothing() {
 
     assert!(err.to_string().contains("holds no VAT forecast"), "{err}");
     assert_eq!(written_verdicts(&client).await, 0);
+}
+
+#[tokio::test]
+async fn an_epoch_older_than_the_api_window_still_gets_its_verdict() {
+    let schema = "ds_test_vat_verdict_old_epoch";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at, vat_minimum_balance)
+             VALUES (0, $1, 0, NOW(), $2)",
+            &[&Decimal::from(EPOCH + 100), &Decimal::from(MINIMUM)],
+        )
+        .await
+        .unwrap();
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &staked(0), EPOCH).await, Some(true));
 }
 
 #[tokio::test]

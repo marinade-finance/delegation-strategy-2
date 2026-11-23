@@ -1268,14 +1268,37 @@ pub async fn load_vat_minimum_balances(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
+    query_vat_minimum_balances(
+        psql_client,
+        "epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC",
+        Decimal::from(epochs),
+    )
+    .await
+}
+
+/// The newest `cluster_info` VAT minimum of `epoch`, whatever its age.
+pub async fn load_epoch_vat_minimum_balance(
+    psql_client: &Client,
+    epoch: u64,
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
+    query_vat_minimum_balances(psql_client, "epoch = $1::NUMERIC", Decimal::from(epoch)).await
+}
+
+async fn query_vat_minimum_balances(
+    psql_client: &Client,
+    epoch_filter: &str,
+    epoch_param: Decimal,
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
     let rows = psql_client
         .query(
-            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
+            &format!(
+                "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
             FROM cluster_info
-            WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+            WHERE {epoch_filter}
                 AND vat_minimum_balance IS NOT NULL
-            ORDER BY epoch, created_at DESC",
-            &[&Decimal::from(epochs)],
+            ORDER BY epoch, created_at DESC"
+            ),
+            &[&epoch_param],
         )
         .await?;
     rows.iter()
