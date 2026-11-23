@@ -150,6 +150,8 @@ async fn the_repos_blacklist_imports_whole() {
         })
         .collect();
     let imported = active_pairs(&client).await;
-    assert!(expected.len() > 500, "{}", expected.len());
+    // A floor, not the row count: it only proves the real file was read. The list shrinks
+    // when validators are lifted (463 rows after the blacklist reset in #325).
+    assert!(expected.len() > 400, "{}", expected.len());
     assert_eq!(imported, expected);
 }
