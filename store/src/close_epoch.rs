@@ -256,6 +256,52 @@ pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<
     Ok(())
 }
 
+// The last hourly snapshot can catch a short mislabel; the client held longest in the epoch cannot.
+pub async fn update_clients_from_versions(psql_client: &Client, epoch: u64) -> anyhow::Result<u64> {
+    let updated = psql_client
+        .execute(
+            "
+            WITH ep AS (
+                SELECT end_at FROM epochs WHERE epoch = $1
+            ), spans AS (
+                SELECT
+                    v.vote_account,
+                    v.client_id,
+                    v.client_id_raw,
+                    v.version,
+                    GREATEST(COALESCE(LEAD(v.created_at) OVER (PARTITION BY v.vote_account ORDER BY v.created_at, v.id), ep.end_at) - v.created_at, INTERVAL '0') AS held
+                FROM versions v, ep
+                WHERE v.epoch = $1
+            ), ranked AS (
+                SELECT
+                    vote_account,
+                    client_id,
+                    client_id_raw,
+                    version,
+                    ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY SUM(held) DESC, client_id_raw, version) AS rn
+                FROM spans
+                WHERE client_id_raw IS NOT NULL
+                GROUP BY 1, 2, 3, 4
+            )
+            UPDATE validators
+            SET
+                client_id = ranked.client_id,
+                client_id_raw = ranked.client_id_raw,
+                version = COALESCE(ranked.version, validators.version)
+            FROM ranked
+            WHERE ranked.vote_account = validators.vote_account
+              AND ranked.rn = 1
+              AND validators.epoch = $1
+              AND (validators.client_id IS DISTINCT FROM ranked.client_id
+                OR validators.client_id_raw IS DISTINCT FROM ranked.client_id_raw
+                OR validators.version IS DISTINCT FROM COALESCE(ranked.version, validators.version))
+            ",
+            &[&Decimal::from(epoch)],
+        )
+        .await?;
+    Ok(updated)
+}
+
 struct ValidatorUpdateRecord {
     vote_account: String,
     epoch: Decimal,
@@ -445,6 +491,11 @@ pub async fn close_epoch(
     update_uptimes(psql_client, snapshot.epoch).await?;
     update_observed_commission(psql_client, snapshot.epoch).await?;
     refresh_expected_take_rates(psql_client, &[snapshot.epoch]).await?;
+    let relabelled = update_clients_from_versions(psql_client, snapshot.epoch).await?;
+    info!(
+        "Set the client held longest in epoch {} for {relabelled} validators",
+        snapshot.epoch
+    );
     if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
         warn!("Could not count validator rows without commission_effective: {err}");
     }
