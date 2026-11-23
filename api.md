@@ -160,7 +160,7 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 
 `bls_pubkey` can be `null` in epochs before Alpenglow, or shortly after it, before DS2 collected the key. The API skips check 1 for those epochs. `null` in `vat_eligible` or `vat_runway_epochs` means an input is missing. The top-level fields repeat the newest epoch.
 
-`vat_eligible` is a forecast from the last stored rows of the epoch. `epoch_stats[].vat_admitted` is the verdict of the chain, read from the `VATDebit` rewards in the first block of the next epoch, about an hour after the boundary: `true` when the vote account paid the VAT, `false` when it had `activated_stake` in the epoch and paid none. It is `null` for the running epoch, for a vote account without `activated_stake` in the epoch that paid no VAT, and until DS2 has stored the verdict.
+`vat_eligible` is a forecast from the last stored rows of the epoch. `epoch_stats[].vat_admitted` is the verdict of the chain, read from the `VATDebit` rewards in the first block of the next epoch, about an hour after the boundary: `true` when the vote account paid the VAT, `false` when it paid none and has `activated_stake` in the next epoch, the stake agave admits on. It is `null` for the running epoch, for a vote account that paid no VAT and has no stake or no stored row in the next epoch yet, and until DS2 has stored the verdict.
 
 ## Uptimes
 ```bash

@@ -86,7 +86,9 @@ pub async fn store_vat_verdict(
             "UPDATE validators
              SET vat_admitted = CASE
                  WHEN vote_account = ANY($2) THEN TRUE
-                 WHEN activated_stake > 0 THEN FALSE
+                 WHEN EXISTS (SELECT 1 FROM validators next
+                              WHERE next.vote_account = validators.vote_account
+                                AND next.epoch = $1 + 1 AND next.activated_stake > 0) THEN FALSE
                  ELSE NULL
              END
              WHERE epoch = $1",

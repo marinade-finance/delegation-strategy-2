@@ -41,6 +41,7 @@ async fn seed_validators(client: &mut Client, schema: &str) {
         validator.bls_pubkey = Some("blsKey".into());
     }
     store_snapshot(client, schema, &snapshot).await;
+    store_next_epoch(client, schema, staked_range(0..STAKED), 100).await;
     client
         .execute(
             "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at, vat_minimum_balance)
@@ -56,6 +57,29 @@ async fn seed_validators(client: &mut Client, schema: &str) {
         &validator_snapshot(EPOCH - 1, "identityPrevious", &previous),
     )
     .await;
+}
+
+async fn store_next_epoch(client: &mut Client, schema: &str, accounts: Vec<String>, stake: u64) {
+    let mut snapshot = validator_snapshot(EPOCH + 1, "identityNext", &accounts[0]);
+    snapshot.validators.clear();
+    for vote_account in accounts {
+        let mut validators =
+            validator_snapshot(EPOCH + 1, &format!("identity{vote_account}"), &vote_account)
+                .validators;
+        validators[0].activated_stake = stake;
+        snapshot.validators.append(&mut validators);
+    }
+    store_snapshot(client, &format!("{schema}-next"), &snapshot).await;
+}
+
+async fn delete_next_epoch(client: &Client, vote_account: &str) {
+    client
+        .execute(
+            "DELETE FROM validators WHERE vote_account = $1 AND epoch = $2",
+            &[&vote_account, &Decimal::from(EPOCH + 1)],
+        )
+        .await
+        .unwrap();
 }
 
 async fn store_verdict(
@@ -249,7 +273,7 @@ async fn an_epoch_without_validators_is_refused() {
         return;
     };
 
-    let err = store_verdict(&mut client, schema, EPOCH + 1, staked_range(0..STAKED))
+    let err = store_verdict(&mut client, schema, EPOCH + 2, staked_range(0..STAKED))
         .await
         .unwrap_err();
 
@@ -483,4 +507,122 @@ async fn load_validators_serves_vat_admitted_per_epoch() {
         vec![(EPOCH + 1, None), (EPOCH, Some(false)), (EPOCH - 1, None)]
     );
     assert_eq!(served(UNSTAKED), vec![(EPOCH, None)]);
+}
+
+#[tokio::test]
+async fn an_account_deactivated_at_the_boundary_gets_no_verdict() {
+    let schema = "ds_test_vat_verdict_deactivated";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    store_next_epoch(&mut client, schema, vec![staked(STAKED - 1)], 0).await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        vat_admitted(&client, &staked(STAKED - 1), EPOCH).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn an_account_without_a_next_epoch_row_gets_no_verdict() {
+    let schema = "ds_test_vat_verdict_no_next";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    delete_next_epoch(&client, &staked(STAKED - 1)).await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        vat_admitted(&client, &staked(STAKED - 1), EPOCH).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn an_undebited_account_staked_in_the_next_epoch_is_refused() {
+    let schema = "ds_test_vat_verdict_next_staked";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        vat_admitted(&client, &staked(STAKED - 1), EPOCH).await,
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn a_debited_account_is_admitted_whatever_its_next_epoch_row() {
+    let schema = "ds_test_vat_verdict_debited_no_next";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    delete_next_epoch(&client, &staked(0)).await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &staked(0), EPOCH).await, Some(true));
+}
+
+#[tokio::test]
+async fn a_rerun_after_the_next_epoch_row_arrives_stores_the_refusal() {
+    let schema = "ds_test_vat_verdict_late_next";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    let refused = staked(STAKED - 1);
+    delete_next_epoch(&client, &refused).await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+    assert_eq!(vat_admitted(&client, &refused, EPOCH).await, None);
+
+    store_next_epoch(&mut client, schema, vec![refused.clone()], 100).await;
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+    assert_eq!(vat_admitted(&client, &refused, EPOCH).await, Some(false));
+
+    store_next_epoch(&mut client, schema, vec![refused.clone()], 0).await;
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+    assert_eq!(vat_admitted(&client, &refused, EPOCH).await, None);
+}
+
+#[tokio::test]
+async fn an_account_with_only_activating_stake_is_refused_on_its_next_epoch_stake() {
+    let schema = "ds_test_vat_verdict_activating";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    let refused = staked(STAKED - 1);
+    client
+        .execute(
+            "UPDATE validators SET activated_stake = 0, activating_stake = 100
+             WHERE vote_account = $1 AND epoch = $2",
+            &[&refused, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &refused, EPOCH).await, Some(false));
 }
