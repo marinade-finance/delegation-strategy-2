@@ -1291,6 +1291,9 @@ pub async fn load_vat_minimum_balances(
         .collect()
 }
 
+// Rows of the epoch running when 0041 was applied, and older ones, may lack the key.
+pub(crate) const BLS_PUBKEY_COLLECTED_SQL: &str = "COALESCE(validators.epoch > (SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) FROM migrations WHERE name = '0041-validators-vat-admission.sql'), FALSE) AS bls_pubkey_collected";
+
 /// The agave VAT filter by `(epoch, vote_account)`; a row with no decodable balance is absent.
 pub fn vat_forecasts(
     rows: &[tokio_postgres::Row],
@@ -1368,16 +1371,12 @@ pub async fn load_validators(
     log::info!("Querying validators...");
     let rows = psql_client
         .query(
-            "
+            &format!(
+                "
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch),
-                -- The epoch running when 0041 was applied. Its rows and older ones may lack the key, whatever later writes touch them.
-                bls_uncollected AS (
-                    SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) AS last_epoch
-                    FROM migrations WHERE name = '0041-validators-vat-admission.sql'
-                )
+                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -1416,7 +1415,7 @@ pub async fn load_validators(
                 vote_account_lamports,
                 bls_pubkey,
                 vat_admitted,
-                COALESCE(validators.epoch > (SELECT last_epoch FROM bls_uncollected), FALSE) AS bls_pubkey_collected,
+                {BLS_PUBKEY_COLLECTED_SQL},
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1482,7 +1481,8 @@ pub async fn load_validators(
                     SELECT vote_account, epoch, activated_stake AS previous_activated_stake FROM validators
                 ) previous ON previous.vote_account = validators.vote_account AND previous.epoch = validators.epoch - 1
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY epoch DESC",
+            ORDER BY epoch DESC"
+            ),
             &[&Decimal::from(display_epochs)],
         )
         .await?;

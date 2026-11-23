@@ -15,6 +15,7 @@ use tokio_postgres::Client;
 const EPOCH: u64 = 1082;
 const STAKED: usize = 20;
 const UNSTAKED: &str = "VatVerdictUnstaked";
+const MINIMUM: u64 = 1_000_000;
 
 fn staked(index: usize) -> String {
     format!("VatVerdictStaked{index:02}")
@@ -34,7 +35,20 @@ async fn seed_validators(client: &mut Client, schema: &str) {
                 .validators,
         );
     }
+    for validator in &mut snapshot.validators {
+        validator.vote_account_lamports = Some(2 * MINIMUM);
+        validator.inflation_rewards_commission_bps_is_v4 = Some(true);
+        validator.bls_pubkey = Some("blsKey".into());
+    }
     store_snapshot(client, schema, &snapshot).await;
+    client
+        .execute(
+            "INSERT INTO cluster_info (epoch_slot, epoch, transaction_count, created_at, vat_minimum_balance)
+             VALUES (0, $1, 0, NOW(), $2)",
+            &[&Decimal::from(EPOCH), &Decimal::from(MINIMUM)],
+        )
+        .await
+        .unwrap();
     let previous = staked(STAKED - 1);
     store_snapshot(
         client,
@@ -78,6 +92,28 @@ async fn vat_admitted(client: &Client, vote_account: &str, epoch: u64) -> Option
         .await
         .unwrap()
         .get(0)
+}
+
+async fn set_column(client: &Client, column: &str, value: Option<bool>, accounts: Vec<String>) {
+    client
+        .execute(
+            &format!(
+                "UPDATE validators SET {column} = $1 WHERE vote_account = ANY($2) AND epoch = $3"
+            ),
+            &[&value, &accounts, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
+}
+
+async fn set_lamports(client: &Client, lamports: Option<u64>, accounts: Vec<String>) {
+    client
+        .execute(
+            "UPDATE validators SET vote_account_lamports = $1 WHERE vote_account = ANY($2) AND epoch = $3",
+            &[&lamports.map(Decimal::from), &accounts, &Decimal::from(EPOCH)],
+        )
+        .await
+        .unwrap();
 }
 
 async fn written_verdicts(client: &Client) -> i64 {
@@ -284,7 +320,7 @@ async fn repeated_debits_do_not_dilute_the_unknown_share() {
 }
 
 #[tokio::test]
-async fn more_than_ten_percent_undebited_staked_accounts_write_nothing() {
+async fn more_than_ten_percent_undebited_forecast_admitted_accounts_write_nothing() {
     let schema = "ds_test_vat_verdict_undebited";
     let Some(mut client) = seeded(schema).await else {
         return;
@@ -296,10 +332,104 @@ async fn more_than_ten_percent_undebited_staked_accounts_write_nothing() {
 
     assert!(
         err.to_string()
-            .contains("3 of 20 staked vote accounts are not debited"),
+            .contains("3 of 20 forecast-admitted vote accounts are not debited"),
         "{err}"
     );
     assert_eq!(written_verdicts(&client).await, 0);
+}
+
+#[tokio::test]
+async fn exactly_ten_percent_undebited_forecast_admitted_accounts_are_accepted() {
+    let schema = "ds_test_vat_verdict_undebited_limit";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 2))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &staked(0), EPOCH).await, Some(true));
+}
+
+#[tokio::test]
+async fn many_forecast_refused_undebited_accounts_are_accepted() {
+    let schema = "ds_test_vat_verdict_forecast_refused";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    set_lamports(&client, Some(MINIMUM - 1), staked_range(STAKED - 6..STAKED)).await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 6))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &staked(0), EPOCH).await, Some(true));
+}
+
+#[tokio::test]
+async fn rows_without_a_forecast_stay_out_of_the_undebited_share() {
+    let schema = "ds_test_vat_verdict_forecast_less";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    set_lamports(&client, None, staked_range(STAKED - 3..STAKED)).await;
+    set_column(
+        &client,
+        "inflation_rewards_commission_bps_is_v4",
+        None,
+        vec![staked(STAKED - 4)],
+    )
+    .await;
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 4))
+        .await
+        .unwrap();
+
+    assert_eq!(vat_admitted(&client, &staked(0), EPOCH).await, Some(true));
+}
+
+#[tokio::test]
+async fn an_epoch_without_a_forecast_writes_nothing() {
+    let schema = "ds_test_vat_verdict_no_forecast";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    client
+        .execute("UPDATE cluster_info SET vat_minimum_balance = NULL", &[])
+        .await
+        .unwrap();
+
+    let err = store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED))
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("holds no VAT forecast"), "{err}");
+    assert_eq!(written_verdicts(&client).await, 0);
+}
+
+#[tokio::test]
+async fn a_refused_verdict_keeps_the_stored_one() {
+    let schema = "ds_test_vat_verdict_keeps";
+    let Some(mut client) = seeded(schema).await else {
+        return;
+    };
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 1))
+        .await
+        .unwrap();
+
+    store_verdict(&mut client, schema, EPOCH, staked_range(0..STAKED - 5))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        vat_admitted(&client, &staked(STAKED - 2), EPOCH).await,
+        Some(true)
+    );
+    assert_eq!(
+        vat_admitted(&client, &staked(STAKED - 1), EPOCH).await,
+        Some(false)
+    );
 }
 
 #[tokio::test]
