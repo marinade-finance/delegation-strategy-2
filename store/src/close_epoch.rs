@@ -2,7 +2,9 @@ use crate::dto::{
     CreditsColumns, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
 };
 use crate::take_rates::refresh_expected_take_rates;
-use crate::utils::UpdateQueryCombiner;
+use crate::utils::{
+    lock_epoch_close, unlock_epoch_close, UpdateQueryCombiner, EPOCH_CLOSE_LOCK_TIMEOUT,
+};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::solana_service::bps_to_percent;
@@ -337,13 +339,18 @@ pub async fn close_epoch(
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let rewards = snapshot.rewards.unwrap();
 
-    create_epoch_record(
+    // Waits out an hourly store of the epoch in flight; any store after the epoch row skips it.
+    lock_epoch_close(psql_client, snapshot.epoch, EPOCH_CLOSE_LOCK_TIMEOUT).await?;
+    let created = create_epoch_record(
         psql_client,
         snapshot.epoch,
         snapshot.cluster_inflation.unwrap(),
         snapshot.slots_per_year,
     )
-    .await?;
+    .await;
+    let unlocked = unlock_epoch_close(psql_client, snapshot.epoch).await;
+    created?;
+    unlocked?;
 
     let mut updated_identities: HashSet<_> = Default::default();
 

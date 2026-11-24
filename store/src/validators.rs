@@ -1,5 +1,8 @@
 use crate::dto::Validator;
-use crate::utils::{InsertQueryCombiner, UpdateQueryCombiner};
+use crate::utils::{
+    lock_epoch_close, unlock_epoch_close, InsertQueryCombiner, UpdateQueryCombiner,
+    EPOCH_CLOSE_LOCK_TIMEOUT,
+};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::validators::Snapshot;
@@ -27,6 +30,15 @@ pub async fn store_validators(
 
     let snapshot_file = std::fs::File::open(params.snapshot_path)?;
     let snapshot: Snapshot = serde_yaml::from_reader(snapshot_file)?;
+
+    lock_epoch_close(psql_client, snapshot.epoch, EPOCH_CLOSE_LOCK_TIMEOUT).await?;
+    let stored = store_snapshot(&snapshot, psql_client).await;
+    let unlocked = unlock_epoch_close(psql_client, snapshot.epoch).await;
+    stored?;
+    unlocked
+}
+
+async fn store_snapshot(snapshot: &Snapshot, psql_client: &mut Client) -> anyhow::Result<()> {
     let snapshot_created_at: DateTime<Utc> = snapshot.created_at.parse().unwrap();
     let snapshot_epoch: Decimal = snapshot.epoch.into();
 

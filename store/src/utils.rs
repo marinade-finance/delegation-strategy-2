@@ -34,6 +34,30 @@ use tokio_postgres::{types::ToSql, Client, GenericClient};
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
 
+pub const EPOCH_CLOSE_LOCK: i32 = 0x6570_636c;
+pub const EPOCH_CLOSE_LOCK_TIMEOUT: &str = "10min";
+
+// A session lock: the server frees it when the connection ends, so a crashed holder blocks nothing.
+pub async fn lock_epoch_close(client: &Client, epoch: u64, timeout: &str) -> anyhow::Result<()> {
+    client
+        .batch_execute(&format!(
+            "SET lock_timeout = '{timeout}'; SELECT pg_advisory_lock({EPOCH_CLOSE_LOCK}, {}); RESET lock_timeout",
+            i32::try_from(epoch)?
+        ))
+        .await?;
+    Ok(())
+}
+
+pub async fn unlock_epoch_close(client: &Client, epoch: u64) -> anyhow::Result<()> {
+    client
+        .batch_execute(&format!(
+            "SELECT pg_advisory_unlock({EPOCH_CLOSE_LOCK}, {})",
+            i32::try_from(epoch)?
+        ))
+        .await?;
+    Ok(())
+}
+
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
 pub use collect::slot_params::SLOTS_IN_EPOCH;
