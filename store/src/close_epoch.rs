@@ -296,7 +296,8 @@ pub async fn update_clients_from_versions(psql_client: &Client, epoch: u64) -> a
             SET
                 client_id = ranked.client_id,
                 client_id_raw = ranked.client_id_raw,
-                version = COALESCE(ranked.version, validators.version)
+                version = COALESCE(ranked.version, validators.version),
+                client_id_source = 'versions'
             FROM ranked
             WHERE ranked.vote_account = validators.vote_account
               AND ranked.rn = 1

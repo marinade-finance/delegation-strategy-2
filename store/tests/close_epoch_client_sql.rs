@@ -164,7 +164,7 @@ async fn a_short_flip_loses_to_the_client_held_most_of_the_epoch() {
     );
     assert_eq!(
         stored(&client, "voteFlipped", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "A's two spans sum to 6h against B's single 4h, so the summed time decides"
     );
 
@@ -189,7 +189,10 @@ async fn a_validator_without_versions_rows_keeps_its_stored_values() {
         update_clients_from_versions(&client, EPOCH).await.unwrap(),
         1
     );
-    assert_eq!(stored(&client, "voteSeen", EPOCH).await, holding(A, None));
+    assert_eq!(
+        stored(&client, "voteSeen", EPOCH).await,
+        holding(A, Some("versions"))
+    );
     assert_eq!(
         stored(&client, "voteUnseen", EPOCH).await,
         holding(B, None),
@@ -230,12 +233,12 @@ async fn time_without_a_client_id_raw_counts_for_no_candidate() {
     );
     assert_eq!(
         stored(&client, "voteLateA", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "8h without a client must not outweigh A's 2h"
     );
     assert_eq!(
         stored(&client, "voteEarlyA", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "a row without a client still ends A's span instead of vanishing"
     );
     assert_eq!(
@@ -271,7 +274,7 @@ async fn only_the_closing_epoch_is_rewritten() {
     );
     assert_eq!(
         stored(&client, "voteBoth", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "a versions row of the next epoch must not cut the closing epoch's span short"
     );
     assert_eq!(
@@ -314,7 +317,7 @@ async fn a_tie_goes_to_the_lower_client_id_raw_and_a_missing_version_keeps_the_s
         Some(A.id),
         Some(A.raw.to_string()),
         Some(B.version.to_string()),
-        Some("stakenet".to_string()),
+        Some("versions".to_string()),
     );
     assert_eq!(
         update_clients_from_versions(&client, EPOCH).await.unwrap(),
@@ -323,7 +326,7 @@ async fn a_tie_goes_to_the_lower_client_id_raw_and_a_missing_version_keeps_the_s
     assert_eq!(
         stored(&client, "voteTied", EPOCH).await,
         expected,
-        "5h each: AgaveBam sorts before JitoLabs; its NULL version keeps the stored one; the source is not touched"
+        "5h each: AgaveBam sorts before JitoLabs; its NULL version keeps the stored one; the source becomes versions"
     );
     assert_eq!(
         update_clients_from_versions(&client, EPOCH).await.unwrap(),
@@ -360,7 +363,7 @@ async fn an_upgrade_does_not_split_the_time_of_the_client_held_longest() {
     );
     assert_eq!(
         stored(&client, "voteUpgraded", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "AgaveBam ran 2h + 3h against JitoLabs' 4h; its longer-held version is stored"
     );
 
@@ -392,7 +395,7 @@ async fn two_spellings_of_one_client_count_as_one_client() {
     );
     assert_eq!(
         stored(&client, "voteRespelled", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "client 6 ran 3h as AgaveBam + 2h as Unknown(6) against JitoLabs' 4h"
     );
 
@@ -441,7 +444,7 @@ async fn close_epoch_stores_the_client_held_longest() {
 
     assert_eq!(
         stored(&client, "voteClosed", EPOCH).await,
-        holding(A, None),
+        holding(A, Some("versions")),
         "the last hour on B must not label an epoch A ran for nine hours"
     );
 
