@@ -141,6 +141,18 @@ lazy_static! {
         &["kind"]
     )
     .unwrap();
+    pub static ref VAT_VERDICT_MISMATCH: IntGauge = register_int_gauge!(
+        "ds_vat_verdict_mismatch",
+        "Vote accounts whose chain VAT verdict differs from stakes-etl in the newest cross-checked epoch"
+    )
+    .unwrap();
+    pub static ref VAT_VERDICT_LATEST_EPOCH: IntGauge = register_int_gauge!(
+        "ds_vat_verdict_latest_epoch",
+        "Newest epoch with a stored chain VAT verdict"
+    )
+    .unwrap();
+    pub static ref CURRENT_EPOCH: IntGauge =
+        register_int_gauge!("ds_current_epoch", "Newest epoch in the validators cache").unwrap();
 }
 
 fn collect_metrics() -> String {

@@ -7,6 +7,7 @@ use crate::slot_params::{
 use crate::solana_service::solana_client_with_timeout;
 use crate::solana_service::*;
 use crate::vat::get_vat_minimum_balance;
+use crate::vat_debits::bigquery_vat_debited;
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
@@ -128,6 +129,9 @@ pub struct ValidatorsPerformanceSnapshot {
     /// The VAT part of `vat_minimum_balance`. None for a backfilled epoch.
     #[serde(default)]
     pub vat_lamports_per_epoch: Option<u64>,
+    /// Vote accounts stakes-etl saw charged the VAT for the epoch. Set only when closing an epoch.
+    #[serde(default)]
+    pub vat_debited_bigquery: Option<Vec<String>>,
     pub validators: HashMap<String, ValidatorPerformance>,
     // Every gossip node, not just the vote-account-joined subset in `validators`; absent from snapshots written before the field existed, which the backfill path still reads.
     #[serde(default)]
@@ -400,6 +404,13 @@ pub fn collect_validators_performance_info(
         None
     };
 
+    let vat_debited_bigquery =
+        if performance_params.with_rewards && epoch < current_epoch_info.epoch {
+            bigquery_vat_debited(&client, epoch)
+        } else {
+            None
+        };
+
     serde_yaml::to_writer(
         std::io::stdout(),
         &ValidatorsPerformanceSnapshot {
@@ -411,6 +422,7 @@ pub fn collect_validators_performance_info(
             cluster_inflation,
             vat_minimum_balance: vat_minimum_balance.map(|minimum| minimum.total()),
             vat_lamports_per_epoch: vat_minimum_balance.map(|minimum| minimum.vat),
+            vat_debited_bigquery,
             validators,
             nodes: node_info,
             rewards,
@@ -544,6 +556,7 @@ delinquent: false
             cluster_inflation: None,
             vat_minimum_balance: None,
             vat_lamports_per_epoch: None,
+            vat_debited_bigquery: None,
             validators: Default::default(),
             nodes: HashMap::from([("identityRoundTrip".to_string(), node)]),
             rewards: None,

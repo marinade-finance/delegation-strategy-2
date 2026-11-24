@@ -15,4 +15,5 @@ pub mod validators_performance;
 pub mod validators_sandwiches;
 pub mod validators_slot_times;
 pub mod vat;
+pub mod vat_debits;
 pub mod whois_service;
