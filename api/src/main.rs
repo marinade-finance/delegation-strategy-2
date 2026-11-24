@@ -3,13 +3,11 @@
 
 use crate::context::{Context, WrappedContext};
 use crate::handlers::{
-    admin_score_upload, blacklist, blacklist_csv, client_history, cluster_stats, commissions,
-    config, docs, events, global_unstake_hints, glossary, health, jito, jito_mev, list_clients,
-    list_providers, list_validators, provider_history, readiness, releases,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, validators_quality, versions,
-    workflow_metrics_upload,
+    blacklist, blacklist_csv, client_history, cluster_stats, commissions, config, docs, events,
+    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
+    list_validators, provider_history, readiness, releases, reports_commission_changes, rewards,
+    take_rates, unstake_hints, uptimes, validators_block_rewards, validators_flat,
+    validators_quality, versions, workflow_metrics_upload,
 };
 use clap::Parser;
 use env_logger::Env;
@@ -169,26 +167,6 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(client_history::handler);
 
-    let route_validator_score_breakdown = warp::path!("validators" / "score-breakdown")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(warp::query::<validator_score_breakdown::QueryParams>())
-        .and(with_context(context.clone()))
-        .and_then(validator_score_breakdown::handler);
-
-    let route_validator_score_breakdowns = warp::path!("validators" / "score-breakdowns")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(warp::query::<validator_score_breakdowns::QueryParams>())
-        .and(with_context(context.clone()))
-        .and_then(validator_score_breakdowns::handler);
-
-    let route_validator_scores = warp::path!("validators" / "scores")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(with_context(context.clone()))
-        .and_then(validator_scores::handler);
-
     let route_validators_flat = warp::path!("validators" / "flat")
         .and(warp::path::end())
         .and(warp::get())
@@ -272,24 +250,6 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(reports_commission_changes::handler);
 
-    let route_reports_scoring = warp::path!("reports" / "scoring")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(with_context(context.clone()))
-        .and_then(reports_scoring::handler);
-
-    let route_reports_scoring_html = warp::path!("reports" / "scoring" / String)
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(with_context(context.clone()))
-        .and_then(reports_scoring_html::handler);
-
-    let route_reports_staking = warp::path!("reports" / "staking")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(with_context(context.clone()))
-        .and_then(reports_staking::handler);
-
     let route_rewards = warp::path!("rewards")
         .and(warp::path::end())
         .and(warp::get())
@@ -337,15 +297,6 @@ async fn main() -> anyhow::Result<()> {
         .and(with_context(context.clone()))
         .and_then(global_unstake_hints::handler);
 
-    let route_admin_upload_score = warp::path!("admin" / "scores")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_admin_auth(params.admin_auth_token.clone()))
-        .and(warp::query::<admin_score_upload::QueryParams>())
-        .and(warp::multipart::form().max_length(5_000_000))
-        .and(with_context(context.clone()))
-        .and_then(admin_score_upload::handler);
-
     let route_workflow_metrics_upload = warp::path!("admin" / "metrics")
         .and(warp::path::end())
         .and(warp::post())
@@ -365,9 +316,6 @@ async fn main() -> anyhow::Result<()> {
         .or(route_provider_history)
         .or(route_client_history)
         .or(route_releases)
-        .or(route_validator_score_breakdown)
-        .or(route_validator_score_breakdowns)
-        .or(route_validator_scores)
         .or(route_validators_flat)
         .or(route_validators_quality)
         .or(route_validators_block_rewards)
@@ -380,16 +328,12 @@ async fn main() -> anyhow::Result<()> {
         .or(route_jito_mev)
         .or(route_jito_priority_fee)
         .or(route_config)
-        .or(route_reports_scoring)
-        .or(route_reports_scoring_html)
-        .or(route_reports_staking)
         .or(route_rewards)
         .or(route_unstake_hints)
         .or(route_global_unstake_hints)
         .or(route_blacklist_csv)
         .or(route_blacklist)
         .or(route_reports_commission_changes)
-        .or(route_admin_upload_score)
         .or(route_workflow_metrics_upload)
         .with(cors);
 
