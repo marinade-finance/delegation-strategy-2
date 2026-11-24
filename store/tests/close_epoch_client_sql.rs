@@ -404,6 +404,56 @@ async fn two_spellings_of_one_client_count_as_one_client() {
 }
 
 #[tokio::test]
+async fn a_version_held_under_two_spellings_beats_a_longer_single_span() {
+    let schema = "ds_test_close_epoch_client_9";
+    if skip_without_database(schema) {
+        return;
+    }
+    let mut client = migrated_client(schema).await.unwrap();
+    let before_upgrade = Held {
+        version: "4.3.1",
+        ..A
+    };
+    let numbered = Held {
+        raw: "Unknown(6)",
+        ..A
+    };
+
+    seed(&mut client, EPOCH, &["voteVersionRespelled"]).await;
+    set_stored(&client, "voteVersionRespelled", EPOCH, &holding(B, None)).await;
+    close(&client, EPOCH, t0(), at(10)).await;
+    version_row(&client, "voteVersionRespelled", EPOCH, at(0), Some(A)).await;
+    version_row(
+        &client,
+        "voteVersionRespelled",
+        EPOCH,
+        at(3),
+        Some(before_upgrade),
+    )
+    .await;
+    version_row(
+        &client,
+        "voteVersionRespelled",
+        EPOCH,
+        at(7),
+        Some(numbered),
+    )
+    .await;
+
+    assert_eq!(
+        update_clients_from_versions(&client, EPOCH).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        stored(&client, "voteVersionRespelled", EPOCH).await,
+        holding(A, Some("versions")),
+        "4.3.2 ran 3h as AgaveBam + 3h as Unknown(6) against 4.3.1's 4h; the tie on spelling goes to AgaveBam"
+    );
+
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
 async fn close_epoch_stores_the_client_held_longest() {
     let schema = "ds_test_close_epoch_client_6";
     if skip_without_database(schema) {

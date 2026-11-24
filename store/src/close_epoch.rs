@@ -281,7 +281,8 @@ pub async fn update_clients_from_versions(psql_client: &Client, epoch: u64) -> a
                     client_id_raw,
                     version,
                     SUM(held) AS held,
-                    SUM(SUM(held)) OVER (PARTITION BY vote_account, COALESCE(client_id::TEXT, client_id_raw)) AS client_held
+                    SUM(SUM(held)) OVER (PARTITION BY vote_account, COALESCE(client_id::TEXT, client_id_raw)) AS client_held,
+                    SUM(SUM(held)) OVER (PARTITION BY vote_account, COALESCE(client_id::TEXT, client_id_raw), version) AS version_held
                 FROM spans
                 WHERE client_id_raw IS NOT NULL
                 GROUP BY 1, 2, 3, 4
@@ -291,7 +292,7 @@ pub async fn update_clients_from_versions(psql_client: &Client, epoch: u64) -> a
                     client_id,
                     client_id_raw,
                     version,
-                    ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY client_held DESC, held DESC, client_id_raw, version) AS rn
+                    ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY client_held DESC, version_held DESC, held DESC, client_id_raw, version) AS rn
                 FROM totals
             )
             UPDATE validators
