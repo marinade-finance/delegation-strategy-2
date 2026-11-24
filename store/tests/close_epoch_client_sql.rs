@@ -63,7 +63,8 @@ async fn seed(client: &mut Client, epoch: u64, vote_accounts: &[&str]) {
                 .remove(0),
         );
     }
-    store_snapshot(client, &format!("close-epoch-client-{epoch}"), &snapshot).await;
+    let name = format!("close-epoch-client-{epoch}-{}", vote_accounts.join("-"));
+    store_snapshot(client, &name, &snapshot).await;
 }
 
 async fn set_stored(client: &Client, vote_account: &str, epoch: u64, stored: &Stored) {
