@@ -243,12 +243,16 @@ client are in the `Unknown` group, as on the lists. The newest epoch counts exac
 `/providers` and `/clients` count, so it matches the list row. Each older epoch counts the
 validators whose own row for that epoch puts them in the group, so a validator that moved counts in
 the old group before the move, and its `stake_share` is of every validator with a row that epoch.
+On a closed epoch's row, `client_id`, `client_id_raw` and `version` are the ones the validator held
+longest in that epoch; the open epoch has the latest snapshot.
 `net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
 `validators_rewards`) are stake-weighted over the members that have one, and `null` for the open
 epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's stored
 value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
 lists.
-An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
+Every epoch from the group's first to its last has a row; an epoch with no member has `total_stake`
+"0", `stake_share` 0, `validator_count` 0 and `null` rates. No row follows the group's last epoch,
+and `current_epoch` is still the cluster's newest epoch.
 ```bash
 curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
 ```

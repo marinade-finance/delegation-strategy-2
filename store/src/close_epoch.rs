@@ -2,7 +2,9 @@ use crate::dto::{
     CreditsColumns, COMMISSION_EFFECTIVE_SOURCE_REWARD_ROW, COMMISSION_EFFECTIVE_SOURCE_VOTE_STATE,
 };
 use crate::take_rates::refresh_expected_take_rates;
-use crate::utils::UpdateQueryCombiner;
+use crate::utils::{
+    lock_epoch_close, unlock_epoch_close, UpdateQueryCombiner, EPOCH_CLOSE_LOCK_TIMEOUT,
+};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use collect::solana_service::bps_to_percent;
@@ -293,6 +295,63 @@ pub async fn update_uptimes(psql_client: &Client, epoch: u64) -> anyhow::Result<
     Ok(())
 }
 
+// The last hourly snapshot can catch a short mislabel; the client held longest in the epoch cannot.
+pub async fn update_clients_from_versions(psql_client: &Client, epoch: u64) -> anyhow::Result<u64> {
+    let updated = psql_client
+        .execute(
+            "
+            WITH ep AS (
+                SELECT end_at FROM epochs WHERE epoch = $1
+            ), spans AS (
+                SELECT
+                    v.vote_account,
+                    v.client_id,
+                    v.client_id_raw,
+                    v.version,
+                    GREATEST(COALESCE(LEAD(v.created_at) OVER (PARTITION BY v.vote_account ORDER BY v.created_at, v.id), ep.end_at) - v.created_at, INTERVAL '0') AS held
+                FROM versions v, ep
+                WHERE v.epoch = $1
+            ), totals AS (
+                SELECT
+                    vote_account,
+                    client_id,
+                    client_id_raw,
+                    version,
+                    SUM(held) AS held,
+                    SUM(SUM(held)) OVER (PARTITION BY vote_account, COALESCE(client_id::TEXT, client_id_raw)) AS client_held,
+                    SUM(SUM(held)) OVER (PARTITION BY vote_account, COALESCE(client_id::TEXT, client_id_raw), version) AS version_held
+                FROM spans
+                WHERE client_id_raw IS NOT NULL
+                GROUP BY 1, 2, 3, 4
+            ), ranked AS (
+                SELECT
+                    vote_account,
+                    client_id,
+                    client_id_raw,
+                    version,
+                    ROW_NUMBER() OVER (PARTITION BY vote_account ORDER BY client_held DESC, version_held DESC, held DESC, client_id_raw, version) AS rn
+                FROM totals
+            )
+            UPDATE validators
+            SET
+                client_id = ranked.client_id,
+                client_id_raw = ranked.client_id_raw,
+                version = COALESCE(ranked.version, validators.version),
+                client_id_source = 'versions'
+            FROM ranked
+            WHERE ranked.vote_account = validators.vote_account
+              AND ranked.rn = 1
+              AND validators.epoch = $1
+              AND (validators.client_id IS DISTINCT FROM ranked.client_id
+                OR validators.client_id_raw IS DISTINCT FROM ranked.client_id_raw
+                OR validators.version IS DISTINCT FROM COALESCE(ranked.version, validators.version))
+            ",
+            &[&Decimal::from(epoch)],
+        )
+        .await?;
+    Ok(updated)
+}
+
 struct ValidatorUpdateRecord {
     vote_account: String,
     epoch: Decimal,
@@ -318,13 +377,18 @@ pub async fn close_epoch(
     let snapshot_epoch: Decimal = snapshot.epoch.into();
     let rewards = snapshot.rewards.unwrap();
 
-    create_epoch_record(
+    // Waits out an hourly store of the epoch in flight; any store after the epoch row skips it.
+    lock_epoch_close(psql_client, snapshot.epoch, EPOCH_CLOSE_LOCK_TIMEOUT).await?;
+    let created = create_epoch_record(
         psql_client,
         snapshot.epoch,
         snapshot.cluster_inflation.unwrap(),
         snapshot.slots_per_year,
     )
-    .await?;
+    .await;
+    let unlocked = unlock_epoch_close(psql_client, snapshot.epoch).await;
+    created?;
+    unlocked?;
 
     let mut updated_identities: HashSet<_> = Default::default();
 
@@ -482,6 +546,11 @@ pub async fn close_epoch(
     update_uptimes(psql_client, snapshot.epoch).await?;
     update_observed_commission(psql_client, snapshot.epoch).await?;
     refresh_expected_take_rates(psql_client, &[snapshot.epoch]).await?;
+    let relabelled = update_clients_from_versions(psql_client, snapshot.epoch).await?;
+    info!(
+        "Set the client held longest in epoch {} for {relabelled} validators",
+        snapshot.epoch
+    );
     if let Err(err) = warn_on_unresolved_commission(psql_client, snapshot.epoch).await {
         warn!("Could not count validator rows without commission_effective: {err}");
     }

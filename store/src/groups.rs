@@ -977,15 +977,22 @@ fn render_history(
     epochs: &BTreeMap<u64, &ValidatorEpochStats>,
     epoch_stake: &HashMap<u64, Decimal>,
 ) -> GroupHistory {
+    let span = points
+        .keys()
+        .min()
+        .copied()
+        .zip(points.keys().max().copied());
     GroupHistory {
         name,
         current_epoch: epochs.keys().next_back().copied(),
-        epochs: epochs
-            .iter()
+        epochs: span
+            .map(|(first, last)| epochs.range(first..=last))
+            .into_iter()
+            .flatten()
             .rev()
-            .filter_map(|(epoch, stats)| {
-                let point = points.remove(epoch)?;
-                Some(GroupHistoryEpoch {
+            .map(|(epoch, stats)| {
+                let point = points.remove(epoch).unwrap_or_default();
+                GroupHistoryEpoch {
                     epoch: *epoch,
                     epoch_start_at: stats.epoch_start_at,
                     epoch_end_at: stats.epoch_end_at,
@@ -995,7 +1002,7 @@ fn render_history(
                     net_apy: point.net_apy.mean(),
                     take_rate: point.take_rate.mean(),
                     expected_take_rate: point.expected_take_rate.mean(),
-                })
+                }
             })
             .collect(),
     }
@@ -2845,7 +2852,7 @@ mod tests {
                 .map(|point| (point.epoch, point.total_stake, point.validator_count))
                 .collect::<Vec<_>>(),
             vec![(CURRENT_EPOCH, Decimal::from(300), 1)],
-            "an epoch the group had no member in is left out"
+            "the group's history starts at its first epoch"
         );
         assert_eq!(hetzner.current_epoch, Some(CURRENT_EPOCH));
 
@@ -2853,6 +2860,132 @@ mod tests {
         assert_eq!(point(ovh, CURRENT_EPOCH).total_stake, Decimal::from(100));
         assert_eq!(point(ovh, PREVIOUS_EPOCH).total_stake, Decimal::from(400));
         assert_eq!(point(ovh, PREVIOUS_EPOCH).validator_count, 2);
+    }
+
+    fn zero_row(validators: &HashMap<String, ValidatorRecord>, epoch: u64) -> GroupHistoryEpoch {
+        let stats = validators
+            .values()
+            .flat_map(|validator| &validator.epoch_stats)
+            .find(|stats| stats.epoch == epoch)
+            .unwrap();
+        GroupHistoryEpoch {
+            epoch,
+            epoch_start_at: stats.epoch_start_at,
+            epoch_end_at: stats.epoch_end_at,
+            total_stake: Decimal::ZERO,
+            stake_share: 0.0,
+            validator_count: 0,
+            net_apy: None,
+            take_rate: None,
+            expected_take_rate: None,
+        }
+    }
+
+    fn epochs_of(history: &GroupHistory) -> Vec<u64> {
+        history.epochs.iter().map(|point| point.epoch).collect()
+    }
+
+    fn steady(epochs: impl IntoIterator<Item = u64>) -> Member {
+        Member::new(
+            "steady",
+            epochs
+                .into_iter()
+                .map(|epoch| (epoch, 100, AGAVE, Some("OVH")))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn history_fills_an_epoch_the_group_had_no_member_in_with_a_zero_row() {
+        let validators = validators(vec![
+            Member {
+                version: Some("26.9.4"),
+                ..Member::new(
+                    "hopper",
+                    vec![
+                        (100, 300, Some(5), Some("Hetzner")),
+                        (99, 300, Some(5), Some("Hetzner")),
+                        (97, 200, Some(5), Some("Hetzner")),
+                    ],
+                )
+            },
+            steady(97..=100),
+        ]);
+        let take_rates = (97..=100)
+            .map(|epoch| (("steady".to_string(), epoch), rates(0.1, Some(0.2))))
+            .collect();
+        let history = aggregate_history(&validators, &take_rates, &HashMap::new());
+
+        let label = crate::dto::client_label(Some(5), Some("26.9.4"));
+        for (level, group) in [
+            ("provider", &history.providers["hetzner"]),
+            (
+                "lineage",
+                group_history(&history.client_lineages, "Firedancer").unwrap(),
+            ),
+            (
+                "label",
+                group_history(&history.client_labels, &label).unwrap(),
+            ),
+        ] {
+            assert_eq!(epochs_of(group), vec![100, 99, 98, 97], "{level}");
+            assert_eq!(
+                point(group, 98),
+                &zero_row(&validators, 98),
+                "{level}: an epoch without a member is a zero row, not a gap"
+            );
+            assert_eq!(
+                (
+                    point(group, 97).total_stake,
+                    point(group, 97).validator_count
+                ),
+                (Decimal::from(200), 1),
+                "{level}"
+            );
+        }
+    }
+
+    #[test]
+    fn history_stops_at_the_groups_first_and_last_epoch() {
+        let validators = validators(vec![
+            Member::new(
+                "middle",
+                vec![
+                    (99, 300, AGAVE, Some("Latitude")),
+                    (97, 300, AGAVE, Some("Latitude")),
+                ],
+            ),
+            steady(96..=100),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let latitude = &history.providers["latitude"];
+        assert_eq!(epochs_of(latitude), vec![99, 98, 97]);
+        assert_eq!(point(latitude, 98), &zero_row(&validators, 98));
+        assert_eq!(latitude.current_epoch, Some(CURRENT_EPOCH));
+    }
+
+    #[test]
+    fn asn_history_fills_an_epoch_the_asn_was_not_seen_in() {
+        let validators = validators(vec![
+            Member {
+                dc_asn: Some(24940),
+                ..Member::new(
+                    "hopper",
+                    vec![
+                        (100, 300, AGAVE, Some("Hetzner")),
+                        (99, 300, AGAVE, Some("Hetzner")),
+                        (97, 200, AGAVE, Some("Hetzner")),
+                    ],
+                )
+            },
+            steady(97..=100),
+        ]);
+        let history = aggregate_history(&validators, &HashMap::new(), &HashMap::new());
+
+        let by_asn = &history.provider_asns[&24940];
+        assert_eq!(epochs_of(by_asn), vec![100, 99, 98, 97]);
+        assert_eq!(point(by_asn, 98), &zero_row(&validators, 98));
     }
 
     #[test]
