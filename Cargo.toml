@@ -30,6 +30,7 @@ csv = "1.1"
 utoipa = { version = "5.4.0", features = ["chrono", "decimal"] }
 solana-rpc-client = "4.4"
 solana-rpc-client-api = "4.4"
+solana-native-token = "3"
 validator = { version = "0.20.0", features = ["derive"] }
 
 include_dir = "0.7.4"

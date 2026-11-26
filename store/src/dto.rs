@@ -1208,6 +1208,27 @@ pub struct ValidatorAggregatedFlat {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
+pub struct ValidatorScoreRecord {
+    pub vote_account: String,
+    pub score: f64,
+    pub rank: i32,
+    pub vemnde_votes: u64,
+    pub msol_votes: u64,
+    pub ui_hints: Vec<String>,
+    pub component_scores: Vec<f64>,
+    pub component_ranks: Vec<i32>,
+    pub component_values: Vec<Option<String>>,
+    pub eligible_stake_algo: bool,
+    pub eligible_stake_vemnde: bool,
+    pub eligible_stake_msol: bool,
+    pub target_stake_algo: u64,
+    pub target_stake_vemnde: u64,
+    pub target_stake_msol: u64,
+    pub scoring_run_id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, utoipa::ToSchema)]
 pub struct ValidatorScoreV2Record {
     pub vote_account: String,
     pub score: f64,
@@ -1224,6 +1245,16 @@ pub struct ValidatorScoreV2Record {
     pub target_stake_msol: f64,
     pub scoring_run_id: i64,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ScoringRunRecord {
+    pub scoring_run_id: Decimal,
+    pub created_at: DateTime<Utc>,
+    pub epoch: i32,
+    pub components: Vec<String>,
+    pub component_weights: Vec<f64>,
+    pub ui_id: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Hash, Eq, PartialEq, utoipa::ToSchema)]

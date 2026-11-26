@@ -62,6 +62,26 @@ lazy_static! {
         "How many times /clients/history endpoint was requested"
     )
     .unwrap();
+    pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWN: IntCounter = register_int_counter!(
+        "ds_request_count_validator_score_breakdown",
+        "How many times /validators/score-breakdown endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_VALIDATOR_SCORE_BREAKDOWNS: IntCounter = register_int_counter!(
+        "ds_request_count_validator_score_breakdowns",
+        "How many times /validators/score-breakdowns endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_VALIDATOR_SCORES: IntCounter = register_int_counter!(
+        "ds_request_count_validator_scores",
+        "How many times /validators/scores endpoint was requested"
+    )
+    .unwrap();
+    pub static ref REQUEST_COUNT_REPORT_STAKING: IntCounter = register_int_counter!(
+        "ds_request_count_planned_stakes",
+        "How many times reports/staking endpoint was requested"
+    )
+    .unwrap();
     pub static ref REQUEST_COUNT_VALIDATORS_FLAT: IntCounter = register_int_counter!(
         "ds_request_count_validators_flat",
         "How many times /validators/flat endpoint was requested"

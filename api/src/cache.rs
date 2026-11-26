@@ -2,6 +2,7 @@ use crate::context::WrappedContext;
 use crate::metrics;
 use chrono::{DateTime, Utc};
 use log::{error, info, warn};
+use rust_decimal::Decimal;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -9,8 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::dto::{
-    ClientLevel, ClientRelease, ClusterStats, CommissionRecord, GroupHistory, UptimeRecord,
-    ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord, VersionRecord,
+    ClientLevel, ClientRelease, ClusterStats, CommissionRecord, GroupHistory, ScoringRunRecord,
+    UptimeRecord, ValidatorGroupTree, ValidatorProviderGroups, ValidatorRecord,
+    ValidatorScoreRecord, VersionRecord,
 };
 use store::groups::{group_history, net_apy_at, ClientReleases, ValidatorGroupings};
 use store::incidents::{IncidentFilters, ValidatorIncidents, DEFAULT_INCIDENT_TYPES};
@@ -24,7 +26,7 @@ const CACHE_WARMUP_TIME_S: u64 = 10 * 60;
 const CACHE_RETRY_TIME_S: u64 = 30;
 // A step still running two refresh windows in is wedged, not slow; no probe can see that on its own.
 const WARM_STEP_TIMEOUT_S: u64 = 2 * CACHE_WARMUP_TIME_S;
-const WARM_STEPS: usize = 8;
+const WARM_STEPS: usize = 9;
 
 type CachedValidators = HashMap<String, ValidatorRecord>;
 /// Raw incident material the served `incidents` arrays are projected from, per vote account.
@@ -36,6 +38,18 @@ type CachedVersions = HashMap<String, Vec<VersionRecord>>;
 type CachedUptimes = HashMap<String, Vec<UptimeRecord>>;
 type CachedClusterStats = Option<ClusterStats>;
 type CachedEpochTakeRates = HashMap<(String, u64), store::take_rates::EpochTakeRates>;
+
+#[derive(Default, Clone)]
+pub struct CachedSingleRunScores {
+    pub scoring_run: Option<ScoringRunRecord>,
+    pub scores: HashMap<String, ValidatorScoreRecord>,
+}
+
+#[derive(Default, Clone)]
+pub struct CachedMultiRunScores {
+    pub scoring_runs: Option<Vec<ScoringRunRecord>>,
+    pub scores: HashMap<Decimal, Vec<ValidatorScoreRecord>>,
+}
 
 /// One validator-bonds flag list, how many refreshes in a row fell back to it, and when upstream last answered.
 #[derive(Default, Clone)]
@@ -82,6 +96,8 @@ pub struct Cache {
     pub versions: CachedVersions,
     pub uptimes: CachedUptimes,
     pub cluster_stats: CachedClusterStats,
+    pub validators_single_run_scores: CachedSingleRunScores,
+    pub validators_multi_run_scores: CachedMultiRunScores,
     pub per_epoch: Option<PerEpochCache>,
 }
 
@@ -223,6 +239,14 @@ impl Cache {
 
     pub fn get_uptimes(&self, vote_account: &String) -> Option<Vec<UptimeRecord>> {
         self.uptimes.get(vote_account).cloned()
+    }
+
+    pub fn get_validators_multi_run_scores(&self) -> CachedMultiRunScores {
+        self.validators_multi_run_scores.clone()
+    }
+
+    pub fn get_validators_single_run_scores(&self) -> CachedSingleRunScores {
+        self.validators_single_run_scores.clone()
     }
 
     pub fn get_cluster_stats(&self, epochs: usize) -> CachedClusterStats {
@@ -674,6 +698,72 @@ pub async fn warm_net_apy_history_cache(context: &WrappedContext) -> anyhow::Res
 
     Ok(())
 }
+pub async fn warm_scores_cache(context: &WrappedContext) -> anyhow::Result<()> {
+    info!("Loading scores from DB");
+    let warmup_timer = Instant::now();
+
+    let last_scoring_run =
+        store::utils::load_last_scoring_run(&context.read().await.psql_client).await?;
+    let scoring_run_id = last_scoring_run.as_ref().map(|run| run.scoring_run_id);
+    let cached_scoring_run_id = context
+        .read()
+        .await
+        .cache
+        .validators_single_run_scores
+        .scoring_run
+        .as_ref()
+        .map(|run| run.scoring_run_id);
+
+    // The id is a max over the whole table, so a run backfilling an older epoch bumps it too.
+    if scoring_run_id.is_some() && scoring_run_id == cached_scoring_run_id {
+        info!("Scoring run unchanged, keeping the cached scores");
+        return Ok(());
+    }
+
+    let scores = match &last_scoring_run {
+        Some(scoring_run) => {
+            store::utils::load_scores(
+                &context.read().await.psql_client,
+                scoring_run.scoring_run_id,
+            )
+            .await?
+        }
+        None => Default::default(),
+    };
+    let multi_run_scores =
+        store::scoring::load_all_scores(&context.read().await.psql_client).await?;
+
+    let multi_run_scoring_runs =
+        store::scoring::load_scoring_runs(&context.read().await.psql_client).await?;
+
+    let scores_len = scores.len();
+    let multi_run_scores_len: usize = multi_run_scores.values().map(|v| v.len()).sum();
+
+    // One guard for both: the step is cancellable at every await, and a torn publish would mix two runs.
+    {
+        let mut ctx = context.write().await;
+        ctx.cache.validators_single_run_scores = CachedSingleRunScores {
+            scoring_run: last_scoring_run,
+            scores,
+        };
+        ctx.cache.validators_multi_run_scores = CachedMultiRunScores {
+            scoring_runs: Some(multi_run_scoring_runs),
+            scores: multi_run_scores,
+        };
+    }
+    info!(
+        "Loaded {} single run scores to cache in {} ms",
+        scores_len,
+        warmup_timer.elapsed().as_millis()
+    );
+    info!(
+        "Loaded {} multiple run scores to cache in {} ms",
+        multi_run_scores_len,
+        warmup_timer.elapsed().as_millis()
+    );
+
+    Ok(())
+}
 
 // Refreshed with the caches so a stalled auction import can page.
 pub async fn refresh_blacklist_status(context: &WrappedContext) -> anyhow::Result<()> {
@@ -688,6 +778,7 @@ type WarmStep = (&'static str, fn(&WrappedContext) -> WarmFuture<'_>);
 
 fn warm_steps() -> [WarmStep; WARM_STEPS] {
     [
+        ("scores", |c| Box::pin(warm_scores_cache(c))),
         ("versions", |c| Box::pin(warm_versions_cache(c))),
         ("commissions", |c| Box::pin(warm_commissions_cache(c))),
         ("uptimes", |c| Box::pin(warm_uptimes_cache(c))),

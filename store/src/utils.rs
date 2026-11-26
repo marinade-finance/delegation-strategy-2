@@ -1,9 +1,9 @@
 use crate::dto::{
     client_label, client_lineage, client_name, client_vendor, effective_client_id,
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
-    DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, UptimeRecord,
-    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreV2Record,
-    ValidatorWarning, ValidatorsAggregated, VersionRecord,
+    DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
+    ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
+    ValidatorScoreV2Record, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use crate::incidents::{
     CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
@@ -2104,6 +2104,120 @@ pub async fn load_scores_in_epochs(
 
     let (result,) = join!(handle);
     Ok(result?)
+}
+
+pub async fn load_last_scoring_run(
+    psql_client: &Client,
+) -> anyhow::Result<Option<ScoringRunRecord>> {
+    log::info!("Querying scoring run...");
+    let result = psql_client
+        .query_opt(
+            "
+            SELECT
+                scoring_run_id::numeric,
+                created_at,
+                epoch,
+                components,
+                component_weights,
+                ui_id
+            FROM scoring_runs
+            WHERE scoring_run_id IN (SELECT MAX(scoring_run_id) FROM scoring_runs)",
+            &[],
+        )
+        .await?;
+
+    let scoring_run = match result {
+        Some(scoring_run) => scoring_run,
+        _ => {
+            log::warn!("No scoring run was found!");
+            return Ok(None);
+        }
+    };
+
+    Ok(Some(ScoringRunRecord {
+        scoring_run_id: scoring_run.get("scoring_run_id"),
+        created_at: scoring_run.get("created_at"),
+        epoch: scoring_run.get("epoch"),
+        components: scoring_run.get("components"),
+        component_weights: scoring_run.get("component_weights"),
+        ui_id: scoring_run.get("ui_id"),
+    }))
+}
+
+pub async fn load_scores(
+    psql_client: &Client,
+    scoring_run_id: Decimal,
+) -> anyhow::Result<HashMap<String, ValidatorScoreRecord>> {
+    log::info!("Querying scores...");
+    let rows = psql_client
+        .query(
+            "
+            SELECT vote_account,
+                score,
+                rank,
+                vemnde_votes,
+                msol_votes,
+                ui_hints,
+                component_scores,
+                component_ranks,
+                component_values,
+                eligible_stake_algo,
+                eligible_stake_vemnde,
+                eligible_stake_msol,
+                target_stake_algo,
+                target_stake_vemnde,
+                target_stake_msol,
+                scores.scoring_run_id,
+                scoring_runs.created_at AS created_at
+            FROM scores
+            LEFT JOIN scoring_runs ON scoring_runs.scoring_run_id = scores.scoring_run_id
+            WHERE scores.scoring_run_id::numeric = $1 ORDER BY rank",
+            &[&scoring_run_id],
+        )
+        .await?;
+
+    let records: HashMap<_, _> = {
+        log::info!("Aggregating scores records...");
+        let mut records: HashMap<_, _> = Default::default();
+        for row in rows {
+            let vote_account: String = row.get("vote_account");
+
+            records
+                .entry(vote_account.clone())
+                .or_insert_with(|| ValidatorScoreRecord {
+                    vote_account: vote_account.clone(),
+                    score: row.get("score"),
+                    rank: row.get("rank"),
+                    vemnde_votes: row.get::<_, Decimal>("vemnde_votes").try_into().unwrap(),
+                    msol_votes: row.get::<_, Decimal>("msol_votes").try_into().unwrap(),
+                    ui_hints: row.get("ui_hints"),
+                    component_scores: row.get("component_scores"),
+                    component_ranks: row.get("component_ranks"),
+                    component_values: row.get("component_values"),
+                    eligible_stake_algo: row.get("eligible_stake_algo"),
+                    eligible_stake_vemnde: row.get("eligible_stake_vemnde"),
+                    eligible_stake_msol: row.get("eligible_stake_msol"),
+                    target_stake_algo: row
+                        .get::<_, Decimal>("target_stake_algo")
+                        .try_into()
+                        .unwrap(),
+                    target_stake_vemnde: row
+                        .get::<_, Decimal>("target_stake_vemnde")
+                        .try_into()
+                        .unwrap(),
+                    target_stake_msol: row
+                        .get::<_, Decimal>("target_stake_msol")
+                        .try_into()
+                        .unwrap(),
+                    scoring_run_id: row.get("scoring_run_id"),
+                    created_at: row.get::<_, DateTime<Utc>>("created_at"),
+                });
+        }
+
+        records
+    };
+    log::info!("Records prepared...");
+    Ok(records)
 }
 
 /// Whether the table holds any row at all, regardless of epoch — `load_validators` filters by the latest `cluster_info` epoch and cannot answer this.
