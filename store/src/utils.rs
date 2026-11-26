@@ -12,6 +12,7 @@ use crate::incidents::{
 use crate::validators_jito::get_last_jito_info;
 use crate::vote_performance::load_vote_performance;
 use chrono::{DateTime, Utc};
+use collect::common::{with_bigquery_timeout, BIGQUERY_READ_TIMEOUT};
 use collect::take_rates::query_validator_rewards;
 use collect::vat::{
     vat_admissions, vat_runway_epochs, VatCandidate, VatMinimumBalance, VatRejection,
@@ -32,6 +33,30 @@ use tokio_postgres::{types::ToSql, Client, GenericClient};
 
 /// Default number of recent epochs the API loads/serves (validators, uptimes, events, ...).
 pub const DEFAULT_CACHE_EPOCHS: u64 = 90;
+
+pub const EPOCH_CLOSE_LOCK: i32 = 0x6570_636c;
+pub const EPOCH_CLOSE_LOCK_TIMEOUT: &str = "10min";
+
+// A session lock: the server frees it when the connection ends, so a crashed holder blocks nothing.
+pub async fn lock_epoch_close(client: &Client, epoch: u64, timeout: &str) -> anyhow::Result<()> {
+    client
+        .batch_execute(&format!(
+            "SET lock_timeout = '{timeout}'; SELECT pg_advisory_lock({EPOCH_CLOSE_LOCK}, {}); RESET lock_timeout",
+            i32::try_from(epoch)?
+        ))
+        .await?;
+    Ok(())
+}
+
+pub async fn unlock_epoch_close(client: &Client, epoch: u64) -> anyhow::Result<()> {
+    client
+        .batch_execute(&format!(
+            "SELECT pg_advisory_unlock({EPOCH_CLOSE_LOCK}, {})",
+            i32::try_from(epoch)?
+        ))
+        .await?;
+    Ok(())
+}
 
 /// Agave's year: the same one every `slots_per_year` row annualises to, so nominal and measured stay comparable.
 const SECONDS_IN_YEAR: f64 = 31556925.9936;
@@ -856,6 +881,15 @@ const STAKES_TABLE: &str = "stakes";
 
 /// Latest epoch present in BigQuery; the gate for refreshing BigQuery-sourced caches.
 pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
+    with_bigquery_timeout(
+        "last epoch",
+        BIGQUERY_READ_TIMEOUT,
+        read_last_bigquery_epoch(),
+    )
+    .await
+}
+
+async fn read_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
     let ds = format!("{GOOGLE_BQ_PROJECT_ID}.{GOOGLE_BQ_DATASET}");
@@ -868,6 +902,15 @@ pub async fn load_last_bigquery_epoch() -> anyhow::Result<Option<u64>> {
 
 /// Latest-epoch unique delegator (distinct `withdraw_authority`) count per validator, from BigQuery.
 pub async fn load_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
+    with_bigquery_timeout(
+        "unique delegators",
+        BIGQUERY_READ_TIMEOUT,
+        read_latest_unique_delegators(),
+    )
+    .await
+}
+
+async fn read_latest_unique_delegators() -> anyhow::Result<HashMap<String, u64>> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -953,6 +996,10 @@ pub struct TakeRates {
 /// `query_validator_rewards` returns, plus the cluster reward mix those same rows sum to. Windowed by
 /// `epochs.epoch_end_time` (same as apy-api).
 pub async fn load_take_rates() -> anyhow::Result<TakeRates> {
+    with_bigquery_timeout("take rates", BIGQUERY_READ_TIMEOUT, read_take_rates()).await
+}
+
+async fn read_take_rates() -> anyhow::Result<TakeRates> {
     let (config, _) = BqClientConfig::new_with_auth().await?;
     let bq_client = BqClient::new(config).await?;
 
@@ -1244,14 +1291,37 @@ pub async fn load_vat_minimum_balances(
     psql_client: &Client,
     epochs: u64,
 ) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
+    query_vat_minimum_balances(
+        psql_client,
+        "epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC",
+        Decimal::from(epochs),
+    )
+    .await
+}
+
+/// The newest `cluster_info` VAT minimum of `epoch`, whatever its age.
+pub async fn load_epoch_vat_minimum_balance(
+    psql_client: &Client,
+    epoch: u64,
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
+    query_vat_minimum_balances(psql_client, "epoch = $1::NUMERIC", Decimal::from(epoch)).await
+}
+
+async fn query_vat_minimum_balances(
+    psql_client: &Client,
+    epoch_filter: &str,
+    epoch_param: Decimal,
+) -> anyhow::Result<BTreeMap<u64, EpochVatMinimum>> {
     let rows = psql_client
         .query(
-            "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
+            &format!(
+                "SELECT DISTINCT ON (epoch) epoch, vat_minimum_balance, vat_lamports_per_epoch
             FROM cluster_info
-            WHERE epoch > (SELECT MAX(epoch) FROM cluster_info) - $1::NUMERIC
+            WHERE {epoch_filter}
                 AND vat_minimum_balance IS NOT NULL
-            ORDER BY epoch, created_at DESC",
-            &[&Decimal::from(epochs)],
+            ORDER BY epoch, created_at DESC"
+            ),
+            &[&epoch_param],
         )
         .await?;
     rows.iter()
@@ -1264,6 +1334,64 @@ pub async fn load_vat_minimum_balances(
                 },
             ))
         })
+        .collect()
+}
+
+// Rows of the epoch running when 0041 was applied, and older ones, may lack the key.
+pub(crate) const BLS_PUBKEY_COLLECTED_SQL: &str = "COALESCE(validators.epoch > (SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) FROM migrations WHERE name = '0041-validators-vat-admission.sql'), FALSE) AS bls_pubkey_collected";
+
+/// The agave VAT filter by `(epoch, vote_account)`; a row with no decodable balance is absent.
+pub fn vat_forecasts(
+    rows: &[tokio_postgres::Row],
+    vat_minimum_balances: &BTreeMap<u64, EpochVatMinimum>,
+) -> HashMap<(u64, String), Option<VatRejection>> {
+    let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
+    for row in rows {
+        let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
+            continue;
+        };
+        let bls_pubkey_collected: bool = row.get("bls_pubkey_collected");
+        // An unknown vote-state version leaves this NULL and decodes no key.
+        if bls_pubkey_collected
+            && row
+                .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4")
+                .is_none()
+        {
+            continue;
+        }
+        let lamports_or_zero = |column: &str| -> u64 {
+            row.get::<_, Option<Decimal>>(column)
+                .map_or(0, |lamports| lamports.try_into().unwrap())
+        };
+        candidates
+            .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
+            .or_default()
+            .insert(
+                row.get("vote_account"),
+                VatCandidate {
+                    // A row stored before the key was collected skips the BLS check.
+                    has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
+                        || !bls_pubkey_collected,
+                    // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
+                    stake: (lamports_or_zero("activated_stake")
+                        + lamports_or_zero("activating_stake"))
+                    .saturating_sub(lamports_or_zero("deactivating_stake")),
+                    lamports: lamports.try_into().unwrap(),
+                    pending_delegator_rewards: lamports_or_zero("pending_delegator_rewards"),
+                },
+            );
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(epoch, candidates)| {
+            let minimum = vat_minimum_balances.get(&epoch)?;
+            Some(
+                vat_admissions(&candidates, minimum.balance.try_into().unwrap())
+                    .into_iter()
+                    .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
+            )
+        })
+        .flatten()
         .collect()
 }
 
@@ -1289,16 +1417,12 @@ pub async fn load_validators(
     log::info!("Querying validators...");
     let rows = psql_client
         .query(
-            "
+            &format!(
+                "
             WITH
                 validators_aggregated AS (SELECT vote_account, MIN(epoch) first_epoch FROM validators GROUP BY vote_account),
                 cluster AS (SELECT MAX(epoch) AS last_epoch FROM cluster_info),
-                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch),
-                -- The epoch running when 0041 was applied. Its rows and older ones may lack the key, whatever later writes touch them.
-                bls_uncollected AS (
-                    SELECT COALESCE((SELECT MAX(epoch) FROM cluster_info WHERE created_at <= applied_at), -1) AS last_epoch
-                    FROM migrations WHERE name = '0041-validators-vat-admission.sql'
-                )
+                epochs_dates AS (SELECT vote_account, first_epoch AS starting_epoch, start_at FROM validators_aggregated AS s JOIN epochs ON s.first_epoch = epochs.epoch)
             SELECT
                 validators.identity,
                 validators.vote_account,
@@ -1336,7 +1460,8 @@ pub async fn load_validators(
                 pending_delegator_rewards,
                 vote_account_lamports,
                 bls_pubkey,
-                COALESCE(validators.epoch > (SELECT last_epoch FROM bls_uncollected), FALSE) AS bls_pubkey_collected,
+                vat_admitted,
+                {BLS_PUBKEY_COLLECTED_SQL},
                 inflation_rewards_collector_healthy,
                 block_revenue_collector_healthy,
                 -- Only UpdateCommissionCollector moves this, so a mismatch is a deliberate redirect
@@ -1402,7 +1527,8 @@ pub async fn load_validators(
                     SELECT vote_account, epoch, activated_stake AS previous_activated_stake FROM validators
                 ) previous ON previous.vote_account = validators.vote_account AND previous.epoch = validators.epoch - 1
             WHERE validators.epoch > cluster.last_epoch - $1::NUMERIC
-            ORDER BY epoch DESC",
+            ORDER BY epoch DESC"
+            ),
             &[&Decimal::from(display_epochs)],
         )
         .await?;
@@ -1420,60 +1546,7 @@ pub async fn load_validators(
         let mut records: HashMap<_, _> = Default::default();
         let mut seeding_epochs: HashMap<String, u64> = Default::default();
         let mut projected_node_metadata: HashSet<String> = Default::default();
-        // The agave VAT filter over the stored rows of each epoch, by `(epoch, vote_account)`.
-        // A row without `vote_account_lamports`, or with a vote state the collector could not decode, gets no verdict and stays out of the rank.
-        let vat_verdicts: HashMap<(u64, String), Option<VatRejection>> = {
-            let mut candidates: HashMap<u64, HashMap<String, VatCandidate>> = HashMap::new();
-            for row in &rows {
-                let Some(lamports) = row.get::<_, Option<Decimal>>("vote_account_lamports") else {
-                    continue;
-                };
-                let bls_pubkey_collected: bool = row.get("bls_pubkey_collected");
-                // An unknown vote-state version leaves this NULL and decodes no key.
-                if bls_pubkey_collected
-                    && row
-                        .get::<_, Option<bool>>("inflation_rewards_commission_bps_is_v4")
-                        .is_none()
-                {
-                    continue;
-                }
-                let lamports_or_zero = |column: &str| -> u64 {
-                    row.get::<_, Option<Decimal>>(column)
-                        .map_or(0, |lamports| lamports.try_into().unwrap())
-                };
-                candidates
-                    .entry(row.get::<_, Decimal>("epoch").try_into().unwrap())
-                    .or_default()
-                    .insert(
-                        row.get("vote_account"),
-                        VatCandidate {
-                            // A row stored before the key was collected skips the BLS check.
-                            has_bls_pubkey: row.get::<_, Option<String>>("bls_pubkey").is_some()
-                                || !bls_pubkey_collected,
-                            // agave ranks by the stake effective after the boundary. Warmup limits are not applied.
-                            stake: (lamports_or_zero("activated_stake")
-                                + lamports_or_zero("activating_stake"))
-                            .saturating_sub(lamports_or_zero("deactivating_stake")),
-                            lamports: lamports.try_into().unwrap(),
-                            pending_delegator_rewards: lamports_or_zero(
-                                "pending_delegator_rewards",
-                            ),
-                        },
-                    );
-            }
-            candidates
-                .into_iter()
-                .filter_map(|(epoch, candidates)| {
-                    let minimum = vat_minimum_balances.get(&epoch)?;
-                    Some(
-                        vat_admissions(&candidates, minimum.balance.try_into().unwrap())
-                            .into_iter()
-                            .map(move |(vote_account, verdict)| ((epoch, vote_account), verdict)),
-                    )
-                })
-                .flatten()
-                .collect()
-        };
+        let vat_verdicts = vat_forecasts(&rows, &vat_minimum_balances);
         for row in rows {
             let vote_account: String = row.get("vote_account");
             let epoch: u64 = row.get::<_, Decimal>("epoch").try_into().unwrap();
@@ -1799,6 +1872,7 @@ pub async fn load_validators(
                     .get::<_, Option<Decimal>>("pending_delegator_rewards"),
                 vote_account_lamports,
                 vat_eligible,
+                vat_admitted: row.get::<_, Option<bool>>("vat_admitted"),
                 bls_pubkey,
                 vat_rejection_reason,
                 vat_runway_epochs,
@@ -2039,6 +2113,18 @@ pub async fn has_validators(psql_client: &Client) -> anyhow::Result<bool> {
         .await?;
 
     Ok(row.get("has_rows"))
+}
+
+/// Mismatched vote accounts of the newest cross-checked epoch; 0 before any check.
+pub async fn load_vat_verdict_mismatch(psql_client: &Client) -> anyhow::Result<i64> {
+    let row = psql_client
+        .query_opt(
+            "SELECT mismatched FROM vat_verdict_checks ORDER BY epoch DESC LIMIT 1",
+            &[],
+        )
+        .await?;
+
+    Ok(row.map_or(0, |row| i64::from(row.get::<_, i32>("mismatched"))))
 }
 
 pub async fn get_last_epoch(psql_client: &Client) -> anyhow::Result<Option<u64>> {

@@ -80,6 +80,7 @@ curl -sfLS 'localhost:8000/validators?limit=1&offset=0' | jq
           "epoch_stake": "9488392700088216",
           "vote_account_lamports": "390217135",
           "vat_eligible": false,
+          "vat_admitted": false,
           "bls_pubkey": null,
           "vat_rejection_reason": "no_bls_key",
           "vat_runway_epochs": "0",
@@ -144,7 +145,7 @@ Alpenglow replaces tower vote credits with vote rewards in lamports. The API giv
 
 The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/validators/flat` gives `avg_adjusted_vote_performance`, the mean of `vote_performance × (1 - commission)` over the epochs that have a value.
 
-`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave refuses the vote account at the end of the epoch, and its stakers get no inflation rewards for that epoch. The API applies the agave VAT filter to the stored rows of the epoch, at the last snapshot. Agave keeps a vote account when all these checks pass:
+`epoch_stats[].vat_eligible` is the SIMD-0357 eligibility forecast for the inflation rewards of that epoch, once Alpenglow is active. `false` means agave is expected to refuse the vote account at the end of the epoch, and its stakers would get no inflation rewards for that epoch. The API applies the agave VAT filter to the stored rows of the epoch, at the last snapshot. Agave keeps a vote account when all these checks pass:
 
 1. The v4 vote state has a BLS key.
 2. The stake at the next epoch is not 0. DS2 projects it as `activated_stake + activating - deactivating`, without the warmup limit.
@@ -158,6 +159,8 @@ The `LowCredits` unstake hint fires when `vote_performance` is below 0.5. `/vali
 - `vat_minimum_balances` is a top-level map from epoch to lamports, with one value for each epoch the response covers. The value is the rent of a v4 vote state plus the VAT of the next epoch, 1.6 SOL at 400 ms slots down to 0.8 SOL at 200 ms. It includes the VAT also before Alpenglow, when agave burns no VAT yet. It comes from the newest `cluster_info` row of the epoch. An epoch without a value is left out.
 
 `bls_pubkey` can be `null` in epochs before Alpenglow, or shortly after it, before DS2 collected the key. The API skips check 1 for those epochs. `null` in `vat_eligible` or `vat_runway_epochs` means an input is missing. The top-level fields repeat the newest epoch.
+
+`vat_eligible` is a forecast from the last stored rows of the epoch. `epoch_stats[].vat_admitted` is the verdict of the chain, read from the `VATDebit` rewards in the first block of the next epoch, about an hour after the boundary: `true` when the vote account paid the VAT, `false` when it paid none and has `activated_stake` in the next epoch, the stake agave admits on. It is `null` for the running epoch, for a vote account that paid no VAT and has no stake or no stored row in the next epoch yet, and until DS2 has stored the verdict.
 
 ## Uptimes
 ```bash
@@ -240,12 +243,16 @@ client are in the `Unknown` group, as on the lists. The newest epoch counts exac
 `/providers` and `/clients` count, so it matches the list row. Each older epoch counts the
 validators whose own row for that epoch puts them in the group, so a validator that moved counts in
 the old group before the move, and its `stake_share` is of every validator with a row that epoch.
+On a closed epoch's row, `client_id`, `client_id_raw` and `version` are the ones the validator held
+longest in that epoch; the open epoch has the latest snapshot.
 `net_apy` (apy-api 14-day rolling staker APY at the epoch end) and `take_rate` (realized,
 `validators_rewards`) are stake-weighted over the members that have one, and `null` for the open
 epoch (`epoch_end_at: null`). `expected_take_rate` is weighted the same way from each epoch's stored
 value (see Take rates); on the open epoch it is the members' current `/validators` value, as on the
 lists.
-An epoch the group had no member in is left out; `current_epoch` is still the cluster's newest epoch.
+Every epoch from the group's first to its last has a row; an epoch with no member has `total_stake`
+"0", `stake_share` 0, `validator_count` 0 and `null` rates. No row follows the group's last epoch,
+and `current_epoch` is still the cluster's newest epoch.
 ```bash
 curl -sfLS 'localhost:8000/clients/history?key=Agave%20%2B%20JitoBAM&level=label&epochs=1' | jq
 ```

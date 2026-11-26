@@ -129,6 +129,40 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_row_inside_the_window_is_kept() {
+        let history = GroupHistory {
+            name: "OVH".to_string(),
+            current_epoch: Some(100),
+            epochs: vec![
+                GroupHistoryEpoch {
+                    total_stake: 300.into(),
+                    validator_count: 1,
+                    ..point(100)
+                },
+                point(99),
+                point(98),
+            ],
+        };
+        let response = group_history_response(history, 2, None);
+
+        assert_eq!(
+            serde_json::to_value(&response.epochs[1]).unwrap(),
+            serde_json::json!({
+                "epoch": 99,
+                "epoch_start_at": null,
+                "epoch_end_at": null,
+                "total_stake": "0",
+                "stake_share": 0.0,
+                "validator_count": 0,
+                "net_apy": null,
+                "take_rate": null,
+                "expected_take_rate": null
+            })
+        );
+        assert_eq!(response.epochs.len(), 2);
+    }
+
+    #[test]
     fn a_missing_group_is_not_found() {
         let reply = group_history_reply(None, 90, None, || "No provider named x".to_string());
         assert_eq!(

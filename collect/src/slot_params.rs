@@ -112,6 +112,14 @@ pub fn nearest_slot_time_ms(measured_ms: u64) -> u64 {
         .unwrap_or(BASELINE_SLOT_PARAMS.slot_time_ms)
 }
 
+pub fn is_known_vat_lamports(lamports: u64) -> bool {
+    SLOT_TIME_GATES
+        .iter()
+        .map(|(_, params)| params.vat_lamports_per_epoch)
+        .chain([BASELINE_SLOT_PARAMS.vat_lamports_per_epoch])
+        .any(|known| known == lamports)
+}
+
 // SIMD-0525: a gate active in epoch E first applies at the first slot of E+1 (agave `feature_effective_slot`).
 pub fn select_slot_params(activations: &[(SlotParams, Option<Epoch>)], epoch: Epoch) -> SlotParams {
     let mut params = BASELINE_SLOT_PARAMS;
@@ -207,6 +215,13 @@ mod tests {
     fn the_midpoint_between_two_rows_decides_which_one_is_nearer() {
         assert_eq!(nearest_slot_time_ms(376), 400);
         assert_eq!(nearest_slot_time_ms(374), 350);
+    }
+
+    #[test]
+    fn only_the_vat_amounts_of_the_table_are_known() {
+        assert!(is_known_vat_lamports(800_000_000));
+        assert!(is_known_vat_lamports(1_600_000_000));
+        assert!(!is_known_vat_lamports(900_000_000));
     }
 
     #[test]

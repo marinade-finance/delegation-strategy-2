@@ -156,10 +156,14 @@ pub fn collect_validator_events_info(
     info!("Querying settlements from epoch: {from_epoch}");
 
     let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    let events = runtime.block_on(async {
-        let bq_client = create_bigquery_client().await?;
-        query_validator_settlements(&bq_client, &events_params.gcp_table_name, from_epoch).await
-    })?;
+    let events = runtime.block_on(with_bigquery_timeout(
+        "validator settlements",
+        BIGQUERY_READ_TIMEOUT,
+        async {
+            let bq_client = create_bigquery_client().await?;
+            query_validator_settlements(&bq_client, &events_params.gcp_table_name, from_epoch).await
+        },
+    ))?;
 
     // Settlements are legitimately sparse (most validators have none in a given epoch),
     // so we always emit the snapshot even when the set is small or empty.

@@ -337,8 +337,10 @@ pub struct ValidatorEpochStats {
     pub pending_delegator_rewards: Option<Decimal>,
     /// Balance of the vote account in lamports, from the last snapshot of the epoch. Null on rows stored before DS2 collected it.
     pub vote_account_lamports: Option<Decimal>,
-    /// SIMD-0357 eligibility for the inflation rewards of the epoch, once Alpenglow is active: the agave VAT filter applied to the stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. Null when `vote_account_lamports` or the minimum is null.
+    /// SIMD-0357 forecast for the inflation rewards of the epoch, once Alpenglow is active: the agave VAT filter applied to the last stored rows of the epoch, against `vat_minimum_balances` at the top level of `/validators`. A forecast from the last snapshot, not the verdict of the chain, which is `vat_admitted`. Null when `vote_account_lamports` or the minimum is null.
     pub vat_eligible: Option<bool>,
+    /// SIMD-0357 verdict of the chain for the inflation rewards of the epoch: true when the vote account paid the VAT debit in the first block of the next epoch, false when it paid none and has `activated_stake` in the next epoch, the stake agave admits on. Null for a vote account that paid no VAT and has no stake or no stored row in the next epoch yet, and until DS2 has stored the verdict.
+    pub vat_admitted: Option<bool>,
     /// Base58 compressed BLS key of the vote account. Null in epochs before Alpenglow.
     pub bls_pubkey: Option<String>,
     /// The first SIMD-0357 check that fails: `no_bls_key`, `no_stake`, `low_balance` or `below_cutoff` (outside the top 2000 by stake, ties at the cut-off included). Null when admitted or when `vat_eligible` is null.
