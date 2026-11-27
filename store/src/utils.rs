@@ -3,8 +3,7 @@ use crate::dto::{
     BlockProductionStats, ClientDiversityStats, ClientLineageStats, ClusterStats, CommissionRecord,
     DCConcentrationStats, FeatureSetStats, RugInfo, RuggerRecord, ScoringRunRecord, UptimeRecord,
     ValidatorAggregatedFlat, ValidatorEpochStats, ValidatorRecord, ValidatorScoreRecord,
-    ValidatorScoreV2Record, ValidatorScoringCsvRow, ValidatorWarning, ValidatorsAggregated,
-    VersionRecord,
+    ValidatorScoreV2Record, ValidatorWarning, ValidatorsAggregated, VersionRecord,
 };
 use crate::incidents::{
     CommissionRaise, DowntimeInterval, EpochBlockProduction, EpochSandwiches, ValidatorIncidents,
@@ -2792,136 +2791,6 @@ pub async fn load_validators_aggregated_flat(
     }
 
     Ok(validators)
-}
-
-fn map_to_ordered_component_values(
-    components: &Vec<&str>,
-    row: &ValidatorScoringCsvRow,
-) -> Vec<Option<String>> {
-    components
-        .iter()
-        .map(|component| match *component {
-            "COMMISSION_ADJUSTED_CREDITS" => Some(row.avg_adjusted_credits.to_string()),
-            "GRACE_SKIP_RATE" => Some(row.avg_grace_skip_rate.to_string()),
-            "DC_CONCENTRATION" => Some(row.avg_dc_concentration.to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-pub async fn store_scoring(
-    psql_client: &mut Client,
-    epoch: i32,
-    ui_id: String,
-    components: Vec<&str>,
-    component_weights: Vec<f64>,
-    scores: Vec<ValidatorScoringCsvRow>,
-) -> anyhow::Result<()> {
-    // One transaction, so MAX(scoring_run_id) never becomes visible ahead of that run's scores.
-    let tx = psql_client.transaction().await?;
-
-    let scoring_run_result = tx
-        .query_one(
-            "INSERT INTO scoring_runs (created_at, epoch, components, component_weights, ui_id)
-            VALUES (now(), $1, $2, $3, $4) RETURNING scoring_run_id;",
-            &[&epoch, &components, &component_weights, &ui_id],
-        )
-        .await?;
-
-    let scoring_run_id: i64 = scoring_run_result.get("scoring_run_id");
-
-    log::info!("Stored scoring run: {scoring_run_id}");
-
-    let component_scores_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.normalized_adjusted_credits,
-                    row.normalized_grace_skip_rate,
-                    row.normalized_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_ranks_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                Vec::from([
-                    row.rank_adjusted_credits,
-                    row.rank_grace_skip_rate,
-                    row.rank_dc_concentration,
-                ]),
-            )
-        })
-        .collect();
-
-    let component_values_by_vote_account: HashMap<_, _> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                map_to_ordered_component_values(&components, row),
-            )
-        })
-        .collect();
-
-    let ui_hints_parsed: HashMap<_, Vec<&str>> = scores
-        .iter()
-        .map(|row| {
-            (
-                row.vote_account.clone(),
-                if row.ui_hints.is_empty() {
-                    Default::default()
-                } else {
-                    row.ui_hints.split(",").collect()
-                },
-            )
-        })
-        .collect();
-
-    for chunk in scores.chunks(500) {
-        let mut query = InsertQueryCombiner::new(
-            "scores".to_string(),
-            "vote_account, score, component_scores, component_ranks, component_values, vemnde_votes, msol_votes, rank, ui_hints, eligible_stake_algo, eligible_stake_vemnde, eligible_stake_msol, target_stake_algo, target_stake_vemnde, target_stake_msol, scoring_run_id".to_string(),
-        );
-        for row in chunk {
-            let mut params: Vec<&(dyn ToSql + Sync)> = vec![
-                &row.vote_account,
-                &row.score,
-                component_scores_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_ranks_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                component_values_by_vote_account
-                    .get(&row.vote_account)
-                    .unwrap(),
-                &row.vemnde_votes,
-                &row.msol_votes,
-                &row.rank,
-                ui_hints_parsed.get(&row.vote_account).unwrap(),
-                &row.eligible_stake_algo,
-                &row.eligible_stake_vemnde,
-                &row.eligible_stake_msol,
-                &row.target_stake_algo,
-                &row.target_stake_vemnde,
-                &row.target_stake_msol,
-                &scoring_run_id,
-            ];
-            query.add(&mut params);
-        }
-        query.execute_in(&tx).await?;
-    }
-
-    tx.commit().await?;
-
-    Ok(())
 }
 
 #[cfg(test)]

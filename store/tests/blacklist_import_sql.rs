@@ -6,8 +6,6 @@ use std::collections::HashSet;
 use store::blacklist::import::{import_legacy, ImportParams};
 use tokio_postgres::Client;
 
-const REPO_BLACKLIST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../blacklist.csv");
-
 async fn import(client: &mut Client, path: &str) -> anyhow::Result<()> {
     import_legacy(
         ImportParams::parse_from(["store", "--csv", path, "--source-ref", "abc123"]),
@@ -126,30 +124,4 @@ async fn a_stored_exemption_closes_its_legacy_rows() {
         .unwrap();
     assert_eq!(closed.get::<_, String>("epoch"), "1090");
     assert_eq!(closed.get::<_, String>("removed_reason"), "exempt");
-}
-
-// The import replaces the file every reader used, so it has to carry every row of it.
-#[tokio::test]
-async fn the_repos_blacklist_imports_whole() {
-    let schema = "ds_test_blacklist_import_repo";
-    if skip_without_database(schema) {
-        return;
-    }
-    let mut client = migrated_client(schema).await.unwrap();
-
-    import(&mut client, REPO_BLACKLIST).await.unwrap();
-
-    let expected: HashSet<(String, String)> = std::fs::read_to_string(REPO_BLACKLIST)
-        .unwrap()
-        .lines()
-        .skip(1)
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let (vote_account, code) = line.split_once(',').unwrap();
-            (vote_account.trim().into(), code.trim().into())
-        })
-        .collect();
-    let imported = active_pairs(&client).await;
-    assert!(expected.len() > 500, "{}", expected.len());
-    assert_eq!(imported, expected);
 }

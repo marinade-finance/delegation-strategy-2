@@ -54,9 +54,10 @@ cargo run --bin store -- --postgres-url $POSTGRES_URL \
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
   jito-mev --snapshot-file "$OUTPUT_DIR"/jito-mev.yaml
 
-# one-off: today's blacklist.csv becomes legacy rows of the blacklist table
+# one-off: the retired blacklist.csv becomes legacy rows of the blacklist table
+git show c5ce07c:blacklist.csv > /tmp/blacklist.csv
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
-  blacklist-import --csv ./blacklist.csv --source-ref "$(git rev-parse HEAD)"
+  blacklist-import --csv /tmp/blacklist.csv --source-ref c5ce07c
 # hourly: sync the manual adds and the exemptions from the config
 cargo run --bin store -- --postgres-url $POSTGRES_URL \
   blacklist-config-sync --config ./blacklist.yaml

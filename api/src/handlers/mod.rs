@@ -1,4 +1,3 @@
-pub mod admin_score_upload;
 pub mod blacklist;
 pub mod blacklist_csv;
 pub mod client_history;
@@ -19,8 +18,6 @@ pub mod provider_history;
 pub mod readiness;
 pub mod releases;
 pub mod reports_commission_changes;
-pub mod reports_scoring;
-pub mod reports_scoring_html;
 pub mod reports_staking;
 pub mod rewards;
 pub mod take_rates;

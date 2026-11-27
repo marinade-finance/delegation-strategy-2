@@ -10,8 +10,6 @@ anyhow = { workspace = true }
 borsh = { workspace = true }
 csv = { workspace = true }
 log = { workspace = true }
-bytes = { workspace = true }
-futures = { workspace = true }
 env_logger = { workspace = true }
 clap = { workspace = true }
 solana-native-token = { workspace = true }
@@ -29,5 +27,4 @@ tokio = { workspace = true }
 warp = { workspace = true }
 prometheus = { workspace = true }
 lazy_static = { workspace = true }
-regex = { workspace = true }
 utoipa = { workspace = true }

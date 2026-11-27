@@ -1,11 +1,10 @@
 use crate::handlers::{
-    admin_score_upload, blacklist, blacklist_csv, client_history, cluster_stats, commissions,
-    config, docs, events, global_unstake_hints, glossary, health, jito, jito_mev, list_clients,
-    list_providers, list_validators, provider_history, readiness, releases,
-    reports_commission_changes, reports_scoring, reports_scoring_html, reports_staking, rewards,
-    take_rates, unstake_hints, uptimes, validator_score_breakdown, validator_score_breakdowns,
-    validator_scores, validators_block_rewards, validators_flat, validators_quality, versions,
-    workflow_metrics_upload,
+    blacklist, blacklist_csv, client_history, cluster_stats, commissions, config, docs, events,
+    global_unstake_hints, glossary, health, jito, jito_mev, list_clients, list_providers,
+    list_validators, provider_history, readiness, releases, reports_commission_changes,
+    reports_staking, rewards, take_rates, unstake_hints, uptimes, validator_score_breakdown,
+    validator_score_breakdowns, validator_scores, validators_block_rewards, validators_flat,
+    validators_quality, versions, workflow_metrics_upload,
 };
 use utoipa::OpenApi;
 
@@ -20,7 +19,6 @@ use utoipa::OpenApi;
         )
     ),
     components(
-        schemas(admin_score_upload::ResponseAdminScoreUpload),
         schemas(store::blacklist::db::Blacklist),
         schemas(store::blacklist::db::BlacklistExempt),
         schemas(store::blacklist::db::BlacklistRow),
@@ -44,7 +42,6 @@ use utoipa::OpenApi;
         schemas(list_validators::ResponseValidators),
         schemas(reports_commission_changes::CommissionChange),
         schemas(reports_commission_changes::ResponseCommissionChanges),
-        schemas(reports_scoring::ResponseReportScoring),
         schemas(reports_staking::ResponseReportStaking),
         schemas(reports_staking::Stake),
         schemas(rewards::ResponseRewards),
@@ -104,7 +101,6 @@ use utoipa::OpenApi;
         schemas(validators_block_rewards::ResponseValidatorsBlockRewards),
     ),
     paths(
-        admin_score_upload::handler,
         cluster_stats::handler,
         list_clients::handler,
         list_providers::handler,
@@ -120,8 +116,6 @@ use utoipa::OpenApi;
         list_validators::handler,
         readiness::handler,
         reports_commission_changes::handler,
-        reports_scoring_html::handler,
-        reports_scoring::handler,
         reports_staking::handler,
         rewards::handler,
         unstake_hints::handler,

@@ -371,29 +371,6 @@ curl -sLfS 'http://localhost:8000/reports/staking' | jq
 }
 ```
 
-## Reports - scoring
-```bash
-curl -sLfS 'http://localhost:8000/reports/scoring' | jq
-```
-```json
-{
-  "reports": {
-    "370": [
-      {
-        "created_at": "2022-11-29T17:20:01.123456Z",
-        "link": "https://..../....zip",
-        "md": "Download data for the report: ```bash\nsh -c \"echo Downloaded...\"```\nGenerate the report: ```bash\nsh -c \"echo Generated...\"```\n"
-      },
-      {
-        "created_at": "2022-11-28T13:46:02.217154Z",
-        "link": "https://..../....zip",
-        "md": "Download data for the report: ```bash\nsh -c \"echo Downloaded...\"```\nGenerate the report: ```bash\nsh -c \"echo Generated...\"```\n"
-      }
-    ]
-  }
-}
-```
-
 ## Reports - commission changes (deprecated)
 ```bash
 curl -sfLS localhost:8000/reports/commission-changes | jq
@@ -545,14 +522,6 @@ curl -sfLS 'localhost:8000/blacklist' | jq
 ## Metrics
 ```bash
 curl -sLfS 'http://localhost:9000/metrics'
-```
-
-### Admin - Score upload
-```bash
-curl -sLfS 'http://localhost:8000/admin/scores?epoch=1&components=COMMISSION_ADJUSTED_CREDITS,GRACE_SKIP_RATE,DC_CONCENTRATION&component_weights=10,1,2&ui_id=fw3' -X POST \
-  -H 'Content-Type: multipart/form-data' \
-  -H 'Authorization: foo' \
-  --form 'scores_csv=@./scores.csv'
 ```
 
 ### Admin - Metrics upload
